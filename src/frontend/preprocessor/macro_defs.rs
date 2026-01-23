@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::utils::{is_ident_start, is_ident_cont};
+use super::utils::{is_ident_start, is_ident_cont, copy_literal, skip_literal};
 
 /// Represents a macro definition.
 #[derive(Debug, Clone)]
@@ -77,45 +77,9 @@ impl MacroTable {
         let mut i = 0;
 
         while i < len {
-            // Skip string literals
-            if chars[i] == '"' {
-                result.push(chars[i]);
-                i += 1;
-                while i < len && chars[i] != '"' {
-                    if chars[i] == '\\' && i + 1 < len {
-                        result.push(chars[i]);
-                        result.push(chars[i + 1]);
-                        i += 2;
-                    } else {
-                        result.push(chars[i]);
-                        i += 1;
-                    }
-                }
-                if i < len {
-                    result.push(chars[i]); // closing quote
-                    i += 1;
-                }
-                continue;
-            }
-
-            // Skip char literals
-            if chars[i] == '\'' {
-                result.push(chars[i]);
-                i += 1;
-                while i < len && chars[i] != '\'' {
-                    if chars[i] == '\\' && i + 1 < len {
-                        result.push(chars[i]);
-                        result.push(chars[i + 1]);
-                        i += 2;
-                    } else {
-                        result.push(chars[i]);
-                        i += 1;
-                    }
-                }
-                if i < len {
-                    result.push(chars[i]); // closing quote
-                    i += 1;
-                }
+            // Skip string and char literals (copy them verbatim)
+            if chars[i] == '"' || chars[i] == '\'' {
+                i = copy_literal(&chars, i, chars[i], &mut result);
                 continue;
             }
 
@@ -263,43 +227,9 @@ impl MacroTable {
                     current_arg = String::new();
                     i += 1;
                 }
-                '"' => {
-                    // String literal - don't split on commas inside
-                    current_arg.push('"');
-                    i += 1;
-                    while i < len && chars[i] != '"' {
-                        if chars[i] == '\\' && i + 1 < len {
-                            current_arg.push(chars[i]);
-                            current_arg.push(chars[i + 1]);
-                            i += 2;
-                        } else {
-                            current_arg.push(chars[i]);
-                            i += 1;
-                        }
-                    }
-                    if i < len {
-                        current_arg.push('"');
-                        i += 1;
-                    }
-                }
-                '\'' => {
-                    // Char literal
-                    current_arg.push('\'');
-                    i += 1;
-                    while i < len && chars[i] != '\'' {
-                        if chars[i] == '\\' && i + 1 < len {
-                            current_arg.push(chars[i]);
-                            current_arg.push(chars[i + 1]);
-                            i += 2;
-                        } else {
-                            current_arg.push(chars[i]);
-                            i += 1;
-                        }
-                    }
-                    if i < len {
-                        current_arg.push('\'');
-                        i += 1;
-                    }
+                '"' | '\'' => {
+                    // String/char literal - copy verbatim, don't split on commas inside
+                    i = copy_literal(chars, i, chars[i], &mut current_arg);
                 }
                 _ => {
                     current_arg.push(chars[i]);
@@ -444,18 +374,7 @@ impl MacroTable {
 
             // Skip string/char literals
             if chars[i] == '"' || chars[i] == '\'' {
-                let quote = chars[i];
-                i += 1;
-                while i < len && chars[i] != quote {
-                    if chars[i] == '\\' && i + 1 < len {
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-                if i < len {
-                    i += 1;
-                }
+                i = skip_literal(&chars, i, chars[i]);
                 continue;
             }
 
@@ -631,45 +550,9 @@ impl MacroTable {
         let mut i = 0;
 
         while i < len {
-            // Skip string literals
-            if chars[i] == '"' {
-                result.push(chars[i]);
-                i += 1;
-                while i < len && chars[i] != '"' {
-                    if chars[i] == '\\' && i + 1 < len {
-                        result.push(chars[i]);
-                        result.push(chars[i + 1]);
-                        i += 2;
-                    } else {
-                        result.push(chars[i]);
-                        i += 1;
-                    }
-                }
-                if i < len {
-                    result.push(chars[i]);
-                    i += 1;
-                }
-                continue;
-            }
-
-            // Skip char literals
-            if chars[i] == '\'' {
-                result.push(chars[i]);
-                i += 1;
-                while i < len && chars[i] != '\'' {
-                    if chars[i] == '\\' && i + 1 < len {
-                        result.push(chars[i]);
-                        result.push(chars[i + 1]);
-                        i += 2;
-                    } else {
-                        result.push(chars[i]);
-                        i += 1;
-                    }
-                }
-                if i < len {
-                    result.push(chars[i]);
-                    i += 1;
-                }
+            // Skip string/char literals (copy verbatim, don't substitute inside)
+            if chars[i] == '"' || chars[i] == '\'' {
+                i = copy_literal(&chars, i, chars[i], &mut result);
                 continue;
             }
 

@@ -28,6 +28,47 @@ pub fn skip_literal(chars: &[char], start: usize, quote: char) -> usize {
     i // unterminated literal - return end
 }
 
+/// Skip past a string or character literal in a byte slice, starting at position `i`.
+/// Returns the position after the closing quote. Handles backslash escapes.
+/// Byte-oriented version for code that processes `&[u8]` directly.
+pub fn skip_literal_bytes(bytes: &[u8], start: usize, quote: u8) -> usize {
+    let len = bytes.len();
+    let mut i = start + 1; // skip opening quote
+    while i < len {
+        if bytes[i] == b'\\' && i + 1 < len {
+            i += 2;
+        } else if bytes[i] == quote {
+            return i + 1;
+        } else {
+            i += 1;
+        }
+    }
+    i
+}
+
+/// Copy a string or character literal from a byte slice into a String result.
+/// Returns the position after the closing quote. Handles backslash escapes.
+/// Byte-oriented version for code that processes `&[u8]` directly.
+pub fn copy_literal_bytes(bytes: &[u8], start: usize, quote: u8, result: &mut String) -> usize {
+    let len = bytes.len();
+    result.push(bytes[start] as char); // opening quote
+    let mut i = start + 1;
+    while i < len {
+        if bytes[i] == b'\\' && i + 1 < len {
+            result.push(bytes[i] as char);
+            result.push(bytes[i + 1] as char);
+            i += 2;
+        } else if bytes[i] == quote {
+            result.push(bytes[i] as char);
+            return i + 1;
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    i
+}
+
 /// Copy a string or character literal from chars into result, starting at position `i`.
 /// Returns the position after the closing quote. Handles backslash escapes.
 pub fn copy_literal(chars: &[char], start: usize, quote: char, result: &mut String) -> usize {

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use super::macro_defs::{MacroDef, MacroTable, parse_define};
 use super::conditionals::{ConditionalStack, evaluate_condition};
 use super::builtin_macros::define_builtin_macros;
-use super::utils::{is_ident_start, is_ident_cont};
+use super::utils::{is_ident_start, is_ident_cont, skip_literal, skip_literal_bytes, copy_literal_bytes};
 
 pub struct Preprocessor {
     macros: MacroTable,
@@ -353,11 +353,32 @@ impl Preprocessor {
     /// Process source code, expanding macros and handling conditionals.
     /// Returns the preprocessed source.
     pub fn preprocess(&mut self, source: &str) -> String {
-        // Translation phases: strip block comments, then join continuations
+        self.preprocess_source(source, false)
+    }
+
+    /// Process source code from an included file. Same pipeline as preprocess()
+    /// but saves/restores the conditional stack and skips pending_injections.
+    fn preprocess_included(&mut self, source: &str) -> String {
+        self.preprocess_source(source, true)
+    }
+
+    /// Unified preprocessing pipeline for both top-level and included sources.
+    ///
+    /// When `is_include` is true:
+    /// - Saves and restores the conditional stack (each file gets its own)
+    /// - Does not emit pending_injections (those only apply to top-level)
+    /// - Only processes directives when no multi-line accumulation is pending
+    fn preprocess_source(&mut self, source: &str, is_include: bool) -> String {
         let source = Self::strip_block_comments(source);
         let source = self.join_continued_lines(&source);
-
         let mut output = String::with_capacity(source.len());
+
+        // For included files, save and reset the conditional stack
+        let saved_conditionals = if is_include {
+            Some(std::mem::replace(&mut self.conditionals, ConditionalStack::new()))
+        } else {
+            None
+        };
 
         // Buffer for accumulating multi-line macro invocations
         let mut pending_line = String::new();
@@ -376,77 +397,43 @@ impl Preprocessor {
                 is_predefined: true,
             });
 
-            // Check for preprocessor directive.
-            // Preprocessor directives take priority even if we're accumulating
-            // a multi-line macro invocation (e.g., #ifdef inside an expression).
-            if trimmed.starts_with('#') {
-                // If we're accumulating a multi-line expression with unbalanced parens,
-                // we need to handle directives (#ifdef, #endif, etc.) while preserving
-                // the pending accumulation.
+            // Directive handling: top-level files process directives even during
+            // multi-line accumulation; included files only when no pending line.
+            let is_directive = trimmed.starts_with('#');
+            let process_directive = is_directive && (!is_include || pending_line.is_empty());
+
+            if process_directive {
                 let include_result = self.process_directive(trimmed, line_num + 1);
                 if let Some(included_content) = include_result {
-                    // An #include was processed; insert the preprocessed content
                     output.push_str(&included_content);
                     output.push('\n');
+                } else if is_include {
+                    // Included files always emit a newline for non-include directives
+                    output.push('\n');
                 }
-                // Emit injected declarations from #include processing
-                if !self.pending_injections.is_empty() {
+                // Top-level: emit injected declarations from #include processing
+                if !is_include && !self.pending_injections.is_empty() {
                     for decl in std::mem::take(&mut self.pending_injections) {
                         output.push_str(&decl);
                     }
                 }
-                // Emit a newline to preserve line numbers
-                if !pending_line.is_empty() {
-                    // We're inside a multi-line accumulation; track newlines
-                    pending_newlines += 1;
-                } else {
-                    output.push('\n');
+                // Preserve line numbering during multi-line accumulation
+                if !is_include {
+                    if !pending_line.is_empty() {
+                        pending_newlines += 1;
+                    } else {
+                        output.push('\n');
+                    }
                 }
             } else if self.conditionals.is_active() {
-                // Regular line - expand macros if we're in an active conditional
-                // Handle multi-line macro invocations by checking for unbalanced parens
-                if pending_line.is_empty() {
-                    if Self::has_unbalanced_parens(line) {
-                        pending_line = line.to_string();
-                        pending_newlines = 1;
-                    } else {
-                        let expanded = self.macros.expand_line(line);
-                        output.push_str(&expanded);
-                        output.push('\n');
-                    }
-                } else {
-                    // Continue accumulating lines
-                    pending_line.push('\n');
-                    pending_line.push_str(line);
-                    pending_newlines += 1;
-
-                    if !Self::has_unbalanced_parens(&pending_line) {
-                        // All parens are balanced - expand the accumulated line
-                        let expanded = self.macros.expand_line(&pending_line);
-                        output.push_str(&expanded);
-                        output.push('\n');
-                        // Emit extra newlines to preserve line numbering
-                        for _ in 1..pending_newlines {
-                            output.push('\n');
-                        }
-                        pending_line.clear();
-                        pending_newlines = 0;
-                    } else if pending_newlines > 20 {
-                        // Safety: don't accumulate forever
-                        let expanded = self.macros.expand_line(&pending_line);
-                        output.push_str(&expanded);
-                        output.push('\n');
-                        for _ in 1..pending_newlines {
-                            output.push('\n');
-                        }
-                        pending_line.clear();
-                        pending_newlines = 0;
-                    }
-                }
+                // Regular line (or directive during include with pending line) -
+                // expand macros, handling multi-line macro invocations
+                self.accumulate_and_expand(
+                    line, &mut pending_line, &mut pending_newlines, &mut output,
+                );
             } else {
-                // In an inactive conditional block - skip the line
-                if !pending_line.is_empty() {
-                    // Preserve line count for pending multi-line accumulation
+                // Inactive conditional block - skip the line but preserve numbering
+                if !is_include && !pending_line.is_empty() {
                     pending_newlines += 1;
                 } else {
                     output.push('\n');
@@ -461,95 +448,50 @@ impl Preprocessor {
             output.push('\n');
         }
 
+        // Restore conditional stack for included files
+        if let Some(saved) = saved_conditionals {
+            self.conditionals = saved;
+        }
+
         output
     }
 
-    /// Process source code from an included file. This is like preprocess()
-    /// but reuses the same preprocessor state (macros, etc.).
-    fn preprocess_included(&mut self, source: &str) -> String {
-        let source = Self::strip_block_comments(source);
-        let source = self.join_continued_lines(&source);
-        let mut output = String::with_capacity(source.len());
-
-        // Save and reset conditional stack for included file
-        let saved_conditionals = std::mem::replace(&mut self.conditionals, ConditionalStack::new());
-
-        // Buffer for multi-line macro invocations
-        let mut pending_line = String::new();
-        let mut pending_newlines: usize = 0;
-
-        for (line_num, line) in source.lines().enumerate() {
-            let trimmed = line.trim();
-
-            self.macros.define(MacroDef {
-                name: "__LINE__".to_string(),
-                is_function_like: false,
-                params: Vec::new(),
-                is_variadic: false,
-                body: (line_num + 1).to_string(),
-                is_predefined: true,
-            });
-
-            if trimmed.starts_with('#') && pending_line.is_empty() {
-                let include_result = self.process_directive(trimmed, line_num + 1);
-                if let Some(included_content) = include_result {
-                    output.push_str(&included_content);
-                    output.push('\n');
-                } else {
-                    output.push('\n');
-                }
-            } else if self.conditionals.is_active() {
-                // Handle multi-line macro invocations
-                if pending_line.is_empty() {
-                    if Self::has_unbalanced_parens(line) {
-                        pending_line = line.to_string();
-                        pending_newlines = 1;
-                    } else {
-                        let expanded = self.macros.expand_line(line);
-                        output.push_str(&expanded);
-                        output.push('\n');
-                    }
-                } else {
-                    pending_line.push('\n');
-                    pending_line.push_str(line);
-                    pending_newlines += 1;
-
-                    if !Self::has_unbalanced_parens(&pending_line) {
-                        let expanded = self.macros.expand_line(&pending_line);
-                        output.push_str(&expanded);
-                        output.push('\n');
-                        for _ in 1..pending_newlines {
-                            output.push('\n');
-                        }
-                        pending_line.clear();
-                        pending_newlines = 0;
-                    } else if pending_newlines > 20 {
-                        let expanded = self.macros.expand_line(&pending_line);
-                        output.push_str(&expanded);
-                        output.push('\n');
-                        for _ in 1..pending_newlines {
-                            output.push('\n');
-                        }
-                        pending_line.clear();
-                        pending_newlines = 0;
-                    }
-                }
+    /// Accumulate lines for multi-line macro invocations (unbalanced parens)
+    /// and expand when complete. This is the shared logic for both preprocess
+    /// paths, avoiding the previous duplication of ~40 lines.
+    fn accumulate_and_expand(
+        &self,
+        line: &str,
+        pending_line: &mut String,
+        pending_newlines: &mut usize,
+        output: &mut String,
+    ) {
+        if pending_line.is_empty() {
+            if Self::has_unbalanced_parens(line) {
+                *pending_line = line.to_string();
+                *pending_newlines = 1;
             } else {
+                let expanded = self.macros.expand_line(line);
+                output.push_str(&expanded);
                 output.push('\n');
             }
+        } else {
+            pending_line.push('\n');
+            pending_line.push_str(line);
+            *pending_newlines += 1;
+
+            if !Self::has_unbalanced_parens(pending_line) || *pending_newlines > 20 {
+                // Parens balanced or safety limit reached - expand accumulated lines
+                let expanded = self.macros.expand_line(pending_line);
+                output.push_str(&expanded);
+                output.push('\n');
+                for _ in 1..*pending_newlines {
+                    output.push('\n');
+                }
+                pending_line.clear();
+                *pending_newlines = 0;
+            }
         }
-
-        // Flush remaining
-        if !pending_line.is_empty() {
-            let expanded = self.macros.expand_line(&pending_line);
-            output.push_str(&expanded);
-            output.push('\n');
-        }
-
-        // Restore conditional stack
-        self.conditionals = saved_conditionals;
-
-        output
     }
 
     /// Set the filename for __FILE__ macro and set as the base include directory.
@@ -668,46 +610,22 @@ impl Preprocessor {
 
     /// Check if a line has unbalanced parentheses, indicating a multi-line
     /// macro invocation that needs to be joined with subsequent lines.
-    /// This respects string literals and character literals.
+    /// Skips string/char literals and line comments.
     fn has_unbalanced_parens(line: &str) -> bool {
         let mut depth: i32 = 0;
-        let mut in_string = false;
-        let mut in_char = false;
         let bytes = line.as_bytes();
         let len = bytes.len();
         let mut i = 0;
 
         while i < len {
-            if in_string {
-                if bytes[i] == b'\\' && i + 1 < len {
-                    i += 2;
-                } else if bytes[i] == b'"' {
-                    in_string = false;
-                    i += 1;
-                } else {
-                    i += 1;
+            match bytes[i] {
+                b'"' | b'\'' => {
+                    i = skip_literal_bytes(bytes, i, bytes[i]);
                 }
-            } else if in_char {
-                if bytes[i] == b'\\' && i + 1 < len {
-                    i += 2;
-                } else if bytes[i] == b'\'' {
-                    in_char = false;
-                    i += 1;
-                } else {
-                    i += 1;
-                }
-            } else {
-                match bytes[i] {
-                    b'"' => { in_string = true; i += 1; }
-                    b'\'' => { in_char = true; i += 1; }
-                    b'(' => { depth += 1; i += 1; }
-                    b')' => { depth -= 1; i += 1; }
-                    b'/' if i + 1 < len && bytes[i + 1] == b'/' => {
-                        // Line comment - stop processing
-                        break;
-                    }
-                    _ => { i += 1; }
-                }
+                b'(' => { depth += 1; i += 1; }
+                b')' => { depth -= 1; i += 1; }
+                b'/' if i + 1 < len && bytes[i + 1] == b'/' => break,
+                _ => { i += 1; }
             }
         }
 
@@ -722,61 +640,40 @@ impl Preprocessor {
         let bytes = source.as_bytes();
         let len = bytes.len();
         let mut i = 0;
-        let mut in_string = false;
-        let mut in_char = false;
 
         while i < len {
-            if in_string {
-                result.push(bytes[i] as char);
-                if bytes[i] == b'\\' && i + 1 < len {
-                    i += 1;
-                    result.push(bytes[i] as char);
-                } else if bytes[i] == b'"' {
-                    in_string = false;
+            match bytes[i] {
+                b'"' | b'\'' => {
+                    // Copy string/char literals verbatim (don't strip comments inside)
+                    i = copy_literal_bytes(bytes, i, bytes[i], &mut result);
                 }
-                i += 1;
-            } else if in_char {
-                result.push(bytes[i] as char);
-                if bytes[i] == b'\\' && i + 1 < len {
-                    i += 1;
-                    result.push(bytes[i] as char);
-                } else if bytes[i] == b'\'' {
-                    in_char = false;
-                }
-                i += 1;
-            } else if bytes[i] == b'"' {
-                in_string = true;
-                result.push('"');
-                i += 1;
-            } else if bytes[i] == b'\'' {
-                in_char = true;
-                result.push('\'');
-                i += 1;
-            } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                // Block comment - replace with spaces, preserving newlines
-                i += 2;
-                result.push(' '); // Replace comment start with space
-                while i < len {
-                    if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                        i += 2;
-                        result.push(' '); // Replace comment end with space
-                        break;
+                b'/' if i + 1 < len && bytes[i + 1] == b'*' => {
+                    // Block comment - replace with spaces, preserving newlines
+                    i += 2;
+                    result.push(' ');
+                    while i < len {
+                        if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                            i += 2;
+                            result.push(' ');
+                            break;
+                        }
+                        if bytes[i] == b'\n' {
+                            result.push('\n');
+                        }
+                        i += 1;
                     }
-                    if bytes[i] == b'\n' {
-                        result.push('\n'); // Preserve newlines for line counting
+                }
+                b'/' if i + 1 < len && bytes[i + 1] == b'/' => {
+                    // Line comment - skip to end of line
+                    i += 2;
+                    while i < len && bytes[i] != b'\n' {
+                        i += 1;
                     }
+                }
+                _ => {
+                    result.push(bytes[i] as char);
                     i += 1;
                 }
-            } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
-                // Line comment - skip to end of line (but not the newline itself)
-                i += 2;
-                while i < len && bytes[i] != b'\n' {
-                    i += 1;
-                }
-                // The newline will be handled in the next iteration
-            } else {
-                result.push(bytes[i] as char);
-                i += 1;
             }
         }
 
@@ -1218,41 +1115,16 @@ fn strip_line_comment(line: &str) -> String {
     let chars: Vec<char> = line.chars().collect();
     let len = chars.len();
     let mut i = 0;
-    let mut in_string = false;
-    let mut in_char = false;
 
     while i < len {
-        if in_string {
-            if chars[i] == '\\' && i + 1 < len {
-                i += 2;
-            } else if chars[i] == '"' {
-                in_string = false;
-                i += 1;
-            } else {
-                i += 1;
+        match chars[i] {
+            '"' | '\'' => {
+                i = skip_literal(&chars, i, chars[i]);
             }
-        } else if in_char {
-            if chars[i] == '\\' && i + 1 < len {
-                i += 2;
-            } else if chars[i] == '\'' {
-                in_char = false;
-                i += 1;
-            } else {
-                i += 1;
-            }
-        } else {
-            if chars[i] == '"' {
-                in_string = true;
-                i += 1;
-            } else if chars[i] == '\'' {
-                in_char = true;
-                i += 1;
-            } else if chars[i] == '/' && i + 1 < len && chars[i + 1] == '/' {
-                // Found line comment
+            '/' if i + 1 < len && chars[i + 1] == '/' => {
                 return chars[..i].iter().collect::<String>().trim_end().to_string();
-            } else {
-                i += 1;
             }
+            _ => i += 1,
         }
     }
 
