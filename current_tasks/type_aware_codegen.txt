@@ -1,0 +1,9 @@
+Implementing type-aware code generation for all backends.
+
+This involves:
+1. Adding a 'ty' field to the Store instruction in IR
+2. Updating x86, ARM, and RISC-V codegen to use correct sized mov/load/store
+   instructions based on the type (movb/movw/movl/movq for x86, etc.)
+3. Updating the lowerer to propagate proper types through IR instructions
+   and use correct element sizes for arrays
+4. Making alloca sizes match actual types (4 bytes for int, 1 for char, etc.)
