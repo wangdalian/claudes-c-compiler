@@ -1035,6 +1035,20 @@ impl Lowerer {
                 matches!(type_spec, TypeSpecifier::Pointer(_))
             }
             Expr::StringLiteral(_, _) => true,
+            Expr::MemberAccess(base_expr, field_name, _) => {
+                // Struct member that is an array (decays to pointer) or pointer type
+                if let Some(ctype) = self.resolve_member_field_ctype(base_expr, field_name) {
+                    return matches!(ctype, CType::Array(_, _) | CType::Pointer(_));
+                }
+                false
+            }
+            Expr::PointerMemberAccess(base_expr, field_name, _) => {
+                // Pointer member access: p->field where field is array or pointer
+                if let Some(ctype) = self.resolve_pointer_member_field_ctype(base_expr, field_name) {
+                    return matches!(ctype, CType::Array(_, _) | CType::Pointer(_));
+                }
+                false
+            }
             _ => false,
         }
     }
@@ -1088,6 +1102,26 @@ impl Lowerer {
                 } else {
                     8
                 }
+            }
+            Expr::MemberAccess(base_expr, field_name, _) => {
+                if let Some(ctype) = self.resolve_member_field_ctype(base_expr, field_name) {
+                    match &ctype {
+                        CType::Array(elem_ty, _) => return elem_ty.size(),
+                        CType::Pointer(pointee_ty) => return pointee_ty.size(),
+                        _ => {}
+                    }
+                }
+                8
+            }
+            Expr::PointerMemberAccess(base_expr, field_name, _) => {
+                if let Some(ctype) = self.resolve_pointer_member_field_ctype(base_expr, field_name) {
+                    match &ctype {
+                        CType::Array(elem_ty, _) => return elem_ty.size(),
+                        CType::Pointer(pointee_ty) => return pointee_ty.size(),
+                        _ => {}
+                    }
+                }
+                8
             }
             _ => {
                 // Try using get_pointee_type_of_expr as a fallback

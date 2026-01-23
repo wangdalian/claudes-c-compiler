@@ -701,10 +701,6 @@ impl Lowerer {
             if field_idx >= layout.fields.len() { break; }
             let field = &layout.fields[field_idx].clone();
             let field_ty = self.ir_type_for_elem_size(field.ty.size());
-            let val = match &item.init {
-                Initializer::Expr(expr) => self.lower_expr(expr),
-                _ => Operand::Const(IrConst::I64(0)),
-            };
 
             let field_addr = self.fresh_value();
             self.emit(Instruction::GetElementPtr {
@@ -713,7 +709,38 @@ impl Lowerer {
                 offset: Operand::Const(IrConst::I64(field.offset as i64)),
                 ty: field_ty,
             });
-            self.emit(Instruction::Store { val, ptr: field_addr, ty: field_ty });
+
+            // Check if the field is a nested struct/union - use memcpy instead of store
+            let is_struct_field = matches!(&field.ty, CType::Struct(_) | CType::Union(_));
+
+            match &item.init {
+                Initializer::Expr(expr) => {
+                    if is_struct_field {
+                        // Struct field: memcpy from source struct address
+                        let src_addr = self.lower_expr(expr);
+                        let src_val = self.operand_to_value(src_addr);
+                        self.emit(Instruction::Memcpy {
+                            dest: field_addr,
+                            src: src_val,
+                            size: field.ty.size(),
+                        });
+                    } else {
+                        let val = self.lower_expr(expr);
+                        self.emit(Instruction::Store { val, ptr: field_addr, ty: field_ty });
+                    }
+                }
+                Initializer::List(sub_items) => {
+                    if is_struct_field {
+                        // Nested struct init list: recursively init the sub-struct
+                        if let CType::Struct(ref st) = &field.ty {
+                            let sub_layout = crate::common::types::StructLayout::for_struct(&st.fields);
+                            self.init_struct_fields(field_addr, sub_items, &sub_layout);
+                        }
+                    }
+                    // For non-struct nested list, fall through (already zero-initialized)
+                }
+            }
+
             current_field_idx = field_idx + 1;
         }
     }
@@ -864,8 +891,10 @@ impl Lowerer {
             ty: field_ty,
         });
 
-        // Array fields decay to pointer (return address, don't load)
-        if self.field_is_array(base_expr, field_name, false) {
+        // Array and struct fields return address (don't load)
+        if self.field_is_array(base_expr, field_name, false)
+            || self.field_is_struct(base_expr, field_name, false)
+        {
             return Operand::Value(field_addr);
         }
         let dest = self.fresh_value();
@@ -884,8 +913,10 @@ impl Lowerer {
             ty: field_ty,
         });
 
-        // Array fields decay to pointer
-        if self.field_is_array(base_expr, field_name, true) {
+        // Array and struct fields return address (don't load)
+        if self.field_is_array(base_expr, field_name, true)
+            || self.field_is_struct(base_expr, field_name, true)
+        {
             return Operand::Value(field_addr);
         }
         let dest = self.fresh_value();
@@ -901,6 +932,16 @@ impl Lowerer {
             self.resolve_member_field_ctype(base_expr, field_name)
         };
         ctype.map(|ct| matches!(ct, CType::Array(_, _))).unwrap_or(false)
+    }
+
+    /// Check if a struct field is a struct/union type (returns address, not loaded value).
+    fn field_is_struct(&self, base_expr: &Expr, field_name: &str, is_pointer_access: bool) -> bool {
+        let ctype = if is_pointer_access {
+            self.resolve_pointer_member_field_ctype(base_expr, field_name)
+        } else {
+            self.resolve_member_field_ctype(base_expr, field_name)
+        };
+        ctype.map(|ct| matches!(ct, CType::Struct(_) | CType::Union(_))).unwrap_or(false)
     }
 
     // -----------------------------------------------------------------------
