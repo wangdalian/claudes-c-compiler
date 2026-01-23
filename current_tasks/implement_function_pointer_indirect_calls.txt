@@ -1,0 +1,9 @@
+Implementing function pointer indirect calls.
+
+Adding a CallIndirect IR instruction and updating:
+- IR definition (ir.rs) with new CallIndirect variant
+- Lowering to detect function pointer calls and emit CallIndirect
+- x86 codegen: call *%rax
+- ARM codegen: blr
+- RISCV codegen: jalr
+- mem2reg and optimization passes to handle the new instruction
