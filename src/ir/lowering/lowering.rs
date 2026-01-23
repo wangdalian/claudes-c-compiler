@@ -22,6 +22,10 @@ pub(super) struct LocalInfo {
     pub is_struct: bool,
     /// The total allocation size of this variable (for sizeof).
     pub alloc_size: usize,
+    /// For multi-dimensional arrays: stride (in bytes) per dimension level.
+    /// E.g., for int a[2][3][4], strides = [48, 16, 4] (row_size, inner_row, elem).
+    /// Empty for non-arrays or 1D arrays (use elem_size instead).
+    pub array_dim_strides: Vec<usize>,
 }
 
 /// Information about a global variable tracked by the lowerer.
@@ -37,6 +41,8 @@ pub(super) struct GlobalInfo {
     pub struct_layout: Option<StructLayout>,
     /// Whether this variable is a struct (not a pointer to struct).
     pub is_struct: bool,
+    /// For multi-dimensional arrays: stride per dimension level.
+    pub array_dim_strides: Vec<usize>,
 }
 
 /// Represents an lvalue - something that can be assigned to.
@@ -236,7 +242,8 @@ impl Lowerer {
                     ty,
                     struct_layout: None,
                     is_struct: false,
-                    alloc_size: 8, // parameter is always passed in a register (pointer-sized)
+                    alloc_size: 8,
+                    array_dim_strides: vec![],
                 });
             }
         }
@@ -290,7 +297,7 @@ impl Lowerer {
             if decl.is_extern && declarator.init.is_none() {
                 if !self.globals.contains_key(&declarator.name) {
                     let base_ty = self.type_spec_to_ir(&decl.type_spec);
-                    let (_, elem_size, is_array, is_pointer) = self.compute_decl_info(&decl.type_spec, &declarator.derived);
+                    let (_, elem_size, is_array, is_pointer, array_dim_strides) = self.compute_decl_info(&decl.type_spec, &declarator.derived);
                     let var_ty = if is_pointer { IrType::Ptr } else { base_ty };
                     let struct_layout = self.get_struct_layout_for_type(&decl.type_spec);
                     let is_struct = struct_layout.is_some() && !is_pointer && !is_array;
@@ -300,6 +307,7 @@ impl Lowerer {
                         is_array,
                         struct_layout,
                         is_struct,
+                        array_dim_strides,
                     });
                 }
                 continue;
@@ -317,7 +325,7 @@ impl Lowerer {
             }
 
             let base_ty = self.type_spec_to_ir(&decl.type_spec);
-            let (alloc_size, elem_size, is_array, is_pointer) = self.compute_decl_info(&decl.type_spec, &declarator.derived);
+            let (alloc_size, elem_size, is_array, is_pointer, array_dim_strides) = self.compute_decl_info(&decl.type_spec, &declarator.derived);
             let var_ty = if is_pointer { IrType::Ptr } else { base_ty };
 
             // Determine struct layout for global struct/pointer-to-struct variables
@@ -332,7 +340,7 @@ impl Lowerer {
 
             // Determine initializer
             let init = if let Some(ref initializer) = declarator.init {
-                self.lower_global_init(initializer, &decl.type_spec, base_ty, is_array, elem_size, actual_alloc_size, &struct_layout)
+                self.lower_global_init(initializer, &decl.type_spec, base_ty, is_array, elem_size, actual_alloc_size, &struct_layout, &array_dim_strides)
             } else {
                 GlobalInit::Zero
             };
@@ -344,6 +352,7 @@ impl Lowerer {
                 is_array,
                 struct_layout,
                 is_struct,
+                array_dim_strides,
             });
 
             // Determine alignment based on type
@@ -388,6 +397,7 @@ impl Lowerer {
         elem_size: usize,
         total_size: usize,
         struct_layout: &Option<StructLayout>,
+        array_dim_strides: &[usize],
     ) -> GlobalInit {
         match init {
             Initializer::Expr(expr) => {
@@ -397,8 +407,6 @@ impl Lowerer {
                 }
                 // String literal initializer for pointer globals
                 if let Expr::StringLiteral(s, _) = expr {
-                    // This is like: const char *p = "hello"
-                    // We need to create a string literal and store its address
                     let label = format!(".Lstr{}", self.next_string);
                     self.next_string += 1;
                     self.module.string_literals.push((label.clone(), s.clone()));
@@ -411,15 +419,12 @@ impl Lowerer {
                 if is_array && elem_size > 0 {
                     let num_elems = total_size / elem_size;
                     let mut values = Vec::with_capacity(num_elems);
-                    for item in items {
-                        if let Initializer::Expr(expr) = &item.init {
-                            if let Some(val) = self.eval_const_expr(expr) {
-                                values.push(val);
-                            } else {
-                                values.push(self.zero_const(base_ty));
-                            }
-                        } else {
-                            values.push(self.zero_const(base_ty));
+                    // For multi-dim arrays, flatten nested init lists
+                    if array_dim_strides.len() > 1 {
+                        self.flatten_global_array_init(items, array_dim_strides, base_ty, &mut values);
+                    } else {
+                        for item in items {
+                            self.flatten_global_init_item(&item.init, base_ty, &mut values);
                         }
                     }
                     // Zero-fill remaining elements
@@ -549,12 +554,9 @@ impl Lowerer {
             match decl {
                 ExternalDecl::Declaration(d) => {
                     self.collect_enum_constants(&d.type_spec);
-                    // Also collect from local enum declarations inside initializers, etc.
                 }
                 ExternalDecl::FunctionDef(func) => {
-                    // Collect from return type
                     self.collect_enum_constants(&func.return_type);
-                    // Collect from function body
                     self.collect_enum_constants_from_compound(&func.body);
                 }
             }
@@ -628,6 +630,98 @@ impl Lowerer {
             let label = self.fresh_label(&format!("user_{}", name));
             self.user_labels.insert(key, label.clone());
             label
+        }
+    }
+
+    /// Flatten a multi-dimensional array initializer list for global arrays.
+    fn flatten_global_array_init(
+        &self,
+        items: &[InitializerItem],
+        array_dim_strides: &[usize],
+        base_ty: IrType,
+        values: &mut Vec<IrConst>,
+    ) {
+        if array_dim_strides.len() <= 1 {
+            for item in items {
+                self.flatten_global_init_item(&item.init, base_ty, values);
+            }
+            return;
+        }
+        let sub_elem_count = if array_dim_strides[0] > 0 && array_dim_strides.last().copied().unwrap_or(1) > 0 {
+            array_dim_strides[0] / array_dim_strides.last().copied().unwrap_or(1)
+        } else {
+            1
+        };
+        for item in items {
+            let start_len = values.len();
+            match &item.init {
+                Initializer::List(sub_items) => {
+                    self.flatten_global_array_init(sub_items, &array_dim_strides[1..], base_ty, values);
+                }
+                Initializer::Expr(expr) => {
+                    if let Some(val) = self.eval_const_expr(expr) {
+                        values.push(val);
+                    } else {
+                        values.push(self.zero_const(base_ty));
+                    }
+                }
+            }
+            while values.len() < start_len + sub_elem_count {
+                values.push(self.zero_const(base_ty));
+            }
+        }
+    }
+
+    /// Flatten a single initializer item, recursing into nested lists.
+    fn flatten_global_init_item(&self, init: &Initializer, base_ty: IrType, values: &mut Vec<IrConst>) {
+        match init {
+            Initializer::Expr(expr) => {
+                if let Some(val) = self.eval_const_expr(expr) {
+                    values.push(val);
+                } else {
+                    values.push(self.zero_const(base_ty));
+                }
+            }
+            Initializer::List(items) => {
+                for item in items {
+                    self.flatten_global_init_item(&item.init, base_ty, values);
+                }
+            }
+        }
+    }
+
+    /// Zero-initialize an alloca by emitting stores of zero.
+    pub(super) fn zero_init_alloca(&mut self, alloca: Value, total_size: usize) {
+        let mut offset = 0usize;
+        while offset + 8 <= total_size {
+            let addr = self.fresh_value();
+            self.emit(Instruction::GetElementPtr {
+                dest: addr,
+                base: alloca,
+                offset: Operand::Const(IrConst::I64(offset as i64)),
+                ty: IrType::I64,
+            });
+            self.emit(Instruction::Store {
+                val: Operand::Const(IrConst::I64(0)),
+                ptr: addr,
+                ty: IrType::I64,
+            });
+            offset += 8;
+        }
+        while offset < total_size {
+            let addr = self.fresh_value();
+            self.emit(Instruction::GetElementPtr {
+                dest: addr,
+                base: alloca,
+                offset: Operand::Const(IrConst::I64(offset as i64)),
+                ty: IrType::I8,
+            });
+            self.emit(Instruction::Store {
+                val: Operand::Const(IrConst::I8(0)),
+                ptr: addr,
+                ty: IrType::I8,
+            });
+            offset += 1;
         }
     }
 }

@@ -111,20 +111,18 @@ impl Lowerer {
     }
 
     /// Compute the address of an array element: base_addr + index * elem_size.
+    /// For multi-dimensional arrays, uses the correct stride for the subscript depth.
     pub(super) fn compute_array_element_addr(&mut self, base: &Expr, index: &Expr) -> Value {
         let index_val = self.lower_expr(index);
 
-        // Determine the element size. For arrays declared with a known type,
-        // we use elem_size from LocalInfo. Default to 8 (int/pointer size on x86-64)
-        // but try to use 4 for int arrays (most common case).
-        let elem_size = self.get_array_elem_size(base);
+        // Determine the element size based on subscript depth for multi-dim arrays
+        let elem_size = self.get_array_elem_size_for_subscript(base);
 
-        // Get the base address
+        // Get the base address - for nested subscripts (a[i][j]), don't load
         let base_addr = self.get_array_base_addr(base);
 
         // Compute offset = index * elem_size
         let offset = if elem_size == 1 {
-            // No multiplication needed
             index_val
         } else {
             let size_const = Operand::Const(IrConst::I64(elem_size as i64));
@@ -159,47 +157,91 @@ impl Lowerer {
     }
 
     /// Get the base address for an array expression.
-    /// For declared arrays, this is the alloca itself (the alloca IS the array).
+    /// For declared arrays, this is the alloca itself.
     /// For pointers, this is the loaded pointer value.
+    /// For nested subscripts (a[i] where a is multi-dim), compute address without loading.
     pub(super) fn get_array_base_addr(&mut self, base: &Expr) -> Operand {
         match base {
             Expr::Identifier(name, _) => {
                 if let Some(info) = self.locals.get(name).cloned() {
                     if info.is_array {
-                        // The alloca IS the base address of the array
                         return Operand::Value(info.alloca);
                     } else {
-                        // It's a pointer - load it (pointers are always 8 bytes/Ptr type)
                         let loaded = self.fresh_value();
                         self.emit(Instruction::Load { dest: loaded, ptr: info.alloca, ty: IrType::Ptr });
                         return Operand::Value(loaded);
                     }
                 }
                 if let Some(ginfo) = self.globals.get(name).cloned() {
-                    // Global variable
                     let addr = self.fresh_value();
                     self.emit(Instruction::GlobalAddr { dest: addr, name: name.clone() });
                     if ginfo.is_array {
-                        // Global array: address IS the base pointer
                         return Operand::Value(addr);
                     } else {
-                        // Global pointer: load the pointer value
                         let loaded = self.fresh_value();
                         self.emit(Instruction::Load { dest: loaded, ptr: addr, ty: IrType::Ptr });
                         return Operand::Value(loaded);
                     }
                 }
-                // Fall through to generic lowering
+                self.lower_expr(base)
+            }
+            Expr::ArraySubscript(inner_base, inner_index, _) => {
+                // For multi-dim arrays: a[i] when a is int[2][3] should return
+                // the address (a + i*stride), NOT load from it.
+                if self.subscript_result_is_array(base) {
+                    // This is a sub-array access - compute address, don't load
+                    let addr = self.compute_array_element_addr(inner_base, inner_index);
+                    return Operand::Value(addr);
+                }
+                // Otherwise it's a pointer - evaluate and use as address
                 self.lower_expr(base)
             }
             _ => {
-                // Generic case: evaluate the expression (it should be a pointer)
                 self.lower_expr(base)
             }
         }
     }
 
-    /// Get the element size for array subscript. Tries to determine from context.
+    /// Get the element size for an array subscript, accounting for multi-dimensional arrays.
+    /// For a[i] where a is int[2][3], returns 12 (3*4 = stride of first dimension).
+    /// For a[i][j] where a is int[2][3], returns 4 (element size).
+    pub(super) fn get_array_elem_size_for_subscript(&self, base: &Expr) -> usize {
+        // Find the root array name and count subscript depth
+        let root_name = self.get_array_root_name_from_base(base);
+        let depth = self.count_subscript_depth(base);
+
+        if let Some(name) = root_name {
+            if let Some(info) = self.locals.get(&name) {
+                if !info.array_dim_strides.is_empty() {
+                    // depth 0 means base is the array name, so use strides[0]
+                    // depth 1 means base is a[i], so use strides[1]
+                    if depth < info.array_dim_strides.len() {
+                        return info.array_dim_strides[depth];
+                    }
+                    return *info.array_dim_strides.last().unwrap_or(&info.elem_size.max(1));
+                }
+                if info.elem_size > 0 {
+                    return info.elem_size;
+                }
+            }
+            if let Some(ginfo) = self.globals.get(&name) {
+                if !ginfo.array_dim_strides.is_empty() {
+                    if depth < ginfo.array_dim_strides.len() {
+                        return ginfo.array_dim_strides[depth];
+                    }
+                    return *ginfo.array_dim_strides.last().unwrap_or(&ginfo.elem_size.max(1));
+                }
+                if ginfo.elem_size > 0 {
+                    return ginfo.elem_size;
+                }
+            }
+        }
+
+        // Fallback to old behavior
+        self.get_array_elem_size(base)
+    }
+
+    /// Get the element size for array subscript (legacy, for 1D arrays).
     pub(super) fn get_array_elem_size(&self, base: &Expr) -> usize {
         if let Expr::Identifier(name, _) = base {
             if let Some(info) = self.locals.get(name) {
@@ -213,22 +255,68 @@ impl Lowerer {
                 }
             }
         }
-        // Default element size: for pointers we don't know the element type,
-        // use 8 bytes as a safe default for pointer dereferencing.
-        // TODO: use type information from sema to determine correct size
         8
     }
 
+    /// Check if the result of an array subscript is still a sub-array (not a scalar).
+    /// For int a[2][3]: a[i] results in a sub-array (int[3]), a[i][j] is a scalar.
+    pub(super) fn subscript_result_is_array(&self, expr: &Expr) -> bool {
+        if let Expr::ArraySubscript(base, _, _) = expr {
+            let root_name = self.get_array_root_name_from_base(base);
+            let depth = self.count_subscript_depth(base) + 1; // +1 for this subscript
+
+            if let Some(name) = root_name {
+                if let Some(info) = self.locals.get(&name) {
+                    if info.array_dim_strides.len() > 1 {
+                        return depth < info.array_dim_strides.len();
+                    }
+                }
+                if let Some(ginfo) = self.globals.get(&name) {
+                    if ginfo.array_dim_strides.len() > 1 {
+                        return depth < ginfo.array_dim_strides.len();
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Count the subscript nesting depth from the base expression.
+    /// For Identifier: depth = 0
+    /// For ArraySubscript(Identifier, _): depth = 1
+    /// For ArraySubscript(ArraySubscript(Identifier, _), _): depth = 2
+    pub(super) fn count_subscript_depth(&self, base: &Expr) -> usize {
+        match base {
+            Expr::ArraySubscript(inner, _, _) => 1 + self.count_subscript_depth(inner),
+            _ => 0,
+        }
+    }
+
+    /// Get the root array name from the base of a subscript expression.
+    /// For Identifier("a"): returns Some("a")
+    /// For ArraySubscript(Identifier("a"), _): returns Some("a")
+    pub(super) fn get_array_root_name_from_base(&self, base: &Expr) -> Option<String> {
+        match base {
+            Expr::Identifier(name, _) => Some(name.clone()),
+            Expr::ArraySubscript(inner, _, _) => self.get_array_root_name_from_base(inner),
+            _ => None,
+        }
+    }
+
+    /// Get the root array name from a full expression (including outer subscript).
+    pub(super) fn get_array_root_name(&self, expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Identifier(name, _) => Some(name.clone()),
+            Expr::ArraySubscript(base, _, _) => self.get_array_root_name(base),
+            _ => None,
+        }
+    }
+
     /// Compute the element size for a pointer type specifier.
-    /// For `Pointer(Int)`, returns sizeof(int) = 4.
-    /// For `Pointer(Char)`, returns 1.
-    /// For `Pointer(Pointer(...))`, returns 8.
     pub(super) fn pointee_elem_size(&self, type_spec: &TypeSpecifier) -> usize {
         match type_spec {
             TypeSpecifier::Pointer(inner) => self.sizeof_type(inner),
-            // Array parameters decay to pointers; elem_size is the element type size
             TypeSpecifier::Array(inner, _) => self.sizeof_type(inner),
-            // Not a pointer type
             _ => 0,
         }
     }

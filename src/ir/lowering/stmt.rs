@@ -46,13 +46,14 @@ impl Lowerer {
                         is_array: false,
                         struct_layout: None,
                         is_struct: false,
+                        array_dim_strides: vec![],
                     });
                 }
                 continue;
             }
 
             let base_ty = self.type_spec_to_ir(&decl.type_spec);
-            let (alloc_size, elem_size, is_array, is_pointer) = self.compute_decl_info(&decl.type_spec, &declarator.derived);
+            let (alloc_size, elem_size, is_array, is_pointer, array_dim_strides) = self.compute_decl_info(&decl.type_spec, &declarator.derived);
             let var_ty = if is_pointer { IrType::Ptr } else { base_ty };
 
             // Determine if this is a struct/union variable or pointer-to-struct.
@@ -74,7 +75,7 @@ impl Lowerer {
 
                 // Determine initializer (evaluated at compile time for static locals)
                 let init = if let Some(ref initializer) = declarator.init {
-                    self.lower_global_init(initializer, &decl.type_spec, base_ty, is_array, elem_size, actual_alloc_size, &struct_layout)
+                    self.lower_global_init(initializer, &decl.type_spec, base_ty, is_array, elem_size, actual_alloc_size, &struct_layout, &array_dim_strides)
                 } else {
                     GlobalInit::Zero
                 };
@@ -106,6 +107,7 @@ impl Lowerer {
                     is_array,
                     struct_layout: struct_layout.clone(),
                     is_struct,
+                    array_dim_strides: array_dim_strides.clone(),
                 });
 
                 // Also add an alias so the local name resolves to the global
@@ -124,6 +126,7 @@ impl Lowerer {
                     struct_layout,
                     is_struct,
                     alloc_size: actual_alloc_size,
+                    array_dim_strides: array_dim_strides.clone(),
                 });
 
                 self.next_static_local += 1;
@@ -146,6 +149,7 @@ impl Lowerer {
                 struct_layout,
                 is_struct,
                 alloc_size: actual_alloc_size,
+                array_dim_strides: array_dim_strides.clone(),
             });
 
             if let Some(ref init) = declarator.init {
@@ -181,13 +185,64 @@ impl Lowerer {
                                 }
                             }
                         } else if is_array && elem_size > 0 {
-                            // Store each element at its correct offset
-                            for (i, item) in items.iter().enumerate() {
-                                let val = match &item.init {
-                                    Initializer::Expr(e) => self.lower_expr(e),
-                                    _ => Operand::Const(IrConst::I64(0)),
-                                };
-                                let offset_val = Operand::Const(IrConst::I64((i * elem_size) as i64));
+                            if array_dim_strides.len() > 1 {
+                                // Multi-dimensional array init: zero first, then fill
+                                self.zero_init_alloca(alloca, alloc_size);
+                                self.lower_array_init_list(items, alloca, base_ty, &array_dim_strides);
+                            } else {
+                                // 1D array: Store each element at its correct offset
+                                for (i, item) in items.iter().enumerate() {
+                                    let val = match &item.init {
+                                        Initializer::Expr(e) => self.lower_expr(e),
+                                        _ => Operand::Const(IrConst::I64(0)),
+                                    };
+                                    let offset_val = Operand::Const(IrConst::I64((i * elem_size) as i64));
+                                    let elem_addr = self.fresh_value();
+                                    self.emit(Instruction::GetElementPtr {
+                                        dest: elem_addr,
+                                        base: alloca,
+                                        offset: offset_val,
+                                        ty: base_ty,
+                                    });
+                                    self.emit(Instruction::Store { val, ptr: elem_addr, ty: base_ty });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Lower a multi-dimensional array initializer list.
+    /// Handles nested braces like `{{1,2,3},{4,5,6}}` for `int a[2][3]`.
+    pub(super) fn lower_array_init_list(
+        &mut self,
+        items: &[InitializerItem],
+        alloca: Value,
+        base_ty: IrType,
+        array_dim_strides: &[usize],
+    ) {
+        let elem_size = *array_dim_strides.last().unwrap_or(&1);
+        let sub_elem_count = if array_dim_strides.len() > 1 && elem_size > 0 {
+            array_dim_strides[0] / elem_size
+        } else {
+            1
+        };
+        let mut flat_index = 0usize;
+        for item in items {
+            let start_index = flat_index;
+            match &item.init {
+                Initializer::List(sub_items) => {
+                    if array_dim_strides.len() > 1 {
+                        // Recurse for sub-array
+                        self.lower_array_init_list_inner(sub_items, alloca, base_ty, &array_dim_strides[1..], &mut flat_index);
+                    } else {
+                        // Bottom level: treat as flat elements
+                        for sub_item in sub_items {
+                            if let Initializer::Expr(e) = &sub_item.init {
+                                let val = self.lower_expr(e);
+                                let offset_val = Operand::Const(IrConst::I64((flat_index * elem_size) as i64));
                                 let elem_addr = self.fresh_value();
                                 self.emit(Instruction::GetElementPtr {
                                     dest: elem_addr,
@@ -196,9 +251,92 @@ impl Lowerer {
                                     ty: base_ty,
                                 });
                                 self.emit(Instruction::Store { val, ptr: elem_addr, ty: base_ty });
+                                flat_index += 1;
                             }
                         }
                     }
+                }
+                Initializer::Expr(e) => {
+                    let val = self.lower_expr(e);
+                    let offset_val = Operand::Const(IrConst::I64((flat_index * elem_size) as i64));
+                    let elem_addr = self.fresh_value();
+                    self.emit(Instruction::GetElementPtr {
+                        dest: elem_addr,
+                        base: alloca,
+                        offset: offset_val,
+                        ty: base_ty,
+                    });
+                    self.emit(Instruction::Store { val, ptr: elem_addr, ty: base_ty });
+                    flat_index += 1;
+                }
+            }
+            // Advance to next sub-array boundary if multi-dim
+            if array_dim_strides.len() > 1 {
+                let boundary = start_index + sub_elem_count;
+                if flat_index < boundary {
+                    flat_index = boundary;
+                }
+            }
+        }
+    }
+
+    fn lower_array_init_list_inner(
+        &mut self,
+        items: &[InitializerItem],
+        alloca: Value,
+        base_ty: IrType,
+        array_dim_strides: &[usize],
+        flat_index: &mut usize,
+    ) {
+        let elem_size = *array_dim_strides.last().unwrap_or(&1);
+        let sub_elem_count = if array_dim_strides.len() > 1 && elem_size > 0 {
+            array_dim_strides[0] / elem_size
+        } else {
+            1
+        };
+        for item in items {
+            let start_index = *flat_index;
+            match &item.init {
+                Initializer::List(sub_items) => {
+                    if array_dim_strides.len() > 1 {
+                        self.lower_array_init_list_inner(sub_items, alloca, base_ty, &array_dim_strides[1..], flat_index);
+                    } else {
+                        for sub_item in sub_items {
+                            if let Initializer::Expr(e) = &sub_item.init {
+                                let val = self.lower_expr(e);
+                                let offset_val = Operand::Const(IrConst::I64((*flat_index * elem_size) as i64));
+                                let elem_addr = self.fresh_value();
+                                self.emit(Instruction::GetElementPtr {
+                                    dest: elem_addr,
+                                    base: alloca,
+                                    offset: offset_val,
+                                    ty: base_ty,
+                                });
+                                self.emit(Instruction::Store { val, ptr: elem_addr, ty: base_ty });
+                                *flat_index += 1;
+                            }
+                        }
+                    }
+                }
+                Initializer::Expr(e) => {
+                    let val = self.lower_expr(e);
+                    let offset_val = Operand::Const(IrConst::I64((*flat_index * elem_size) as i64));
+                    let elem_addr = self.fresh_value();
+                    self.emit(Instruction::GetElementPtr {
+                        dest: elem_addr,
+                        base: alloca,
+                        offset: offset_val,
+                        ty: base_ty,
+                    });
+                    self.emit(Instruction::Store { val, ptr: elem_addr, ty: base_ty });
+                    *flat_index += 1;
+                }
+            }
+            // Advance to next sub-array boundary
+            if array_dim_strides.len() > 1 {
+                let boundary = start_index + sub_elem_count;
+                if *flat_index < boundary {
+                    *flat_index = boundary;
                 }
             }
         }

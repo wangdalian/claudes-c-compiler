@@ -125,11 +125,25 @@ impl Lowerer {
                 IrType::I64
             }
             Expr::ArraySubscript(base, _, _) => {
-                // Element type of the array
+                // For multi-dim arrays, find the root identifier
+                let root_name = self.get_array_root_name(expr);
+                if let Some(name) = root_name {
+                    if let Some(info) = self.locals.get(&name) {
+                        if info.is_array {
+                            return info.ty;
+                        }
+                    }
+                    if let Some(ginfo) = self.globals.get(&name) {
+                        if ginfo.is_array {
+                            return self.ir_type_for_elem_size(*ginfo.array_dim_strides.last().unwrap_or(&8));
+                        }
+                    }
+                }
+                // Fallback: check direct base
                 if let Expr::Identifier(name, _) = base.as_ref() {
                     if let Some(info) = self.locals.get(name) {
                         if info.is_array {
-                            return info.ty; // base_ty was stored as the element type
+                            return info.ty;
                         }
                     }
                 }
@@ -383,43 +397,106 @@ impl Lowerer {
     }
 
     /// Compute allocation info for a declaration.
-    /// Returns (alloc_size, elem_size, is_array, is_pointer).
-    pub(super) fn compute_decl_info(&self, ts: &TypeSpecifier, derived: &[DerivedDeclarator]) -> (usize, usize, bool, bool) {
+    /// Returns (alloc_size, elem_size, is_array, is_pointer, array_dim_strides).
+    /// For multi-dimensional arrays like int a[2][3], array_dim_strides = [12, 4]
+    /// (stride for dim 0 = 3*4=12, stride for dim 1 = 4).
+    pub(super) fn compute_decl_info(&self, ts: &TypeSpecifier, derived: &[DerivedDeclarator]) -> (usize, usize, bool, bool, Vec<usize>) {
         // Check for pointer declarators
         let has_pointer = derived.iter().any(|d| matches!(d, DerivedDeclarator::Pointer));
-        if has_pointer {
-            // Compute element size for pointer arithmetic: sizeof(pointed-to type)
-            // For `int *p`, elem_size = sizeof(int) = 4
+        let has_array = derived.iter().any(|d| matches!(d, DerivedDeclarator::Array(_)));
+
+        // If both pointer and array, treat as pointer (e.g., int (*p)[5])
+        if has_pointer && !has_array {
             let elem_size = self.sizeof_type(ts);
-            return (8, elem_size, false, true);
+            return (8, elem_size, false, true, vec![]);
+        }
+        if has_pointer && has_array {
+            // Pointer to array (e.g., int (*p)[5]) - treat as pointer
+            let elem_size = self.sizeof_type(ts);
+            return (8, elem_size, false, true, vec![]);
         }
 
-        // Check for array declarators
-        for d in derived {
+        // Check for array declarators - collect all dimensions
+        let array_dims: Vec<Option<usize>> = derived.iter().filter_map(|d| {
             if let DerivedDeclarator::Array(size_expr) = d {
-                // Use actual element size based on type (type-aware codegen)
-                let elem_size = self.sizeof_type(ts);
-                // Ensure at least 1 byte per element
-                let elem_size = elem_size.max(1);
-                if let Some(size_expr) = size_expr {
-                    if let Expr::IntLiteral(n, _) = size_expr.as_ref() {
-                        let total = elem_size * (*n as usize);
-                        return (total, elem_size, true, false);
+                let dim = size_expr.as_ref().and_then(|e| {
+                    if let Expr::IntLiteral(n, _) = e.as_ref() {
+                        Some(*n as usize)
+                    } else {
+                        None
                     }
-                }
-                // Variable-length array or unknown size: allocate a reasonable default
-                // TODO: proper VLA support
-                return (elem_size * 256, elem_size, true, false);
+                });
+                Some(dim)
+            } else {
+                None
             }
+        }).collect();
+
+        if !array_dims.is_empty() {
+            let base_elem_size = self.sizeof_type(ts).max(1);
+
+            // Also account for array dimensions in the type specifier itself
+            // e.g., if type is Array(Array(Int, 3), 2) from the parser
+            let type_dims = self.collect_type_array_dims(ts);
+
+            // Combine: derived dims come first (outermost), then type dims
+            let all_dims: Vec<usize> = array_dims.iter().map(|d| d.unwrap_or(256))
+                .chain(type_dims.iter().copied())
+                .collect();
+
+            // Compute total size = product of all dims * base_elem_size
+            let total: usize = all_dims.iter().product::<usize>() * base_elem_size;
+
+            // Compute strides: stride[i] = product of dims[i+1..] * base_elem_size
+            let mut strides = Vec::with_capacity(all_dims.len());
+            for i in 0..all_dims.len() {
+                let stride: usize = all_dims[i+1..].iter().product::<usize>() * base_elem_size;
+                strides.push(stride);
+            }
+
+            // elem_size is the stride of the outermost dimension (for 1D compat, it's base_elem_size)
+            let elem_size = if strides.len() > 1 { strides[0] } else { base_elem_size };
+
+            return (total, elem_size, true, false, strides);
         }
 
         // For struct/union types, use their layout size
         if let Some(layout) = self.get_struct_layout_for_type(ts) {
-            return (layout.size, 0, false, false);
+            return (layout.size, 0, false, false, vec![]);
         }
 
         // Regular scalar - we use 8-byte slots for each stack value
-        (8, 0, false, false)
+        (8, 0, false, false, vec![])
+    }
+
+    /// Collect array dimensions from nested Array type specifiers.
+    /// For Array(Array(Int, 3), 2), returns [2, 3] (but we skip the outermost
+    /// since that comes from the derived declarator).
+    fn collect_type_array_dims(&self, ts: &TypeSpecifier) -> Vec<usize> {
+        let mut dims = Vec::new();
+        let mut current = ts;
+        loop {
+            if let TypeSpecifier::Array(inner, Some(size_expr)) = current {
+                if let Expr::IntLiteral(n, _) = size_expr.as_ref() {
+                    dims.push(*n as usize);
+                }
+                current = inner.as_ref();
+            } else {
+                break;
+            }
+        }
+        dims
+    }
+
+    /// Map an element size in bytes to an appropriate IrType.
+    pub(super) fn ir_type_for_elem_size(&self, size: usize) -> IrType {
+        match size {
+            1 => IrType::I8,
+            2 => IrType::I16,
+            4 => IrType::I32,
+            8 => IrType::I64,
+            _ => IrType::I64,
+        }
     }
 
     /// Convert a TypeSpecifier to CType (for struct layout computation).

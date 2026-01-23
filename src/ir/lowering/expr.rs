@@ -423,6 +423,13 @@ impl Lowerer {
                 Operand::Value(dest)
             }
             Expr::ArraySubscript(base, index, _) => {
+                // For multi-dim arrays, a[i] where a is int[2][3] returns the
+                // address of the sub-array (don't load). Only load at the innermost subscript.
+                if self.subscript_result_is_array(expr) {
+                    // Result is a sub-array - return its address as a pointer
+                    let addr = self.compute_array_element_addr(base, index);
+                    return Operand::Value(addr);
+                }
                 // Compute element address and load with proper element type
                 let elem_ty = self.get_expr_type(expr);
                 let addr = self.compute_array_element_addr(base, index);
