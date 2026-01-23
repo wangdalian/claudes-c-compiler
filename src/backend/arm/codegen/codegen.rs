@@ -266,9 +266,11 @@ impl ArmCodegen {
             let alloca_idx = block.instructions.iter()
                 .filter(|i| matches!(i, Instruction::Alloca { .. }))
                 .nth(arg_idx);
-            if let Some(Instruction::Alloca { dest, .. }) = alloca_idx {
+            if let Some(Instruction::Alloca { dest, ty, .. }) = alloca_idx {
                 if let Some(&offset) = self.value_locations.get(&dest.0) {
-                    self.emit(&format!("    str {}, [sp, #{}]", arg_regs[arg_idx], offset));
+                    let store_instr = Self::str_for_type(*ty);
+                    let reg = Self::reg_for_type(arg_regs[arg_idx], *ty);
+                    self.emit(&format!("    {} {}, [sp, #{}]", store_instr, reg, offset));
                 }
             }
         }
@@ -316,28 +318,77 @@ impl ArmCodegen {
                     }
                 }
             }
-            Instruction::BinOp { dest, op, lhs, rhs, .. } => {
+            Instruction::BinOp { dest, op, lhs, rhs, ty } => {
                 self.operand_to_x0(lhs);
                 self.emit("    mov x1, x0");
                 self.operand_to_x0(rhs);
                 self.emit("    mov x2, x0");
 
-                match op {
-                    IrBinOp::Add => self.emit("    add x0, x1, x2"),
-                    IrBinOp::Sub => self.emit("    sub x0, x1, x2"),
-                    IrBinOp::Mul => self.emit("    mul x0, x1, x2"),
-                    IrBinOp::SDiv => self.emit("    sdiv x0, x1, x2"),
-                    IrBinOp::UDiv => self.emit("    udiv x0, x1, x2"),
-                    IrBinOp::SRem | IrBinOp::URem => {
-                        self.emit("    sdiv x3, x1, x2");
-                        self.emit("    msub x0, x3, x2, x1");
+                // Use 32-bit (w-register) operations for I32/U32 types
+                let use_32bit = *ty == IrType::I32 || *ty == IrType::U32;
+                let is_unsigned = ty.is_unsigned();
+
+                if use_32bit {
+                    match op {
+                        IrBinOp::Add => {
+                            self.emit("    add w0, w1, w2");
+                            if !is_unsigned { self.emit("    sxtw x0, w0"); }
+                        }
+                        IrBinOp::Sub => {
+                            self.emit("    sub w0, w1, w2");
+                            if !is_unsigned { self.emit("    sxtw x0, w0"); }
+                        }
+                        IrBinOp::Mul => {
+                            self.emit("    mul w0, w1, w2");
+                            if !is_unsigned { self.emit("    sxtw x0, w0"); }
+                        }
+                        IrBinOp::SDiv => {
+                            self.emit("    sdiv w0, w1, w2");
+                            self.emit("    sxtw x0, w0");
+                        }
+                        IrBinOp::UDiv => {
+                            self.emit("    udiv w0, w1, w2");
+                            // w-register result is already zero-extended in x0
+                        }
+                        IrBinOp::SRem => {
+                            self.emit("    sdiv w3, w1, w2");
+                            self.emit("    msub w0, w3, w2, w1");
+                            self.emit("    sxtw x0, w0");
+                        }
+                        IrBinOp::URem => {
+                            self.emit("    udiv w3, w1, w2");
+                            self.emit("    msub w0, w3, w2, w1");
+                            // w-register result is already zero-extended in x0
+                        }
+                        IrBinOp::And => self.emit("    and w0, w1, w2"),
+                        IrBinOp::Or => self.emit("    orr w0, w1, w2"),
+                        IrBinOp::Xor => self.emit("    eor w0, w1, w2"),
+                        IrBinOp::Shl => self.emit("    lsl w0, w1, w2"),
+                        IrBinOp::AShr => self.emit("    asr w0, w1, w2"),
+                        IrBinOp::LShr => self.emit("    lsr w0, w1, w2"),
                     }
-                    IrBinOp::And => self.emit("    and x0, x1, x2"),
-                    IrBinOp::Or => self.emit("    orr x0, x1, x2"),
-                    IrBinOp::Xor => self.emit("    eor x0, x1, x2"),
-                    IrBinOp::Shl => self.emit("    lsl x0, x1, x2"),
-                    IrBinOp::AShr => self.emit("    asr x0, x1, x2"),
-                    IrBinOp::LShr => self.emit("    lsr x0, x1, x2"),
+                } else {
+                    match op {
+                        IrBinOp::Add => self.emit("    add x0, x1, x2"),
+                        IrBinOp::Sub => self.emit("    sub x0, x1, x2"),
+                        IrBinOp::Mul => self.emit("    mul x0, x1, x2"),
+                        IrBinOp::SDiv => self.emit("    sdiv x0, x1, x2"),
+                        IrBinOp::UDiv => self.emit("    udiv x0, x1, x2"),
+                        IrBinOp::SRem => {
+                            self.emit("    sdiv x3, x1, x2");
+                            self.emit("    msub x0, x3, x2, x1");
+                        }
+                        IrBinOp::URem => {
+                            self.emit("    udiv x3, x1, x2");
+                            self.emit("    msub x0, x3, x2, x1");
+                        }
+                        IrBinOp::And => self.emit("    and x0, x1, x2"),
+                        IrBinOp::Or => self.emit("    orr x0, x1, x2"),
+                        IrBinOp::Xor => self.emit("    eor x0, x1, x2"),
+                        IrBinOp::Shl => self.emit("    lsl x0, x1, x2"),
+                        IrBinOp::AShr => self.emit("    asr x0, x1, x2"),
+                        IrBinOp::LShr => self.emit("    lsr x0, x1, x2"),
+                    }
                 }
 
                 if let Some(&offset) = self.value_locations.get(&dest.0) {
@@ -354,11 +405,19 @@ impl ArmCodegen {
                     self.emit(&format!("    str x0, [sp, #{}]", offset));
                 }
             }
-            Instruction::Cmp { dest, op, lhs, rhs, .. } => {
+            Instruction::Cmp { dest, op, lhs, rhs, ty } => {
                 self.operand_to_x0(lhs);
                 self.emit("    mov x1, x0");
                 self.operand_to_x0(rhs);
-                self.emit("    cmp x1, x0");
+                // Use 32-bit compare for I32/U32 to match C semantics
+                let use_32bit = *ty == IrType::I32 || *ty == IrType::U32
+                    || *ty == IrType::I8 || *ty == IrType::U8
+                    || *ty == IrType::I16 || *ty == IrType::U16;
+                if use_32bit {
+                    self.emit("    cmp w1, w0");
+                } else {
+                    self.emit("    cmp x1, x0");
+                }
 
                 let cond = match op {
                     IrCmpOp::Eq => "eq",
@@ -437,8 +496,9 @@ impl ArmCodegen {
                     self.emit(&format!("    str x0, [sp, #{}]", offset));
                 }
             }
-            Instruction::Cast { dest, src, .. } => {
+            Instruction::Cast { dest, src, from_ty, to_ty } => {
                 self.operand_to_x0(src);
+                Self::emit_cast(&mut self.output, *from_ty, *to_ty);
                 if let Some(&offset) = self.value_locations.get(&dest.0) {
                     self.emit(&format!("    str x0, [sp, #{}]", offset));
                 }
@@ -525,21 +585,69 @@ impl ArmCodegen {
     }
 
     /// Get the appropriate register name for a given base and type.
+    /// On AArch64, wN is the 32-bit alias of xN.
+    /// For byte/halfword/word stores, strb/strh/str use w-registers.
     fn reg_for_type(base: &str, ty: IrType) -> &'static str {
-        // On AArch64, w0 is the 32-bit alias of x0, etc.
-        // For byte/halfword stores, we still use w-reg (strb/strh use 32-bit reg)
+        let use_w = matches!(ty,
+            IrType::I8 | IrType::U8 | IrType::I16 | IrType::U16 |
+            IrType::I32 | IrType::U32
+        );
         match base {
-            "x0" => match ty {
-                IrType::I8 | IrType::U8 | IrType::I16 | IrType::U16 |
-                IrType::I32 | IrType::U32 => "w0",
-                _ => "x0",
-            },
-            "x1" => match ty {
-                IrType::I8 | IrType::U8 | IrType::I16 | IrType::U16 |
-                IrType::I32 | IrType::U32 => "w1",
-                _ => "x1",
-            },
-            _ => "x0",
+            "x0" => if use_w { "w0" } else { "x0" },
+            "x1" => if use_w { "w1" } else { "x1" },
+            "x2" => if use_w { "w2" } else { "x2" },
+            "x3" => if use_w { "w3" } else { "x3" },
+            "x4" => if use_w { "w4" } else { "x4" },
+            "x5" => if use_w { "w5" } else { "x5" },
+            "x6" => if use_w { "w6" } else { "x6" },
+            "x7" => if use_w { "w7" } else { "x7" },
+            _ => "x0", // fallback
+        }
+    }
+
+    /// Emit a type cast instruction sequence for AArch64.
+    fn emit_cast(output: &mut String, from_ty: IrType, to_ty: IrType) {
+        // Same type: no cast needed
+        if from_ty == to_ty {
+            return;
+        }
+        // Same size integers: just reinterpret signedness
+        if from_ty.size() == to_ty.size() && from_ty.is_integer() && to_ty.is_integer() {
+            return;
+        }
+
+        let from_size = from_ty.size();
+        let to_size = to_ty.size();
+
+        if to_size > from_size {
+            // Widening cast
+            if from_ty.is_unsigned() {
+                // Zero-extend for unsigned types
+                match from_ty {
+                    IrType::U8 => { output.push_str("    and x0, x0, #0xff\n"); }
+                    IrType::U16 => { output.push_str("    and x0, x0, #0xffff\n"); }
+                    IrType::U32 => { output.push_str("    mov w0, w0\n"); } // implicit zero-extend
+                    _ => {}
+                }
+            } else {
+                // Sign-extend for signed types
+                match from_ty {
+                    IrType::I8 => { output.push_str("    sxtb x0, w0\n"); }
+                    IrType::I16 => { output.push_str("    sxth x0, w0\n"); }
+                    IrType::I32 => { output.push_str("    sxtw x0, w0\n"); }
+                    _ => {}
+                }
+            }
+        } else if to_size < from_size {
+            // Narrowing cast: mask to target width
+            match to_ty {
+                IrType::I8 | IrType::U8 => { output.push_str("    and x0, x0, #0xff\n"); }
+                IrType::I16 | IrType::U16 => { output.push_str("    and x0, x0, #0xffff\n"); }
+                IrType::I32 | IrType::U32 => { output.push_str("    mov w0, w0\n"); } // truncate to 32-bit
+                _ => {}
+            }
+        } else {
+            // Same size: pointer <-> integer conversions (no-op on AArch64)
         }
     }
 

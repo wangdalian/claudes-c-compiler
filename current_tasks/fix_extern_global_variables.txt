@@ -1,0 +1,20 @@
+Task: Fix extern global variable handling
+
+Problem: extern declarations (e.g., `extern void *stdout;`) incorrectly emit
+storage (.zero) in BSS, which overrides the actual symbol from linked libraries.
+This causes stdout/stderr/stdin to be zero-initialized local copies instead of
+pointing to the real libc FILE structures.
+
+Root cause: lower_global_decl always emits an IrGlobal with GlobalInit::Zero
+even for extern declarations. The backends then emit .bss storage for these.
+
+Fix:
+1. Add is_extern field to IrGlobal
+2. Set is_extern=true for extern declarations without initializers
+3. Skip emitting storage for extern globals in all three backends
+4. Extern globals still tracked in self.globals so codegen generates proper loads
+
+Impact: Fixes all tests using stdout, stderr, stdin (fflush, fprintf, etc.)
+Also fixes any test that declares extern variables from other translation units.
+
+Status: In progress

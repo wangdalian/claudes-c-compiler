@@ -268,9 +268,10 @@ impl RiscvCodegen {
             let alloca = block.instructions.iter()
                 .filter(|i| matches!(i, Instruction::Alloca { .. }))
                 .nth(arg_idx);
-            if let Some(Instruction::Alloca { dest, .. }) = alloca {
+            if let Some(Instruction::Alloca { dest, ty, .. }) = alloca {
                 if let Some(&offset) = self.value_locations.get(&dest.0) {
-                    self.emit(&format!("    sd {}, {}(s0)", arg_regs[arg_idx], offset));
+                    let store_instr = Self::store_for_type(*ty);
+                    self.emit(&format!("    {} {}, {}(s0)", store_instr, arg_regs[arg_idx], offset));
                 }
             }
         }
@@ -313,26 +314,48 @@ impl RiscvCodegen {
                     }
                 }
             }
-            Instruction::BinOp { dest, op, lhs, rhs, .. } => {
+            Instruction::BinOp { dest, op, lhs, rhs, ty } => {
                 self.operand_to_t0(lhs);
                 self.emit("    mv t1, t0");
                 self.operand_to_t0(rhs);
                 self.emit("    mv t2, t0");
 
-                match op {
-                    IrBinOp::Add => self.emit("    add t0, t1, t2"),
-                    IrBinOp::Sub => self.emit("    sub t0, t1, t2"),
-                    IrBinOp::Mul => self.emit("    mul t0, t1, t2"),
-                    IrBinOp::SDiv => self.emit("    div t0, t1, t2"),
-                    IrBinOp::UDiv => self.emit("    divu t0, t1, t2"),
-                    IrBinOp::SRem => self.emit("    rem t0, t1, t2"),
-                    IrBinOp::URem => self.emit("    remu t0, t1, t2"),
-                    IrBinOp::And => self.emit("    and t0, t1, t2"),
-                    IrBinOp::Or => self.emit("    or t0, t1, t2"),
-                    IrBinOp::Xor => self.emit("    xor t0, t1, t2"),
-                    IrBinOp::Shl => self.emit("    sll t0, t1, t2"),
-                    IrBinOp::AShr => self.emit("    sra t0, t1, t2"),
-                    IrBinOp::LShr => self.emit("    srl t0, t1, t2"),
+                // Use 32-bit (W-suffix) operations for I32/U32 types
+                // On RV64, *w instructions operate on lower 32 bits and sign-extend result
+                let use_32bit = *ty == IrType::I32 || *ty == IrType::U32;
+
+                if use_32bit {
+                    match op {
+                        IrBinOp::Add => self.emit("    addw t0, t1, t2"),
+                        IrBinOp::Sub => self.emit("    subw t0, t1, t2"),
+                        IrBinOp::Mul => self.emit("    mulw t0, t1, t2"),
+                        IrBinOp::SDiv => self.emit("    divw t0, t1, t2"),
+                        IrBinOp::UDiv => self.emit("    divuw t0, t1, t2"),
+                        IrBinOp::SRem => self.emit("    remw t0, t1, t2"),
+                        IrBinOp::URem => self.emit("    remuw t0, t1, t2"),
+                        IrBinOp::And => self.emit("    and t0, t1, t2"),
+                        IrBinOp::Or => self.emit("    or t0, t1, t2"),
+                        IrBinOp::Xor => self.emit("    xor t0, t1, t2"),
+                        IrBinOp::Shl => self.emit("    sllw t0, t1, t2"),
+                        IrBinOp::AShr => self.emit("    sraw t0, t1, t2"),
+                        IrBinOp::LShr => self.emit("    srlw t0, t1, t2"),
+                    }
+                } else {
+                    match op {
+                        IrBinOp::Add => self.emit("    add t0, t1, t2"),
+                        IrBinOp::Sub => self.emit("    sub t0, t1, t2"),
+                        IrBinOp::Mul => self.emit("    mul t0, t1, t2"),
+                        IrBinOp::SDiv => self.emit("    div t0, t1, t2"),
+                        IrBinOp::UDiv => self.emit("    divu t0, t1, t2"),
+                        IrBinOp::SRem => self.emit("    rem t0, t1, t2"),
+                        IrBinOp::URem => self.emit("    remu t0, t1, t2"),
+                        IrBinOp::And => self.emit("    and t0, t1, t2"),
+                        IrBinOp::Or => self.emit("    or t0, t1, t2"),
+                        IrBinOp::Xor => self.emit("    xor t0, t1, t2"),
+                        IrBinOp::Shl => self.emit("    sll t0, t1, t2"),
+                        IrBinOp::AShr => self.emit("    sra t0, t1, t2"),
+                        IrBinOp::LShr => self.emit("    srl t0, t1, t2"),
+                    }
                 }
 
                 if let Some(&offset) = self.value_locations.get(&dest.0) {
@@ -349,11 +372,28 @@ impl RiscvCodegen {
                     self.emit(&format!("    sd t0, {}(s0)", offset));
                 }
             }
-            Instruction::Cmp { dest, op, lhs, rhs, .. } => {
+            Instruction::Cmp { dest, op, lhs, rhs, ty } => {
                 self.operand_to_t0(lhs);
                 self.emit("    mv t1, t0");
                 self.operand_to_t0(rhs);
                 self.emit("    mv t2, t0");
+
+                // For 32-bit types, sign/zero-extend before comparison to ensure
+                // correct semantics (RV64 registers are 64-bit)
+                let is_32bit = *ty == IrType::I32 || *ty == IrType::U32
+                    || *ty == IrType::I8 || *ty == IrType::U8
+                    || *ty == IrType::I16 || *ty == IrType::U16;
+                if is_32bit && ty.is_unsigned() {
+                    // Zero-extend both operands to 64-bit for unsigned compare
+                    self.emit("    slli t1, t1, 32");
+                    self.emit("    srli t1, t1, 32");
+                    self.emit("    slli t2, t2, 32");
+                    self.emit("    srli t2, t2, 32");
+                } else if is_32bit {
+                    // Sign-extend both operands to 64-bit for signed compare
+                    self.emit("    sext.w t1, t1");
+                    self.emit("    sext.w t2, t2");
+                }
 
                 match op {
                     IrCmpOp::Eq => {
@@ -364,14 +404,24 @@ impl RiscvCodegen {
                         self.emit("    sub t0, t1, t2");
                         self.emit("    snez t0, t0");
                     }
-                    IrCmpOp::Slt | IrCmpOp::Ult => self.emit("    slt t0, t1, t2"),
-                    IrCmpOp::Sge | IrCmpOp::Uge => {
+                    IrCmpOp::Slt => self.emit("    slt t0, t1, t2"),
+                    IrCmpOp::Ult => self.emit("    sltu t0, t1, t2"),
+                    IrCmpOp::Sge => {
                         self.emit("    slt t0, t1, t2");
                         self.emit("    xori t0, t0, 1");
                     }
-                    IrCmpOp::Sgt | IrCmpOp::Ugt => self.emit("    slt t0, t2, t1"),
-                    IrCmpOp::Sle | IrCmpOp::Ule => {
+                    IrCmpOp::Uge => {
+                        self.emit("    sltu t0, t1, t2");
+                        self.emit("    xori t0, t0, 1");
+                    }
+                    IrCmpOp::Sgt => self.emit("    slt t0, t2, t1"),
+                    IrCmpOp::Ugt => self.emit("    sltu t0, t2, t1"),
+                    IrCmpOp::Sle => {
                         self.emit("    slt t0, t2, t1");
+                        self.emit("    xori t0, t0, 1");
+                    }
+                    IrCmpOp::Ule => {
+                        self.emit("    sltu t0, t2, t1");
                         self.emit("    xori t0, t0, 1");
                     }
                 }
@@ -426,8 +476,9 @@ impl RiscvCodegen {
                     self.emit(&format!("    sd t0, {}(s0)", offset));
                 }
             }
-            Instruction::Cast { dest, src, .. } => {
+            Instruction::Cast { dest, src, from_ty, to_ty } => {
                 self.operand_to_t0(src);
+                Self::emit_cast(&mut self.output, *from_ty, *to_ty);
                 if let Some(&offset) = self.value_locations.get(&dest.0) {
                     self.emit(&format!("    sd t0, {}(s0)", offset));
                 }
@@ -503,6 +554,74 @@ impl RiscvCodegen {
             IrType::U32 => "lwu",    // zero-extend word to 64-bit
             IrType::I64 | IrType::U64 | IrType::Ptr => "ld",
             _ => "ld",
+        }
+    }
+
+    /// Emit a type cast instruction sequence for RISC-V 64.
+    fn emit_cast(output: &mut String, from_ty: IrType, to_ty: IrType) {
+        // Same type: no cast needed
+        if from_ty == to_ty {
+            return;
+        }
+        // Same size integers: just reinterpret signedness
+        if from_ty.size() == to_ty.size() && from_ty.is_integer() && to_ty.is_integer() {
+            return;
+        }
+
+        let from_size = from_ty.size();
+        let to_size = to_ty.size();
+
+        if to_size > from_size {
+            // Widening cast
+            if from_ty.is_unsigned() {
+                // Zero-extend for unsigned types
+                match from_ty {
+                    IrType::U8 => { output.push_str("    andi t0, t0, 0xff\n"); }
+                    IrType::U16 => {
+                        // RISC-V doesn't have a single instruction for 16-bit zero-extend
+                        // Use slli/srli to zero-extend
+                        output.push_str("    slli t0, t0, 48\n");
+                        output.push_str("    srli t0, t0, 48\n");
+                    }
+                    IrType::U32 => {
+                        // Zero-extend 32-bit to 64-bit
+                        output.push_str("    slli t0, t0, 32\n");
+                        output.push_str("    srli t0, t0, 32\n");
+                    }
+                    _ => {}
+                }
+            } else {
+                // Sign-extend for signed types
+                match from_ty {
+                    IrType::I8 => {
+                        output.push_str("    slli t0, t0, 56\n");
+                        output.push_str("    srai t0, t0, 56\n");
+                    }
+                    IrType::I16 => {
+                        output.push_str("    slli t0, t0, 48\n");
+                        output.push_str("    srai t0, t0, 48\n");
+                    }
+                    IrType::I32 => {
+                        output.push_str("    sext.w t0, t0\n"); // sign-extend word
+                    }
+                    _ => {}
+                }
+            }
+        } else if to_size < from_size {
+            // Narrowing cast: mask to target width
+            match to_ty {
+                IrType::I8 | IrType::U8 => { output.push_str("    andi t0, t0, 0xff\n"); }
+                IrType::I16 | IrType::U16 => {
+                    output.push_str("    slli t0, t0, 48\n");
+                    output.push_str("    srli t0, t0, 48\n");
+                }
+                IrType::I32 | IrType::U32 => {
+                    output.push_str("    sext.w t0, t0\n"); // truncate to 32-bit (sign-extends on RV64)
+                }
+                _ => {}
+            }
+        } else {
+            // Same size: pointer <-> integer conversions (no-op on RISC-V 64)
         }
     }
 

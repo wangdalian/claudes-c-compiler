@@ -1,6 +1,0 @@
-Fix backend consistency issues across ARM and RISC-V codegens:
-1. ARM URem uses sdiv instead of udiv
-2. ARM and RISC-V casts are no-ops (should emit sign/zero extension)
-3. ARM and RISC-V lack 32-bit arithmetic for I32/U32 types
-4. RISC-V uses slt for unsigned comparisons (should use sltu)
-5. RISC-V Call clobbers earlier args when loading later ones
