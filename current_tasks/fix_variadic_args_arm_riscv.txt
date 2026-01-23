@@ -1,0 +1,13 @@
+Fix variadic function argument passing on AArch64 and RISC-V backends.
+
+Problem: va_start/va_arg is broken because variadic arguments passed in registers
+(x0-x7 on ARM, a0-a7 on RISC-V) are not saved to the stack in the function prologue.
+va_start points to the caller's stack area (x29+16 / s0+16) but the variadic args
+are actually in registers.
+
+Fix:
+1. ARM: Save x0-x7 to register save area in variadic function prologues.
+   Set va_start __stack to point past named params in save area.
+2. RISC-V: Save unnamed a0-a7 registers to stack in variadic function prologues.
+   Set va_start pointer to saved variadic args.
+3. Fix va_list type size on AArch64 (should be 32 bytes, not 24).
