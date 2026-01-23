@@ -1,0 +1,5 @@
+Fix function pointer return type for float/double:
+1. Fix extract_return_type_from_ctype in expr.rs to peel spurious Pointer wrapper from build_full_ctype
+2. Fix get_expr_type for FunctionCall to handle (*fptr)(...) deref syntax
+3. Handle both global fptrs (Function(return_type=Pointer(Float))) and parameter fptrs (Pointer(Float))
+4. Add peel_ptr_from_return_type and extract_func_ptr_return_type helpers
