@@ -376,7 +376,25 @@ impl Lowerer {
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Return(expr, _span) => {
-                let op = expr.as_ref().map(|e| self.lower_expr(e));
+                let op = expr.as_ref().map(|e| {
+                    let val = self.lower_expr(e);
+                    // Insert narrowing cast if function returns a type narrower than I64
+                    let ret_ty = self.current_return_type;
+                    if ret_ty != IrType::I64 && ret_ty != IrType::Ptr
+                        && ret_ty != IrType::Void && ret_ty.is_integer()
+                    {
+                        let narrowed = self.fresh_value();
+                        self.emit(Instruction::Cast {
+                            dest: narrowed,
+                            src: val,
+                            from_ty: IrType::I64,
+                            to_ty: ret_ty,
+                        });
+                        Operand::Value(narrowed)
+                    } else {
+                        val
+                    }
+                });
                 self.terminate(Terminator::Return(op));
                 // Start a new unreachable block for any code after return
                 let label = self.fresh_label("post_ret");
@@ -451,6 +469,9 @@ impl Lowerer {
                 self.start_block(end_label);
             }
             Stmt::For(init, cond, inc, body, _span) => {
+                // Save locals for for-init scope (C99: for-init decl has its own scope)
+                let saved_locals = self.locals.clone();
+
                 // Init
                 if let Some(init) = init {
                     match init.as_ref() {
@@ -499,6 +520,9 @@ impl Lowerer {
                 self.continue_labels.pop();
 
                 self.start_block(end_label);
+
+                // Restore locals to exit for-init scope
+                self.locals = saved_locals;
             }
             Stmt::DoWhile(body, cond, _span) => {
                 let body_label = self.fresh_label("do_body");

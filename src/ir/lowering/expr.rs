@@ -134,42 +134,78 @@ impl Lowerer {
                     }
                 }
 
+                // Infer types to determine signed/unsigned and result width
+                let lhs_ty = self.infer_expr_type(lhs);
+                let rhs_ty = self.infer_expr_type(rhs);
+                let common_ty = Self::common_type(lhs_ty, rhs_ty);
+                let is_unsigned = common_ty.is_unsigned();
+
                 let lhs_val = self.lower_expr(lhs);
                 let rhs_val = self.lower_expr(rhs);
                 let dest = self.fresh_value();
 
                 match op {
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                        let cmp_op = match op {
-                            BinOp::Eq => IrCmpOp::Eq,
-                            BinOp::Ne => IrCmpOp::Ne,
-                            BinOp::Lt => IrCmpOp::Slt,
-                            BinOp::Le => IrCmpOp::Sle,
-                            BinOp::Gt => IrCmpOp::Sgt,
-                            BinOp::Ge => IrCmpOp::Sge,
+                        let cmp_op = match (op, is_unsigned) {
+                            (BinOp::Eq, _) => IrCmpOp::Eq,
+                            (BinOp::Ne, _) => IrCmpOp::Ne,
+                            (BinOp::Lt, false) => IrCmpOp::Slt,
+                            (BinOp::Lt, true) => IrCmpOp::Ult,
+                            (BinOp::Le, false) => IrCmpOp::Sle,
+                            (BinOp::Le, true) => IrCmpOp::Ule,
+                            (BinOp::Gt, false) => IrCmpOp::Sgt,
+                            (BinOp::Gt, true) => IrCmpOp::Ugt,
+                            (BinOp::Ge, false) => IrCmpOp::Sge,
+                            (BinOp::Ge, true) => IrCmpOp::Uge,
                             _ => unreachable!(),
                         };
                         self.emit(Instruction::Cmp { dest, op: cmp_op, lhs: lhs_val, rhs: rhs_val, ty: IrType::I64 });
                     }
                     _ => {
-                        let ir_op = match op {
-                            BinOp::Add => IrBinOp::Add,
-                            BinOp::Sub => IrBinOp::Sub,
-                            BinOp::Mul => IrBinOp::Mul,
-                            BinOp::Div => IrBinOp::SDiv,
-                            BinOp::Mod => IrBinOp::SRem,
-                            BinOp::BitAnd => IrBinOp::And,
-                            BinOp::BitOr => IrBinOp::Or,
-                            BinOp::BitXor => IrBinOp::Xor,
-                            BinOp::Shl => IrBinOp::Shl,
-                            BinOp::Shr => IrBinOp::AShr,
+                        let ir_op = match (op, is_unsigned) {
+                            (BinOp::Add, _) => IrBinOp::Add,
+                            (BinOp::Sub, _) => IrBinOp::Sub,
+                            (BinOp::Mul, _) => IrBinOp::Mul,
+                            (BinOp::Div, false) => IrBinOp::SDiv,
+                            (BinOp::Div, true) => IrBinOp::UDiv,
+                            (BinOp::Mod, false) => IrBinOp::SRem,
+                            (BinOp::Mod, true) => IrBinOp::URem,
+                            (BinOp::BitAnd, _) => IrBinOp::And,
+                            (BinOp::BitOr, _) => IrBinOp::Or,
+                            (BinOp::BitXor, _) => IrBinOp::Xor,
+                            (BinOp::Shl, _) => IrBinOp::Shl,
+                            (BinOp::Shr, false) => IrBinOp::AShr,
+                            (BinOp::Shr, true) => IrBinOp::LShr,
                             _ => unreachable!(),
                         };
                         self.emit(Instruction::BinOp { dest, op: ir_op, lhs: lhs_val, rhs: rhs_val, ty: IrType::I64 });
                     }
                 }
 
-                Operand::Value(dest)
+                // For sub-64-bit types (U32, I32, etc.), insert a truncation cast
+                // to ensure the result fits in the narrower type.
+                // This handles unsigned int wraparound and signed int overflow behavior.
+                if common_ty == IrType::U32 || common_ty == IrType::I32 {
+                    match op {
+                        // Comparisons always produce 0 or 1, no truncation needed
+                        BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
+                        BinOp::Gt | BinOp::Ge | BinOp::LogicalAnd | BinOp::LogicalOr => {
+                            Operand::Value(dest)
+                        }
+                        _ => {
+                            let narrowed = self.fresh_value();
+                            self.emit(Instruction::Cast {
+                                dest: narrowed,
+                                src: Operand::Value(dest),
+                                from_ty: IrType::I64,
+                                to_ty: common_ty,
+                            });
+                            Operand::Value(narrowed)
+                        }
+                    }
+                } else {
+                    Operand::Value(dest)
+                }
             }
             Expr::UnaryOp(op, inner, _) => {
                 match op {
@@ -178,16 +214,42 @@ impl Lowerer {
                         self.lower_expr(inner)
                     }
                     UnaryOp::Neg => {
+                        let inner_ty = self.infer_expr_type(inner);
                         let val = self.lower_expr(inner);
                         let dest = self.fresh_value();
                         self.emit(Instruction::UnaryOp { dest, op: IrUnaryOp::Neg, src: val, ty: IrType::I64 });
-                        Operand::Value(dest)
+                        // Truncate to sub-64-bit type if needed
+                        if inner_ty == IrType::U32 || inner_ty == IrType::I32 {
+                            let narrowed = self.fresh_value();
+                            self.emit(Instruction::Cast {
+                                dest: narrowed,
+                                src: Operand::Value(dest),
+                                from_ty: IrType::I64,
+                                to_ty: inner_ty,
+                            });
+                            Operand::Value(narrowed)
+                        } else {
+                            Operand::Value(dest)
+                        }
                     }
                     UnaryOp::BitNot => {
+                        let inner_ty = self.infer_expr_type(inner);
                         let val = self.lower_expr(inner);
                         let dest = self.fresh_value();
                         self.emit(Instruction::UnaryOp { dest, op: IrUnaryOp::Not, src: val, ty: IrType::I64 });
-                        Operand::Value(dest)
+                        // Truncate to sub-64-bit type if needed (e.g., ~uint must be 32-bit)
+                        if inner_ty == IrType::U32 || inner_ty == IrType::I32 {
+                            let narrowed = self.fresh_value();
+                            self.emit(Instruction::Cast {
+                                dest: narrowed,
+                                src: Operand::Value(dest),
+                                from_ty: IrType::I64,
+                                to_ty: inner_ty,
+                            });
+                            Operand::Value(narrowed)
+                        } else {
+                            Operand::Value(dest)
+                        }
                     }
                     UnaryOp::LogicalNot => {
                         let val = self.lower_expr(inner);
@@ -267,6 +329,10 @@ impl Lowerer {
                 let arg_vals: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
                 let dest = self.fresh_value();
 
+                // Look up function return type for narrowing cast after the call.
+                // Default to I64 if unknown (e.g., implicitly declared functions).
+                let mut call_ret_ty = IrType::I64;
+
                 match func.as_ref() {
                     Expr::Identifier(name, _) => {
                         // Check if this is a local variable (function pointer) rather
@@ -309,7 +375,10 @@ impl Lowerer {
                                 return_type: IrType::I64,
                             });
                         } else {
-                            // Direct function call
+                            // Direct function call - look up return type
+                            if let Some(&ret_ty) = self.function_return_types.get(name) {
+                                call_ret_ty = ret_ty;
+                            }
                             self.emit(Instruction::Call {
                                 dest: Some(dest),
                                 func: name.clone(),
@@ -342,7 +411,22 @@ impl Lowerer {
                     }
                 }
 
-                Operand::Value(dest)
+                // If the function returns a type narrower than I64,
+                // insert a narrowing cast to properly truncate/sign-extend the result.
+                if call_ret_ty != IrType::I64 && call_ret_ty != IrType::Ptr
+                    && call_ret_ty != IrType::Void && call_ret_ty.is_integer()
+                {
+                    let narrowed = self.fresh_value();
+                    self.emit(Instruction::Cast {
+                        dest: narrowed,
+                        src: Operand::Value(dest),
+                        from_ty: IrType::I64,
+                        to_ty: call_ret_ty,
+                    });
+                    Operand::Value(narrowed)
+                } else {
+                    Operand::Value(dest)
+                }
             }
             Expr::Conditional(cond, then_expr, else_expr, _) => {
                 let cond_val = self.lower_expr(cond);
@@ -776,5 +860,84 @@ impl Lowerer {
         }
         // Fallback
         rhs_val
+    }
+
+    /// Infer the IrType of an expression based on available type information.
+    /// Returns I64 if the type cannot be determined. This is used to select
+    /// unsigned vs signed operations and insert narrowing casts.
+    pub(super) fn infer_expr_type(&self, expr: &Expr) -> IrType {
+        match expr {
+            Expr::Identifier(name, _) => {
+                if self.enum_constants.contains_key(name) {
+                    return IrType::I32;
+                }
+                if let Some(info) = self.locals.get(name) {
+                    return info.ty;
+                }
+                if let Some(ginfo) = self.globals.get(name) {
+                    return ginfo.ty;
+                }
+                IrType::I64
+            }
+            Expr::IntLiteral(val, _) => {
+                if *val >= 0 && *val <= i32::MAX as i64 {
+                    IrType::I32
+                } else {
+                    IrType::I64
+                }
+            }
+            Expr::CharLiteral(_, _) => IrType::I8,
+            Expr::Cast(ref target_type, _, _) => {
+                self.type_spec_to_ir(target_type)
+            }
+            Expr::BinaryOp(op, lhs, rhs, _) => {
+                match op {
+                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le |
+                    BinOp::Gt | BinOp::Ge | BinOp::LogicalAnd | BinOp::LogicalOr => {
+                        IrType::I32 // comparison results are int
+                    }
+                    _ => {
+                        // For arithmetic, use usual arithmetic conversions:
+                        // promote both operands and return the common type
+                        let lt = self.infer_expr_type(lhs);
+                        let rt = self.infer_expr_type(rhs);
+                        Self::common_type(lt, rt)
+                    }
+                }
+            }
+            Expr::UnaryOp(_, inner, _) => self.infer_expr_type(inner),
+            Expr::FunctionCall(func, _, _) => {
+                // Check function return type
+                if let Expr::Identifier(name, _) = func.as_ref() {
+                    if let Some(&ret_ty) = self.function_return_types.get(name.as_str()) {
+                        return ret_ty;
+                    }
+                }
+                IrType::I64
+            }
+            _ => IrType::I64,
+        }
+    }
+
+    /// Determine the common type for binary operation (usual arithmetic conversions, simplified).
+    fn common_type(a: IrType, b: IrType) -> IrType {
+        // If either is I64/U64/Ptr, result is 64-bit
+        if a == IrType::I64 || a == IrType::U64 || a == IrType::Ptr
+            || b == IrType::I64 || b == IrType::U64 || b == IrType::Ptr
+        {
+            if a == IrType::U64 || b == IrType::U64 {
+                return IrType::U64;
+            }
+            return IrType::I64;
+        }
+        // Both are 32-bit or narrower
+        if a == IrType::U32 || b == IrType::U32 {
+            return IrType::U32;
+        }
+        if a == IrType::I32 || b == IrType::I32 {
+            return IrType::I32;
+        }
+        // Narrow types get promoted to int
+        IrType::I32
     }
 }

@@ -142,7 +142,7 @@ impl X86Codegen {
                     _ => {}
                 }
             }
-        } else if to_size >= from_size {
+        } else if to_size == from_size {
             // Same size: pointer <-> integer conversions
             match (from_ty, to_ty) {
                 (IrType::I32, IrType::Ptr) | (IrType::U32, IrType::Ptr) => {
@@ -150,8 +150,20 @@ impl X86Codegen {
                 }
                 _ => {}
             }
+        } else {
+            // Narrowing: truncate then sign/zero-extend back to 64-bit
+            // so that the full 64-bit register has the correct narrowed value.
+            // This is necessary because we store all values as 64-bit movq.
+            match to_ty {
+                IrType::I8 => self.state.emit("    movsbq %al, %rax"),
+                IrType::U8 => self.state.emit("    movzbq %al, %rax"),
+                IrType::I16 => self.state.emit("    movswq %ax, %rax"),
+                IrType::U16 => self.state.emit("    movzwq %ax, %rax"),
+                IrType::I32 => self.state.emit("    movslq %eax, %rax"),
+                IrType::U32 => self.state.emit("    movl %eax, %eax"),
+                _ => {}
+            }
         }
-        // Narrowing: no-op on x86-64 (sub-register aliasing)
     }
 }
 

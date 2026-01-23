@@ -182,13 +182,26 @@ impl RiscvCodegen {
                 }
             }
         } else if to_size < from_size {
+            // Narrowing: truncate and sign/zero-extend back to 64-bit
             match to_ty {
-                IrType::I8 | IrType::U8 => self.state.emit("    andi t0, t0, 0xff"),
-                IrType::I16 | IrType::U16 => {
+                IrType::I8 => {
+                    self.state.emit("    slli t0, t0, 56");
+                    self.state.emit("    srai t0, t0, 56");
+                }
+                IrType::U8 => self.state.emit("    andi t0, t0, 0xff"),
+                IrType::I16 => {
+                    self.state.emit("    slli t0, t0, 48");
+                    self.state.emit("    srai t0, t0, 48");
+                }
+                IrType::U16 => {
                     self.state.emit("    slli t0, t0, 48");
                     self.state.emit("    srli t0, t0, 48");
                 }
-                IrType::I32 | IrType::U32 => self.state.emit("    sext.w t0, t0"),
+                IrType::I32 => self.state.emit("    sext.w t0, t0"),
+                IrType::U32 => {
+                    self.state.emit("    slli t0, t0, 32");
+                    self.state.emit("    srli t0, t0, 32");
+                }
                 _ => {}
             }
         }

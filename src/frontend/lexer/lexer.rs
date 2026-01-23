@@ -120,8 +120,12 @@ impl Lexer {
             }
             let hex_str = std::str::from_utf8(&self.input[hex_start..self.pos]).unwrap_or("0");
             let value = u64::from_str_radix(hex_str, 16).unwrap_or(0);
-            // Skip suffixes (u, l, ll, ul, ull, etc.)
+            // Check for unsigned suffix before consuming it
+            let is_unsigned = self.peek_int_suffix_unsigned();
             self.skip_int_suffix();
+            if is_unsigned || value > i64::MAX as u64 {
+                return Token::new(TokenKind::UIntLiteral(value), Span::new(start as u32, self.pos as u32, self.file_id));
+            }
             return Token::new(TokenKind::IntLiteral(value as i64), Span::new(start as u32, self.pos as u32, self.file_id));
         }
 
@@ -134,7 +138,11 @@ impl Lexer {
             }
             let oct_str = std::str::from_utf8(&self.input[oct_start..self.pos]).unwrap_or("0");
             let value = u64::from_str_radix(oct_str, 8).unwrap_or(0);
+            let is_unsigned = self.peek_int_suffix_unsigned();
             self.skip_int_suffix();
+            if is_unsigned || value > i64::MAX as u64 {
+                return Token::new(TokenKind::UIntLiteral(value), Span::new(start as u32, self.pos as u32, self.file_id));
+            }
             return Token::new(TokenKind::IntLiteral(value as i64), Span::new(start as u32, self.pos as u32, self.file_id));
         }
 
@@ -175,10 +183,30 @@ impl Lexer {
             let value: f64 = text.parse().unwrap_or(0.0);
             Token::new(TokenKind::FloatLiteral(value), Span::new(start as u32, self.pos as u32, self.file_id))
         } else {
+            let is_unsigned = self.peek_int_suffix_unsigned();
             self.skip_int_suffix();
-            let value: i64 = text.parse().unwrap_or(0);
-            Token::new(TokenKind::IntLiteral(value), Span::new(start as u32, self.pos as u32, self.file_id))
+            // Parse as u64 first to handle values > i64::MAX (like unsigned long constants)
+            let uvalue: u64 = text.parse().unwrap_or(0);
+            if is_unsigned || uvalue > i64::MAX as u64 {
+                Token::new(TokenKind::UIntLiteral(uvalue), Span::new(start as u32, self.pos as u32, self.file_id))
+            } else {
+                Token::new(TokenKind::IntLiteral(uvalue as i64), Span::new(start as u32, self.pos as u32, self.file_id))
+            }
         }
+    }
+
+    /// Check if the upcoming integer suffix contains 'u' or 'U' (unsigned)
+    /// without consuming the suffix.
+    fn peek_int_suffix_unsigned(&self) -> bool {
+        let mut p = self.pos;
+        while p < self.input.len() {
+            match self.input[p] {
+                b'u' | b'U' => return true,
+                b'l' | b'L' => { p += 1; }
+                _ => break,
+            }
+        }
+        false
     }
 
     fn skip_int_suffix(&mut self) {

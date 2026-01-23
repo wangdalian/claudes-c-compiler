@@ -75,6 +75,8 @@ pub struct Lowerer {
     pub(super) current_label: String,
     /// Name of the function currently being lowered (for static local mangling and scoping user labels)
     pub(super) current_function_name: String,
+    /// Return type of the function currently being lowered (for narrowing casts on return)
+    pub(super) current_return_type: IrType,
     // Variable -> alloca mapping with metadata
     pub(super) locals: HashMap<String, LocalInfo>,
     // Global variable tracking (name -> info)
@@ -100,6 +102,8 @@ pub struct Lowerer {
     pub(super) user_labels: HashMap<String, String>,
     /// Typedef mappings (name -> underlying TypeSpecifier).
     pub(super) typedefs: HashMap<String, TypeSpecifier>,
+    /// Function name -> return type mapping for inserting narrowing casts after calls.
+    pub(super) function_return_types: HashMap<String, IrType>,
 }
 
 impl Lowerer {
@@ -115,6 +119,7 @@ impl Lowerer {
             current_instrs: Vec::new(),
             current_label: String::new(),
             current_function_name: String::new(),
+            current_return_type: IrType::I64,
             locals: HashMap::new(),
             globals: HashMap::new(),
             known_functions: HashSet::new(),
@@ -129,6 +134,7 @@ impl Lowerer {
             enum_constants: HashMap::new(),
             user_labels: HashMap::new(),
             typedefs: HashMap::new(),
+            function_return_types: HashMap::new(),
         }
     }
 
@@ -136,17 +142,22 @@ impl Lowerer {
         // Seed builtin typedefs (matching the parser's pre-seeded typedef names)
         self.seed_builtin_typedefs();
 
-        // First pass: collect all function names so we can distinguish
-        // function references from global variable references
+        // First pass: collect all function names and return types so we can
+        // distinguish function references from global variable references
+        // and insert proper narrowing casts after calls.
         for decl in &tu.decls {
             if let ExternalDecl::FunctionDef(func) = decl {
                 self.known_functions.insert(func.name.clone());
+                let ret_ty = self.type_spec_to_ir(&func.return_type);
+                self.function_return_types.insert(func.name.clone(), ret_ty);
             }
             // Also detect function declarations (extern prototypes)
             if let ExternalDecl::Declaration(decl) = decl {
                 for declarator in &decl.declarators {
                     if declarator.derived.iter().any(|d| matches!(d, DerivedDeclarator::Function(_, _))) {
                         self.known_functions.insert(declarator.name.clone());
+                        let ret_ty = self.type_spec_to_ir(&decl.type_spec);
+                        self.function_return_types.insert(declarator.name.clone(), ret_ty);
                     }
                 }
             }
@@ -215,6 +226,7 @@ impl Lowerer {
         self.current_function_name = func.name.clone();
 
         let return_type = self.type_spec_to_ir(&func.return_type);
+        self.current_return_type = return_type;
         let params: Vec<IrParam> = func.params.iter().map(|p| IrParam {
             name: p.name.clone().unwrap_or_default(),
             ty: self.type_spec_to_ir(&p.type_spec),
