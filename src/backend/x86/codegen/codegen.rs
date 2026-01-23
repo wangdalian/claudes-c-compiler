@@ -1251,9 +1251,456 @@ impl ArchCodegen for X86Codegen {
         self.state.emit("    mfence");
     }
 
-    fn emit_inline_asm(&mut self, _template: &str, _outputs: &[(String, Value, Option<String>)], _inputs: &[(String, Operand, Option<String>)], _clobbers: &[String]) {
-        // x86 inline asm stub - not implemented
-        self.state.emit("    # inline asm not supported on x86 target");
+    fn emit_inline_asm(&mut self, template: &str, outputs: &[(String, Value, Option<String>)], inputs: &[(String, Operand, Option<String>)], _clobbers: &[String], operand_types: &[IrType]) {
+        // x86-64 inline assembly support.
+        // Allocate registers for operands, substitute %0/%1/%[name] in template,
+        // load inputs and store outputs.
+
+        // Scratch registers for generic "r" constraints (caller-saved, not rax/rsp/rbp)
+        let gp_scratch: &[&str] = &["rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11"];
+        let mut scratch_idx = 0;
+
+        // Map from specific constraint letters to registers
+        fn specific_reg(constraint: &str) -> Option<&'static str> {
+            let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+            match c {
+                "a" => Some("rax"),
+                "b" => Some("rbx"),
+                "c" => Some("rcx"),
+                "d" => Some("rdx"),
+                "S" => Some("rsi"),
+                "D" => Some("rdi"),
+                _ => None,
+            }
+        }
+
+        // Determine if constraint is a pure memory constraint (not "rm" which prefers register)
+        fn is_memory_constraint(constraint: &str) -> bool {
+            let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+            // Only "m" is pure memory. "rm", "qm", "g" allow register (prefer register).
+            c == "m"
+        }
+
+        // Determine if constraint is a tied operand ("0", "1", etc.)
+        fn tied_operand(constraint: &str) -> Option<usize> {
+            let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+            if c.len() >= 1 && c.chars().all(|ch| ch.is_ascii_digit()) {
+                c.parse::<usize>().ok()
+            } else {
+                None
+            }
+        }
+
+        // Phase 1: Assign registers/memory to all operands
+        // Order: outputs first, then inputs (matching GCC operand numbering)
+        let total_operands = outputs.len() + inputs.len();
+        let mut op_regs: Vec<String> = vec![String::new(); total_operands]; // register name or empty for memory
+        let mut op_is_memory: Vec<bool> = vec![false; total_operands];
+        let mut op_names: Vec<Option<String>> = vec![None; total_operands];
+        let mut op_mem_addrs: Vec<String> = vec![String::new(); total_operands]; // "offset(%rbp)" for memory ops
+
+        // First pass: assign specific registers and mark memory operands
+        for (i, (constraint, ptr, name)) in outputs.iter().enumerate() {
+            op_names[i] = name.clone();
+            if let Some(reg) = specific_reg(constraint) {
+                op_regs[i] = reg.to_string();
+            } else if is_memory_constraint(constraint) {
+                op_is_memory[i] = true;
+                // For memory output, we need the address of the pointer target
+                if let Some(slot) = self.state.get_slot(ptr.0) {
+                    if self.state.is_alloca(ptr.0) {
+                        op_mem_addrs[i] = format!("{}(%rbp)", slot.0);
+                    } else {
+                        // ptr itself is a pointer; load it to get the actual address
+                        op_mem_addrs[i] = format!("{}(%rbp)", slot.0);
+                    }
+                }
+            }
+        }
+
+        // Track which inputs are tied (to avoid assigning them scratch regs)
+        let mut input_tied_to: Vec<Option<usize>> = vec![None; inputs.len()];
+
+        for (i, (constraint, _val, name)) in inputs.iter().enumerate() {
+            let op_idx = outputs.len() + i;
+            op_names[op_idx] = name.clone();
+            if let Some(tied_to) = tied_operand(constraint) {
+                input_tied_to[i] = Some(tied_to);
+                // Don't assign yet - will resolve after scratch allocation
+            } else if let Some(reg) = specific_reg(constraint) {
+                op_regs[op_idx] = reg.to_string();
+            } else if is_memory_constraint(constraint) {
+                op_is_memory[op_idx] = true;
+                match _val {
+                    Operand::Value(v) => {
+                        if let Some(slot) = self.state.get_slot(v.0) {
+                            if self.state.is_alloca(v.0) {
+                                op_mem_addrs[op_idx] = format!("{}(%rbp)", slot.0);
+                            } else {
+                                op_mem_addrs[op_idx] = format!("{}(%rbp)", slot.0);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Second pass: assign scratch registers to operands that need "r" and don't have one yet
+        // Skip tied inputs (they'll get their register from the tied target)
+        for i in 0..total_operands {
+            if op_regs[i].is_empty() && !op_is_memory[i] {
+                // Check if this is a tied input
+                let is_tied = if i >= outputs.len() {
+                    input_tied_to[i - outputs.len()].is_some()
+                } else {
+                    false
+                };
+                if !is_tied {
+                    if scratch_idx < gp_scratch.len() {
+                        op_regs[i] = gp_scratch[scratch_idx].to_string();
+                        scratch_idx += 1;
+                    } else {
+                        op_regs[i] = format!("r{}", 12 + scratch_idx - gp_scratch.len());
+                        scratch_idx += 1;
+                    }
+                }
+            }
+        }
+
+        // Third pass: resolve tied operands now that all targets have registers
+        for (i, tied_to) in input_tied_to.iter().enumerate() {
+            if let Some(tied_to) = tied_to {
+                let op_idx = outputs.len() + i;
+                if *tied_to < op_regs.len() {
+                    op_regs[op_idx] = op_regs[*tied_to].clone();
+                    op_is_memory[op_idx] = op_is_memory[*tied_to];
+                    op_mem_addrs[op_idx] = op_mem_addrs[*tied_to].clone();
+                }
+            }
+        }
+
+        // Handle "+" (read-write) constraints: the synthetic input shares the output's register.
+        // The lowering adds synthetic inputs at the BEGINNING of the inputs list
+        // (one for each "+" output, in order).
+        let mut plus_idx = 0;
+        for (i, (constraint, _, _)) in outputs.iter().enumerate() {
+            if constraint.contains('+') {
+                let plus_input_idx = outputs.len() + plus_idx;
+                if plus_input_idx < total_operands {
+                    op_regs[plus_input_idx] = op_regs[i].clone();
+                    op_is_memory[plus_input_idx] = op_is_memory[i];
+                    op_mem_addrs[plus_input_idx] = op_mem_addrs[i].clone();
+                }
+                plus_idx += 1;
+            }
+        }
+
+        // Build GCC operand number → internal index mapping.
+        // GCC numbers: outputs first, then EXPLICIT inputs (synthetic "+" inputs are hidden).
+        // Internal: outputs, then synthetic "+" inputs, then explicit inputs.
+        let num_plus = outputs.iter().filter(|(c,_,_)| c.contains('+')).count();
+        let num_gcc_operands = outputs.len() + (inputs.len() - num_plus);
+        let mut gcc_to_internal: Vec<usize> = Vec::with_capacity(num_gcc_operands);
+        // Outputs map directly
+        for i in 0..outputs.len() {
+            gcc_to_internal.push(i);
+        }
+        // Explicit inputs (skip synthetic "+" inputs which are at the beginning of inputs)
+        for i in num_plus..inputs.len() {
+            gcc_to_internal.push(outputs.len() + i);
+        }
+
+        // Phase 2: Load input values into their assigned registers
+        for (i, (constraint, val, _)) in inputs.iter().enumerate() {
+            let op_idx = outputs.len() + i;
+            if op_is_memory[op_idx] {
+                continue; // Memory operands don't need loading into registers
+            }
+            let reg = &op_regs[op_idx];
+            if reg.is_empty() {
+                continue;
+            }
+            // For ALL inputs (including tied), load the input value into the register.
+            // Tied operands ("0", "1") already share the same register as their target,
+            // so loading the input value into that register is correct.
+            match val {
+                Operand::Const(c) => {
+                    let imm = c.to_i64().unwrap_or(0);
+                    if imm == 0 {
+                        self.state.emit(&format!("    xorq %{}, %{}", reg, reg));
+                    } else {
+                        self.state.emit(&format!("    movabsq ${}, %{}", imm, reg));
+                    }
+                }
+                Operand::Value(v) => {
+                    if let Some(slot) = self.state.get_slot(v.0) {
+                        if self.state.is_alloca(v.0) {
+                            self.state.emit(&format!("    leaq {}(%rbp), %{}", slot.0, reg));
+                        } else {
+                            self.state.emit(&format!("    movq {}(%rbp), %{}", slot.0, reg));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Also pre-load read-write output values
+        for (i, (constraint, ptr, _)) in outputs.iter().enumerate() {
+            if constraint.contains('+') && !op_is_memory[i] {
+                let reg = &op_regs[i];
+                if let Some(slot) = self.state.get_slot(ptr.0) {
+                    self.state.emit(&format!("    movq {}(%rbp), %{}", slot.0, reg));
+                }
+            }
+        }
+
+        // Build operand type array for register size selection (default to I64 if missing)
+        let mut op_types: Vec<IrType> = vec![IrType::I64; total_operands];
+        for (i, ty) in operand_types.iter().enumerate() {
+            if i < total_operands {
+                op_types[i] = *ty;
+            }
+        }
+        // For tied operands, inherit the type from the operand they're tied to
+        for (i, (constraint, _, _)) in inputs.iter().enumerate() {
+            let op_idx = outputs.len() + i;
+            if let Some(tied_to) = tied_operand(constraint) {
+                if tied_to < op_types.len() && op_idx < op_types.len() {
+                    op_types[op_idx] = op_types[tied_to];
+                }
+            }
+        }
+
+        // Phase 3: Substitute operand references in template and emit
+        let lines: Vec<&str> = template.split('\n').collect();
+        for line in &lines {
+            let line = line.trim().trim_start_matches('\t').trim();
+            if line.is_empty() {
+                continue;
+            }
+            let resolved = Self::substitute_x86_asm_operands(line, &op_regs, &op_names, &op_is_memory, &op_mem_addrs, &op_types, &gcc_to_internal);
+            self.state.emit(&format!("    {}", resolved));
+        }
+
+        // Phase 4: Store output register values back to their stack slots
+        for (i, (constraint, ptr, _)) in outputs.iter().enumerate() {
+            if (constraint.contains('=') || constraint.contains('+')) && !op_is_memory[i] {
+                let reg = &op_regs[i];
+                if let Some(slot) = self.state.get_slot(ptr.0) {
+                    self.state.emit(&format!("    movq %{}, {}(%rbp)", reg, slot.0));
+                }
+            }
+        }
+    }
+}
+
+impl X86Codegen {
+    /// Substitute %0, %1, %[name], %k0, %b1, %w2, %q3, %h4 etc. in x86 asm template.
+    /// Uses operand_types to determine the default register size when no modifier is given.
+    fn substitute_x86_asm_operands(
+        line: &str,
+        op_regs: &[String],
+        op_names: &[Option<String>],
+        op_is_memory: &[bool],
+        op_mem_addrs: &[String],
+        op_types: &[IrType],
+        gcc_to_internal: &[usize],
+    ) -> String {
+        let mut result = String::new();
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '%' && i + 1 < chars.len() {
+                i += 1;
+                // %% -> literal %
+                if chars[i] == '%' {
+                    result.push('%');
+                    i += 1;
+                    continue;
+                }
+                // Check for x86 size modifier: k (32), w (16), b (8-low), h (8-high), q (64), l (32-alt)
+                let mut modifier = None;
+                if matches!(chars[i], 'k' | 'w' | 'b' | 'h' | 'q' | 'l') {
+                    if i + 1 < chars.len() && (chars[i + 1].is_ascii_digit() || chars[i + 1] == '[') {
+                        modifier = Some(chars[i]);
+                        i += 1;
+                    }
+                }
+
+                if chars[i] == '[' {
+                    // Named operand: %[name] or %k[name]
+                    i += 1;
+                    let name_start = i;
+                    while i < chars.len() && chars[i] != ']' {
+                        i += 1;
+                    }
+                    let name: String = chars[name_start..i].iter().collect();
+                    if i < chars.len() { i += 1; } // skip ]
+
+                    let mut found = false;
+                    for (idx, op_name) in op_names.iter().enumerate() {
+                        if let Some(ref n) = op_name {
+                            if n == &name {
+                                if op_is_memory[idx] {
+                                    result.push_str(&op_mem_addrs[idx]);
+                                } else {
+                                    let effective_mod = modifier.or_else(|| Self::default_modifier_for_type(op_types.get(idx).copied()));
+                                    result.push('%');
+                                    result.push_str(&Self::format_x86_reg(&op_regs[idx], effective_mod));
+                                }
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !found {
+                        result.push('%');
+                        if let Some(m) = modifier { result.push(m); }
+                        result.push('[');
+                        result.push_str(&name);
+                        result.push(']');
+                    }
+                } else if chars[i].is_ascii_digit() {
+                    // Positional operand: %0, %1, %k2, etc.
+                    // GCC operand numbers skip synthetic "+" inputs, so map through gcc_to_internal
+                    let mut num = 0usize;
+                    while i < chars.len() && chars[i].is_ascii_digit() {
+                        num = num * 10 + (chars[i] as usize - '0' as usize);
+                        i += 1;
+                    }
+                    let internal_idx = if num < gcc_to_internal.len() {
+                        gcc_to_internal[num]
+                    } else {
+                        num // fallback: direct mapping
+                    };
+                    if internal_idx < op_regs.len() {
+                        if op_is_memory[internal_idx] {
+                            result.push_str(&op_mem_addrs[internal_idx]);
+                        } else {
+                            let effective_mod = modifier.or_else(|| Self::default_modifier_for_type(op_types.get(internal_idx).copied()));
+                            result.push('%');
+                            result.push_str(&Self::format_x86_reg(&op_regs[internal_idx], effective_mod));
+                        }
+                    } else {
+                        result.push('%');
+                        if let Some(m) = modifier { result.push(m); }
+                        result.push_str(&format!("{}", num));
+                    }
+                } else {
+                    // Not a recognized pattern, emit as-is (e.g. %rax, %eax, etc.)
+                    result.push('%');
+                    if let Some(m) = modifier { result.push(m); }
+                    result.push(chars[i]);
+                    i += 1;
+                }
+            } else {
+                result.push(chars[i]);
+                i += 1;
+            }
+        }
+        result
+    }
+
+    /// Determine the default register size modifier based on the operand's IR type.
+    /// In GCC inline asm, the default register size matches the C type:
+    /// - 8-bit types -> %al (modifier 'b')
+    /// - 16-bit types -> %ax (modifier 'w')
+    /// - 32-bit types -> %eax (modifier 'k')
+    /// - 64-bit types -> %rax (no modifier / 'q')
+    fn default_modifier_for_type(ty: Option<IrType>) -> Option<char> {
+        match ty {
+            Some(IrType::I8) | Some(IrType::U8) => Some('b'),
+            Some(IrType::I16) | Some(IrType::U16) => Some('w'),
+            Some(IrType::I32) | Some(IrType::U32) | Some(IrType::F32) => Some('k'),
+            // I64, U64, Ptr, F64 all use 64-bit registers (default)
+            _ => None,
+        }
+    }
+
+    /// Format x86 register with size modifier.
+    /// Modifiers: k (32-bit), w (16-bit), b (8-bit low), h (8-bit high), q (64-bit), l (32-bit alt)
+    fn format_x86_reg(reg: &str, modifier: Option<char>) -> String {
+        match modifier {
+            Some('k') | Some('l') => {
+                // 32-bit version
+                Self::reg_to_32(reg)
+            }
+            Some('w') => {
+                // 16-bit version
+                Self::reg_to_16(reg)
+            }
+            Some('b') => {
+                // 8-bit low version
+                Self::reg_to_8l(reg)
+            }
+            Some('h') => {
+                // 8-bit high version
+                Self::reg_to_8h(reg)
+            }
+            Some('q') | None => {
+                // 64-bit (default for x86-64)
+                reg.to_string()
+            }
+            _ => reg.to_string(),
+        }
+    }
+
+    /// Convert 64-bit register name to 32-bit variant.
+    fn reg_to_32(reg: &str) -> String {
+        match reg {
+            "rax" => "eax".to_string(),
+            "rbx" => "ebx".to_string(),
+            "rcx" => "ecx".to_string(),
+            "rdx" => "edx".to_string(),
+            "rsi" => "esi".to_string(),
+            "rdi" => "edi".to_string(),
+            "rbp" => "ebp".to_string(),
+            "rsp" => "esp".to_string(),
+            _ if reg.starts_with('r') => format!("{}d", reg), // r8 -> r8d, r10 -> r10d
+            _ => reg.to_string(),
+        }
+    }
+
+    /// Convert 64-bit register name to 16-bit variant.
+    fn reg_to_16(reg: &str) -> String {
+        match reg {
+            "rax" => "ax".to_string(),
+            "rbx" => "bx".to_string(),
+            "rcx" => "cx".to_string(),
+            "rdx" => "dx".to_string(),
+            "rsi" => "si".to_string(),
+            "rdi" => "di".to_string(),
+            "rbp" => "bp".to_string(),
+            "rsp" => "sp".to_string(),
+            _ if reg.starts_with('r') => format!("{}w", reg), // r8 -> r8w
+            _ => reg.to_string(),
+        }
+    }
+
+    /// Convert 64-bit register name to 8-bit low variant.
+    fn reg_to_8l(reg: &str) -> String {
+        match reg {
+            "rax" => "al".to_string(),
+            "rbx" => "bl".to_string(),
+            "rcx" => "cl".to_string(),
+            "rdx" => "dl".to_string(),
+            "rsi" => "sil".to_string(),
+            "rdi" => "dil".to_string(),
+            _ if reg.starts_with('r') => format!("{}b", reg), // r8 -> r8b
+            _ => reg.to_string(),
+        }
+    }
+
+    /// Convert 64-bit register name to 8-bit high variant.
+    fn reg_to_8h(reg: &str) -> String {
+        match reg {
+            "rax" => "ah".to_string(),
+            "rbx" => "bh".to_string(),
+            "rcx" => "ch".to_string(),
+            "rdx" => "dh".to_string(),
+            _ => Self::reg_to_8l(reg), // fallback to low byte
+        }
     }
 }
 

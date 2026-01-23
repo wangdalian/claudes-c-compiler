@@ -205,6 +205,8 @@ pub enum Instruction {
         inputs: Vec<(String, Operand, Option<String>)>,
         /// Clobber list (register names and "memory", "cc")
         clobbers: Vec<String>,
+        /// Types of operands (outputs first, then inputs) for register size selection
+        operand_types: Vec<IrType>,
     },
 }
 

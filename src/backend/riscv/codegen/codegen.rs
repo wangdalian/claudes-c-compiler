@@ -1187,13 +1187,302 @@ impl ArchCodegen for RiscvCodegen {
         self.state.emit("    fence rw, rw");
     }
 
-    fn emit_inline_asm(&mut self, _template: &str, _outputs: &[(String, Value, Option<String>)], _inputs: &[(String, Operand, Option<String>)], _clobbers: &[String]) {
-        // RISC-V inline asm stub - not implemented
-        self.state.emit("    # inline asm not supported on riscv target");
+    fn emit_inline_asm(&mut self, template: &str, outputs: &[(String, Value, Option<String>)], inputs: &[(String, Operand, Option<String>)], _clobbers: &[String], _operand_types: &[IrType]) {
+        // RISC-V inline assembly support.
+        // Allocate temporary registers for operands, substitute %0/%1/%[name],
+        // load inputs and store outputs.
+
+        // Scratch registers for generic "r" constraints.
+        // Use t0-t6 (temporaries) and a2-a7 (args not typically in use during asm).
+        let gp_scratch: &[&str] = &["t0", "t1", "t2", "t3", "t4", "t5", "t6", "a2", "a3", "a4", "a5", "a6", "a7"];
+        let mut scratch_idx = 0;
+
+        // Map from specific register constraint names to RISC-V register names
+        fn specific_reg(constraint: &str) -> Option<&'static str> {
+            let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+            match c {
+                "a0" => Some("a0"),
+                "a1" => Some("a1"),
+                "a2" => Some("a2"),
+                "a3" => Some("a3"),
+                "a4" => Some("a4"),
+                "a5" => Some("a5"),
+                "a6" => Some("a6"),
+                "a7" => Some("a7"),
+                "ra" => Some("ra"),
+                "t0" => Some("t0"),
+                "t1" => Some("t1"),
+                "t2" => Some("t2"),
+                _ => None,
+            }
+        }
+
+        fn is_memory_constraint(constraint: &str) -> bool {
+            let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+            c == "m"
+        }
+
+        fn tied_operand(constraint: &str) -> Option<usize> {
+            let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+            if !c.is_empty() && c.chars().all(|ch| ch.is_ascii_digit()) {
+                c.parse::<usize>().ok()
+            } else {
+                None
+            }
+        }
+
+        let total_operands = outputs.len() + inputs.len();
+        let mut op_regs: Vec<String> = vec![String::new(); total_operands];
+        let mut op_is_memory: Vec<bool> = vec![false; total_operands];
+        let mut op_names: Vec<Option<String>> = vec![None; total_operands];
+        let mut op_mem_offsets: Vec<i64> = vec![0; total_operands]; // stack offset for memory ops
+
+        // First pass: assign specific registers and mark memory operands
+        for (i, (constraint, ptr, name)) in outputs.iter().enumerate() {
+            op_names[i] = name.clone();
+            if let Some(reg) = specific_reg(constraint) {
+                op_regs[i] = reg.to_string();
+            } else if is_memory_constraint(constraint) {
+                op_is_memory[i] = true;
+                if let Some(slot) = self.state.get_slot(ptr.0) {
+                    op_mem_offsets[i] = slot.0;
+                }
+            }
+        }
+
+        // Track tied inputs for deferred resolution
+        let mut input_tied_to: Vec<Option<usize>> = vec![None; inputs.len()];
+
+        for (i, (constraint, _val, name)) in inputs.iter().enumerate() {
+            let op_idx = outputs.len() + i;
+            op_names[op_idx] = name.clone();
+            if let Some(tied_to) = tied_operand(constraint) {
+                input_tied_to[i] = Some(tied_to);
+                // Don't assign yet - resolve after scratch allocation
+            } else if let Some(reg) = specific_reg(constraint) {
+                op_regs[op_idx] = reg.to_string();
+            } else if is_memory_constraint(constraint) {
+                op_is_memory[op_idx] = true;
+                if let Operand::Value(v) = _val {
+                    if let Some(slot) = self.state.get_slot(v.0) {
+                        op_mem_offsets[op_idx] = slot.0;
+                    }
+                }
+            }
+        }
+
+        // Second pass: assign scratch registers for generic "r" operands (skip tied)
+        for i in 0..total_operands {
+            if op_regs[i].is_empty() && !op_is_memory[i] {
+                let is_tied = if i >= outputs.len() {
+                    input_tied_to[i - outputs.len()].is_some()
+                } else {
+                    false
+                };
+                if !is_tied {
+                    if scratch_idx < gp_scratch.len() {
+                        op_regs[i] = gp_scratch[scratch_idx].to_string();
+                        scratch_idx += 1;
+                    } else {
+                        op_regs[i] = format!("s{}", 2 + scratch_idx - gp_scratch.len());
+                        scratch_idx += 1;
+                    }
+                }
+            }
+        }
+
+        // Third pass: resolve tied operands now that all targets have registers
+        for (i, tied_to) in input_tied_to.iter().enumerate() {
+            if let Some(tied_to) = tied_to {
+                let op_idx = outputs.len() + i;
+                if *tied_to < op_regs.len() {
+                    op_regs[op_idx] = op_regs[*tied_to].clone();
+                    op_is_memory[op_idx] = op_is_memory[*tied_to];
+                    op_mem_offsets[op_idx] = op_mem_offsets[*tied_to];
+                }
+            }
+        }
+
+        // Handle "+" read-write: synthetic inputs share register with their output
+        let num_plus = outputs.iter().filter(|(c,_,_)| c.contains('+')).count();
+        let mut plus_idx = 0;
+        for (i, (constraint, _, _)) in outputs.iter().enumerate() {
+            if constraint.contains('+') {
+                let plus_input_idx = outputs.len() + plus_idx;
+                if plus_input_idx < total_operands {
+                    op_regs[plus_input_idx] = op_regs[i].clone();
+                    op_is_memory[plus_input_idx] = op_is_memory[i];
+                    op_mem_offsets[plus_input_idx] = op_mem_offsets[i];
+                }
+                plus_idx += 1;
+            }
+        }
+
+        // Build GCC operand number → internal index mapping.
+        // GCC numbers: outputs first, then EXPLICIT inputs (synthetic "+" inputs are hidden).
+        let num_plus = outputs.iter().filter(|(c,_,_)| c.contains('+')).count();
+        let num_gcc_operands = outputs.len() + (inputs.len() - num_plus);
+        let mut gcc_to_internal: Vec<usize> = Vec::with_capacity(num_gcc_operands);
+        for i in 0..outputs.len() {
+            gcc_to_internal.push(i);
+        }
+        for i in num_plus..inputs.len() {
+            gcc_to_internal.push(outputs.len() + i);
+        }
+
+        // Phase 2: Load input values into their assigned registers
+        for (i, (_constraint, val, _)) in inputs.iter().enumerate() {
+            let op_idx = outputs.len() + i;
+            if op_is_memory[op_idx] {
+                continue;
+            }
+            let reg = &op_regs[op_idx];
+            if reg.is_empty() {
+                continue;
+            }
+
+            // For ALL inputs (including tied), load the input value into the register.
+            // Tied operands already share the same register as their target output.
+            match val {
+                Operand::Const(c) => {
+                    let imm = c.to_i64().unwrap_or(0);
+                    self.state.emit(&format!("    li {}, {}", reg, imm));
+                }
+                Operand::Value(v) => {
+                    if let Some(slot) = self.state.get_slot(v.0) {
+                        if self.state.is_alloca(v.0) {
+                            self.emit_addi_s0(reg, slot.0);
+                        } else {
+                            self.emit_load_from_s0(reg, slot.0, "ld");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pre-load read-write output values
+        for (i, (constraint, ptr, _)) in outputs.iter().enumerate() {
+            if constraint.contains('+') && !op_is_memory[i] {
+                let reg = &op_regs[i].clone();
+                if let Some(slot) = self.state.get_slot(ptr.0) {
+                    self.emit_load_from_s0(reg, slot.0, "ld");
+                }
+            }
+        }
+
+        // Phase 3: Substitute operand references in template and emit
+        let lines: Vec<&str> = template.split('\n').collect();
+        for line in &lines {
+            let line = line.trim().trim_start_matches('\t').trim();
+            if line.is_empty() {
+                continue;
+            }
+            let resolved = Self::substitute_riscv_asm_operands(line, &op_regs, &op_names, &op_is_memory, &op_mem_offsets, &gcc_to_internal);
+            self.state.emit(&format!("    {}", resolved));
+        }
+
+        // Phase 4: Store output register values back to their stack slots
+        for (i, (constraint, ptr, _)) in outputs.iter().enumerate() {
+            if (constraint.contains('=') || constraint.contains('+')) && !op_is_memory[i] {
+                let reg = &op_regs[i].clone();
+                if let Some(slot) = self.state.get_slot(ptr.0) {
+                    self.emit_store_to_s0(reg, slot.0, "sd");
+                }
+            }
+        }
     }
 }
 
 impl RiscvCodegen {
+    /// Substitute %0, %1, %[name] in RISC-V asm template.
+    fn substitute_riscv_asm_operands(
+        line: &str,
+        op_regs: &[String],
+        op_names: &[Option<String>],
+        op_is_memory: &[bool],
+        op_mem_offsets: &[i64],
+        gcc_to_internal: &[usize],
+    ) -> String {
+        let mut result = String::new();
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '%' && i + 1 < chars.len() {
+                i += 1;
+                // %% -> literal %
+                if chars[i] == '%' {
+                    result.push('%');
+                    i += 1;
+                    continue;
+                }
+
+                if chars[i] == '[' {
+                    // Named operand: %[name]
+                    i += 1;
+                    let name_start = i;
+                    while i < chars.len() && chars[i] != ']' {
+                        i += 1;
+                    }
+                    let name: String = chars[name_start..i].iter().collect();
+                    if i < chars.len() { i += 1; }
+
+                    let mut found = false;
+                    for (idx, op_name) in op_names.iter().enumerate() {
+                        if let Some(ref n) = op_name {
+                            if n == &name {
+                                if op_is_memory[idx] {
+                                    result.push_str(&format!("{}(s0)", op_mem_offsets[idx]));
+                                } else {
+                                    result.push_str(&op_regs[idx]);
+                                }
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !found {
+                        result.push('%');
+                        result.push('[');
+                        result.push_str(&name);
+                        result.push(']');
+                    }
+                } else if chars[i].is_ascii_digit() {
+                    // Positional operand: %0, %1, etc.
+                    // GCC operand numbers skip synthetic "+" inputs, so map through gcc_to_internal
+                    let mut num = 0usize;
+                    while i < chars.len() && chars[i].is_ascii_digit() {
+                        num = num * 10 + (chars[i] as usize - '0' as usize);
+                        i += 1;
+                    }
+                    let internal_idx = if num < gcc_to_internal.len() {
+                        gcc_to_internal[num]
+                    } else {
+                        num
+                    };
+                    if internal_idx < op_regs.len() {
+                        if op_is_memory[internal_idx] {
+                            result.push_str(&format!("{}(s0)", op_mem_offsets[internal_idx]));
+                        } else {
+                            result.push_str(&op_regs[internal_idx]);
+                        }
+                    } else {
+                        result.push_str(&format!("%{}", num));
+                    }
+                } else {
+                    // Not recognized, emit as-is
+                    result.push('%');
+                    result.push(chars[i]);
+                    i += 1;
+                }
+            } else {
+                result.push(chars[i]);
+                i += 1;
+            }
+        }
+        result
+    }
+
+    /// Get the AMO ordering suffix.
     /// Get the AMO ordering suffix.
     fn amo_ordering(ordering: AtomicOrdering) -> &'static str {
         match ordering {

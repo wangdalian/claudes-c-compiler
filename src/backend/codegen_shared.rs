@@ -173,7 +173,7 @@ pub trait ArchCodegen {
     fn emit_fence(&mut self, ordering: AtomicOrdering);
 
     /// Emit inline assembly.
-    fn emit_inline_asm(&mut self, template: &str, outputs: &[(String, Value, Option<String>)], inputs: &[(String, Operand, Option<String>)], clobbers: &[String]);
+    fn emit_inline_asm(&mut self, template: &str, outputs: &[(String, Value, Option<String>)], inputs: &[(String, Operand, Option<String>)], clobbers: &[String], operand_types: &[IrType]);
 
     /// Emit a return terminator.
     fn emit_return(&mut self, val: Option<&Operand>, frame_size: i64);
@@ -330,8 +330,8 @@ fn generate_instruction(cg: &mut dyn ArchCodegen, inst: &Instruction) {
         Instruction::LabelAddr { dest, label } => {
             cg.emit_label_addr(dest, label);
         }
-        Instruction::InlineAsm { template, outputs, inputs, clobbers } => {
-            cg.emit_inline_asm(template, outputs, inputs, clobbers);
+        Instruction::InlineAsm { template, outputs, inputs, clobbers, operand_types } => {
+            cg.emit_inline_asm(template, outputs, inputs, clobbers, operand_types);
         }
     }
 }

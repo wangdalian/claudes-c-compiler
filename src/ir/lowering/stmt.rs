@@ -1277,11 +1277,15 @@ impl Lowerer {
             Stmt::InlineAsm { template, outputs, inputs, clobbers } => {
                 let mut ir_outputs = Vec::new();
                 let mut ir_inputs = Vec::new();
+                let mut operand_types = Vec::new();
 
                 // Process output operands: get the address (pointer) to store result
+                // Also collect types for synthetic "+" inputs separately
+                let mut plus_input_types = Vec::new();
                 for out in outputs {
                     let constraint = out.constraint.clone();
                     let name = out.name.clone();
+                    let out_ty = self.get_expr_type(&out.expr);
                     // Get the lvalue address for the output expression
                     if let Some(lv) = self.lower_lvalue(&out.expr) {
                         let ptr = match lv {
@@ -1293,17 +1297,25 @@ impl Lowerer {
                             let ty = self.get_expr_type(&out.expr);
                             self.emit(Instruction::Load { dest: cur_val, ptr, ty });
                             ir_inputs.push((constraint.replace('+', "").to_string(), Operand::Value(cur_val), name.clone()));
+                            plus_input_types.push(out_ty.clone());
                         }
                         ir_outputs.push((constraint, ptr, name));
+                        operand_types.push(out_ty);
                     }
+                }
+                // Add types for synthetic "+" inputs (they go at the beginning of ir_inputs)
+                for ty in plus_input_types {
+                    operand_types.push(ty);
                 }
 
                 // Process input operands: evaluate expression to get value
                 for inp in inputs {
                     let constraint = inp.constraint.clone();
                     let name = inp.name.clone();
+                    let inp_ty = self.get_expr_type(&inp.expr);
                     let val = self.lower_expr(&inp.expr);
                     ir_inputs.push((constraint, val, name));
+                    operand_types.push(inp_ty);
                 }
 
                 self.emit(Instruction::InlineAsm {
@@ -1311,6 +1323,7 @@ impl Lowerer {
                     outputs: ir_outputs,
                     inputs: ir_inputs,
                     clobbers: clobbers.clone(),
+                    operand_types,
                 });
             }
         }

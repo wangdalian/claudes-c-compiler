@@ -1627,7 +1627,7 @@ impl ArchCodegen for ArmCodegen {
         self.state.emit("    dmb ish");
     }
 
-    fn emit_inline_asm(&mut self, template: &str, outputs: &[(String, Value, Option<String>)], inputs: &[(String, Operand, Option<String>)], _clobbers: &[String]) {
+    fn emit_inline_asm(&mut self, template: &str, outputs: &[(String, Value, Option<String>)], inputs: &[(String, Operand, Option<String>)], _clobbers: &[String], _operand_types: &[IrType]) {
         // Allocate registers for operands.
         // outputs come first in operand numbering, then inputs.
         // Use x9..x15 (caller-saved scratch) for GP operands.
