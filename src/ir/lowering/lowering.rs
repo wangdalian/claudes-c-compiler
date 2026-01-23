@@ -130,6 +130,8 @@ pub struct Lowerer {
     pub(super) known_functions: HashSet<String>,
     // Set of already-defined function bodies (to avoid duplicate definitions)
     pub(super) defined_functions: HashSet<String>,
+    // Set of function names declared with static (internal) linkage
+    pub(super) static_functions: HashSet<String>,
     // Loop context for break/continue
     pub(super) break_labels: Vec<String>,
     pub(super) continue_labels: Vec<String>,
@@ -185,6 +187,7 @@ impl Lowerer {
             typedefs: HashMap::new(),
             func_meta: FunctionMeta::default(),
             static_local_names: HashMap::new(),
+            static_functions: HashSet::new(),
             current_sret_ptr: None,
         }
     }
@@ -244,6 +247,9 @@ impl Lowerer {
         for decl in &tu.decls {
             if let ExternalDecl::FunctionDef(func) = decl {
                 self.known_functions.insert(func.name.clone());
+                if func.is_static {
+                    self.static_functions.insert(func.name.clone());
+                }
                 let ret_ty = self.type_spec_to_ir(&func.return_type);
                 self.func_meta.return_types.insert(func.name.clone(), ret_ty);
                 // Track CType for pointer-returning functions
@@ -300,6 +306,9 @@ impl Lowerer {
                     }
                     if let Some((params, variadic)) = func_info {
                         self.known_functions.insert(declarator.name.clone());
+                        if decl.is_static {
+                            self.static_functions.insert(declarator.name.clone());
+                        }
                         // Wrap return type with pointer levels from derived declarators
                         let mut ret_ty = self.type_spec_to_ir(&decl.type_spec);
                         if ptr_count > 0 {
@@ -671,6 +680,10 @@ impl Lowerer {
             self.terminate(Terminator::Return(ret_op));
         }
 
+        // A function has internal linkage if it was declared static anywhere
+        // in the translation unit (C99 6.2.2p5: once declared with internal
+        // linkage, all subsequent declarations also have internal linkage).
+        let is_static = func.is_static || self.static_functions.contains(&func.name);
         let ir_func = IrFunction {
             name: func.name.clone(),
             return_type,
@@ -678,7 +691,7 @@ impl Lowerer {
             blocks: std::mem::take(&mut self.current_blocks),
             is_variadic: func.variadic,
             is_declaration: false,
-            is_static: func.is_static,
+            is_static,
             stack_size: 0,
         };
         self.module.functions.push(ir_func);

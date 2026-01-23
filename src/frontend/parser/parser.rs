@@ -235,6 +235,22 @@ impl Parser {
             }));
         }
 
+        // Handle _Static_assert at file scope
+        if matches!(self.peek(), TokenKind::StaticAssert) {
+            self.advance();
+            self.skip_balanced_parens();
+            self.consume_if(&TokenKind::Semicolon);
+            return Some(ExternalDecl::Declaration(Declaration {
+                type_spec: TypeSpecifier::Void,
+                declarators: Vec::new(),
+                is_static: false,
+                is_extern: false,
+                is_typedef: false,
+                is_const: false,
+                span: Span::dummy(),
+            }));
+        }
+
         // Reset storage class flags before each declaration
         self.parsing_typedef = false;
         self.parsing_static = false;
@@ -1697,7 +1713,13 @@ impl Parser {
 
         while !matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
             self.skip_gcc_extensions();
-            if self.is_type_specifier() {
+            if matches!(self.peek(), TokenKind::StaticAssert) {
+                // _Static_assert(expr, "msg"); or _Static_assert(expr);
+                // Skip entirely (no codegen needed for static assertions)
+                self.advance(); // consume _Static_assert
+                self.skip_balanced_parens(); // skip (...)
+                self.consume_if(&TokenKind::Semicolon);
+            } else if self.is_type_specifier() {
                 if let Some(decl) = self.parse_local_declaration() {
                     items.push(BlockItem::Declaration(decl));
                 }
