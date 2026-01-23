@@ -1,0 +1,27 @@
+Task: Fix static local variable scoping and incomplete array typedef initialization
+Status: IN PROGRESS
+
+Problems to fix:
+1. Static local variables are inserted into self.locals during declaration,
+   causing their GlobalAddr to be emitted in the wrong basic block.
+   When goto/switch skips the declaration, the GlobalAddr is unreachable,
+   but later uses of the variable try to reference it.
+   Fix: Don't insert static locals into self.locals. They are already
+   handled by static_local_names + globals lookup in expr.rs and lvalue.rs.
+
+   Affected tests:
+   - wacc_chapter_10_valid_extra_credit_goto_skip_static_initializer
+   - wacc_chapter_10_valid_extra_credit_switch_skip_static_initializer
+   - wacc_chapter_10_valid_shadow_static_local_var
+
+2. Incomplete array type via typedef (typedef int a[]) produces globals
+   with wrong size (sizeof element instead of sizeof array) and no initializer data.
+   Fix: Properly compute array size from initializer for typedefs with
+   incomplete array type.
+
+   Affected tests:
+   - compiler_suite_0030_0114 (typedef int a[]; a x = {1,2,3};)
+
+3. Additional small fixes identified during investigation:
+   - Static initializer float-to-int and int-to-float conversion improvements
+   - unsigned int compound assignment type conversion
