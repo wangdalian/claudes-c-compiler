@@ -948,6 +948,10 @@ impl Preprocessor {
                 // but for our purposes, treat it as an extern int
                 self.pending_injections.push("extern int errno;\n".to_string());
             }
+            "stdbool.h" => {
+                // Define true/false macros only when stdbool.h is explicitly included
+                crate::frontend::preprocessor::builtin_macros::define_stdbool_true_false(&mut self.macros);
+            }
             _ => {}
         }
     }

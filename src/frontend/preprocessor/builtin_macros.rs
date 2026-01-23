@@ -205,12 +205,17 @@ fn define_stddef_macros(macros: &mut MacroTable) {
     });
 }
 
-/// <stdbool.h> macros
+/// <stdbool.h> macros - only `bool` is predefined; `true` and `false` are
+/// deferred to `#include <stdbool.h>` to allow C99 code to use them as identifiers.
 fn define_stdbool_macros(macros: &mut MacroTable) {
     def(macros, "bool", "_Bool");
+    def(macros, "__bool_true_false_are_defined", "1");
+}
+
+/// Define the stdbool true/false macros (called on #include <stdbool.h>).
+pub fn define_stdbool_true_false(macros: &mut MacroTable) {
     def(macros, "true", "1");
     def(macros, "false", "0");
-    def(macros, "__bool_true_false_are_defined", "1");
 }
 
 /// <stdatomic.h> macros
