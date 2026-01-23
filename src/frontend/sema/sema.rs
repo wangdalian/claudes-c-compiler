@@ -450,7 +450,7 @@ impl SemanticAnalyzer {
             TypeSpecifier::UnsignedInt => CType::UInt,
             TypeSpecifier::UnsignedLong => CType::ULong,
             TypeSpecifier::UnsignedLongLong => CType::ULongLong,
-            TypeSpecifier::Bool => CType::Int, // _Bool as int for now
+            TypeSpecifier::Bool => CType::Bool,
             TypeSpecifier::Pointer(inner) => {
                 let inner_type = self.type_spec_to_ctype(inner);
                 CType::Pointer(Box::new(inner_type))

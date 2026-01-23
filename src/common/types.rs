@@ -2,6 +2,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CType {
     Void,
+    Bool,
     Char,
     UChar,
     Short,
@@ -284,7 +285,7 @@ impl CType {
     pub fn size(&self) -> usize {
         match self {
             CType::Void => 0,
-            CType::Char | CType::UChar => 1,
+            CType::Bool | CType::Char | CType::UChar => 1,
             CType::Short | CType::UShort => 2,
             CType::Int | CType::UInt => 4,
             CType::Long | CType::ULong => 8,
@@ -312,7 +313,7 @@ impl CType {
     pub fn align(&self) -> usize {
         match self {
             CType::Void => 1,
-            CType::Char | CType::UChar => 1,
+            CType::Bool | CType::Char | CType::UChar => 1,
             CType::Short | CType::UShort => 2,
             CType::Int | CType::UInt => 4,
             CType::Long | CType::ULong => 8,
@@ -331,7 +332,7 @@ impl CType {
     }
 
     pub fn is_integer(&self) -> bool {
-        matches!(self, CType::Char | CType::UChar | CType::Short | CType::UShort |
+        matches!(self, CType::Bool | CType::Char | CType::UChar | CType::Short | CType::UShort |
                        CType::Int | CType::UInt | CType::Long | CType::ULong |
                        CType::LongLong | CType::ULongLong | CType::Enum(_))
     }
@@ -419,6 +420,7 @@ impl IrType {
     pub fn from_ctype(ct: &CType) -> Self {
         match ct {
             CType::Void => IrType::Void,
+            CType::Bool => IrType::U8,
             CType::Char => IrType::I8,
             CType::UChar => IrType::U8,
             CType::Short => IrType::I16,

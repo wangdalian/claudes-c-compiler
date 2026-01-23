@@ -1398,8 +1398,14 @@ impl Lowerer {
                 dest: result, op: ir_op,
                 lhs: Operand::Value(loaded_val), rhs: step, ty: binop_ty,
             });
-            self.store_lvalue_typed(&lv, Operand::Value(result), ty);
-            return Operand::Value(result);
+            // _Bool lvalues normalize the result to 0 or 1
+            let store_op = if self.is_bool_lvalue(inner) {
+                self.emit_bool_normalize(Operand::Value(result))
+            } else {
+                Operand::Value(result)
+            };
+            self.store_lvalue_typed(&lv, store_op.clone(), ty);
+            return store_op;
         }
         self.lower_expr(inner)
     }
@@ -1416,8 +1422,14 @@ impl Lowerer {
                 dest: result, op: ir_op,
                 lhs: Operand::Value(loaded_val), rhs: step, ty: binop_ty,
             });
-            self.store_lvalue_typed(&lv, Operand::Value(result), ty);
-            return loaded; // Return original value
+            // _Bool lvalues normalize the result to 0 or 1
+            let store_op = if self.is_bool_lvalue(inner) {
+                self.emit_bool_normalize(Operand::Value(result))
+            } else {
+                Operand::Value(result)
+            };
+            self.store_lvalue_typed(&lv, store_op, ty);
+            return loaded; // Return original value (before inc/dec)
         }
         self.lower_expr(inner)
     }
@@ -1549,6 +1561,12 @@ impl Lowerer {
                 Operand::Value(narrowed)
             } else {
                 Operand::Value(result)
+            };
+            // _Bool lvalues normalize the result to 0 or 1
+            let store_val = if self.is_bool_lvalue(lhs) {
+                self.emit_bool_normalize(store_val)
+            } else {
+                store_val
             };
             self.store_lvalue_typed(&lv, store_val.clone(), ty);
             return store_val;

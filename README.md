@@ -4,7 +4,7 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
 
 ## Status
 
-**Basic compilation pipeline functional.** ~35% of x86-64 tests passing.
+**Basic compilation pipeline functional.** ~68% of x86-64 tests passing.
 
 ### Working Features
 - Preprocessor with `#include` file resolution (system headers, -I paths, include guards, #pragma once)
@@ -13,10 +13,10 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
 - Optimization passes (constant folding, DCE, GVN, algebraic simplification)
 - Three backend targets with correct ABI handling
 
-### Test Results (20% sample, ratio 5)
-- x86-64: ~35% passing
-- AArch64: ~36% passing
-- RISC-V 64: ~37% passing
+### Test Results (10% sample, ratio 10)
+- x86-64: ~68.6% passing (2051/2991)
+- AArch64: ~71.5% passing (2051/2869)
+- RISC-V 64: ~65.1% passing (1862/2861)
 
 ### What Works
 - `int main() { return N; }` for any integer N
@@ -54,6 +54,10 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
   - Constant expression evaluation for initializers
 
 ### Recent Additions
+- **CType::Bool and _Bool normalization**: Added `CType::Bool` variant to distinguish `_Bool` from
+  `unsigned char` at the type level. Stores to `_Bool` lvalues through pointer dereference,
+  array subscript, struct/union member access, compound assignment, and increment/decrement
+  now correctly normalize values to 0 or 1.
 - **#include file resolution**: Full `#include` support reading actual system headers from
   `/usr/include`, with search path support (-I), include guard recognition, #pragma once,
   block comment stripping (C-style `/* */` comments no longer confuse the preprocessor),

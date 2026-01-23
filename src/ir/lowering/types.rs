@@ -1613,7 +1613,7 @@ impl Lowerer {
             TypeSpecifier::UnsignedChar => CType::UChar,
             TypeSpecifier::Short => CType::Short,
             TypeSpecifier::UnsignedShort => CType::UShort,
-            TypeSpecifier::Bool => CType::UChar, // _Bool is stored as unsigned byte
+            TypeSpecifier::Bool => CType::Bool, // _Bool: 1-byte unsigned, normalizes to 0 or 1 on store
             TypeSpecifier::Int | TypeSpecifier::Signed => CType::Int,
             TypeSpecifier::UnsignedInt | TypeSpecifier::Unsigned => CType::UInt,
             TypeSpecifier::Long => CType::Long,

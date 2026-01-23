@@ -1894,6 +1894,8 @@ impl Lowerer {
     }
 
     /// Check if an lvalue expression targets a _Bool variable (requires normalization).
+    /// Handles direct identifiers, pointer dereferences (*pval), array subscripts (arr[i]),
+    /// and member accesses (s.field, p->field) where the target type is _Bool.
     pub(super) fn is_bool_lvalue(&self, expr: &Expr) -> bool {
         match expr {
             Expr::Identifier(name, _) => {
@@ -1902,8 +1904,16 @@ impl Lowerer {
                 }
                 false
             }
-            // TODO: Handle _Bool pointer dereferences (*pval = x) and _Bool array subscripts
-            // This requires a CType::Bool variant to distinguish from unsigned char
+            Expr::Deref(_, _)
+            | Expr::ArraySubscript(_, _, _)
+            | Expr::MemberAccess(_, _, _)
+            | Expr::PointerMemberAccess(_, _, _) => {
+                // Use CType resolution to check if the lvalue target is _Bool
+                if let Some(ct) = self.get_expr_ctype(expr) {
+                    return matches!(ct, CType::Bool);
+                }
+                false
+            }
             _ => false,
         }
     }
