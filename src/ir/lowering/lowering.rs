@@ -127,6 +127,12 @@ pub struct Lowerer {
     pub(super) static_local_names: HashMap<String, String>,
     /// Function name -> return CType mapping (for pointer-returning functions).
     pub(super) function_return_ctypes: HashMap<String, CType>,
+    /// Functions that return structs > 8 bytes and need hidden sret pointer.
+    /// Maps function name to the struct return size.
+    pub(super) sret_functions: HashMap<String, usize>,
+    /// In the current function being lowered, the alloca holding the sret pointer
+    /// (hidden first parameter). None if the function does not use sret.
+    pub(super) current_sret_ptr: Option<Value>,
 }
 
 impl Lowerer {
@@ -166,6 +172,8 @@ impl Lowerer {
             function_ptr_param_types: HashMap::new(),
             static_local_names: HashMap::new(),
             function_return_ctypes: HashMap::new(),
+            sret_functions: HashMap::new(),
+            current_sret_ptr: None,
         }
     }
 
@@ -216,6 +224,16 @@ impl Lowerer {
                     let ret_ctype = self.type_spec_to_ctype(&func.return_type);
                     self.function_return_ctypes.insert(func.name.clone(), ret_ctype);
                 }
+                // Detect struct returns > 8 bytes that need sret (hidden pointer) convention
+                {
+                    let resolved = self.resolve_type_spec(&func.return_type);
+                    if matches!(resolved, TypeSpecifier::Struct(_, _) | TypeSpecifier::Union(_, _)) {
+                        let size = self.sizeof_type(&func.return_type);
+                        if size > 8 {
+                            self.sret_functions.insert(func.name.clone(), size);
+                        }
+                    }
+                }
                 // Collect parameter types (skip variadic portion)
                 let param_tys: Vec<IrType> = func.params.iter().map(|p| {
                     self.type_spec_to_ir(&p.type_spec)
@@ -264,6 +282,16 @@ impl Lowerer {
                                 base_ctype
                             };
                             self.function_return_ctypes.insert(declarator.name.clone(), ret_ctype);
+                        }
+                        // Detect struct returns > 8 bytes that need sret
+                        if ptr_count == 0 {
+                            let resolved = self.resolve_type_spec(&decl.type_spec);
+                            if matches!(resolved, TypeSpecifier::Struct(_, _) | TypeSpecifier::Union(_, _)) {
+                                let size = self.sizeof_type(&decl.type_spec);
+                                if size > 8 {
+                                    self.sret_functions.insert(declarator.name.clone(), size);
+                                }
+                            }
                         }
                         let param_tys: Vec<IrType> = params.iter().map(|p| {
                             self.type_spec_to_ir(&p.type_spec)
@@ -345,13 +373,23 @@ impl Lowerer {
         let return_type = self.type_spec_to_ir(&func.return_type);
         self.current_return_type = return_type;
         self.current_return_is_bool = matches!(self.resolve_type_spec(&func.return_type), TypeSpecifier::Bool);
-        let params: Vec<IrParam> = func.params.iter().map(|p| IrParam {
+
+        // Check if this function uses sret (returns struct > 8 bytes via hidden pointer)
+        let uses_sret = self.sret_functions.contains_key(&func.name);
+
+        let mut params: Vec<IrParam> = Vec::new();
+        // If sret, prepend hidden pointer parameter
+        if uses_sret {
+            params.push(IrParam { name: "__sret_ptr".to_string(), ty: IrType::Ptr });
+        }
+        params.extend(func.params.iter().map(|p| IrParam {
             name: p.name.clone().unwrap_or_default(),
             ty: self.type_spec_to_ir(&p.type_spec),
-        }).collect();
+        }));
 
         // Start entry block
         self.start_block("entry".to_string());
+        self.current_sret_ptr = None;
 
         // Allocate params as local variables.
         //
@@ -370,9 +408,23 @@ impl Lowerer {
         }
         let mut struct_params: Vec<StructParamInfo> = Vec::new();
 
+        // sret_offset: maps IR param index to func.params index (skip hidden sret param)
+        let sret_offset: usize = if uses_sret { 1 } else { 0 };
+
         for (i, param) in params.iter().enumerate() {
+            // For sret, index 0 is the hidden sret pointer param
+            if uses_sret && i == 0 {
+                // Emit alloca for hidden sret pointer, don't register as local
+                let alloca = self.fresh_value();
+                self.emit(Instruction::Alloca { dest: alloca, ty: IrType::Ptr, size: 8 });
+                self.current_sret_ptr = Some(alloca);
+                continue;
+            }
+
+            let orig_idx = i - sret_offset;  // index into func.params
+
             if !param.name.is_empty() {
-                let is_struct_param = if let Some(orig_param) = func.params.get(i) {
+                let is_struct_param = if let Some(orig_param) = func.params.get(orig_idx) {
                     let resolved = self.resolve_type_spec(&orig_param.type_spec);
                     matches!(resolved, TypeSpecifier::Struct(_, _) | TypeSpecifier::Union(_, _))
                 } else {
@@ -383,7 +435,7 @@ impl Lowerer {
                 let alloca = self.fresh_value();
                 let ty = param.ty;
                 // Use sizeof from TypeSpecifier for correct long double size (16 bytes)
-                let param_size = func.params.get(i)
+                let param_size = func.params.get(orig_idx)
                     .map(|p| self.sizeof_type(&p.type_spec))
                     .unwrap_or(ty.size())
                     .max(ty.size());
@@ -395,7 +447,7 @@ impl Lowerer {
 
                 if is_struct_param {
                     // Record that we need to create a struct copy for this param
-                    let layout = func.params.get(i)
+                    let layout = func.params.get(orig_idx)
                         .and_then(|p| self.get_struct_layout_for_type(&p.type_spec));
                     let struct_size = layout.as_ref().map_or(8, |l| l.size);
                     struct_params.push(StructParamInfo {
@@ -407,26 +459,26 @@ impl Lowerer {
                 } else {
                     // Normal parameter: register as local immediately
                     let elem_size = if ty == IrType::Ptr {
-                        func.params.get(i).map_or(0, |p| self.pointee_elem_size(&p.type_spec))
+                        func.params.get(orig_idx).map_or(0, |p| self.pointee_elem_size(&p.type_spec))
                     } else { 0 };
 
                     let pointee_type = if ty == IrType::Ptr {
-                        func.params.get(i).and_then(|p| self.pointee_ir_type(&p.type_spec))
+                        func.params.get(orig_idx).and_then(|p| self.pointee_ir_type(&p.type_spec))
                     } else { None };
 
                     let struct_layout = if ty == IrType::Ptr {
-                        func.params.get(i).and_then(|p| self.get_struct_layout_for_pointer_param(&p.type_spec))
+                        func.params.get(orig_idx).and_then(|p| self.get_struct_layout_for_pointer_param(&p.type_spec))
                     } else { None };
 
-                    let c_type = func.params.get(i).map(|p| self.type_spec_to_ctype(&p.type_spec));
-                    let is_bool = func.params.get(i).map_or(false, |p| {
+                    let c_type = func.params.get(orig_idx).map(|p| self.type_spec_to_ctype(&p.type_spec));
+                    let is_bool = func.params.get(orig_idx).map_or(false, |p| {
                         matches!(self.resolve_type_spec(&p.type_spec), TypeSpecifier::Bool)
                     });
 
                     // For pointer-to-array params (e.g., int (*)[3] from int arr[N][3]),
                     // compute array_dim_strides so multi-dim subscripts work.
                     let array_dim_strides = if ty == IrType::Ptr {
-                        func.params.get(i).map_or(vec![], |p| self.compute_ptr_array_strides(&p.type_spec))
+                        func.params.get(orig_idx).map_or(vec![], |p| self.compute_ptr_array_strides(&p.type_spec))
                     } else { vec![] };
 
                     self.locals.insert(param.name.clone(), LocalInfo {

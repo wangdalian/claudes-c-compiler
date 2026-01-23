@@ -641,9 +641,28 @@ impl Lowerer {
             }
         }
 
+        // Check if this call needs sret (returns struct > 8 bytes)
+        let sret_size = if let Expr::Identifier(name, _) = func {
+            self.sret_functions.get(name).copied()
+        } else {
+            None
+        };
+
         // Lower arguments with implicit casts
-        let (arg_vals, arg_types) = self.lower_call_arguments(func, args);
+        let (mut arg_vals, mut arg_types) = self.lower_call_arguments(func, args);
         let dest = self.fresh_value();
+
+        // For sret calls, allocate space and prepend hidden pointer argument
+        let sret_alloca = if let Some(size) = sret_size {
+            let alloca = self.fresh_value();
+            self.emit(Instruction::Alloca { dest: alloca, ty: IrType::Ptr, size });
+            // Prepend the alloca address as hidden first argument
+            arg_vals.insert(0, Operand::Value(alloca));
+            arg_types.insert(0, IrType::Ptr);
+            Some(alloca)
+        } else {
+            None
+        };
 
         // Determine variadic status
         let call_variadic = if let Expr::Identifier(name, _) = func {
@@ -654,6 +673,11 @@ impl Lowerer {
 
         // Dispatch: direct call, function pointer call, or indirect call
         let call_ret_ty = self.emit_call_instruction(func, dest, arg_vals, arg_types, call_variadic);
+
+        // For sret calls, the struct data is now in the alloca - return its address
+        if let Some(alloca) = sret_alloca {
+            return Operand::Value(alloca);
+        }
 
         // Narrow the result if the return type is sub-64-bit integer
         self.maybe_narrow_call_result(dest, call_ret_ty)

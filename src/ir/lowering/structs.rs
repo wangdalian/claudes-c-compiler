@@ -200,32 +200,40 @@ impl Lowerer {
                 });
                 inner_addr
             }
-            Expr::FunctionCall(_, _, _) => {
+            Expr::FunctionCall(func_expr, _, _) => {
                 // Function returning a struct: call the function, then store
                 // the return value to a temporary alloca so we have an address.
-                // For small structs (<= 8 bytes), the return value in rax IS
-                // the packed struct data, not an address.
                 let struct_size = self.get_struct_size_for_expr(expr);
-                let val = self.lower_expr(expr);
-                let alloca = self.fresh_value();
-                let alloc_size = if struct_size > 0 { struct_size } else { 8 };
-                self.emit(Instruction::Alloca { dest: alloca, size: alloc_size, ty: IrType::I64 });
-                if struct_size <= 8 {
-                    // Small struct: return value is packed data, store directly
-                    self.emit(Instruction::Store { val, ptr: alloca, ty: IrType::I64 });
+
+                // Check if this is an sret call (struct > 8 bytes with hidden pointer)
+                let is_sret = if let Expr::Identifier(name, _) = func_expr.as_ref() {
+                    self.sret_functions.contains_key(name)
                 } else {
-                    // Large struct: return value is an address, memcpy
-                    let src_addr = match val {
+                    false
+                };
+
+                if is_sret {
+                    // For sret calls, lower_expr returns the alloca address directly
+                    // (the struct data is already there)
+                    let val = self.lower_expr(expr);
+                    match val {
                         Operand::Value(v) => v,
                         Operand::Const(_) => {
                             let tmp = self.fresh_value();
                             self.emit(Instruction::Copy { dest: tmp, src: val });
                             tmp
                         }
-                    };
-                    self.emit(Instruction::Memcpy { dest: alloca, src: src_addr, size: struct_size });
+                    }
+                } else {
+                    // Non-sret: small struct (<= 8 bytes), return value in rax IS
+                    // the packed struct data, not an address.
+                    let val = self.lower_expr(expr);
+                    let alloca = self.fresh_value();
+                    let alloc_size = if struct_size > 0 { struct_size } else { 8 };
+                    self.emit(Instruction::Alloca { dest: alloca, size: alloc_size, ty: IrType::I64 });
+                    self.emit(Instruction::Store { val, ptr: alloca, ty: IrType::I64 });
+                    alloca
                 }
-                alloca
             }
             _ => {
                 let val = self.lower_expr(expr);

@@ -677,6 +677,23 @@ impl Lowerer {
         match stmt {
             Stmt::Return(expr, _span) => {
                 let op = expr.as_ref().map(|e| {
+                    // For struct returns with sret (> 8 bytes), copy struct data to the
+                    // hidden sret pointer and return that pointer.
+                    if let Some(sret_alloca) = self.current_sret_ptr {
+                        if self.expr_is_struct_value(e) {
+                            let struct_size = self.get_struct_size_for_expr(e);
+                            if struct_size > 8 {
+                                let src_addr = self.get_struct_base_addr(e);
+                                // Load the sret pointer from its alloca
+                                let sret_ptr = self.fresh_value();
+                                self.emit(Instruction::Load { dest: sret_ptr, ptr: sret_alloca, ty: IrType::Ptr });
+                                // Memcpy struct data to sret destination
+                                self.emit(Instruction::Memcpy { dest: sret_ptr, src: src_addr, size: struct_size });
+                                // Return the sret pointer
+                                return Operand::Value(sret_ptr);
+                            }
+                        }
+                    }
                     // For small struct returns (<= 8 bytes), load the struct data
                     // from its address so it goes into rax as data (not as a pointer).
                     if self.expr_is_struct_value(e) {
