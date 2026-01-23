@@ -1,0 +1,12 @@
+Improve parser robustness for declaration parsing:
+
+1. Fix function pointer parameter declarations (e.g., void (*fn)(int a))
+   Currently the parser sees "(*fn)" and fails because it doesn't recognize
+   parenthesized declarators in parameter lists.
+
+2. Fix storage class specifiers appearing after the type keyword
+   (e.g., "int static x;" is valid C but we only check for storage class before type)
+
+3. Remove stale implement_struct_support.txt (already done in commit 97cab23)
+
+These fixes will unblock ~50+ test cases that currently fail with parse errors.
