@@ -1,0 +1,20 @@
+Task: Implement _Complex type support
+Status: IN PROGRESS
+
+Goal: Add basic _Complex number support to unlock 1000+ failing test cases.
+
+Plan:
+1. Add ComplexFloat, ComplexDouble, ComplexLongDouble to CType enum
+2. Update parser to properly build Complex types (currently skips _Complex)
+3. Add __real__ and __imag__ unary operators to lexer/parser/AST
+4. Add imaginary literal suffixes (1.0i, 1.0fi, 1.0li) to lexer
+5. Add complex.h header support (creal, cimag, etc.)
+6. Lower complex types in IR as struct {real, imag} pairs
+7. Implement complex arithmetic (+, -, *, /)
+8. Implement complex type conversions and assignments
+
+Approach:
+- Complex types stored as two-element structs internally
+- Operations decomposed into component-wise operations on real/imag parts
+- creal/cimag implemented as field access on the internal struct
+- __real__/__imag__ are unary prefix operators (GCC extension)
