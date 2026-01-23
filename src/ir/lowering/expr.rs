@@ -394,9 +394,22 @@ impl Lowerer {
 
     /// Lower struct/union assignment using memcpy.
     fn lower_struct_assign(&mut self, lhs: &Expr, rhs: &Expr) -> Operand {
-        let rhs_val = self.lower_expr(rhs);
         let struct_size = self.get_struct_size_for_expr(lhs);
 
+        // For function calls returning small structs (<= 8 bytes),
+        // the return value IS the struct data in rax, not an address.
+        // Store it directly instead of memcpy.
+        if matches!(rhs, Expr::FunctionCall(_, _, _)) && struct_size <= 8 {
+            let rhs_val = self.lower_expr(rhs);
+            if let Some(lv) = self.lower_lvalue(lhs) {
+                let dest_addr = self.lvalue_addr(&lv);
+                self.emit(Instruction::Store { val: rhs_val, ptr: dest_addr, ty: IrType::I64 });
+                return Operand::Value(dest_addr);
+            }
+            return rhs_val;
+        }
+
+        let rhs_val = self.lower_expr(rhs);
         if let Some(lv) = self.lower_lvalue(lhs) {
             let dest_addr = self.lvalue_addr(&lv);
             let src_addr = self.operand_to_value(rhs_val);

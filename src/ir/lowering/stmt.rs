@@ -278,13 +278,20 @@ impl Lowerer {
                             }
                         } else if is_struct {
                             // Struct copy-initialization: struct Point b = a;
-                            // Get the source struct address and memcpy to our alloca
-                            let src_addr = self.get_struct_base_addr(expr);
-                            self.emit(Instruction::Memcpy {
-                                dest: alloca,
-                                src: src_addr,
-                                size: actual_alloc_size,
-                            });
+                            // For function calls returning small structs (<= 8 bytes),
+                            // the return value IS the struct data in rax (not an address).
+                            // Store it directly instead of using memcpy.
+                            if matches!(expr, Expr::FunctionCall(_, _, _)) && actual_alloc_size <= 8 {
+                                let val = self.lower_expr(expr);
+                                self.emit(Instruction::Store { val, ptr: alloca, ty: IrType::I64 });
+                            } else {
+                                let src_addr = self.get_struct_base_addr(expr);
+                                self.emit(Instruction::Memcpy {
+                                    dest: alloca,
+                                    src: src_addr,
+                                    size: actual_alloc_size,
+                                });
+                            }
                         } else {
                             let val = self.lower_expr(expr);
                             // Insert implicit cast for type mismatches
@@ -585,6 +592,17 @@ impl Lowerer {
         match stmt {
             Stmt::Return(expr, _span) => {
                 let op = expr.as_ref().map(|e| {
+                    // For small struct returns (<= 8 bytes), load the struct data
+                    // from its address so it goes into rax as data (not as a pointer).
+                    if self.expr_is_struct_value(e) {
+                        let struct_size = self.get_struct_size_for_expr(e);
+                        if struct_size <= 8 {
+                            let addr = self.get_struct_base_addr(e);
+                            let dest = self.fresh_value();
+                            self.emit(Instruction::Load { dest, ptr: addr, ty: IrType::I64 });
+                            return Operand::Value(dest);
+                        }
+                    }
                     let val = self.lower_expr(e);
                     let ret_ty = self.current_return_type;
                     let expr_ty = self.get_expr_type(e);
