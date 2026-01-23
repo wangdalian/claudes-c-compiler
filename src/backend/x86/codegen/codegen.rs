@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use crate::ir::ir::*;
 use crate::common::types::IrType;
 
@@ -8,6 +8,8 @@ pub struct X86Codegen {
     output: String,
     stack_offset: i64,
     value_locations: HashMap<u32, ValueLocation>,
+    /// Track which Values are allocas (their stack slot IS the data, not a pointer to data).
+    alloca_values: HashSet<u32>,
     label_counter: u32,
 }
 
@@ -23,6 +25,7 @@ impl X86Codegen {
             output: String::new(),
             stack_offset: 0,
             value_locations: HashMap::new(),
+            alloca_values: HashSet::new(),
             label_counter: 0,
         }
     }
@@ -69,6 +72,7 @@ impl X86Codegen {
     fn generate_function(&mut self, func: &IrFunction) {
         self.stack_offset = 0;
         self.value_locations.clear();
+        self.alloca_values.clear();
 
         self.emit_line(&format!(".globl {}", func.name));
         self.emit_line(&format!(".type {}, @function", func.name));
@@ -121,6 +125,7 @@ impl X86Codegen {
                     let alloc_size = if *size == 0 { 8 } else { *size as i64 };
                     space += (alloc_size + 7) & !7; // align to 8
                     self.value_locations.insert(dest.0, ValueLocation::Stack(-space));
+                    self.alloca_values.insert(dest.0);
                 } else {
                     // Other instructions produce values on stack too
                     if let Some(dest) = self.get_dest(inst) {
@@ -180,15 +185,31 @@ impl X86Codegen {
                 // Space already allocated in prologue
             }
             Instruction::Store { val, ptr } => {
-                let val_str = self.operand_to_rax(val);
-                let _ = val_str;
-                if let Some(ValueLocation::Stack(offset)) = self.value_locations.get(&ptr.0) {
-                    self.emit_line(&format!("    movq %rax, {}(%rbp)", offset));
+                self.operand_to_rax(val);
+                if let Some(ValueLocation::Stack(offset)) = self.value_locations.get(&ptr.0).cloned() {
+                    if self.alloca_values.contains(&ptr.0) {
+                        // Store directly to the alloca's stack slot
+                        self.emit_line(&format!("    movq %rax, {}(%rbp)", offset));
+                    } else {
+                        // ptr is a computed address (e.g., from GEP).
+                        // Load the pointer, then store through it.
+                        self.emit_line("    movq %rax, %rcx"); // save value in rcx
+                        self.emit_line(&format!("    movq {}(%rbp), %rdx", offset)); // load pointer
+                        self.emit_line("    movq %rcx, (%rdx)"); // store value at address
+                    }
                 }
             }
             Instruction::Load { dest, ptr, .. } => {
-                if let Some(ValueLocation::Stack(ptr_offset)) = self.value_locations.get(&ptr.0) {
-                    self.emit_line(&format!("    movq {}(%rbp), %rax", ptr_offset));
+                if let Some(ValueLocation::Stack(ptr_offset)) = self.value_locations.get(&ptr.0).cloned() {
+                    if self.alloca_values.contains(&ptr.0) {
+                        // Load directly from the alloca's stack slot
+                        self.emit_line(&format!("    movq {}(%rbp), %rax", ptr_offset));
+                    } else {
+                        // ptr is a computed address (e.g., from GEP).
+                        // Load the pointer, then load through it.
+                        self.emit_line(&format!("    movq {}(%rbp), %rax", ptr_offset)); // load pointer
+                        self.emit_line("    movq (%rax), %rax"); // load from address
+                    }
                     if let Some(ValueLocation::Stack(dest_offset)) = self.value_locations.get(&dest.0) {
                         self.emit_line(&format!("    movq %rax, {}(%rbp)", dest_offset));
                     }
@@ -330,9 +351,16 @@ impl X86Codegen {
                 }
             }
             Instruction::GetElementPtr { dest, base, offset, .. } => {
-                // Load base address
-                if let Some(ValueLocation::Stack(base_offset)) = self.value_locations.get(&base.0) {
-                    self.emit_line(&format!("    movq {}(%rbp), %rax", base_offset));
+                // For alloca values, use LEA to get the address of the stack slot.
+                // For non-alloca values (loaded pointers), use MOV to get the pointer value.
+                if let Some(ValueLocation::Stack(base_offset)) = self.value_locations.get(&base.0).cloned() {
+                    if self.alloca_values.contains(&base.0) {
+                        // Alloca: the stack slot IS the data, use LEA to get its address
+                        self.emit_line(&format!("    leaq {}(%rbp), %rax", base_offset));
+                    } else {
+                        // Non-alloca: the stack slot contains a pointer, load it
+                        self.emit_line(&format!("    movq {}(%rbp), %rax", base_offset));
+                    }
                 }
                 // Add offset
                 self.emit_line("    pushq %rax");

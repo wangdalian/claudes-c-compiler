@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use crate::ir::ir::*;
 use crate::common::types::IrType;
 
@@ -7,6 +7,8 @@ pub struct RiscvCodegen {
     output: String,
     stack_offset: i64,
     value_locations: HashMap<u32, i64>,
+    /// Track which Values are allocas (their stack slot IS the data, not a pointer to data).
+    alloca_values: HashSet<u32>,
 }
 
 impl RiscvCodegen {
@@ -15,6 +17,7 @@ impl RiscvCodegen {
             output: String::new(),
             stack_offset: 0,
             value_locations: HashMap::new(),
+            alloca_values: HashSet::new(),
         }
     }
 
@@ -58,6 +61,7 @@ impl RiscvCodegen {
     fn generate_function(&mut self, func: &IrFunction) {
         self.stack_offset = 0;
         self.value_locations.clear();
+        self.alloca_values.clear();
 
         self.emit(&format!(".globl {}", func.name));
         self.emit(&format!(".type {}, @function", func.name));
@@ -104,7 +108,8 @@ impl RiscvCodegen {
         for block in &func.blocks {
             for inst in &block.instructions {
                 if let Some(dest) = self.get_dest(inst) {
-                    let size = if let Instruction::Alloca { size, .. } = inst {
+                    let size = if let Instruction::Alloca { size, dest: alloca_dest, .. } = inst {
+                        self.alloca_values.insert(alloca_dest.0);
                         ((*size as i64 + 7) & !7).max(8)
                     } else {
                         8
@@ -148,12 +153,28 @@ impl RiscvCodegen {
             Instruction::Store { val, ptr } => {
                 self.operand_to_t0(val);
                 if let Some(&offset) = self.value_locations.get(&ptr.0) {
-                    self.emit(&format!("    sd t0, {}(s0)", offset));
+                    if self.alloca_values.contains(&ptr.0) {
+                        // Store directly to the alloca's stack slot
+                        self.emit(&format!("    sd t0, {}(s0)", offset));
+                    } else {
+                        // ptr is a computed address (e.g., from GEP).
+                        // Load the pointer, then store through it.
+                        self.emit("    mv t3, t0"); // save value
+                        self.emit(&format!("    ld t4, {}(s0)", offset)); // load pointer
+                        self.emit("    sd t3, 0(t4)"); // store value at address
+                    }
                 }
             }
             Instruction::Load { dest, ptr, .. } => {
                 if let Some(&ptr_off) = self.value_locations.get(&ptr.0) {
-                    self.emit(&format!("    ld t0, {}(s0)", ptr_off));
+                    if self.alloca_values.contains(&ptr.0) {
+                        // Load directly from the alloca's stack slot
+                        self.emit(&format!("    ld t0, {}(s0)", ptr_off));
+                    } else {
+                        // ptr is a computed address. Load the pointer, then deref.
+                        self.emit(&format!("    ld t0, {}(s0)", ptr_off)); // load pointer
+                        self.emit("    ld t0, 0(t0)"); // load from address
+                    }
                     if let Some(&dest_off) = self.value_locations.get(&dest.0) {
                         self.emit(&format!("    sd t0, {}(s0)", dest_off));
                     }
@@ -260,8 +281,16 @@ impl RiscvCodegen {
                 }
             }
             Instruction::GetElementPtr { dest, base, offset, .. } => {
+                // For alloca values, use ADDI to compute address from s0.
+                // For non-alloca values (loaded pointers), load the pointer first.
                 if let Some(&base_off) = self.value_locations.get(&base.0) {
-                    self.emit(&format!("    ld t1, {}(s0)", base_off));
+                    if self.alloca_values.contains(&base.0) {
+                        // Alloca: compute address as s0 + base_off
+                        self.emit(&format!("    addi t1, s0, {}", base_off));
+                    } else {
+                        // Non-alloca: load the pointer value
+                        self.emit(&format!("    ld t1, {}(s0)", base_off));
+                    }
                 }
                 self.operand_to_t0(offset);
                 self.emit("    add t0, t1, t0");

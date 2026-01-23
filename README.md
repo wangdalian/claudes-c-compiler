@@ -11,9 +11,9 @@ A C compiler written in Rust, targeting x86-64, AArch64, and RISC-V 64.
 - Assembly and linking via system tools (gcc/gas)
 
 ### Test Results (1% sample)
-- x86-64: ~13% passing
-- AArch64: ~8% passing
-- RISC-V 64: ~15% passing
+- x86-64: ~16% passing
+- AArch64: ~11% passing
+- RISC-V 64: ~17% passing
 
 ### What Works
 - `int main() { return N; }` for any integer N
@@ -23,16 +23,23 @@ A C compiler written in Rust, targeting x86-64, AArch64, and RISC-V 64.
 - `if`/`else`, `while`, `for`, `do-while` control flow
 - Function calls with up to 6/8 arguments
 - Comparison operators
+- Array declarations, subscript read/write (`arr[i]`, `arr[i] = val`)
+- Array initializer lists (`int arr[] = {1, 2, 3}`)
+- Pointer dereference assignment (`*p = val`, `val = *p`)
+- Address-of operator (`&x`, `&arr[i]`)
+- Compound assignment on arrays/pointers (`arr[i] += val`, `*p -= val`)
+- Pre/post increment/decrement on arrays/pointers (`arr[i]++`, `++(*p)`)
+- Short-circuit evaluation for `&&` and `||`
+- Proper `sizeof` for basic types and arrays
 
 ### What's Not Yet Implemented
 - Preprocessor (macros, includes, conditionals)
 - Type checking (sema is a stub)
 - Structs, unions, enums (parsed but not lowered)
-- Arrays and pointers (parsed but codegen incomplete)
 - Switch statements (stub)
 - Floating point
 - Global variables
-- String formatting (printf with %d etc)
+- Type casts
 - Native assembler/linker (currently uses gcc)
 - Optimization passes
 

@@ -19,7 +19,9 @@ impl RiscvAssembler {
             .output()
             .map_err(|e| format!("Failed to run RISC-V assembler: {}", e))?;
 
-        let _ = std::fs::remove_file(&asm_path);
+        if std::env::var("CCC_KEEP_ASM").is_err() {
+            let _ = std::fs::remove_file(&asm_path);
+        }
 
         if !result.status.success() {
             let stderr = String::from_utf8_lossy(&result.stderr);

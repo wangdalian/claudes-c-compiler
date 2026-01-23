@@ -3,6 +3,28 @@ use crate::frontend::parser::ast::*;
 use crate::ir::ir::*;
 use crate::common::types::IrType;
 
+/// Information about a local variable stored in an alloca.
+#[derive(Debug, Clone)]
+struct LocalInfo {
+    /// The Value (alloca) holding the address of this local.
+    alloca: Value,
+    /// Element size for arrays (used for pointer arithmetic on subscript).
+    /// For non-arrays this is 0.
+    elem_size: usize,
+    /// Whether this is an array (the alloca IS the base address, not a pointer to one).
+    is_array: bool,
+}
+
+/// Represents an lvalue - something that can be assigned to.
+/// Contains the address (as an IR Value) where the data resides.
+#[derive(Debug, Clone)]
+enum LValue {
+    /// A direct variable: the alloca is the address.
+    Variable(Value),
+    /// An address computed at runtime (e.g., arr[i], *ptr).
+    Address(Value),
+}
+
 /// Lowers AST to IR (alloca-based, not yet SSA).
 pub struct Lowerer {
     next_value: u32,
@@ -13,8 +35,8 @@ pub struct Lowerer {
     current_blocks: Vec<BasicBlock>,
     current_instrs: Vec<Instruction>,
     current_label: String,
-    // Variable -> alloca mapping
-    locals: HashMap<String, Value>,
+    // Variable -> alloca mapping with metadata
+    locals: HashMap<String, LocalInfo>,
     // Loop context for break/continue
     break_labels: Vec<String>,
     continue_labels: Vec<String>,
@@ -112,7 +134,11 @@ impl Lowerer {
                     ty: param.ty,
                     size: param.ty.size(),
                 });
-                self.locals.insert(param.name.clone(), alloca);
+                self.locals.insert(param.name.clone(), LocalInfo {
+                    alloca,
+                    elem_size: 0,
+                    is_array: false,
+                });
             }
         }
 
@@ -158,15 +184,19 @@ impl Lowerer {
 
     fn lower_local_decl(&mut self, decl: &Declaration) {
         for declarator in &decl.declarators {
-            let ty = self.type_spec_to_ir(&decl.type_spec);
-            let size = self.compute_decl_size(&decl.type_spec, &declarator.derived);
+            let base_ty = self.type_spec_to_ir(&decl.type_spec);
+            let (alloc_size, elem_size, is_array, is_pointer) = self.compute_decl_info(&decl.type_spec, &declarator.derived);
             let alloca = self.fresh_value();
             self.emit(Instruction::Alloca {
                 dest: alloca,
-                ty,
-                size,
+                ty: if is_pointer || is_array { IrType::Ptr } else { base_ty },
+                size: alloc_size,
             });
-            self.locals.insert(declarator.name.clone(), alloca);
+            self.locals.insert(declarator.name.clone(), LocalInfo {
+                alloca,
+                elem_size,
+                is_array,
+            });
 
             if let Some(ref init) = declarator.init {
                 match init {
@@ -174,8 +204,27 @@ impl Lowerer {
                         let val = self.lower_expr(expr);
                         self.emit(Instruction::Store { val, ptr: alloca });
                     }
-                    Initializer::List(_) => {
-                        // TODO: handle initializer lists
+                    Initializer::List(items) => {
+                        // Initialize array/struct elements from initializer list
+                        if is_array && elem_size > 0 {
+                            // Zero-initialize the whole array first
+                            // Then store each element
+                            for (i, item) in items.iter().enumerate() {
+                                let val = match &item.init {
+                                    Initializer::Expr(e) => self.lower_expr(e),
+                                    _ => Operand::Const(IrConst::I64(0)),
+                                };
+                                let offset_val = Operand::Const(IrConst::I64((i * elem_size) as i64));
+                                let elem_addr = self.fresh_value();
+                                self.emit(Instruction::GetElementPtr {
+                                    dest: elem_addr,
+                                    base: alloca,
+                                    offset: offset_val,
+                                    ty: base_ty,
+                                });
+                                self.emit(Instruction::Store { val, ptr: elem_addr });
+                            }
+                        }
                     }
                 }
             }
@@ -397,6 +446,151 @@ impl Lowerer {
         }
     }
 
+    /// Try to get the lvalue (address) of an expression.
+    /// Returns Some(LValue) if the expression is an lvalue, None otherwise.
+    fn lower_lvalue(&mut self, expr: &Expr) -> Option<LValue> {
+        match expr {
+            Expr::Identifier(name, _) => {
+                if let Some(info) = self.locals.get(name).cloned() {
+                    Some(LValue::Variable(info.alloca))
+                } else {
+                    None
+                }
+            }
+            Expr::Deref(inner, _) => {
+                // *ptr -> the address is the value of ptr
+                let ptr_val = self.lower_expr(inner);
+                match ptr_val {
+                    Operand::Value(v) => Some(LValue::Address(v)),
+                    Operand::Const(_) => {
+                        // Constant address - copy to a value
+                        let dest = self.fresh_value();
+                        self.emit(Instruction::Copy { dest, src: ptr_val });
+                        Some(LValue::Address(dest))
+                    }
+                }
+            }
+            Expr::ArraySubscript(base, index, _) => {
+                // base[index] -> compute address of element
+                let addr = self.compute_array_element_addr(base, index);
+                Some(LValue::Address(addr))
+            }
+            _ => None,
+        }
+    }
+
+    /// Get the address (as a Value) from an LValue.
+    fn lvalue_addr(&self, lv: &LValue) -> Value {
+        match lv {
+            LValue::Variable(v) => *v,
+            LValue::Address(v) => *v,
+        }
+    }
+
+    /// Load the value from an lvalue.
+    fn load_lvalue(&mut self, lv: &LValue) -> Operand {
+        let addr = self.lvalue_addr(lv);
+        let dest = self.fresh_value();
+        self.emit(Instruction::Load { dest, ptr: addr, ty: IrType::I64 });
+        Operand::Value(dest)
+    }
+
+    /// Store a value to an lvalue.
+    fn store_lvalue(&mut self, lv: &LValue, val: Operand) {
+        let addr = self.lvalue_addr(lv);
+        self.emit(Instruction::Store { val, ptr: addr });
+    }
+
+    /// Compute the address of an array element: base_addr + index * elem_size.
+    fn compute_array_element_addr(&mut self, base: &Expr, index: &Expr) -> Value {
+        let index_val = self.lower_expr(index);
+
+        // Determine the element size. For arrays declared with a known type,
+        // we use elem_size from LocalInfo. Default to 8 (int/pointer size on x86-64)
+        // but try to use 4 for int arrays (most common case).
+        let elem_size = self.get_array_elem_size(base);
+
+        // Get the base address
+        let base_addr = self.get_array_base_addr(base);
+
+        // Compute offset = index * elem_size
+        let offset = if elem_size == 1 {
+            // No multiplication needed
+            index_val
+        } else {
+            let size_const = Operand::Const(IrConst::I64(elem_size as i64));
+            let mul_dest = self.fresh_value();
+            self.emit(Instruction::BinOp {
+                dest: mul_dest,
+                op: IrBinOp::Mul,
+                lhs: index_val,
+                rhs: size_const,
+                ty: IrType::I64,
+            });
+            Operand::Value(mul_dest)
+        };
+
+        // GEP: base + offset
+        let addr = self.fresh_value();
+        let base_val = match base_addr {
+            Operand::Value(v) => v,
+            Operand::Const(_) => {
+                let tmp = self.fresh_value();
+                self.emit(Instruction::Copy { dest: tmp, src: base_addr });
+                tmp
+            }
+        };
+        self.emit(Instruction::GetElementPtr {
+            dest: addr,
+            base: base_val,
+            offset,
+            ty: IrType::I64,
+        });
+        addr
+    }
+
+    /// Get the base address for an array expression.
+    /// For declared arrays, this is the alloca itself (the alloca IS the array).
+    /// For pointers, this is the loaded pointer value.
+    fn get_array_base_addr(&mut self, base: &Expr) -> Operand {
+        match base {
+            Expr::Identifier(name, _) => {
+                if let Some(info) = self.locals.get(name).cloned() {
+                    if info.is_array {
+                        // The alloca IS the base address of the array
+                        return Operand::Value(info.alloca);
+                    } else {
+                        // It's a pointer - load it to get the address it points to
+                        let loaded = self.fresh_value();
+                        self.emit(Instruction::Load { dest: loaded, ptr: info.alloca, ty: IrType::I64 });
+                        return Operand::Value(loaded);
+                    }
+                }
+                // Fall through to generic lowering
+                self.lower_expr(base)
+            }
+            _ => {
+                // Generic case: evaluate the expression (it should be a pointer)
+                self.lower_expr(base)
+            }
+        }
+    }
+
+    /// Get the element size for array subscript. Tries to determine from context.
+    fn get_array_elem_size(&self, base: &Expr) -> usize {
+        if let Expr::Identifier(name, _) = base {
+            if let Some(info) = self.locals.get(name) {
+                if info.elem_size > 0 {
+                    return info.elem_size;
+                }
+            }
+        }
+        // Default element size: 8 bytes to match codegen's movq operations.
+        // TODO: use type information from sema to determine correct size
+        // once we have type-aware codegen with proper sized loads/stores.
+        8
+    }
+
     fn lower_expr(&mut self, expr: &Expr) -> Operand {
         match expr {
             Expr::IntLiteral(val, _) => {
@@ -417,9 +611,13 @@ impl Lowerer {
                 Operand::Value(dest)
             }
             Expr::Identifier(name, _) => {
-                if let Some(&alloca) = self.locals.get(name) {
+                if let Some(info) = self.locals.get(name).cloned() {
+                    if info.is_array {
+                        // Arrays decay to pointer: return the alloca address itself
+                        return Operand::Value(info.alloca);
+                    }
                     let dest = self.fresh_value();
-                    self.emit(Instruction::Load { dest, ptr: alloca, ty: IrType::I64 });
+                    self.emit(Instruction::Load { dest, ptr: info.alloca, ty: IrType::I64 });
                     Operand::Value(dest)
                 } else {
                     // Assume it's a function or global
@@ -429,20 +627,21 @@ impl Lowerer {
                 }
             }
             Expr::BinaryOp(op, lhs, rhs, _) => {
+                match op {
+                    BinOp::LogicalAnd => {
+                        return self.lower_logical_and(lhs, rhs);
+                    }
+                    BinOp::LogicalOr => {
+                        return self.lower_logical_or(lhs, rhs);
+                    }
+                    _ => {}
+                }
+
                 let lhs_val = self.lower_expr(lhs);
                 let rhs_val = self.lower_expr(rhs);
                 let dest = self.fresh_value();
 
                 match op {
-                    BinOp::LogicalAnd | BinOp::LogicalOr => {
-                        // TODO: short-circuit evaluation
-                        let ir_op = match op {
-                            BinOp::LogicalAnd => IrBinOp::And,
-                            BinOp::LogicalOr => IrBinOp::Or,
-                            _ => unreachable!(),
-                        };
-                        self.emit(Instruction::BinOp { dest, op: ir_op, lhs: lhs_val, rhs: rhs_val, ty: IrType::I32 });
-                    }
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                         let cmp_op = match op {
                             BinOp::Eq => IrCmpOp::Eq,
@@ -496,78 +695,24 @@ impl Lowerer {
                         Operand::Value(dest)
                     }
                     UnaryOp::PreInc | UnaryOp::PreDec => {
-                        // Get the address
-                        if let Expr::Identifier(name, _) = inner.as_ref() {
-                            if let Some(&alloca) = self.locals.get(name) {
-                                let loaded = self.fresh_value();
-                                self.emit(Instruction::Load { dest: loaded, ptr: alloca, ty: IrType::I64 });
-                                let one = Operand::Const(IrConst::I64(1));
-                                let result = self.fresh_value();
-                                let ir_op = if *op == UnaryOp::PreInc { IrBinOp::Add } else { IrBinOp::Sub };
-                                self.emit(Instruction::BinOp { dest: result, op: ir_op, lhs: Operand::Value(loaded), rhs: one, ty: IrType::I64 });
-                                self.emit(Instruction::Store { val: Operand::Value(result), ptr: alloca });
-                                return Operand::Value(result);
-                            }
-                        }
-                        // TODO: handle other lvalues
-                        self.lower_expr(inner)
+                        self.lower_pre_inc_dec(inner, *op)
                     }
                 }
             }
             Expr::PostfixOp(op, inner, _) => {
-                if let Expr::Identifier(name, _) = inner.as_ref() {
-                    if let Some(&alloca) = self.locals.get(name) {
-                        let loaded = self.fresh_value();
-                        self.emit(Instruction::Load { dest: loaded, ptr: alloca, ty: IrType::I64 });
-                        let one = Operand::Const(IrConst::I64(1));
-                        let result = self.fresh_value();
-                        let ir_op = if *op == PostfixOp::PostInc { IrBinOp::Add } else { IrBinOp::Sub };
-                        self.emit(Instruction::BinOp { dest: result, op: ir_op, lhs: Operand::Value(loaded), rhs: one, ty: IrType::I64 });
-                        self.emit(Instruction::Store { val: Operand::Value(result), ptr: alloca });
-                        return Operand::Value(loaded); // return original value
-                    }
-                }
-                // TODO: handle other lvalues
-                self.lower_expr(inner)
+                self.lower_post_inc_dec(inner, *op)
             }
             Expr::Assign(lhs, rhs, _) => {
                 let rhs_val = self.lower_expr(rhs);
-                if let Expr::Identifier(name, _) = lhs.as_ref() {
-                    if let Some(&alloca) = self.locals.get(name) {
-                        self.emit(Instruction::Store { val: rhs_val.clone(), ptr: alloca });
-                        return rhs_val;
-                    }
+                if let Some(lv) = self.lower_lvalue(lhs) {
+                    self.store_lvalue(&lv, rhs_val.clone());
+                    return rhs_val;
                 }
-                // TODO: handle other lvalues (deref, array index, member access)
+                // Fallback: just return the rhs value
                 rhs_val
             }
             Expr::CompoundAssign(op, lhs, rhs, _) => {
-                let rhs_val = self.lower_expr(rhs);
-                if let Expr::Identifier(name, _) = lhs.as_ref() {
-                    if let Some(&alloca) = self.locals.get(name) {
-                        let loaded = self.fresh_value();
-                        self.emit(Instruction::Load { dest: loaded, ptr: alloca, ty: IrType::I64 });
-                        let ir_op = match op {
-                            BinOp::Add => IrBinOp::Add,
-                            BinOp::Sub => IrBinOp::Sub,
-                            BinOp::Mul => IrBinOp::Mul,
-                            BinOp::Div => IrBinOp::SDiv,
-                            BinOp::Mod => IrBinOp::SRem,
-                            BinOp::BitAnd => IrBinOp::And,
-                            BinOp::BitOr => IrBinOp::Or,
-                            BinOp::BitXor => IrBinOp::Xor,
-                            BinOp::Shl => IrBinOp::Shl,
-                            BinOp::Shr => IrBinOp::AShr,
-                            _ => IrBinOp::Add,
-                        };
-                        let result = self.fresh_value();
-                        self.emit(Instruction::BinOp { dest: result, op: ir_op, lhs: Operand::Value(loaded), rhs: rhs_val, ty: IrType::I64 });
-                        self.emit(Instruction::Store { val: Operand::Value(result), ptr: alloca });
-                        return Operand::Value(result);
-                    }
-                }
-                // TODO: handle other lvalues
-                rhs_val
+                self.lower_compound_assign(op, lhs, rhs)
             }
             Expr::FunctionCall(func, args, _) => {
                 let func_name = match func.as_ref() {
@@ -588,8 +733,6 @@ impl Lowerer {
                 Operand::Value(dest)
             }
             Expr::Conditional(cond, then_expr, else_expr, _) => {
-                // TODO: proper phi-based conditional
-                // For now lower as basic if-then-else with a temp
                 let cond_val = self.lower_expr(cond);
                 let result_alloca = self.fresh_value();
                 self.emit(Instruction::Alloca { dest: result_alloca, ty: IrType::I64, size: 8 });
@@ -631,12 +774,27 @@ impl Lowerer {
                 Operand::Const(IrConst::I64(size as i64))
             }
             Expr::AddressOf(inner, _) => {
-                if let Expr::Identifier(name, _) = inner.as_ref() {
-                    if let Some(&alloca) = self.locals.get(name) {
-                        return Operand::Value(alloca);
-                    }
+                // Try to get the lvalue address
+                if let Some(lv) = self.lower_lvalue(inner) {
+                    let addr = self.lvalue_addr(&lv);
+                    // For alloca values, we need to get the address of the alloca
+                    // using GEP with offset 0. This produces a leaq in codegen.
+                    let result = self.fresh_value();
+                    self.emit(Instruction::GetElementPtr {
+                        dest: result,
+                        base: addr,
+                        offset: Operand::Const(IrConst::I64(0)),
+                        ty: IrType::Ptr,
+                    });
+                    return Operand::Value(result);
                 }
-                // TODO: handle other lvalues
+                // Fallback for globals
+                if let Expr::Identifier(name, _) = inner.as_ref() {
+                    let dest = self.fresh_value();
+                    self.emit(Instruction::GlobalAddr { dest, name: name.clone() });
+                    return Operand::Value(dest);
+                }
+                // TODO: handle other cases
                 let dest = self.fresh_value();
                 self.emit(Instruction::GlobalAddr { dest, name: "unknown".to_string() });
                 Operand::Value(dest)
@@ -648,18 +806,19 @@ impl Lowerer {
                     Operand::Value(v) => {
                         self.emit(Instruction::Load { dest, ptr: v, ty: IrType::I64 });
                     }
-                    _ => {
-                        // TODO: handle constant address deref
+                    Operand::Const(_) => {
+                        let tmp = self.fresh_value();
+                        self.emit(Instruction::Copy { dest: tmp, src: ptr });
+                        self.emit(Instruction::Load { dest, ptr: tmp, ty: IrType::I64 });
                     }
                 }
                 Operand::Value(dest)
             }
             Expr::ArraySubscript(base, index, _) => {
-                let _base_val = self.lower_expr(base);
-                let _index_val = self.lower_expr(index);
-                // TODO: proper array access (GEP + load)
+                // Compute element address and load
+                let addr = self.compute_array_element_addr(base, index);
                 let dest = self.fresh_value();
-                self.emit(Instruction::Copy { dest, src: Operand::Const(IrConst::I64(0)) });
+                self.emit(Instruction::Load { dest, ptr: addr, ty: IrType::I64 });
                 Operand::Value(dest)
             }
             Expr::MemberAccess(_, _, _) | Expr::PointerMemberAccess(_, _, _) => {
@@ -670,10 +829,181 @@ impl Lowerer {
                 self.lower_expr(lhs);
                 self.lower_expr(rhs)
             }
-            Expr::FloatLiteral(_, _) => {
-                Operand::Const(IrConst::F64(0.0))
-            }
         }
+    }
+
+    /// Lower short-circuit && (logical AND).
+    /// Evaluates lhs; if false, result is 0; otherwise evaluates rhs.
+    fn lower_logical_and(&mut self, lhs: &Expr, rhs: &Expr) -> Operand {
+        let result_alloca = self.fresh_value();
+        self.emit(Instruction::Alloca { dest: result_alloca, ty: IrType::I64, size: 8 });
+
+        let rhs_label = self.fresh_label("and_rhs");
+        let end_label = self.fresh_label("and_end");
+
+        // Evaluate lhs
+        let lhs_val = self.lower_expr(lhs);
+
+        // If lhs is false (0), short-circuit to end with result = 0
+        self.emit(Instruction::Store { val: Operand::Const(IrConst::I64(0)), ptr: result_alloca });
+        self.terminate(Terminator::CondBranch {
+            cond: lhs_val,
+            true_label: rhs_label.clone(),
+            false_label: end_label.clone(),
+        });
+
+        // Evaluate rhs
+        self.start_block(rhs_label);
+        let rhs_val = self.lower_expr(rhs);
+        // Result is (rhs != 0) ? 1 : 0
+        let rhs_bool = self.fresh_value();
+        self.emit(Instruction::Cmp {
+            dest: rhs_bool,
+            op: IrCmpOp::Ne,
+            lhs: rhs_val,
+            rhs: Operand::Const(IrConst::I64(0)),
+            ty: IrType::I64,
+        });
+        self.emit(Instruction::Store { val: Operand::Value(rhs_bool), ptr: result_alloca });
+        self.terminate(Terminator::Branch(end_label.clone()));
+
+        self.start_block(end_label);
+        let result = self.fresh_value();
+        self.emit(Instruction::Load { dest: result, ptr: result_alloca, ty: IrType::I64 });
+        Operand::Value(result)
+    }
+
+    /// Lower short-circuit || (logical OR).
+    /// Evaluates lhs; if true, result is 1; otherwise evaluates rhs.
+    fn lower_logical_or(&mut self, lhs: &Expr, rhs: &Expr) -> Operand {
+        let result_alloca = self.fresh_value();
+        self.emit(Instruction::Alloca { dest: result_alloca, ty: IrType::I64, size: 8 });
+
+        let rhs_label = self.fresh_label("or_rhs");
+        let end_label = self.fresh_label("or_end");
+
+        // Evaluate lhs
+        let lhs_val = self.lower_expr(lhs);
+
+        // If lhs is true (nonzero), short-circuit to end with result = 1
+        self.emit(Instruction::Store { val: Operand::Const(IrConst::I64(1)), ptr: result_alloca });
+        self.terminate(Terminator::CondBranch {
+            cond: lhs_val,
+            true_label: end_label.clone(),
+            false_label: rhs_label.clone(),
+        });
+
+        // Evaluate rhs
+        self.start_block(rhs_label);
+        let rhs_val = self.lower_expr(rhs);
+        // Result is (rhs != 0) ? 1 : 0
+        let rhs_bool = self.fresh_value();
+        self.emit(Instruction::Cmp {
+            dest: rhs_bool,
+            op: IrCmpOp::Ne,
+            lhs: rhs_val,
+            rhs: Operand::Const(IrConst::I64(0)),
+            ty: IrType::I64,
+        });
+        self.emit(Instruction::Store { val: Operand::Value(rhs_bool), ptr: result_alloca });
+        self.terminate(Terminator::Branch(end_label.clone()));
+
+        self.start_block(end_label);
+        let result = self.fresh_value();
+        self.emit(Instruction::Load { dest: result, ptr: result_alloca, ty: IrType::I64 });
+        Operand::Value(result)
+    }
+
+    /// Lower pre-increment/decrement for any lvalue.
+    fn lower_pre_inc_dec(&mut self, inner: &Expr, op: UnaryOp) -> Operand {
+        if let Some(lv) = self.lower_lvalue(inner) {
+            let loaded = self.load_lvalue(&lv);
+            let loaded_val = match loaded {
+                Operand::Value(v) => v,
+                _ => {
+                    let tmp = self.fresh_value();
+                    self.emit(Instruction::Copy { dest: tmp, src: loaded });
+                    tmp
+                }
+            };
+            let one = Operand::Const(IrConst::I64(1));
+            let result = self.fresh_value();
+            let ir_op = if op == UnaryOp::PreInc { IrBinOp::Add } else { IrBinOp::Sub };
+            self.emit(Instruction::BinOp {
+                dest: result,
+                op: ir_op,
+                lhs: Operand::Value(loaded_val),
+                rhs: one,
+                ty: IrType::I64,
+            });
+            self.store_lvalue(&lv, Operand::Value(result));
+            return Operand::Value(result);
+        }
+        // Fallback
+        self.lower_expr(inner)
+    }
+
+    /// Lower post-increment/decrement for any lvalue.
+    fn lower_post_inc_dec(&mut self, inner: &Expr, op: PostfixOp) -> Operand {
+        if let Some(lv) = self.lower_lvalue(inner) {
+            let loaded = self.load_lvalue(&lv);
+            let loaded_val = match loaded.clone() {
+                Operand::Value(v) => v,
+                _ => {
+                    let tmp = self.fresh_value();
+                    self.emit(Instruction::Copy { dest: tmp, src: loaded.clone() });
+                    tmp
+                }
+            };
+            let one = Operand::Const(IrConst::I64(1));
+            let result = self.fresh_value();
+            let ir_op = if op == PostfixOp::PostInc { IrBinOp::Add } else { IrBinOp::Sub };
+            self.emit(Instruction::BinOp {
+                dest: result,
+                op: ir_op,
+                lhs: Operand::Value(loaded_val),
+                rhs: one,
+                ty: IrType::I64,
+            });
+            self.store_lvalue(&lv, Operand::Value(result));
+            // Return original value (before inc/dec)
+            return loaded;
+        }
+        // Fallback
+        self.lower_expr(inner)
+    }
+
+    /// Lower compound assignment (+=, -=, etc.) for any lvalue.
+    fn lower_compound_assign(&mut self, op: &BinOp, lhs: &Expr, rhs: &Expr) -> Operand {
+        let rhs_val = self.lower_expr(rhs);
+        if let Some(lv) = self.lower_lvalue(lhs) {
+            let loaded = self.load_lvalue(&lv);
+            let ir_op = match op {
+                BinOp::Add => IrBinOp::Add,
+                BinOp::Sub => IrBinOp::Sub,
+                BinOp::Mul => IrBinOp::Mul,
+                BinOp::Div => IrBinOp::SDiv,
+                BinOp::Mod => IrBinOp::SRem,
+                BinOp::BitAnd => IrBinOp::And,
+                BinOp::BitOr => IrBinOp::Or,
+                BinOp::BitXor => IrBinOp::Xor,
+                BinOp::Shl => IrBinOp::Shl,
+                BinOp::Shr => IrBinOp::AShr,
+                _ => IrBinOp::Add,
+            };
+            let result = self.fresh_value();
+            self.emit(Instruction::BinOp {
+                dest: result,
+                op: ir_op,
+                lhs: loaded,
+                rhs: rhs_val,
+                ty: IrType::I64,
+            });
+            self.store_lvalue(&lv, Operand::Value(result));
+            return Operand::Value(result);
+        }
+        // Fallback
+        rhs_val
     }
 
     fn type_spec_to_ir(&self, ts: &TypeSpecifier) -> IrType {
@@ -707,15 +1037,49 @@ impl Lowerer {
             TypeSpecifier::Float => 4,
             TypeSpecifier::Double => 8,
             TypeSpecifier::Pointer(_) => 8,
+            TypeSpecifier::Array(elem, Some(size_expr)) => {
+                // Try to evaluate the size expression as a constant
+                let elem_size = self.sizeof_type(elem);
+                if let Expr::IntLiteral(n, _) = size_expr.as_ref() {
+                    return elem_size * (*n as usize);
+                }
+                elem_size // Fallback: unknown size
+            }
             _ => 8,
         }
     }
 
-    fn compute_decl_size(&self, ts: &TypeSpecifier, derived: &[DerivedDeclarator]) -> usize {
-        if derived.iter().any(|d| matches!(d, DerivedDeclarator::Pointer)) {
-            return 8;
+    /// Compute allocation info for a declaration.
+    /// Returns (alloc_size, elem_size, is_array, is_pointer).
+    fn compute_decl_info(&self, _ts: &TypeSpecifier, derived: &[DerivedDeclarator]) -> (usize, usize, bool, bool) {
+        // Check for pointer declarators
+        let has_pointer = derived.iter().any(|d| matches!(d, DerivedDeclarator::Pointer));
+        if has_pointer {
+            return (8, 0, false, true);
         }
-        self.sizeof_type(ts)
+
+        // Check for array declarators
+        for d in derived {
+            if let DerivedDeclarator::Array(size_expr) = d {
+                // TODO: When we have type-aware codegen (using different sizes for
+                // different types), use self.sizeof_type(ts) here. For now, since
+                // codegen uses 8-byte (movq) for all loads/stores, we use 8 as the
+                // element stride to avoid overlapping reads.
+                let elem_size = 8;
+                if let Some(size_expr) = size_expr {
+                    if let Expr::IntLiteral(n, _) = size_expr.as_ref() {
+                        let total = elem_size * (*n as usize);
+                        return (total, elem_size, true, false);
+                    }
+                }
+                // Variable-length array or unknown size: allocate a reasonable default
+                // TODO: proper VLA support
+                return (elem_size * 256, elem_size, true, false);
+            }
+        }
+
+        // Regular scalar - use 8 bytes to match codegen's movq operations
+        (8, 0, false, false)
     }
 }
 

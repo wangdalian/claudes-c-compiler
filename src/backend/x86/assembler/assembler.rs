@@ -24,8 +24,10 @@ impl X86Assembler {
             .output()
             .map_err(|e| format!("Failed to run assembler: {}", e))?;
 
-        // Clean up
-        let _ = std::fs::remove_file(&asm_path);
+        // Clean up temp assembly file (keep if CCC_KEEP_ASM is set for debugging)
+        if std::env::var("CCC_KEEP_ASM").is_err() {
+            let _ = std::fs::remove_file(&asm_path);
+        }
 
         if !result.status.success() {
             let stderr = String::from_utf8_lossy(&result.stderr);

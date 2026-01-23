@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use crate::ir::ir::*;
 use crate::common::types::IrType;
 
@@ -7,6 +7,8 @@ pub struct ArmCodegen {
     output: String,
     stack_offset: i64,
     value_locations: HashMap<u32, i64>, // value -> stack offset from sp
+    /// Track which Values are allocas (their stack slot IS the data, not a pointer to data).
+    alloca_values: HashSet<u32>,
 }
 
 impl ArmCodegen {
@@ -15,6 +17,7 @@ impl ArmCodegen {
             output: String::new(),
             stack_offset: 0,
             value_locations: HashMap::new(),
+            alloca_values: HashSet::new(),
         }
     }
 
@@ -59,6 +62,7 @@ impl ArmCodegen {
     fn generate_function(&mut self, func: &IrFunction) {
         self.stack_offset = 0;
         self.value_locations.clear();
+        self.alloca_values.clear();
 
         self.emit(&format!(".globl {}", func.name));
         self.emit(&format!(".type {}, %function", func.name));
@@ -102,7 +106,8 @@ impl ArmCodegen {
         for block in &func.blocks {
             for inst in &block.instructions {
                 if let Some(dest) = self.get_dest(inst) {
-                    let size = if let Instruction::Alloca { size, .. } = inst {
+                    let size = if let Instruction::Alloca { size, dest: alloca_dest, .. } = inst {
+                        self.alloca_values.insert(alloca_dest.0);
                         ((*size as i64 + 7) & !7).max(8)
                     } else {
                         8
@@ -146,12 +151,28 @@ impl ArmCodegen {
             Instruction::Store { val, ptr } => {
                 self.operand_to_x0(val);
                 if let Some(&offset) = self.value_locations.get(&ptr.0) {
-                    self.emit(&format!("    str x0, [sp, #{}]", offset));
+                    if self.alloca_values.contains(&ptr.0) {
+                        // Store directly to the alloca's stack slot
+                        self.emit(&format!("    str x0, [sp, #{}]", offset));
+                    } else {
+                        // ptr is a computed address (e.g., from GEP).
+                        // Load the pointer, then store through it.
+                        self.emit("    mov x1, x0"); // save value
+                        self.emit(&format!("    ldr x2, [sp, #{}]", offset)); // load pointer
+                        self.emit("    str x1, [x2]"); // store value at address
+                    }
                 }
             }
             Instruction::Load { dest, ptr, .. } => {
                 if let Some(&ptr_off) = self.value_locations.get(&ptr.0) {
-                    self.emit(&format!("    ldr x0, [sp, #{}]", ptr_off));
+                    if self.alloca_values.contains(&ptr.0) {
+                        // Load directly from the alloca's stack slot
+                        self.emit(&format!("    ldr x0, [sp, #{}]", ptr_off));
+                    } else {
+                        // ptr is a computed address. Load the pointer, then deref.
+                        self.emit(&format!("    ldr x0, [sp, #{}]", ptr_off)); // load pointer
+                        self.emit("    ldr x0, [x0]"); // load from address
+                    }
                     if let Some(&dest_off) = self.value_locations.get(&dest.0) {
                         self.emit(&format!("    str x0, [sp, #{}]", dest_off));
                     }
@@ -221,15 +242,19 @@ impl ArmCodegen {
             }
             Instruction::Call { dest, func, args, .. } => {
                 let arg_regs = ["x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"];
-                for (i, arg) in args.iter().enumerate() {
-                    if i < 8 {
-                        self.operand_to_x0(arg);
-                        if i > 0 {
-                            self.emit(&format!("    mov {}, x0", arg_regs[i]));
-                        }
-                    }
-                    // TODO: stack args
+                // Use temporary registers x9-x15 to avoid clobbering args
+                let tmp_regs = ["x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16"];
+                let num_args = args.len().min(8);
+                // First, load all args into temp registers
+                for (i, arg) in args.iter().enumerate().take(num_args) {
+                    self.operand_to_x0(arg);
+                    self.emit(&format!("    mov {}, x0", tmp_regs[i]));
                 }
+                // Then move from temps to arg registers
+                for i in 0..num_args {
+                    self.emit(&format!("    mov {}, {}", arg_regs[i], tmp_regs[i]));
+                }
+                // TODO: stack args for > 8 args
                 self.emit(&format!("    bl {}", func));
                 if let Some(dest) = dest {
                     if let Some(&offset) = self.value_locations.get(&dest.0) {
@@ -257,8 +282,16 @@ impl ArmCodegen {
                 }
             }
             Instruction::GetElementPtr { dest, base, offset, .. } => {
+                // For alloca values, use ADD to compute address from SP.
+                // For non-alloca values (loaded pointers), load the pointer first.
                 if let Some(&base_off) = self.value_locations.get(&base.0) {
-                    self.emit(&format!("    ldr x1, [sp, #{}]", base_off));
+                    if self.alloca_values.contains(&base.0) {
+                        // Alloca: compute address as sp + offset
+                        self.emit(&format!("    add x1, sp, #{}", base_off));
+                    } else {
+                        // Non-alloca: load the pointer value
+                        self.emit(&format!("    ldr x1, [sp, #{}]", base_off));
+                    }
                 }
                 self.operand_to_x0(offset);
                 self.emit("    add x0, x1, x0");
