@@ -10,6 +10,11 @@ pub struct Parser {
     /// Set to true when parse_type_specifier encounters a `typedef` keyword.
     /// Used by declaration parsers to register the declared names as typedefs.
     parsing_typedef: bool,
+    /// Set to true when parse_type_specifier encounters a `static` keyword.
+    /// Used to propagate storage class to Declaration nodes.
+    parsing_static: bool,
+    /// Set to true when parse_type_specifier encounters an `extern` keyword.
+    parsing_extern: bool,
 }
 
 impl Parser {
@@ -19,6 +24,8 @@ impl Parser {
             pos: 0,
             typedefs: Self::builtin_typedefs(),
             parsing_typedef: false,
+            parsing_static: false,
+            parsing_extern: false,
         }
     }
 
@@ -168,12 +175,16 @@ impl Parser {
             return Some(ExternalDecl::Declaration(Declaration {
                 type_spec: TypeSpecifier::Void,
                 declarators: Vec::new(),
+                is_static: false,
+                is_extern: false,
                 span: Span::dummy(),
             }));
         }
 
-        // Reset typedef flag before each declaration
+        // Reset storage class flags before each declaration
         self.parsing_typedef = false;
+        self.parsing_static = false;
+        self.parsing_extern = false;
 
         // Try to parse a type + name, then determine if it's a function def or declaration
         let start = self.peek_span();
@@ -186,6 +197,8 @@ impl Parser {
             return Some(ExternalDecl::Declaration(Declaration {
                 type_spec,
                 declarators: Vec::new(),
+                is_static: self.parsing_static,
+                is_extern: self.parsing_extern,
                 span: start,
             }));
         }
@@ -293,6 +306,8 @@ impl Parser {
             Some(ExternalDecl::Declaration(Declaration {
                 type_spec,
                 declarators,
+                is_static: self.parsing_static,
+                is_extern: self.parsing_extern,
                 span: start,
             }))
         }
@@ -340,9 +355,17 @@ impl Parser {
         loop {
             match self.peek() {
                 TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict
-                | TokenKind::Static | TokenKind::Extern | TokenKind::Register
+                | TokenKind::Register
                 | TokenKind::Inline | TokenKind::Noreturn | TokenKind::Auto => {
                     self.advance();
+                }
+                TokenKind::Static => {
+                    self.advance();
+                    self.parsing_static = true;
+                }
+                TokenKind::Extern => {
+                    self.advance();
+                    self.parsing_extern = true;
                 }
                 TokenKind::Typedef => {
                     self.advance();
@@ -506,9 +529,16 @@ impl Parser {
                 TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict => {
                     self.advance();
                 }
-                TokenKind::Static | TokenKind::Extern | TokenKind::Register
-                | TokenKind::Inline | TokenKind::Noreturn => {
-                    // Storage class and function specifiers can appear after the type in C
+                TokenKind::Static => {
+                    // Storage class can appear after the type in C (e.g., "int static x;")
+                    self.advance();
+                    self.parsing_static = true;
+                }
+                TokenKind::Extern => {
+                    self.advance();
+                    self.parsing_extern = true;
+                }
+                TokenKind::Register | TokenKind::Inline | TokenKind::Noreturn => {
                     self.advance();
                 }
                 TokenKind::Attribute => {
@@ -956,14 +986,20 @@ impl Parser {
 
     fn parse_local_declaration(&mut self) -> Option<Declaration> {
         let start = self.peek_span();
+        // Reset storage class flags before parsing type specifier
+        self.parsing_static = false;
+        self.parsing_extern = false;
+        self.parsing_typedef = false;
         let type_spec = self.parse_type_specifier()?;
+        let is_static = self.parsing_static;
+        let is_extern = self.parsing_extern;
 
         let mut declarators = Vec::new();
 
         // Handle case where type is followed by semicolon (struct/enum/union def)
         if matches!(self.peek(), TokenKind::Semicolon) {
             self.advance();
-            return Some(Declaration { type_spec, declarators, span: start });
+            return Some(Declaration { type_spec, declarators, is_static, is_extern, span: start });
         }
 
         loop {
@@ -995,7 +1031,7 @@ impl Parser {
         }
 
         self.expect(&TokenKind::Semicolon);
-        Some(Declaration { type_spec, declarators, span: start })
+        Some(Declaration { type_spec, declarators, is_static, is_extern, span: start })
     }
 
     fn parse_initializer(&mut self) -> Initializer {

@@ -52,6 +52,9 @@ A C compiler written in Rust, targeting x86-64, AArch64, and RISC-V 64.
   - Constant expression evaluation for initializers
 
 ### Recent Additions
+- **Static local variables**: `static` locals are emitted as globals with mangled names
+  (e.g., `func.varname`), preserving values across function calls. Works with
+  scalars, arrays, and initializers. Storage class tracking in parser and AST.
 - **Typedef tracking**: parser correctly registers typedef names from `typedef` declarations
   (both top-level and local), enabling cast expressions like `(mytype)expr` with user-defined types
 - **Built-in type names**: standard C type names (`size_t`, `int32_t`, `FILE`, etc.) pre-seeded
@@ -64,14 +67,10 @@ A C compiler written in Rust, targeting x86-64, AArch64, and RISC-V 64.
 
 ### What's Not Yet Implemented
 - Full `#include` resolution (only built-in headers for now)
-- Type checking (sema is a stub)
-- Structs, unions, enums (parsed but not lowered to IR)
 - Floating point
-- Static local variables
 - Full cast semantics (truncation/sign-extension in some cases)
 - Inline assembly (parsed but skipped)
 - Native assembler/linker (currently uses gcc)
-- Optimization passes
 
 ## Building
 

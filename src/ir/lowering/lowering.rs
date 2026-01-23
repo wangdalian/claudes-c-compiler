@@ -54,11 +54,15 @@ pub struct Lowerer {
     next_label: u32,
     next_string: u32,
     next_anon_struct: u32,
+    /// Counter for unique static local variable names
+    next_static_local: u32,
     module: IrModule,
     // Current function state
     current_blocks: Vec<BasicBlock>,
     current_instrs: Vec<Instruction>,
     current_label: String,
+    /// Name of the function currently being lowered (for static local mangling)
+    current_function_name: String,
     // Variable -> alloca mapping with metadata
     locals: HashMap<String, LocalInfo>,
     // Global variable tracking (name -> info)
@@ -85,10 +89,12 @@ impl Lowerer {
             next_label: 0,
             next_string: 0,
             next_anon_struct: 0,
+            next_static_local: 0,
             module: IrModule::new(),
             current_blocks: Vec::new(),
             current_instrs: Vec::new(),
             current_label: String::new(),
+            current_function_name: String::new(),
             locals: HashMap::new(),
             globals: HashMap::new(),
             known_functions: HashSet::new(),
@@ -169,6 +175,7 @@ impl Lowerer {
         self.locals.clear();
         self.break_labels.clear();
         self.continue_labels.clear();
+        self.current_function_name = func.name.clone();
 
         let return_type = self.type_spec_to_ir(&func.return_type);
         let params: Vec<IrParam> = func.params.iter().map(|p| IrParam {
@@ -282,8 +289,7 @@ impl Lowerer {
                 IrType::Void => 1,
             };
 
-            // TODO: detect static storage class from the parser
-            let is_static = false;
+            let is_static = decl.is_static;
 
             self.module.globals.push(IrGlobal {
                 name: declarator.name.clone(),
@@ -471,6 +477,69 @@ impl Lowerer {
             } else {
                 alloc_size
             };
+
+            // Handle static local variables: emit as globals with mangled names
+            if decl.is_static {
+                let static_name = format!("{}.{}", self.current_function_name, declarator.name);
+
+                // Determine initializer (evaluated at compile time for static locals)
+                let init = if let Some(ref initializer) = declarator.init {
+                    self.lower_global_init(initializer, &decl.type_spec, base_ty, is_array, elem_size, actual_alloc_size)
+                } else {
+                    GlobalInit::Zero
+                };
+
+                let align = match var_ty {
+                    IrType::I8 => 1,
+                    IrType::I16 => 2,
+                    IrType::I32 => 4,
+                    IrType::I64 | IrType::Ptr => 8,
+                    IrType::F32 => 4,
+                    IrType::F64 => 8,
+                    IrType::Void => 1,
+                };
+
+                // Add as a global variable (with static linkage = not exported)
+                self.module.globals.push(IrGlobal {
+                    name: static_name.clone(),
+                    ty: var_ty,
+                    size: actual_alloc_size,
+                    align,
+                    init,
+                    is_static: true,
+                });
+
+                // Track as a global for access via GlobalAddr
+                self.globals.insert(static_name.clone(), GlobalInfo {
+                    ty: var_ty,
+                    elem_size,
+                    is_array,
+                    struct_layout: struct_layout.clone(),
+                    is_struct,
+                });
+
+                // Also add an alias so the local name resolves to the global
+                // We emit a GlobalAddr to get the address, then treat it like an alloca
+                let addr = self.fresh_value();
+                self.emit(Instruction::GlobalAddr {
+                    dest: addr,
+                    name: static_name,
+                });
+
+                self.locals.insert(declarator.name.clone(), LocalInfo {
+                    alloca: addr,
+                    elem_size,
+                    is_array,
+                    ty: var_ty,
+                    struct_layout,
+                    is_struct,
+                });
+
+                self.next_static_local += 1;
+                // Static locals are initialized once at program start (via .data/.bss),
+                // not at every function call, so skip the runtime initialization below
+                continue;
+            }
 
             let alloca = self.fresh_value();
             self.emit(Instruction::Alloca {

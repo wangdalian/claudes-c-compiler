@@ -164,7 +164,11 @@ impl SemanticAnalyzer {
 
         for init_decl in &decl.declarators {
             let full_type = self.apply_derived_declarators(&base_type, &init_decl.derived);
-            let storage = if is_global {
+            let storage = if decl.is_extern {
+                StorageClass::Extern
+            } else if decl.is_static {
+                StorageClass::Static
+            } else if is_global {
                 StorageClass::Extern
             } else {
                 StorageClass::Auto
