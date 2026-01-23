@@ -53,6 +53,17 @@ impl Lowerer {
             Expr::FloatLiteralLongDouble(val, _) => Operand::Const(IrConst::LongDouble(*val)),
             Expr::CharLiteral(ch, _) => Operand::Const(IrConst::I32(*ch as i32)),
 
+            // Imaginary literals: create complex value {0, imag_val}
+            Expr::ImaginaryLiteral(val, _) => {
+                self.lower_imaginary_literal(*val, &CType::ComplexDouble)
+            }
+            Expr::ImaginaryLiteralF32(val, _) => {
+                self.lower_imaginary_literal(*val, &CType::ComplexFloat)
+            }
+            Expr::ImaginaryLiteralLongDouble(val, _) => {
+                self.lower_imaginary_literal(*val, &CType::ComplexLongDouble)
+            }
+
             Expr::StringLiteral(s, _) => self.lower_string_literal(s),
             Expr::Identifier(name, _) => self.lower_identifier(name),
             Expr::BinaryOp(op, lhs, rhs, _) => self.lower_binary_op(op, lhs, rhs),
@@ -132,7 +143,7 @@ impl Lowerer {
             return Operand::Const(IrConst::I64(val));
         }
 
-        // Local variables: arrays/structs decay to address, scalars are loaded.
+        // Local variables: arrays/structs/complex decay to address, scalars are loaded.
         // Check locals first so that inner-scope locals shadow outer static locals.
         if let Some(info) = self.locals.get(name).cloned() {
             // Static locals: emit fresh GlobalAddr at point of use (the declaration
@@ -150,6 +161,12 @@ impl Lowerer {
             if info.is_array || info.is_struct {
                 return Operand::Value(info.alloca);
             }
+            // Complex types return their alloca pointer (like structs)
+            if let Some(ref ct) = info.c_type {
+                if ct.is_complex() {
+                    return Operand::Value(info.alloca);
+                }
+            }
             let dest = self.fresh_value();
             self.emit(Instruction::Load { dest, ptr: info.alloca, ty: info.ty });
             return Operand::Value(dest);
@@ -164,6 +181,11 @@ impl Lowerer {
                 if ginfo.is_array || ginfo.is_struct {
                     return Operand::Value(addr);
                 }
+                if let Some(ref ct) = ginfo.c_type {
+                    if ct.is_complex() {
+                        return Operand::Value(addr);
+                    }
+                }
                 let dest = self.fresh_value();
                 self.emit(Instruction::Load { dest, ptr: addr, ty: ginfo.ty });
                 return Operand::Value(dest);
@@ -177,6 +199,12 @@ impl Lowerer {
             if ginfo.is_array || ginfo.is_struct {
                 // Arrays and structs decay to their address
                 return Operand::Value(addr);
+            }
+            // Complex types return their address pointer (like structs)
+            if let Some(ref ct) = ginfo.c_type {
+                if ct.is_complex() {
+                    return Operand::Value(addr);
+                }
             }
             let dest = self.fresh_value();
             self.emit(Instruction::Load { dest, ptr: addr, ty: ginfo.ty });
@@ -201,6 +229,16 @@ impl Lowerer {
             _ => {}
         }
 
+        // Complex arithmetic: if either operand is complex, handle specially.
+        // This MUST be checked before pointer arithmetic since complex types use Ptr IR type.
+        if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) {
+            let lhs_ct = self.expr_ctype(lhs);
+            let rhs_ct = self.expr_ctype(rhs);
+            if lhs_ct.is_complex() || rhs_ct.is_complex() {
+                return self.lower_complex_binary_op(op, lhs, rhs, &lhs_ct, &rhs_ct);
+            }
+        }
+
         // Pointer arithmetic: ptr +/- int, int + ptr, ptr - ptr
         if matches!(op, BinOp::Add | BinOp::Sub) {
             if let Some(result) = self.try_lower_pointer_arithmetic(op, lhs, rhs) {
@@ -208,10 +246,16 @@ impl Lowerer {
             }
         }
 
+        // Complex equality/inequality: compare real and imaginary parts separately
+        if matches!(op, BinOp::Eq | BinOp::Ne) {
+            let lhs_ct = self.expr_ctype(lhs);
+            let rhs_ct = self.expr_ctype(rhs);
+            if lhs_ct.is_complex() || rhs_ct.is_complex() {
+                return self.lower_complex_comparison(op, lhs, rhs, &lhs_ct, &rhs_ct);
+            }
+        }
+
         // Pointer comparison: compare as integer addresses, not as the pointed-to type.
-        // We use lower_expr (not lower_expr_with_type) because pointer arithmetic
-        // already produces I64 results, and lower_expr_with_type would insert a
-        // spurious float-to-int cast based on get_expr_type returning the element type.
         if matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
             if self.expr_is_pointer(lhs) || self.expr_is_pointer(rhs) {
                 let lhs_val = self.lower_expr(lhs);
@@ -225,6 +269,29 @@ impl Lowerer {
 
         // Regular arithmetic/comparison
         self.lower_arithmetic_binop(op, lhs, rhs)
+    }
+
+    /// Lower a binary operation involving complex numbers.
+    fn lower_complex_binary_op(&mut self, op: &BinOp, lhs: &Expr, rhs: &Expr, lhs_ct: &CType, rhs_ct: &CType) -> Operand {
+        let result_ct = self.common_complex_type(lhs_ct, rhs_ct);
+
+        // Lower and convert both operands to the result complex type
+        let lhs_val = self.lower_expr(lhs);
+        let rhs_val = self.lower_expr(rhs);
+
+        let lhs_complex = self.convert_to_complex(lhs_val, lhs_ct, &result_ct);
+        let rhs_complex = self.convert_to_complex(rhs_val, rhs_ct, &result_ct);
+
+        let lhs_ptr = self.operand_to_value(lhs_complex);
+        let rhs_ptr = self.operand_to_value(rhs_complex);
+
+        match op {
+            BinOp::Add => self.lower_complex_add(lhs_ptr, rhs_ptr, &result_ct),
+            BinOp::Sub => self.lower_complex_sub(lhs_ptr, rhs_ptr, &result_ct),
+            BinOp::Mul => self.lower_complex_mul(lhs_ptr, rhs_ptr, &result_ct),
+            BinOp::Div => self.lower_complex_div(lhs_ptr, rhs_ptr, &result_ct),
+            _ => unreachable!(),
+        }
     }
 
     /// Try to lower a binary op as pointer arithmetic. Returns Some if either
@@ -274,7 +341,7 @@ impl Lowerer {
 
     /// Multiply an index value by a scale factor (for pointer arithmetic).
     /// Returns the operand unchanged if scale is 1.
-    fn scale_index(&mut self, index: Operand, scale: usize) -> Operand {
+    pub(super) fn scale_index(&mut self, index: Operand, scale: usize) -> Operand {
         if scale <= 1 {
             return index;
         }
@@ -431,6 +498,11 @@ impl Lowerer {
     fn lower_unary_op(&mut self, op: UnaryOp, inner: &Expr) -> Operand {
         match op {
             UnaryOp::Plus => {
+                // Check for complex type - unary plus is identity for complex
+                let inner_ct = self.expr_ctype(inner);
+                if inner_ct.is_complex() {
+                    return self.lower_expr(inner);
+                }
                 // Unary plus applies integer promotion (C99 6.5.3.3)
                 let val = self.lower_expr(inner);
                 let inner_ty = self.infer_expr_type(inner);
@@ -450,6 +522,13 @@ impl Lowerer {
                 }
             }
             UnaryOp::Neg => {
+                // Check for complex negation
+                let inner_ct = self.expr_ctype(inner);
+                if inner_ct.is_complex() {
+                    let val = self.lower_expr(inner);
+                    let ptr = self.operand_to_value(val);
+                    return self.lower_complex_neg(ptr, &inner_ct);
+                }
                 let ty = self.get_expr_type(inner);
                 let inner_ty = self.infer_expr_type(inner);
                 let neg_ty = if ty.is_float() { ty } else { IrType::I64 };
@@ -465,6 +544,11 @@ impl Lowerer {
                 }
             }
             UnaryOp::BitNot => {
+                // GCC extension: ~ on complex type produces complex conjugate
+                let inner_ct = self.expr_ctype(inner);
+                if inner_ct.is_complex() {
+                    return self.lower_complex_conj(inner);
+                }
                 let inner_ty = self.infer_expr_type(inner);
                 let val = self.lower_expr(inner);
                 let dest = self.fresh_value();
@@ -503,6 +587,8 @@ impl Lowerer {
                 Operand::Value(dest)
             }
             UnaryOp::PreInc | UnaryOp::PreDec => self.lower_pre_inc_dec(inner, op),
+            UnaryOp::RealPart => self.lower_complex_real_part(inner),
+            UnaryOp::ImagPart => self.lower_complex_imag_part(inner),
         }
     }
 
@@ -511,6 +597,12 @@ impl Lowerer {
     // -----------------------------------------------------------------------
 
     fn lower_assign(&mut self, lhs: &Expr, rhs: &Expr) -> Operand {
+        // Complex assignment: copy real/imag parts
+        let lhs_ct = self.expr_ctype(lhs);
+        if lhs_ct.is_complex() {
+            return self.lower_complex_assign(lhs, rhs, &lhs_ct);
+        }
+
         if self.expr_is_struct_value(lhs) {
             return self.lower_struct_assign(lhs, rhs);
         }
@@ -902,20 +994,33 @@ impl Lowerer {
                     BuiltinIntrinsic::Bswap => self.lower_bswap_intrinsic(name, args),
                     BuiltinIntrinsic::Popcount => self.lower_unary_intrinsic(name, args, IrUnaryOp::Popcount),
                     BuiltinIntrinsic::Parity => self.lower_parity_intrinsic(name, args),
-                    _ => {
-                        let cleaned_name = name.strip_prefix("__builtin_").unwrap_or(name).to_string();
-                        let arg_types: Vec<IrType> = args.iter().map(|a| self.get_expr_type(a)).collect();
-                        let arg_vals: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                        let dest = self.fresh_value();
-                        let variadic = self.func_meta.variadic.contains(cleaned_name.as_str());
-                        let n_fixed = if variadic {
-                            self.func_meta.param_types.get(cleaned_name.as_str()).map(|p| p.len()).unwrap_or(arg_vals.len())
-                        } else { arg_vals.len() };
-                        self.emit(Instruction::Call {
-                            dest: Some(dest), func: cleaned_name,
-                            args: arg_vals, arg_types, return_type: IrType::I64, is_variadic: variadic, num_fixed_args: n_fixed,
-                        });
-                        Some(Operand::Value(dest))
+                    BuiltinIntrinsic::ComplexReal => {
+                        // creal/crealf/creall: extract real part of complex argument
+                        if !args.is_empty() {
+                            Some(self.lower_complex_real_part(&args[0]))
+                        } else {
+                            Some(Operand::Const(IrConst::F64(0.0)))
+                        }
+                    }
+                    BuiltinIntrinsic::ComplexImag => {
+                        // cimag/cimagf/cimagl: extract imaginary part of complex argument
+                        if !args.is_empty() {
+                            Some(self.lower_complex_imag_part(&args[0]))
+                        } else {
+                            Some(Operand::Const(IrConst::F64(0.0)))
+                        }
+                    }
+                    BuiltinIntrinsic::ComplexConj => {
+                        // conj/conjf/conjl: negate imaginary part
+                        if !args.is_empty() {
+                            Some(self.lower_complex_conj(&args[0]))
+                        } else {
+                            Some(Operand::Const(IrConst::F64(0.0)))
+                        }
+                    }
+                    BuiltinIntrinsic::Fence => {
+                        // __sync_synchronize: emit a fence/barrier (no-op for now)
+                        Some(Operand::Const(IrConst::I64(0)))
                     }
                 }
             }
@@ -1650,6 +1755,41 @@ impl Lowerer {
     // -----------------------------------------------------------------------
 
     fn lower_cast(&mut self, target_type: &TypeSpecifier, inner: &Expr) -> Operand {
+        let target_resolved = self.resolve_type_spec(target_type);
+        let target_ctype = self.type_spec_to_ctype(&target_resolved);
+        let inner_ctype = self.expr_ctype(inner);
+
+        // Handle complex type casts
+        if target_ctype.is_complex() && !inner_ctype.is_complex() {
+            // Cast real to complex: (_Complex double)x -> {x, 0}
+            let val = self.lower_expr(inner);
+            return self.real_to_complex(val, &inner_ctype, &target_ctype);
+        }
+        if target_ctype.is_complex() && inner_ctype.is_complex() {
+            // Cast complex to complex: (_Complex float)z where z is _Complex double
+            if target_ctype == inner_ctype {
+                return self.lower_expr(inner);
+            }
+            let val = self.lower_expr(inner);
+            let ptr = self.operand_to_value(val);
+            return self.complex_to_complex(ptr, &inner_ctype, &target_ctype);
+        }
+        if !target_ctype.is_complex() && inner_ctype.is_complex() {
+            // Cast complex to real: (double)z -> extract real part
+            let val = self.lower_expr(inner);
+            let ptr = self.operand_to_value(val);
+            let real = self.load_complex_real(ptr, &inner_ctype);
+            // May need to cast the real part to the target type
+            let comp_ty = Self::complex_component_ir_type(&inner_ctype);
+            let to_ty = self.type_spec_to_ir(target_type);
+            if comp_ty != to_ty {
+                let dest = self.fresh_value();
+                self.emit(Instruction::Cast { dest, src: real, from_ty: comp_ty, to_ty });
+                return Operand::Value(dest);
+            }
+            return real;
+        }
+
         let src = self.lower_expr(inner);
         let mut from_ty = self.get_expr_type(inner);
         let to_ty = self.type_spec_to_ir(target_type);
@@ -1986,6 +2126,11 @@ impl Lowerer {
                 if matches!(pointee.as_ref(), CType::Struct(_) | CType::Union(_)) {
                     return self.lower_expr(inner);
                 }
+                // Dereferencing a pointer-to-complex: return the address (like struct deref).
+                // Complex values are aggregates passed by pointer, so *ptr just yields the address.
+                if pointee.is_complex() {
+                    return self.lower_expr(inner);
+                }
             }
         }
 
@@ -2007,6 +2152,15 @@ impl Lowerer {
         if self.expr_is_struct_value(expr) {
             let addr = self.compute_array_element_addr(base, index);
             return Operand::Value(addr);
+        }
+        // Complex array elements: return address (like structs), since complex values
+        // are multi-byte aggregates accessed via pointer
+        {
+            let elem_ct = self.expr_ctype(expr);
+            if elem_ct.is_complex() {
+                let addr = self.compute_array_element_addr(base, index);
+                return Operand::Value(addr);
+            }
         }
         // Compute element address and load
         let elem_ty = self.get_expr_type(expr);
@@ -2327,6 +2481,41 @@ impl Lowerer {
     // -----------------------------------------------------------------------
 
     pub(super) fn lower_compound_assign(&mut self, op: &BinOp, lhs: &Expr, rhs: &Expr) -> Operand {
+        // Complex compound assignment (z += w, z -= w, z *= w, z /= w)
+        let lhs_ct = self.expr_ctype(lhs);
+        if lhs_ct.is_complex() && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) {
+            let rhs_ct = self.expr_ctype(rhs);
+            let result_ct = self.common_complex_type(&lhs_ct, &rhs_ct);
+
+            // Get LHS pointer (the complex variable address)
+            let lhs_ptr = self.lower_complex_lvalue(lhs);
+
+            // Lower and convert RHS to complex
+            let rhs_val = self.lower_expr(rhs);
+            let rhs_complex = self.convert_to_complex(rhs_val, &rhs_ct, &result_ct);
+            let rhs_ptr = self.operand_to_value(rhs_complex);
+
+            // Perform the operation
+            let result = match op {
+                BinOp::Add => self.lower_complex_add(lhs_ptr, rhs_ptr, &result_ct),
+                BinOp::Sub => self.lower_complex_sub(lhs_ptr, rhs_ptr, &result_ct),
+                BinOp::Mul => self.lower_complex_mul(lhs_ptr, rhs_ptr, &result_ct),
+                BinOp::Div => self.lower_complex_div(lhs_ptr, rhs_ptr, &result_ct),
+                _ => unreachable!(),
+            };
+
+            // Store result back into LHS
+            let result_ptr = self.operand_to_value(result);
+            let comp_size = Self::complex_component_size(&result_ct);
+            self.emit(Instruction::Memcpy {
+                dest: lhs_ptr,
+                src: result_ptr,
+                size: comp_size * 2,
+            });
+
+            return Operand::Value(lhs_ptr);
+        }
+
         // Check for bitfield compound assignment
         if let Some(result) = self.try_lower_bitfield_compound_assign(op, lhs, rhs) {
             return result;

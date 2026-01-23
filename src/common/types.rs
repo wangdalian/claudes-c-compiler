@@ -16,6 +16,12 @@ pub enum CType {
     Float,
     Double,
     LongDouble,
+    /// C99 _Complex float: two f32 values (real, imag)
+    ComplexFloat,
+    /// C99 _Complex double: two f64 values (real, imag)
+    ComplexDouble,
+    /// C99 _Complex long double: two f128 values (real, imag) - uses F128 storage per component
+    ComplexLongDouble,
     Pointer(Box<CType>),
     Array(Box<CType>, Option<usize>),
     Function(Box<FunctionType>),
@@ -328,6 +334,9 @@ impl CType {
             CType::Float => 4,
             CType::Double => 8,
             CType::LongDouble => 16,
+            CType::ComplexFloat => 8,     // 2 * sizeof(float)
+            CType::ComplexDouble => 16,   // 2 * sizeof(double)
+            CType::ComplexLongDouble => 32, // 2 * sizeof(long double) = 2 * 16
             CType::Pointer(_) => 8,
             CType::Array(elem, Some(n)) => elem.size() * n,
             CType::Array(_, None) => 8, // incomplete array treated as pointer
@@ -356,6 +365,9 @@ impl CType {
             CType::Float => 4,
             CType::Double => 8,
             CType::LongDouble => 16,
+            CType::ComplexFloat => 4,       // align of float component
+            CType::ComplexDouble => 8,      // align of double component
+            CType::ComplexLongDouble => 16, // align of long double (F128) component
             CType::Pointer(_) => 8,
             CType::Array(elem, _) => elem.align(),
             CType::Function(_) => 8,
@@ -374,6 +386,41 @@ impl CType {
 
     pub fn is_signed(&self) -> bool {
         matches!(self, CType::Char | CType::Short | CType::Int | CType::Long | CType::LongLong)
+    }
+
+    /// Whether this is a complex type (_Complex float/double/long double).
+    pub fn is_complex(&self) -> bool {
+        matches!(self, CType::ComplexFloat | CType::ComplexDouble | CType::ComplexLongDouble)
+    }
+
+    /// Whether this is a floating-point type (float, double, long double).
+    pub fn is_floating(&self) -> bool {
+        matches!(self, CType::Float | CType::Double | CType::LongDouble)
+    }
+
+    /// Whether this is an arithmetic type (integer, floating, or complex).
+    pub fn is_arithmetic(&self) -> bool {
+        self.is_integer() || self.is_floating() || self.is_complex()
+    }
+
+    /// Get the component type for a complex type (e.g., ComplexFloat -> Float).
+    pub fn complex_component_type(&self) -> CType {
+        match self {
+            CType::ComplexFloat => CType::Float,
+            CType::ComplexDouble => CType::Double,
+            CType::ComplexLongDouble => CType::LongDouble,
+            _ => self.clone(), // not complex, return self
+        }
+    }
+
+    /// Get the complex type for a given real component type.
+    pub fn to_complex(&self) -> CType {
+        match self {
+            CType::Float => CType::ComplexFloat,
+            CType::Double => CType::ComplexDouble,
+            CType::LongDouble => CType::ComplexLongDouble,
+            _ => CType::ComplexDouble, // default: promote to complex double
+        }
     }
 
 }
@@ -489,6 +536,8 @@ impl IrType {
             CType::Float => IrType::F32,
             CType::Double => IrType::F64,
             CType::LongDouble => IrType::F128,
+            // Complex types are handled as aggregate (pointer to stack slot)
+            CType::ComplexFloat | CType::ComplexDouble | CType::ComplexLongDouble => IrType::Ptr,
             CType::Pointer(_) | CType::Array(_, _) | CType::Function(_) => IrType::Ptr,
             CType::Struct(_) | CType::Union(_) => IrType::Ptr, // TODO: handle aggregates properly
         }

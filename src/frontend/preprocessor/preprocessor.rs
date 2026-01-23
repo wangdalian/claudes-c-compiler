@@ -952,6 +952,30 @@ impl Preprocessor {
                 // Define true/false macros only when stdbool.h is explicitly included
                 crate::frontend::preprocessor::builtin_macros::define_stdbool_true_false(&mut self.macros);
             }
+            "complex.h" => {
+                // C99 <complex.h> support
+                // Define standard complex macros
+                self.macros.define(parse_define("complex _Complex").unwrap());
+                self.macros.define(parse_define("_Complex_I (__extension__ 1.0fi)").unwrap());
+                self.macros.define(parse_define("I _Complex_I").unwrap());
+                self.macros.define(parse_define("__STDC_IEC_559_COMPLEX__ 1").unwrap());
+                // Declare complex math functions
+                self.pending_injections.push(concat!(
+                    "double creal(double _Complex __z);\n",
+                    "float crealf(float _Complex __z);\n",
+                    "long double creall(long double _Complex __z);\n",
+                    "double cimag(double _Complex __z);\n",
+                    "float cimagf(float _Complex __z);\n",
+                    "long double cimagl(long double _Complex __z);\n",
+                    "double _Complex conj(double _Complex __z);\n",
+                    "float _Complex conjf(float _Complex __z);\n",
+                    "long double _Complex conjl(long double _Complex __z);\n",
+                    "double cabs(double _Complex __z);\n",
+                    "float cabsf(float _Complex __z);\n",
+                    "double carg(double _Complex __z);\n",
+                    "float cargf(float _Complex __z);\n",
+                ).to_string());
+            }
             _ => {}
         }
     }

@@ -11,6 +11,12 @@ pub enum TokenKind {
     FloatLiteral(f64),             // no suffix (double)
     FloatLiteralF32(f64),          // f/F suffix (float, 32-bit)
     FloatLiteralLongDouble(f64),   // l/L suffix (long double)
+    /// Imaginary double literal (e.g. 1.0i) - GCC extension
+    ImaginaryLiteral(f64),
+    /// Imaginary float literal (e.g. 1.0fi or 1.0if) - GCC extension
+    ImaginaryLiteralF32(f64),
+    /// Imaginary long double literal (e.g. 1.0Li or 1.0il) - GCC extension
+    ImaginaryLiteralLongDouble(f64),
     StringLiteral(String),
     CharLiteral(char),
 
@@ -71,6 +77,10 @@ pub enum TokenKind {
     Extension,
     Builtin,         // __builtin_va_list (used as type name)
     BuiltinVaArg,    // __builtin_va_arg(expr, type) - special syntax
+    /// __real__ - extract real part of complex number (GCC extension)
+    RealPart,
+    /// __imag__ - extract imaginary part of complex number (GCC extension)
+    ImagPart,
 
     // Punctuation
     LParen,     // (
@@ -205,6 +215,8 @@ impl TokenKind {
             "__extension__" => Some(TokenKind::Extension),
             "__builtin_va_list" => Some(TokenKind::Builtin),
             "__builtin_va_arg" => Some(TokenKind::BuiltinVaArg),
+            "__real__" | "__real" => Some(TokenKind::RealPart),
+            "__imag__" | "__imag" => Some(TokenKind::ImagPart),
             // __builtin_va_start, __builtin_va_end, __builtin_va_copy remain as
             // Identifier tokens so they flow through the normal builtin call path
             _ => None,

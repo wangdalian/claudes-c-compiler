@@ -156,6 +156,10 @@ pub struct Lowerer {
     /// In the current function being lowered, the alloca holding the sret pointer
     /// (hidden first parameter). None if the function does not use sret.
     pub(super) current_sret_ptr: Option<Value>,
+    /// CType for each local variable (needed for complex number operations).
+    pub(super) var_ctypes: HashMap<String, CType>,
+    /// Return CType for known functions (needed for complex function calls).
+    pub(super) func_return_ctypes: HashMap<String, CType>,
 }
 
 impl Lowerer {
@@ -189,6 +193,8 @@ impl Lowerer {
             static_local_names: HashMap::new(),
             static_functions: HashSet::new(),
             current_sret_ptr: None,
+            var_ctypes: HashMap::new(),
+            func_return_ctypes: HashMap::new(),
         }
     }
 
@@ -257,14 +263,19 @@ impl Lowerer {
                     let ret_ctype = self.type_spec_to_ctype(&func.return_type);
                     self.func_meta.return_ctypes.insert(func.name.clone(), ret_ctype);
                 }
-                // Detect struct returns > 8 bytes that need sret (hidden pointer) convention
+                // Detect struct/complex returns > 8 bytes that need sret (hidden pointer) convention
                 {
-                    let resolved = self.resolve_type_spec(&func.return_type);
+                    let resolved = self.resolve_type_spec(&func.return_type).clone();
                     if matches!(resolved, TypeSpecifier::Struct(_, _) | TypeSpecifier::Union(_, _)) {
                         let size = self.sizeof_type(&func.return_type);
                         if size > 8 {
                             self.func_meta.sret_functions.insert(func.name.clone(), size);
                         }
+                    }
+                    // Complex types > 8 bytes also need sret
+                    if matches!(resolved, TypeSpecifier::ComplexDouble | TypeSpecifier::ComplexLongDouble) {
+                        let size = self.sizeof_type(&func.return_type);
+                        self.func_meta.sret_functions.insert(func.name.clone(), size);
                     }
                 }
                 // Collect parameter types (skip variadic portion)
@@ -329,14 +340,27 @@ impl Lowerer {
                             };
                             self.func_meta.return_ctypes.insert(declarator.name.clone(), ret_ctype);
                         }
-                        // Detect struct returns > 8 bytes that need sret
+                        // Record complex return types for expr_ctype resolution
                         if ptr_count == 0 {
                             let resolved = self.resolve_type_spec(&decl.type_spec);
+                            let ret_ct = self.type_spec_to_ctype(&resolved);
+                            if ret_ct.is_complex() {
+                                self.func_return_ctypes.insert(declarator.name.clone(), ret_ct);
+                            }
+                        }
+                        // Detect struct/complex returns > 8 bytes that need sret
+                        if ptr_count == 0 {
+                            let resolved = self.resolve_type_spec(&decl.type_spec).clone();
                             if matches!(resolved, TypeSpecifier::Struct(_, _) | TypeSpecifier::Union(_, _)) {
                                 let size = self.sizeof_type(&decl.type_spec);
                                 if size > 8 {
                                     self.func_meta.sret_functions.insert(declarator.name.clone(), size);
                                 }
+                            }
+                            // Complex types > 8 bytes also need sret
+                            if matches!(resolved, TypeSpecifier::ComplexDouble | TypeSpecifier::ComplexLongDouble) {
+                                let size = self.sizeof_type(&decl.type_spec);
+                                self.func_meta.sret_functions.insert(declarator.name.clone(), size);
                             }
                         }
                         let param_tys: Vec<IrType> = params.iter().map(|p| {
@@ -425,6 +449,12 @@ impl Lowerer {
         self.current_return_type = return_type;
         self.current_return_is_bool = matches!(self.resolve_type_spec(&func.return_type), TypeSpecifier::Bool);
 
+        // Record return CType for complex-returning functions
+        let ret_ctype = self.type_spec_to_ctype(&self.resolve_type_spec(&func.return_type).clone());
+        if ret_ctype.is_complex() {
+            self.func_return_ctypes.insert(func.name.clone(), ret_ctype);
+        }
+
         // Check if this function uses sret (returns struct > 8 bytes via hidden pointer)
         let uses_sret = self.func_meta.sret_functions.contains_key(&func.name);
 
@@ -461,6 +491,8 @@ impl Lowerer {
             struct_size: usize,
             struct_layout: Option<StructLayout>,
             param_name: String,
+            is_complex: bool,
+            c_type: Option<CType>,
         }
         let mut struct_params: Vec<StructParamInfo> = Vec::new();
 
@@ -487,6 +519,13 @@ impl Lowerer {
                     false
                 };
 
+                let is_complex_param = if let Some(orig_param) = func.params.get(orig_idx) {
+                    let resolved = self.resolve_type_spec(&orig_param.type_spec);
+                    matches!(resolved, TypeSpecifier::ComplexFloat | TypeSpecifier::ComplexDouble | TypeSpecifier::ComplexLongDouble)
+                } else {
+                    false
+                };
+
                 // Emit the alloca that receives the argument value from the register
                 let alloca = self.fresh_value();
                 let ty = param.ty;
@@ -501,16 +540,33 @@ impl Lowerer {
                     size: param_size,
                 });
 
-                if is_struct_param {
-                    // Record that we need to create a struct copy for this param
-                    let layout = func.params.get(orig_idx)
-                        .and_then(|p| self.get_struct_layout_for_type(&p.type_spec));
-                    let struct_size = layout.as_ref().map_or(8, |l| l.size);
+                if is_struct_param || is_complex_param {
+                    // Record that we need to create a struct/complex copy for this param
+                    let layout = if is_struct_param {
+                        func.params.get(orig_idx)
+                            .and_then(|p| self.get_struct_layout_for_type(&p.type_spec))
+                    } else {
+                        None
+                    };
+                    let struct_size = if is_complex_param {
+                        func.params.get(orig_idx)
+                            .map(|p| self.sizeof_type(&p.type_spec))
+                            .unwrap_or(16)
+                    } else {
+                        layout.as_ref().map_or(8, |l| l.size)
+                    };
+                    let param_ctype = if is_complex_param {
+                        func.params.get(orig_idx).map(|p| self.type_spec_to_ctype(&p.type_spec))
+                    } else {
+                        None
+                    };
                     struct_params.push(StructParamInfo {
                         ptr_alloca: alloca,
                         struct_size,
                         struct_layout: layout,
                         param_name: param.name.clone(),
+                        is_complex: is_complex_param,
+                        c_type: param_ctype,
                     });
                 } else {
                     // Normal parameter: register as local immediately
@@ -599,7 +655,7 @@ impl Lowerer {
                 size: sp.struct_size,
             });
 
-            // Register the struct alloca as the local variable
+            // Register the struct/complex alloca as the local variable
             self.locals.insert(sp.param_name, LocalInfo {
                 alloca: struct_alloca,
                 elem_size: 0,
@@ -610,7 +666,7 @@ impl Lowerer {
                 is_struct: true,
                 alloc_size: sp.struct_size,
                 array_dim_strides: vec![],
-                c_type: None,
+                c_type: sp.c_type,
                 is_bool: false,
                 static_global_name: None,
             });
@@ -1002,6 +1058,15 @@ impl Lowerer {
                 // Try to evaluate as a global address expression (e.g., &x, func, arr, &arr[3], &s.field)
                 if let Some(addr_init) = self.eval_global_addr_expr(expr) {
                     return addr_init;
+                }
+                // Complex global initializer: try to evaluate as {real, imag} pair
+                {
+                    let resolved = self.resolve_type_spec(_type_spec).clone();
+                    if matches!(resolved, TypeSpecifier::ComplexFloat | TypeSpecifier::ComplexDouble | TypeSpecifier::ComplexLongDouble) {
+                        if let Some(init) = self.eval_complex_global_init(expr, &resolved) {
+                            return init;
+                        }
+                    }
                 }
                 // Can't evaluate - zero init as fallback
                 GlobalInit::Zero

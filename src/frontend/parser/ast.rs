@@ -110,6 +110,9 @@ pub enum TypeSpecifier {
     UnsignedLong,
     UnsignedLongLong,
     Bool,
+    ComplexFloat,
+    ComplexDouble,
+    ComplexLongDouble,
     Struct(Option<String>, Option<Vec<StructFieldDecl>>),
     Union(Option<String>, Option<Vec<StructFieldDecl>>),
     Enum(Option<String>, Option<Vec<EnumVariant>>),
@@ -202,6 +205,12 @@ pub enum Expr {
     FloatLiteral(f64, Span),            // double literal (no suffix)
     FloatLiteralF32(f64, Span),         // float literal (f/F suffix)
     FloatLiteralLongDouble(f64, Span),  // long double literal (l/L suffix)
+    /// Imaginary literal: value * I (double imaginary, e.g. 1.0i)
+    ImaginaryLiteral(f64, Span),
+    /// Float imaginary literal (e.g. 1.0fi)
+    ImaginaryLiteralF32(f64, Span),
+    /// Long double imaginary literal (e.g. 1.0Li)
+    ImaginaryLiteralLongDouble(f64, Span),
     StringLiteral(String, Span),
     CharLiteral(char, Span),
     Identifier(String, Span),
@@ -285,6 +294,10 @@ pub enum UnaryOp {
     LogicalNot,
     PreInc,
     PreDec,
+    /// __real__ expr - extract real part of complex number (GCC extension)
+    RealPart,
+    /// __imag__ expr - extract imaginary part of complex number (GCC extension)
+    ImagPart,
 }
 
 /// Postfix operators.
@@ -300,6 +313,7 @@ impl Expr {
             Expr::IntLiteral(_, s) | Expr::UIntLiteral(_, s)
             | Expr::LongLiteral(_, s) | Expr::ULongLiteral(_, s)
             | Expr::FloatLiteral(_, s) | Expr::FloatLiteralF32(_, s) | Expr::FloatLiteralLongDouble(_, s)
+            | Expr::ImaginaryLiteral(_, s) | Expr::ImaginaryLiteralF32(_, s) | Expr::ImaginaryLiteralLongDouble(_, s)
             | Expr::StringLiteral(_, s)
             | Expr::CharLiteral(_, s) | Expr::Identifier(_, s)
             | Expr::BinaryOp(_, _, _, s) | Expr::UnaryOp(_, _, s) | Expr::PostfixOp(_, _, s)

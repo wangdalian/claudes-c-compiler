@@ -910,13 +910,26 @@ impl Parser {
         } else if has_bool {
             TypeSpecifier::Bool
         } else if has_float {
-            TypeSpecifier::Float
+            if has_complex {
+                TypeSpecifier::ComplexFloat
+            } else {
+                TypeSpecifier::Float
+            }
         } else if has_double {
-            if long_count > 0 {
+            if has_complex {
+                if long_count > 0 {
+                    TypeSpecifier::ComplexLongDouble
+                } else {
+                    TypeSpecifier::ComplexDouble
+                }
+            } else if long_count > 0 {
                 TypeSpecifier::LongDouble
             } else {
                 TypeSpecifier::Double
             }
+        } else if has_complex && !has_struct && !has_union && !has_enum {
+            // standalone _Complex (without float/double) defaults to _Complex double
+            TypeSpecifier::ComplexDouble
         } else if has_struct {
             self.skip_gcc_extensions();
             let name = if let TokenKind::Identifier(n) = self.peek().clone() {
@@ -2478,6 +2491,18 @@ impl Parser {
                 // If not followed by identifier, fall through to parse as expression
                 self.parse_postfix_expr()
             }
+            TokenKind::RealPart => {
+                let span = self.peek_span();
+                self.advance();
+                let expr = self.parse_cast_expr();
+                Expr::UnaryOp(UnaryOp::RealPart, Box::new(expr), span)
+            }
+            TokenKind::ImagPart => {
+                let span = self.peek_span();
+                self.advance();
+                let expr = self.parse_cast_expr();
+                Expr::UnaryOp(UnaryOp::ImagPart, Box::new(expr), span)
+            }
             TokenKind::PlusPlus => {
                 let span = self.peek_span();
                 self.advance();
@@ -2731,6 +2756,21 @@ impl Parser {
                 let span = self.peek_span();
                 self.advance();
                 Expr::FloatLiteralLongDouble(val, span)
+            }
+            TokenKind::ImaginaryLiteral(val) => {
+                let span = self.peek_span();
+                self.advance();
+                Expr::ImaginaryLiteral(val, span)
+            }
+            TokenKind::ImaginaryLiteralF32(val) => {
+                let span = self.peek_span();
+                self.advance();
+                Expr::ImaginaryLiteralF32(val, span)
+            }
+            TokenKind::ImaginaryLiteralLongDouble(val) => {
+                let span = self.peek_span();
+                self.advance();
+                Expr::ImaginaryLiteralLongDouble(val, span)
             }
             TokenKind::StringLiteral(ref s) => {
                 let mut result = s.clone();

@@ -131,6 +131,23 @@ static BUILTIN_MAP: LazyLock<HashMap<&'static str, BuiltinInfo>> = LazyLock::new
     // Atomics (map to libc atomic helpers for now)
     m.insert("__sync_synchronize", BuiltinInfo::intrinsic(BuiltinIntrinsic::Fence));
 
+    // Complex number functions (C99 <complex.h>)
+    m.insert("creal", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexReal));
+    m.insert("crealf", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexReal));
+    m.insert("creall", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexReal));
+    m.insert("cimag", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexImag));
+    m.insert("cimagf", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexImag));
+    m.insert("cimagl", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexImag));
+    m.insert("__builtin_creal", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexReal));
+    m.insert("__builtin_crealf", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexReal));
+    m.insert("__builtin_creall", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexReal));
+    m.insert("__builtin_cimag", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexImag));
+    m.insert("__builtin_cimagf", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexImag));
+    m.insert("__builtin_cimagl", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexImag));
+    m.insert("conj", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexConj));
+    m.insert("conjf", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexConj));
+    m.insert("conjl", BuiltinInfo::intrinsic(BuiltinIntrinsic::ComplexConj));
+
     m
 });
 
@@ -165,6 +182,12 @@ pub enum BuiltinIntrinsic {
     Fence,
     FpCompare,
     Parity,
+    /// creal/crealf/creall: extract real part of complex number
+    ComplexReal,
+    /// cimag/cimagf/cimagl: extract imaginary part of complex number
+    ComplexImag,
+    /// conj/conjf/conjl: compute complex conjugate
+    ComplexConj,
 }
 
 impl BuiltinInfo {

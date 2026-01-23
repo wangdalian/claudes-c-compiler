@@ -241,6 +241,12 @@ impl Lowerer {
                 });
             let is_struct = struct_layout.is_some() && !is_pointer && !is_array;
 
+            // Detect complex type variables
+            let is_complex = !is_pointer && !is_array && matches!(
+                self.resolve_type_spec(&decl.type_spec),
+                TypeSpecifier::ComplexFloat | TypeSpecifier::ComplexDouble | TypeSpecifier::ComplexLongDouble
+            );
+
             // For struct variables, use the struct's actual size;
             // but for arrays of structs, use the full array allocation size.
             let actual_alloc_size = if let Some(ref layout) = struct_layout {
@@ -336,7 +342,7 @@ impl Lowerer {
             let alloca = self.fresh_value();
             self.emit(Instruction::Alloca {
                 dest: alloca,
-                ty: if is_array || is_struct { IrType::Ptr } else { var_ty },
+                ty: if is_array || is_struct || is_complex { IrType::Ptr } else { var_ty },
                 size: actual_alloc_size,
             });
             let pointee_type = self.compute_pointee_type(&decl.type_spec, &declarator.derived);
@@ -398,6 +404,17 @@ impl Lowerer {
                                     size: actual_alloc_size,
                                 });
                             }
+                        } else if is_complex {
+                            // Complex variable initialization: _Complex double z = expr;
+                            // The expression returns a pointer to a stack-allocated {real, imag} pair.
+                            // We memcpy from that pointer to our alloca.
+                            let val = self.lower_expr(expr);
+                            let src = self.operand_to_value(val);
+                            self.emit(Instruction::Memcpy {
+                                dest: alloca,
+                                src,
+                                size: actual_alloc_size,
+                            });
                         } else {
                             // Track const-qualified integer variable values for compile-time
                             // array size evaluation (e.g., const int len = 5000; int arr[len];)
@@ -419,7 +436,52 @@ impl Lowerer {
                         }
                     }
                     Initializer::List(items) => {
-                        if is_struct {
+                        if is_complex {
+                            // Complex initializer list: _Complex double z = {real, imag}
+                            let resolved_ts = self.resolve_type_spec(&decl.type_spec);
+                            let complex_ctype = self.type_spec_to_ctype(&resolved_ts);
+                            let comp_ty = Self::complex_component_ir_type(&complex_ctype);
+                            // Store real part (first item)
+                            if let Some(item) = items.first() {
+                                if let Initializer::Expr(expr) = &item.init {
+                                    let val = self.lower_expr(expr);
+                                    let expr_ty = self.get_expr_type(expr);
+                                    let val = self.emit_implicit_cast(val, expr_ty, comp_ty);
+                                    self.emit(Instruction::Store { val, ptr: alloca, ty: comp_ty });
+                                }
+                            } else {
+                                // Zero-init real part
+                                let zero = match comp_ty {
+                                    IrType::F32 => Operand::Const(IrConst::F32(0.0)),
+                                    _ => Operand::Const(IrConst::F64(0.0)),
+                                };
+                                self.emit(Instruction::Store { val: zero, ptr: alloca, ty: comp_ty });
+                            }
+                            // Store imag part (second item) at offset
+                            let comp_size = Self::complex_component_size(&complex_ctype);
+                            let imag_ptr = self.fresh_value();
+                            self.emit(Instruction::GetElementPtr {
+                                dest: imag_ptr,
+                                base: alloca,
+                                offset: Operand::Const(IrConst::I64(comp_size as i64)),
+                                ty: IrType::I8,
+                            });
+                            if let Some(item) = items.get(1) {
+                                if let Initializer::Expr(expr) = &item.init {
+                                    let val = self.lower_expr(expr);
+                                    let expr_ty = self.get_expr_type(expr);
+                                    let val = self.emit_implicit_cast(val, expr_ty, comp_ty);
+                                    self.emit(Instruction::Store { val, ptr: imag_ptr, ty: comp_ty });
+                                }
+                            } else {
+                                // Zero-init imag part if not provided
+                                let zero = match comp_ty {
+                                    IrType::F32 => Operand::Const(IrConst::F32(0.0)),
+                                    _ => Operand::Const(IrConst::F64(0.0)),
+                                };
+                                self.emit(Instruction::Store { val: zero, ptr: imag_ptr, ty: comp_ty });
+                            }
+                        } else if is_struct {
                             // Initialize struct fields from initializer list
                             // Supports designated initializers and nested struct init
                             if let Some(layout) = self.locals.get(&declarator.name).and_then(|l| l.struct_layout.clone()) {
@@ -801,6 +863,17 @@ impl Lowerer {
                                 // Return the sret pointer
                                 return Operand::Value(sret_ptr);
                             }
+                        }
+                        // For complex returns with sret, copy complex data to sret pointer
+                        let expr_ct = self.expr_ctype(e);
+                        if expr_ct.is_complex() {
+                            let complex_size = expr_ct.size();
+                            let val = self.lower_expr(e);
+                            let src_addr = self.operand_to_value(val);
+                            let sret_ptr = self.fresh_value();
+                            self.emit(Instruction::Load { dest: sret_ptr, ptr: sret_alloca, ty: IrType::Ptr });
+                            self.emit(Instruction::Memcpy { dest: sret_ptr, src: src_addr, size: complex_size });
+                            return Operand::Value(sret_ptr);
                         }
                     }
                     // For small struct returns (<= 8 bytes), load the struct data

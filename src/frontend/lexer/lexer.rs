@@ -203,7 +203,11 @@ impl Lexer {
             // Regular hex integer
             let hex_str = std::str::from_utf8(&self.input[hex_start..self.pos]).unwrap_or("0");
             let value = u64::from_str_radix(hex_str, 16).unwrap_or(0);
-            let (is_unsigned, is_long) = self.parse_int_suffix();
+            let (is_unsigned, is_long, is_imaginary) = self.parse_int_suffix();
+            if is_imaginary {
+                let span = Span::new(start as u32, self.pos as u32, self.file_id);
+                return Token::new(TokenKind::ImaginaryLiteral(value as f64), span);
+            }
             return self.make_int_token(value, is_unsigned, is_long, true, start);
         }
 
@@ -218,7 +222,11 @@ impl Lexer {
             }
             let bin_str = std::str::from_utf8(&self.input[bin_start..self.pos]).unwrap_or("0");
             let value = u64::from_str_radix(bin_str, 2).unwrap_or(0);
-            let (is_unsigned, is_long) = self.parse_int_suffix();
+            let (is_unsigned, is_long, is_imaginary) = self.parse_int_suffix();
+            if is_imaginary {
+                let span = Span::new(start as u32, self.pos as u32, self.file_id);
+                return Token::new(TokenKind::ImaginaryLiteral(value as f64), span);
+            }
             return self.make_int_token(value, is_unsigned, is_long, true, start);
         }
 
@@ -244,7 +252,11 @@ impl Lexer {
                 } else {
                     let oct_str = std::str::from_utf8(&self.input[oct_start..self.pos]).unwrap_or("0");
                     let value = u64::from_str_radix(oct_str, 8).unwrap_or(0);
-                    let (is_unsigned, is_long) = self.parse_int_suffix();
+                    let (is_unsigned, is_long, is_imaginary) = self.parse_int_suffix();
+                    if is_imaginary {
+                        let span = Span::new(start as u32, self.pos as u32, self.file_id);
+                        return Token::new(TokenKind::ImaginaryLiteral(value as f64), span);
+                    }
                     return self.make_int_token(value, is_unsigned, is_long, true, start);
                 }
             }
@@ -280,52 +292,81 @@ impl Lexer {
 
         if is_float {
             // Check float suffix: f/F means float (32-bit), l/L means long double, none means double
-            // Track: 0 = double, 1 = float, 2 = long double
+            // Also track imaginary suffix 'i' (GCC extension)
+            // float_kind: 0 = double, 1 = float, 2 = long double
+            // is_imaginary: true if 'i' suffix present
+            let mut is_imaginary = false;
             let float_kind = if self.pos < self.input.len() && (self.input[self.pos] == b'f' || self.input[self.pos] == b'F') {
                 self.pos += 1;
-                // Also consume trailing 'i' for imaginary (GCC extension: 3.0fi)
+                // Consume trailing 'i' for imaginary (GCC extension: 3.0fi)
                 if self.pos < self.input.len() && self.input[self.pos] == b'i' {
                     self.pos += 1;
+                    is_imaginary = true;
                 }
                 1 // float (f32)
             } else if self.pos < self.input.len() && (self.input[self.pos] == b'l' || self.input[self.pos] == b'L') {
                 self.pos += 1;
-                // Also consume trailing 'i' for imaginary (GCC extension: 3.0Li)
+                // Consume trailing 'i' for imaginary (GCC extension: 3.0Li)
                 if self.pos < self.input.len() && self.input[self.pos] == b'i' {
                     self.pos += 1;
+                    is_imaginary = true;
                 }
                 2 // long double
             } else if self.pos < self.input.len() && self.input[self.pos] == b'i' {
                 // GCC extension: imaginary suffix 'i' (3.0i)
                 self.pos += 1;
+                is_imaginary = true;
                 // Check for additional f/F/l/L after i (e.g., 3.0if, 3.0iF)
                 if self.pos < self.input.len() && (self.input[self.pos] == b'f' || self.input[self.pos] == b'F') {
                     self.pos += 1;
+                    1 // float imaginary
                 } else if self.pos < self.input.len() && (self.input[self.pos] == b'l' || self.input[self.pos] == b'L') {
                     self.pos += 1;
+                    2 // long double imaginary
+                } else {
+                    0 // double imaginary
                 }
-                0 // double (imaginary)
             } else {
                 0 // double
             };
+            // Also consume trailing 'j' suffix (C99/GCC alternative for imaginary)
+            if !is_imaginary && self.pos < self.input.len() && self.input[self.pos] == b'j' {
+                self.pos += 1;
+                is_imaginary = true;
+            }
             let value: f64 = text.parse().unwrap_or(0.0);
             let span = Span::new(start as u32, self.pos as u32, self.file_id);
-            match float_kind {
-                1 => Token::new(TokenKind::FloatLiteralF32(value as f64), span),
-                2 => Token::new(TokenKind::FloatLiteralLongDouble(value), span),
-                _ => Token::new(TokenKind::FloatLiteral(value), span),
+            if is_imaginary {
+                match float_kind {
+                    1 => Token::new(TokenKind::ImaginaryLiteralF32(value), span),
+                    2 => Token::new(TokenKind::ImaginaryLiteralLongDouble(value), span),
+                    _ => Token::new(TokenKind::ImaginaryLiteral(value), span),
+                }
+            } else {
+                match float_kind {
+                    1 => Token::new(TokenKind::FloatLiteralF32(value as f64), span),
+                    2 => Token::new(TokenKind::FloatLiteralLongDouble(value), span),
+                    _ => Token::new(TokenKind::FloatLiteral(value), span),
+                }
             }
         } else {
             let uvalue: u64 = text.parse().unwrap_or(0);
-            let (is_unsigned, is_long) = self.parse_int_suffix();
-            self.make_int_token(uvalue, is_unsigned, is_long, false, start)
+            let (is_unsigned, is_long, is_imaginary) = self.parse_int_suffix();
+            if is_imaginary {
+                // Integer imaginary literal (e.g., 5i) becomes double imaginary
+                let span = Span::new(start as u32, self.pos as u32, self.file_id);
+                Token::new(TokenKind::ImaginaryLiteral(uvalue as f64), span)
+            } else {
+                self.make_int_token(uvalue, is_unsigned, is_long, false, start)
+            }
         }
     }
 
-    /// Parse integer suffix and return (is_unsigned, is_long).
+    /// Parse integer suffix and return (is_unsigned, is_long, is_imaginary).
     /// is_long is true for l/L or ll/LL suffixes.
-    /// Also consumes trailing 'i' suffix for GCC imaginary integer literals (e.g., 5i).
-    fn parse_int_suffix(&mut self) -> (bool, bool) {
+    /// is_imaginary is true for trailing 'i' suffix (GCC extension: 5i).
+    fn parse_int_suffix(&mut self) -> (bool, bool, bool) {
+        let mut is_imaginary = false;
         // First check for standalone 'i' imaginary suffix (GCC extension: 5i)
         // Must check this before the main loop since 'i' alone means imaginary, not a regular suffix
         if self.pos < self.input.len() && self.input[self.pos] == b'i' {
@@ -333,7 +374,7 @@ impl Lexer {
             let next = if self.pos + 1 < self.input.len() { self.input[self.pos + 1] } else { 0 };
             if !next.is_ascii_alphanumeric() && next != b'_' {
                 self.pos += 1; // consume 'i' as imaginary suffix
-                return (false, false);
+                return (false, false, true);
             }
         }
 
@@ -354,14 +395,15 @@ impl Lexer {
                 break;
             }
         }
-        // Consume trailing 'i' for GCC imaginary suffix (e.g., 5li, 5ui, 5ULi)
-        if self.pos < self.input.len() && self.input[self.pos] == b'i' {
+        // Consume trailing 'i' or 'j' for GCC imaginary suffix (e.g., 5li, 5ui, 5ULi)
+        if self.pos < self.input.len() && (self.input[self.pos] == b'i' || self.input[self.pos] == b'j') {
             let next = if self.pos + 1 < self.input.len() { self.input[self.pos + 1] } else { 0 };
             if !next.is_ascii_alphanumeric() && next != b'_' {
                 self.pos += 1;
+                is_imaginary = true;
             }
         }
-        (is_unsigned, is_long)
+        (is_unsigned, is_long, is_imaginary)
     }
 
     /// Create the appropriate token kind based on integer value, suffix, and base info.

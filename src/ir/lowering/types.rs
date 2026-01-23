@@ -823,10 +823,26 @@ impl Lowerer {
             Expr::FloatLiteral(_, _) => return IrType::F64,
             Expr::FloatLiteralF32(_, _) => return IrType::F32,
             Expr::FloatLiteralLongDouble(_, _) => return IrType::F128, // long double: 16-byte ABI
+            Expr::ImaginaryLiteral(_, _) | Expr::ImaginaryLiteralF32(_, _)
+            | Expr::ImaginaryLiteralLongDouble(_, _) => return IrType::Ptr, // complex is aggregate
             Expr::StringLiteral(_, _) => return IrType::Ptr,
             Expr::Cast(ref target_type, _, _) => return self.type_spec_to_ir(target_type),
+            Expr::UnaryOp(UnaryOp::RealPart, inner, _) | Expr::UnaryOp(UnaryOp::ImagPart, inner, _) => {
+                // __real__ and __imag__ extract a component from complex values
+                let inner_ct = self.expr_ctype(inner);
+                if inner_ct.is_complex() {
+                    return Self::complex_component_ir_type(&inner_ct);
+                }
+                // For non-complex: __real__ returns the value, __imag__ returns 0
+                return self.get_expr_type(inner);
+            }
             Expr::UnaryOp(UnaryOp::Neg, inner, _) | Expr::UnaryOp(UnaryOp::Plus, inner, _)
             | Expr::UnaryOp(UnaryOp::BitNot, inner, _) => {
+                // Check for complex types
+                let inner_ct = self.expr_ctype(inner);
+                if inner_ct.is_complex() {
+                    return IrType::Ptr; // complex is aggregate type
+                }
                 // C99 6.3.1.1: Integer promotion - result type is at least int
                 let inner_ty = self.get_expr_type(inner);
                 if inner_ty.is_float() {
@@ -844,6 +860,17 @@ impl Lowerer {
                 return self.get_expr_type(inner);
             }
             Expr::BinaryOp(op, lhs, rhs, _) => {
+                // Check for complex operands - complex arithmetic returns Ptr
+                match op {
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                        let lct = self.expr_ctype(lhs);
+                        let rct = self.expr_ctype(rhs);
+                        if lct.is_complex() || rct.is_complex() {
+                            return IrType::Ptr; // complex is aggregate
+                        }
+                    }
+                    _ => {}
+                }
                 match op {
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
                     | BinOp::LogicalAnd | BinOp::LogicalOr => return IrType::I64,
@@ -1287,6 +1314,8 @@ impl Lowerer {
             TypeSpecifier::Float => IrType::F32,
             TypeSpecifier::Double => IrType::F64,
             TypeSpecifier::LongDouble => IrType::F128,
+            // Complex types are handled as aggregate (pointer to stack slot)
+            TypeSpecifier::ComplexFloat | TypeSpecifier::ComplexDouble | TypeSpecifier::ComplexLongDouble => IrType::Ptr,
             TypeSpecifier::Pointer(_) => IrType::Ptr,
             TypeSpecifier::Array(_, _) => IrType::Ptr,
             TypeSpecifier::Struct(_, _) | TypeSpecifier::Union(_, _) => IrType::Ptr,
@@ -1312,6 +1341,9 @@ impl Lowerer {
             TypeSpecifier::Float => Some((4, 4)),
             TypeSpecifier::Double => Some((8, 8)),
             TypeSpecifier::LongDouble => Some((16, 16)),
+            TypeSpecifier::ComplexFloat => Some((8, 4)),
+            TypeSpecifier::ComplexDouble => Some((16, 8)),
+            TypeSpecifier::ComplexLongDouble => Some((32, 16)),
             TypeSpecifier::Pointer(_) => Some((8, 8)),
             TypeSpecifier::Enum(_, _) => Some((4, 4)),
             TypeSpecifier::TypedefName(_) => Some((8, 8)), // fallback for unresolved typedefs
@@ -1636,6 +1668,11 @@ impl Lowerer {
                         self.sizeof_expr(inner).max(4) // integer promotion
                     }
                     UnaryOp::PreInc | UnaryOp::PreDec => self.sizeof_expr(inner),
+                    UnaryOp::RealPart | UnaryOp::ImagPart => {
+                        // Result is the component type size
+                        let inner_ctype = self.expr_ctype(inner);
+                        inner_ctype.complex_component_type().size()
+                    }
                 }
             }
 
@@ -1939,6 +1976,9 @@ impl Lowerer {
             TypeSpecifier::Float => CType::Float,
             TypeSpecifier::Double => CType::Double,
             TypeSpecifier::LongDouble => CType::LongDouble,
+            TypeSpecifier::ComplexFloat => CType::ComplexFloat,
+            TypeSpecifier::ComplexDouble => CType::ComplexDouble,
+            TypeSpecifier::ComplexLongDouble => CType::ComplexLongDouble,
             TypeSpecifier::Pointer(inner) => CType::Pointer(Box::new(self.type_spec_to_ctype(inner))),
             TypeSpecifier::Array(elem, size_expr) => {
                 let elem_ctype = self.type_spec_to_ctype(elem);

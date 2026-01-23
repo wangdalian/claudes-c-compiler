@@ -432,6 +432,9 @@ impl SemanticAnalyzer {
             | Expr::FloatLiteral(_, _)
             | Expr::FloatLiteralF32(_, _)
             | Expr::FloatLiteralLongDouble(_, _)
+            | Expr::ImaginaryLiteral(_, _)
+            | Expr::ImaginaryLiteralF32(_, _)
+            | Expr::ImaginaryLiteralLongDouble(_, _)
             | Expr::StringLiteral(_, _)
             | Expr::CharLiteral(_, _) => {}
             // Label address (&&label) - just a compile-time address
@@ -474,6 +477,9 @@ impl SemanticAnalyzer {
             TypeSpecifier::UnsignedLong => CType::ULong,
             TypeSpecifier::UnsignedLongLong => CType::ULongLong,
             TypeSpecifier::Bool => CType::Bool,
+            TypeSpecifier::ComplexFloat => CType::ComplexFloat,
+            TypeSpecifier::ComplexDouble => CType::ComplexDouble,
+            TypeSpecifier::ComplexLongDouble => CType::ComplexLongDouble,
             TypeSpecifier::Pointer(inner) => {
                 let inner_type = self.type_spec_to_ctype(inner);
                 CType::Pointer(Box::new(inner_type))
