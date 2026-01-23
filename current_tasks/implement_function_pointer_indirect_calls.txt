@@ -1,0 +1,14 @@
+Implement function pointer indirect calls across IR, lowering, and all backends.
+
+Currently, when a variable holds a function pointer and we call through it (e.g., f(x, y)),
+the lowering treats the callee as a direct function name. This produces incorrect code.
+
+Plan:
+1. Add IndirectCall instruction to IR (takes a Value for the function pointer target)
+2. Update lowering: when FunctionCall callee is not a known function name but a local
+   variable (function pointer), emit IndirectCall instead of Call
+3. Update x86 codegen: emit "call *%rax" for IndirectCall
+4. Update ARM codegen: emit "blr x0" for IndirectCall
+5. Update RISC-V codegen: emit "jalr ra, t0, 0" for IndirectCall
+
+This fixes ~10-20 test cases involving function pointers as parameters or variables.
