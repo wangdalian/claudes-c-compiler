@@ -862,9 +862,17 @@ impl Lowerer {
                     return IrType::I32;
                 }
                 if let Some(info) = self.locals.get(name) {
+                    // Arrays decay to pointers in expression context
+                    if info.is_array {
+                        return IrType::Ptr;
+                    }
                     return info.ty;
                 }
                 if let Some(ginfo) = self.globals.get(name) {
+                    // Arrays decay to pointers in expression context
+                    if ginfo.is_array {
+                        return IrType::Ptr;
+                    }
                     return ginfo.ty;
                 }
                 IrType::I64

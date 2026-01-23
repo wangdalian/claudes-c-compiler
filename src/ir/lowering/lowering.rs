@@ -1214,30 +1214,41 @@ impl Lowerer {
     /// Lower a struct initializer list to a GlobalInit::Array of field values.
     /// Emits each field's value at its appropriate position, with padding bytes as zeros.
     /// Supports designated initializers like {.b = 2, .a = 1}.
+    /// Check if a type contains pointer elements (either directly or as array elements)
+    fn type_has_pointer_elements(ty: &CType) -> bool {
+        match ty {
+            CType::Pointer(_) => true,
+            CType::Array(inner, _) => Self::type_has_pointer_elements(inner),
+            _ => false,
+        }
+    }
+
+    /// Check if an initializer (possibly nested) contains expressions that require
+    /// address relocations (string literals, address-of expressions, etc.)
+    fn init_has_addr_exprs(&self, init: &Initializer) -> bool {
+        match init {
+            Initializer::Expr(expr) => {
+                matches!(expr, Expr::StringLiteral(_, _))
+                    || (self.eval_const_expr(expr).is_none() && self.eval_global_addr_expr(expr).is_some())
+            }
+            Initializer::List(items) => {
+                items.iter().any(|item| self.init_has_addr_exprs(&item.init))
+            }
+        }
+    }
+
     fn lower_struct_global_init(
         &mut self,
         items: &[InitializerItem],
         layout: &StructLayout,
     ) -> GlobalInit {
         // Check if any field has an address expression (needs relocation).
-        // This includes string literals used to initialize pointer fields.
-        let has_addr_fields = items.iter().enumerate().any(|(idx, item)| {
-            if let Initializer::Expr(expr) = &item.init {
-                // String literals initializing pointer fields need relocations
-                if matches!(expr, Expr::StringLiteral(_, _)) {
-                    // Check if the corresponding field is a pointer type
-                    let field_idx = self.resolve_struct_init_field_idx(item, layout, idx);
-                    if field_idx < layout.fields.len() {
-                        if matches!(layout.fields[field_idx].ty, CType::Pointer(_)) {
-                            return true;
-                        }
-                    }
-                }
-                self.eval_const_expr(expr).is_none() && self.eval_global_addr_expr(expr).is_some()
-            } else {
-                false
-            }
-        });
+        // This includes:
+        // - String literals initializing pointer fields directly
+        // - String literals initializing pointer array fields (flat or braced)
+        // - Address-of expressions (&var) initializing pointer fields
+        // - Nested initializer lists containing any of the above
+        let has_addr_fields = self.struct_init_has_addr_fields(items, layout);
 
         if has_addr_fields {
             return self.lower_struct_global_init_compound(items, layout);
@@ -1250,6 +1261,76 @@ impl Lowerer {
         // Emit as array of I8 (byte) constants
         let values: Vec<IrConst> = bytes.iter().map(|&b| IrConst::I8(b as i8)).collect();
         GlobalInit::Array(values)
+    }
+
+    /// Check if a struct initializer list contains any fields that require address relocations.
+    /// This handles flat init (where multiple items fill an array field), braced init,
+    /// and designated init patterns.
+    fn struct_init_has_addr_fields(&self, items: &[InitializerItem], layout: &StructLayout) -> bool {
+        let mut current_field_idx = 0usize;
+        let mut item_idx = 0usize;
+
+        while item_idx < items.len() {
+            let item = &items[item_idx];
+            let field_idx = self.resolve_struct_init_field_idx(item, layout, current_field_idx);
+
+            if field_idx >= layout.fields.len() {
+                // Could be flat init filling into an array field; check if previous field
+                // was an array of pointers
+                item_idx += 1;
+                continue;
+            }
+
+            let field_ty = &layout.fields[field_idx].ty;
+
+            match &item.init {
+                Initializer::Expr(expr) => {
+                    // Direct string literal or address expression
+                    if matches!(expr, Expr::StringLiteral(_, _)) {
+                        // Check if field is a pointer or array of pointers
+                        if Self::type_has_pointer_elements(field_ty) {
+                            return true;
+                        }
+                    }
+                    if self.eval_const_expr(expr).is_none() && self.eval_global_addr_expr(expr).is_some() {
+                        return true;
+                    }
+                    // For flat array-of-pointer init, consume remaining items for this field
+                    if let CType::Array(elem_ty, Some(arr_size)) = field_ty {
+                        if Self::type_has_pointer_elements(elem_ty) {
+                            // Check if any of the remaining items for this array have addr exprs
+                            for i in 1..*arr_size {
+                                let next = item_idx + i;
+                                if next >= items.len() { break; }
+                                if !items[next].designators.is_empty() { break; }
+                                if self.init_has_addr_exprs(&items[next].init) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                Initializer::List(nested_items) => {
+                    // Check if the nested list contains addr expressions and the field
+                    // is or contains pointer types
+                    if Self::type_has_pointer_elements(field_ty) {
+                        if self.init_has_addr_exprs(&item.init) {
+                            return true;
+                        }
+                    }
+                    // Also check for nested structs containing pointer fields
+                    if let Some(nested_layout) = self.get_struct_layout_for_ctype(field_ty) {
+                        if self.struct_init_has_addr_fields(nested_items, &nested_layout) {
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            current_field_idx = field_idx + 1;
+            item_idx += 1;
+        }
+        false
     }
 
     /// Recursively fill byte buffer for struct global initialization.
@@ -1591,6 +1672,8 @@ impl Lowerer {
 
     /// Lower a struct global init that contains address expressions.
     /// Emits field-by-field using Compound, with padding bytes between fields.
+    /// Handles flat init (where multiple items fill an array-of-pointer field),
+    /// braced init, and designated init patterns.
     fn lower_struct_global_init_compound(
         &mut self,
         items: &[InitializerItem],
@@ -1599,17 +1682,51 @@ impl Lowerer {
         let total_size = layout.size;
         let mut elements: Vec<GlobalInit> = Vec::new();
         let mut current_offset = 0usize;
+
+        // Build a map of field_idx -> list of initializer items.
+        // For array fields with flat init, multiple items may map to the same field.
+        let mut field_inits: Vec<Vec<&InitializerItem>> = vec![Vec::new(); layout.fields.len()];
         let mut current_field_idx = 0usize;
 
-        // Build a map of field_idx -> initializer value
-        let mut field_inits: Vec<Option<&InitializerItem>> = vec![None; layout.fields.len()];
-        for item in items {
+        let mut item_idx = 0;
+        while item_idx < items.len() {
+            let item = &items[item_idx];
             let field_idx = self.resolve_struct_init_field_idx(item, layout, current_field_idx);
-            if field_idx >= layout.fields.len() { continue; }
-            field_inits[field_idx] = Some(item);
+            if field_idx >= layout.fields.len() {
+                item_idx += 1;
+                continue;
+            }
+
+            let field_ty = &layout.fields[field_idx].ty;
+
+            // Check if this is a flat init filling an array field
+            if let CType::Array(_, Some(arr_size)) = field_ty {
+                if matches!(&item.init, Initializer::Expr(_)) {
+                    // Flat init: consume up to arr_size items for this array field
+                    let mut consumed = 0;
+                    while consumed < *arr_size && (item_idx + consumed) < items.len() {
+                        let cur_item = &items[item_idx + consumed];
+                        // Stop if we hit a designator targeting a different field
+                        if !cur_item.designators.is_empty() && consumed > 0 {
+                            break;
+                        }
+                        if matches!(&cur_item.init, Initializer::List(_)) && consumed > 0 {
+                            break;
+                        }
+                        field_inits[field_idx].push(cur_item);
+                        consumed += 1;
+                    }
+                    item_idx += consumed;
+                    current_field_idx = field_idx + 1;
+                    let has_designator = !item.designators.is_empty();
+                    if layout.is_union && !has_designator { break; }
+                    continue;
+                }
+            }
+
+            field_inits[field_idx].push(item);
             current_field_idx = field_idx + 1;
-            // For unions with flat init, stop after first member.
-            // Designated inits can overwrite (last wins).
+            item_idx += 1;
             let has_designator = !item.designators.is_empty();
             if layout.is_union && !has_designator { break; }
         }
@@ -1628,77 +1745,36 @@ impl Lowerer {
                 current_offset = field_offset;
             }
 
-            if let Some(item) = field_inits[fi] {
-                match &item.init {
-                    Initializer::Expr(expr) => {
-                        if let Expr::StringLiteral(s, _) = expr {
-                            if field_is_pointer {
-                                // String literal initializing a pointer field:
-                                // create a .rodata string entry and emit GlobalAddr
-                                let label = format!(".Lstr{}", self.next_string);
-                                self.next_string += 1;
-                                self.module.string_literals.push((label.clone(), s.clone()));
-                                elements.push(GlobalInit::GlobalAddr(label));
-                            } else {
-                                // String literal initializing a char array field
-                                let s_bytes = s.as_bytes();
-                                for (i, &b) in s_bytes.iter().enumerate() {
-                                    if i >= field_size { break; }
-                                    elements.push(GlobalInit::Scalar(IrConst::I8(b as i8)));
-                                }
-                                // null terminator + remaining zero fill
-                                for _ in s_bytes.len()..field_size {
-                                    elements.push(GlobalInit::Scalar(IrConst::I8(0)));
-                                }
-                            }
-                        } else if let Some(val) = self.eval_const_expr(expr) {
-                            // Scalar constant - emit as bytes
-                            self.push_const_as_bytes(&mut elements, &val, field_size);
-                        } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
-                            // Address expression - emit as relocation
-                            elements.push(addr_init);
-                        } else {
-                            // Unknown - zero fill
-                            for _ in 0..field_size {
-                                elements.push(GlobalInit::Scalar(IrConst::I8(0)));
-                            }
-                        }
-                    }
-                    Initializer::List(nested_items) => {
-                        // Nested struct/array init - serialize to bytes
-                        let mut bytes = vec![0u8; field_size];
-                        let field_ty = layout.fields[fi].ty.clone();
-                        if let Some(nested_layout) = self.get_struct_layout_for_ctype(&field_ty) {
-                            self.fill_struct_global_bytes(nested_items, &nested_layout, &mut bytes, 0);
-                        } else {
-                            // Simple array or scalar list
-                            let mut byte_offset = 0;
-                            let elem_ty = match &field_ty {
-                                CType::Array(inner, _) => IrType::from_ctype(inner),
-                                other => IrType::from_ctype(other),
-                            };
-                            let elem_size = elem_ty.size().max(1);
-                            for ni in nested_items {
-                                if byte_offset >= field_size { break; }
-                                if let Initializer::Expr(ref e) = ni.init {
-                                    if let Some(val) = self.eval_const_expr(e) {
-                                        let val = val.coerce_to(elem_ty);
-                                        self.write_const_to_bytes(&mut bytes, byte_offset, &val, elem_ty);
-                                    }
-                                }
-                                byte_offset += elem_size;
-                            }
-                        }
-                        for b in &bytes {
-                            elements.push(GlobalInit::Scalar(IrConst::I8(*b as i8)));
-                        }
-                    }
-                }
-            } else {
+            let inits = &field_inits[fi];
+            if inits.is_empty() {
                 // No initializer for this field - zero fill
                 for _ in 0..field_size {
                     elements.push(GlobalInit::Scalar(IrConst::I8(0)));
                 }
+            } else if inits.len() == 1 {
+                let item = inits[0];
+                // Check if this is a designated init for an array-of-pointer field
+                // e.g., .a[1] = "abc" where a is char *a[3]
+                let has_array_idx_designator = item.designators.iter().any(|d| matches!(d, Designator::Index(_)));
+                if has_array_idx_designator {
+                    if let CType::Array(elem_ty, Some(arr_size)) = &layout.fields[fi].ty {
+                        if Self::type_has_pointer_elements(elem_ty) {
+                            // Designated init for pointer array element
+                            self.emit_compound_ptr_array_designated_init(
+                                &mut elements, &[item], elem_ty, *arr_size);
+                        } else {
+                            // Non-pointer array with designator - use byte-level approach
+                            self.emit_compound_field_init(&mut elements, &item.init, &layout.fields[fi].ty, field_size, field_is_pointer);
+                        }
+                    } else {
+                        self.emit_compound_field_init(&mut elements, &item.init, &layout.fields[fi].ty, field_size, field_is_pointer);
+                    }
+                } else {
+                    self.emit_compound_field_init(&mut elements, &item.init, &layout.fields[fi].ty, field_size, field_is_pointer);
+                }
+            } else {
+                // Multiple items for this field (flat array init)
+                self.emit_compound_flat_array_init(&mut elements, inits, &layout.fields[fi].ty, field_size);
             }
             current_offset += field_size;
         }
@@ -1710,6 +1786,310 @@ impl Lowerer {
         }
 
         GlobalInit::Compound(elements)
+    }
+
+    /// Emit a single field initializer in compound (relocation-aware) mode.
+    fn emit_compound_field_init(
+        &mut self,
+        elements: &mut Vec<GlobalInit>,
+        init: &Initializer,
+        field_ty: &CType,
+        field_size: usize,
+        field_is_pointer: bool,
+    ) {
+        match init {
+            Initializer::Expr(expr) => {
+                if let Expr::StringLiteral(s, _) = expr {
+                    if field_is_pointer {
+                        // String literal initializing a pointer field:
+                        // create a .rodata string entry and emit GlobalAddr
+                        let label = format!(".Lstr{}", self.next_string);
+                        self.next_string += 1;
+                        self.module.string_literals.push((label.clone(), s.clone()));
+                        elements.push(GlobalInit::GlobalAddr(label));
+                    } else {
+                        // String literal initializing a char array field
+                        let s_bytes = s.as_bytes();
+                        for (i, &b) in s_bytes.iter().enumerate() {
+                            if i >= field_size { break; }
+                            elements.push(GlobalInit::Scalar(IrConst::I8(b as i8)));
+                        }
+                        // null terminator + remaining zero fill
+                        for _ in s_bytes.len()..field_size {
+                            elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+                        }
+                    }
+                } else if let Some(val) = self.eval_const_expr(expr) {
+                    // Scalar constant - emit as bytes
+                    self.push_const_as_bytes(elements, &val, field_size);
+                } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
+                    // Address expression - emit as relocation
+                    elements.push(addr_init);
+                } else {
+                    // Unknown - zero fill
+                    for _ in 0..field_size {
+                        elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+                    }
+                }
+            }
+            Initializer::List(nested_items) => {
+                // Check if this is an array of pointers
+                if let CType::Array(elem_ty, Some(arr_size)) = field_ty {
+                    if Self::type_has_pointer_elements(elem_ty) {
+                        // Array of pointers: emit each element as a GlobalAddr or zero
+                        self.emit_compound_ptr_array_init(elements, nested_items, elem_ty, *arr_size);
+                        return;
+                    }
+                }
+
+                // Check if nested struct has pointer fields
+                let field_ty_clone = field_ty.clone();
+                if let Some(nested_layout) = self.get_struct_layout_for_ctype(&field_ty_clone) {
+                    if self.struct_init_has_addr_fields(nested_items, &nested_layout) {
+                        // Recursively handle nested struct with address fields
+                        let nested = self.lower_struct_global_init_compound(nested_items, &nested_layout);
+                        // Flatten nested Compound into our elements
+                        if let GlobalInit::Compound(nested_elems) = nested {
+                            elements.extend(nested_elems);
+                        } else {
+                            // Shouldn't happen, but zero-fill as fallback
+                            for _ in 0..field_size {
+                                elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+                            }
+                        }
+                        return;
+                    }
+                }
+
+                // No address fields - serialize to bytes
+                let mut bytes = vec![0u8; field_size];
+                if let Some(nested_layout) = self.get_struct_layout_for_ctype(&field_ty_clone) {
+                    self.fill_struct_global_bytes(nested_items, &nested_layout, &mut bytes, 0);
+                } else {
+                    // Simple array or scalar list
+                    let mut byte_offset = 0;
+                    let elem_ir_ty = match &field_ty_clone {
+                        CType::Array(inner, _) => IrType::from_ctype(inner),
+                        other => IrType::from_ctype(other),
+                    };
+                    let elem_size = elem_ir_ty.size().max(1);
+                    for ni in nested_items {
+                        if byte_offset >= field_size { break; }
+                        if let Initializer::Expr(ref e) = ni.init {
+                            if let Some(val) = self.eval_const_expr(e) {
+                                let val = val.coerce_to(elem_ir_ty);
+                                self.write_const_to_bytes(&mut bytes, byte_offset, &val, elem_ir_ty);
+                            }
+                        }
+                        byte_offset += elem_size;
+                    }
+                }
+                for b in &bytes {
+                    elements.push(GlobalInit::Scalar(IrConst::I8(*b as i8)));
+                }
+            }
+        }
+    }
+
+    /// Emit an array-of-pointers field from a braced initializer list.
+    /// Each element is either a GlobalAddr (for string literals / address expressions)
+    /// or zero-filled (for missing elements).
+    fn emit_compound_ptr_array_init(
+        &mut self,
+        elements: &mut Vec<GlobalInit>,
+        items: &[InitializerItem],
+        elem_ty: &CType,
+        arr_size: usize,
+    ) {
+        let ptr_size = 8; // 64-bit pointers
+        let mut ai = 0usize;
+
+        for item in items {
+            if ai >= arr_size { break; }
+
+            // Handle index designator: [idx] = val
+            if let Some(Designator::Index(ref idx_expr)) = item.designators.first() {
+                if let Some(idx) = self.eval_const_expr(idx_expr).and_then(|c| c.to_usize()) {
+                    // Zero-fill skipped elements
+                    while ai < idx && ai < arr_size {
+                        for _ in 0..ptr_size {
+                            elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+                        }
+                        ai += 1;
+                    }
+                }
+            }
+            if ai >= arr_size { break; }
+
+            if let Initializer::Expr(ref expr) = item.init {
+                if let Expr::StringLiteral(s, _) = expr {
+                    let label = format!(".Lstr{}", self.next_string);
+                    self.next_string += 1;
+                    self.module.string_literals.push((label.clone(), s.clone()));
+                    elements.push(GlobalInit::GlobalAddr(label));
+                } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
+                    elements.push(addr_init);
+                } else if let Some(val) = self.eval_const_expr(expr) {
+                    self.push_const_as_bytes(elements, &val, ptr_size);
+                } else {
+                    // zero
+                    for _ in 0..ptr_size {
+                        elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+                    }
+                }
+            } else {
+                // Nested list - zero fill this element
+                for _ in 0..ptr_size {
+                    elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+                }
+            }
+            ai += 1;
+        }
+
+        // Zero-fill remaining elements
+        while ai < arr_size {
+            for _ in 0..ptr_size {
+                elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+            }
+            ai += 1;
+        }
+    }
+
+    /// Emit a designated initializer for a pointer array field.
+    /// Handles cases like `.a[1] = "abc"` where a is `char *a[3]`.
+    /// The items may have field+index designators; we extract the index from the designators.
+    fn emit_compound_ptr_array_designated_init(
+        &mut self,
+        elements: &mut Vec<GlobalInit>,
+        items: &[&InitializerItem],
+        elem_ty: &CType,
+        arr_size: usize,
+    ) {
+        let ptr_size = 8; // 64-bit pointers
+        // Build a sparse map of which indices are initialized
+        let mut index_inits: Vec<Option<&Initializer>> = vec![None; arr_size];
+
+        for item in items {
+            // Find the Index designator (may be after a Field designator)
+            let idx = item.designators.iter().find_map(|d| {
+                if let Designator::Index(ref idx_expr) = d {
+                    self.eval_const_expr(idx_expr).and_then(|c| c.to_usize())
+                } else {
+                    None
+                }
+            }).unwrap_or(0);
+
+            if idx < arr_size {
+                index_inits[idx] = Some(&item.init);
+            }
+        }
+
+        // Emit each element
+        for ai in 0..arr_size {
+            if let Some(init) = index_inits[ai] {
+                if let Initializer::Expr(ref expr) = init {
+                    if let Expr::StringLiteral(s, _) = expr {
+                        let label = format!(".Lstr{}", self.next_string);
+                        self.next_string += 1;
+                        self.module.string_literals.push((label.clone(), s.clone()));
+                        elements.push(GlobalInit::GlobalAddr(label));
+                    } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
+                        elements.push(addr_init);
+                    } else if let Some(val) = self.eval_const_expr(expr) {
+                        self.push_const_as_bytes(elements, &val, ptr_size);
+                    } else {
+                        for _ in 0..ptr_size {
+                            elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+                        }
+                    }
+                } else {
+                    for _ in 0..ptr_size {
+                        elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+                    }
+                }
+            } else {
+                // Uninitialized element - zero fill
+                for _ in 0..ptr_size {
+                    elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+                }
+            }
+        }
+    }
+
+    /// Emit a flat array init for a field that has multiple items (flat init style).
+    /// E.g., struct { char *s[2]; } x = { "abc", "def" };
+    fn emit_compound_flat_array_init(
+        &mut self,
+        elements: &mut Vec<GlobalInit>,
+        inits: &[&InitializerItem],
+        field_ty: &CType,
+        field_size: usize,
+    ) {
+        let (elem_ty, arr_size) = match field_ty {
+            CType::Array(inner, Some(size)) => (inner.as_ref(), *size),
+            _ => {
+                // Not an array - just use first item
+                if let Some(first) = inits.first() {
+                    let field_is_pointer = matches!(field_ty, CType::Pointer(_));
+                    self.emit_compound_field_init(elements, &first.init, field_ty, field_size, field_is_pointer);
+                } else {
+                    for _ in 0..field_size {
+                        elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+                    }
+                }
+                return;
+            }
+        };
+
+        let elem_is_pointer = Self::type_has_pointer_elements(elem_ty);
+        let elem_size = elem_ty.size();
+        let ptr_size = 8; // 64-bit
+
+        let mut ai = 0usize;
+        for item in inits {
+            if ai >= arr_size { break; }
+
+            if let Initializer::Expr(ref expr) = item.init {
+                if elem_is_pointer {
+                    if let Expr::StringLiteral(s, _) = expr {
+                        let label = format!(".Lstr{}", self.next_string);
+                        self.next_string += 1;
+                        self.module.string_literals.push((label.clone(), s.clone()));
+                        elements.push(GlobalInit::GlobalAddr(label));
+                    } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
+                        elements.push(addr_init);
+                    } else if let Some(val) = self.eval_const_expr(expr) {
+                        self.push_const_as_bytes(elements, &val, ptr_size);
+                    } else {
+                        for _ in 0..ptr_size {
+                            elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+                        }
+                    }
+                } else {
+                    if let Some(val) = self.eval_const_expr(expr) {
+                        self.push_const_as_bytes(elements, &val, elem_size);
+                    } else {
+                        for _ in 0..elem_size {
+                            elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+                        }
+                    }
+                }
+            } else {
+                // Nested list - zero fill element
+                for _ in 0..elem_size {
+                    elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+                }
+            }
+            ai += 1;
+        }
+
+        // Zero-fill remaining elements
+        while ai < arr_size {
+            for _ in 0..elem_size {
+                elements.push(GlobalInit::Scalar(IrConst::I8(0)));
+            }
+            ai += 1;
+        }
     }
 
     /// Push a constant value as individual bytes into a compound init element list.

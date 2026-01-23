@@ -784,9 +784,36 @@ impl Lowerer {
                 match intrinsic {
                     BuiltinIntrinsic::FpCompare => {
                         // __builtin_isgreater(a,b) -> a > b, etc.
+                        // Must use the actual argument types for correct comparison.
                         if args.len() >= 2 {
-                            let lhs = self.lower_expr(&args[0]);
-                            let rhs = self.lower_expr(&args[1]);
+                            let lhs_ty = self.get_expr_type(&args[0]);
+                            let rhs_ty = self.get_expr_type(&args[1]);
+                            // Promote to the wider float type (F32 < F64)
+                            let cmp_ty = if lhs_ty == IrType::F64 || rhs_ty == IrType::F64 {
+                                IrType::F64
+                            } else if lhs_ty == IrType::F32 || rhs_ty == IrType::F32 {
+                                IrType::F32
+                            } else {
+                                // Integer args - promote to F64
+                                IrType::F64
+                            };
+                            let mut lhs = self.lower_expr(&args[0]);
+                            let mut rhs = self.lower_expr(&args[1]);
+                            // Convert args to the comparison type if needed
+                            if lhs_ty != cmp_ty {
+                                let conv = self.fresh_value();
+                                self.emit(Instruction::Cast {
+                                    dest: conv, src: lhs, from_ty: lhs_ty, to_ty: cmp_ty,
+                                });
+                                lhs = Operand::Value(conv);
+                            }
+                            if rhs_ty != cmp_ty {
+                                let conv = self.fresh_value();
+                                self.emit(Instruction::Cast {
+                                    dest: conv, src: rhs, from_ty: rhs_ty, to_ty: cmp_ty,
+                                });
+                                rhs = Operand::Value(conv);
+                            }
                             let cmp_op = match name {
                                 "__builtin_isgreater" => IrCmpOp::Sgt,
                                 "__builtin_isgreaterequal" => IrCmpOp::Sge,
@@ -798,7 +825,7 @@ impl Lowerer {
                             };
                             let dest = self.fresh_value();
                             self.emit(Instruction::Cmp {
-                                dest, op: cmp_op, lhs, rhs, ty: IrType::F64,
+                                dest, op: cmp_op, lhs, rhs, ty: cmp_ty,
                             });
                             return Some(Operand::Value(dest));
                         }
