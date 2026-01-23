@@ -401,7 +401,11 @@ impl SemanticAnalyzer {
             }
             // Literals don't need analysis
             Expr::IntLiteral(_, _)
+            | Expr::UIntLiteral(_, _)
+            | Expr::LongLiteral(_, _)
+            | Expr::ULongLiteral(_, _)
             | Expr::FloatLiteral(_, _)
+            | Expr::FloatLiteralF32(_, _)
             | Expr::StringLiteral(_, _)
             | Expr::CharLiteral(_, _) => {}
         }
@@ -532,7 +536,8 @@ impl SemanticAnalyzer {
     /// Returns None if the expression cannot be evaluated.
     fn eval_const_expr(&self, expr: &Expr) -> Option<i64> {
         match expr {
-            Expr::IntLiteral(val, _) => Some(*val),
+            Expr::IntLiteral(val, _) | Expr::LongLiteral(val, _) => Some(*val),
+            Expr::UIntLiteral(val, _) | Expr::ULongLiteral(val, _) => Some(*val as i64),
             Expr::CharLiteral(ch, _) => Some(*ch as i64),
             Expr::Identifier(name, _) => {
                 self.result.enum_constants.get(name).copied()

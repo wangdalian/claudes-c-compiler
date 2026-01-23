@@ -7,14 +7,20 @@ impl Lowerer {
     /// Try to evaluate a constant expression at compile time.
     pub(super) fn eval_const_expr(&self, expr: &Expr) -> Option<IrConst> {
         match expr {
-            Expr::IntLiteral(val, _) => {
+            Expr::IntLiteral(val, _) | Expr::LongLiteral(val, _) => {
                 Some(IrConst::I64(*val))
+            }
+            Expr::UIntLiteral(val, _) | Expr::ULongLiteral(val, _) => {
+                Some(IrConst::I64(*val as i64))
             }
             Expr::CharLiteral(ch, _) => {
                 Some(IrConst::I32(*ch as i32))
             }
             Expr::FloatLiteral(val, _) => {
                 Some(IrConst::F64(*val))
+            }
+            Expr::FloatLiteralF32(val, _) => {
+                Some(IrConst::F32(*val as f32))
             }
             Expr::UnaryOp(UnaryOp::Plus, inner, _) => {
                 // Unary plus: identity, just evaluate the inner expression
@@ -340,8 +346,10 @@ impl Lowerer {
     /// Get the IR type for an expression (best-effort, based on locals/globals info).
     pub(super) fn get_expr_type(&self, expr: &Expr) -> IrType {
         match expr {
-            Expr::IntLiteral(_, _) | Expr::CharLiteral(_, _) => return IrType::I64,
+            Expr::IntLiteral(_, _) | Expr::LongLiteral(_, _) | Expr::CharLiteral(_, _) => return IrType::I64,
+            Expr::UIntLiteral(_, _) | Expr::ULongLiteral(_, _) => return IrType::U64,
             Expr::FloatLiteral(_, _) => return IrType::F64,
+            Expr::FloatLiteralF32(_, _) => return IrType::F32,
             Expr::StringLiteral(_, _) => return IrType::Ptr,
             Expr::Cast(ref target_type, _, _) => return self.type_spec_to_ir(target_type),
             Expr::UnaryOp(UnaryOp::Neg, inner, _) | Expr::UnaryOp(UnaryOp::Plus, inner, _) => {
@@ -625,8 +633,9 @@ impl Lowerer {
             TypeSpecifier::Pointer(_) => 8,
             TypeSpecifier::Array(elem, Some(size_expr)) => {
                 let elem_size = self.sizeof_type(elem);
-                if let Expr::IntLiteral(n, _) = size_expr.as_ref() {
-                    return elem_size * (*n as usize);
+                let n = self.expr_as_array_size(size_expr);
+                if let Some(n) = n {
+                    return elem_size * (n as usize);
                 }
                 elem_size
             }
@@ -662,10 +671,28 @@ impl Lowerer {
     /// Returns the size in bytes of the expression's type.
     pub(super) fn sizeof_expr(&self, expr: &Expr) -> usize {
         match expr {
-            // Integer literal: type int (4 bytes)
-            Expr::IntLiteral(_, _) => 4,
+            // Integer literal: type int (4 bytes), unless value overflows to long
+            Expr::IntLiteral(val, _) => {
+                if *val >= i32::MIN as i64 && *val <= i32::MAX as i64 {
+                    4
+                } else {
+                    8
+                }
+            }
+            // Unsigned int literal: type unsigned int (4 bytes) if fits, else unsigned long
+            Expr::UIntLiteral(val, _) => {
+                if *val <= u32::MAX as u64 {
+                    4
+                } else {
+                    8
+                }
+            }
+            // Long/unsigned long literal: always 8 bytes
+            Expr::LongLiteral(_, _) | Expr::ULongLiteral(_, _) => 8,
             // Float literal: type double (8 bytes) by default in C
             Expr::FloatLiteral(_, _) => 8,
+            // Float literal with f suffix: type float (4 bytes)
+            Expr::FloatLiteralF32(_, _) => 4,
             // Char literal: type int in C (4 bytes)
             Expr::CharLiteral(_, _) => 4,
             // String literal: array of char, size = length + 1 (null terminator)
@@ -843,11 +870,7 @@ impl Lowerer {
                     let array_dims: Vec<Option<usize>> = derived.iter().filter_map(|d| {
                         if let DerivedDeclarator::Array(size_expr) = d {
                             let dim = size_expr.as_ref().and_then(|e| {
-                                if let Expr::IntLiteral(n, _) = e.as_ref() {
-                                    Some(*n as usize)
-                                } else {
-                                    None
-                                }
+                                self.expr_as_array_size(e).map(|n| n as usize)
                             });
                             Some(dim)
                         } else {
@@ -868,11 +891,7 @@ impl Lowerer {
         let array_dims: Vec<Option<usize>> = derived.iter().filter_map(|d| {
             if let DerivedDeclarator::Array(size_expr) = d {
                 let dim = size_expr.as_ref().and_then(|e| {
-                    if let Expr::IntLiteral(n, _) = e.as_ref() {
-                        Some(*n as usize)
-                    } else {
-                        None
-                    }
+                    self.expr_as_array_size(e).map(|n| n as usize)
                 });
                 Some(dim)
             } else {
@@ -918,6 +937,16 @@ impl Lowerer {
     }
 
     /// Collect array dimensions from nested Array type specifiers.
+    /// Extract an integer value from any integer literal expression (Int, UInt, Long, ULong).
+    /// Used for array sizes and other compile-time integer expressions.
+    pub(super) fn expr_as_array_size(&self, expr: &Expr) -> Option<i64> {
+        match expr {
+            Expr::IntLiteral(n, _) | Expr::LongLiteral(n, _) => Some(*n),
+            Expr::UIntLiteral(n, _) | Expr::ULongLiteral(n, _) => Some(*n as i64),
+            _ => None,
+        }
+    }
+
     /// For Array(Array(Int, 3), 2), returns [2, 3] (but we skip the outermost
     /// since that comes from the derived declarator).
     fn collect_type_array_dims(&self, ts: &TypeSpecifier) -> Vec<usize> {
@@ -925,8 +954,8 @@ impl Lowerer {
         let mut current = ts;
         loop {
             if let TypeSpecifier::Array(inner, Some(size_expr)) = current {
-                if let Expr::IntLiteral(n, _) = size_expr.as_ref() {
-                    dims.push(*n as usize);
+                if let Some(n) = self.expr_as_array_size(size_expr) {
+                    dims.push(n as usize);
                 }
                 current = inner.as_ref();
             } else {
@@ -968,11 +997,7 @@ impl Lowerer {
             TypeSpecifier::Array(elem, size_expr) => {
                 let elem_ctype = self.type_spec_to_ctype(elem);
                 let size = size_expr.as_ref().and_then(|e| {
-                    if let Expr::IntLiteral(n, _) = e.as_ref() {
-                        Some(*n as usize)
-                    } else {
-                        None
-                    }
+                    self.expr_as_array_size(e).map(|n| n as usize)
                 });
                 CType::Array(Box::new(elem_ctype), size)
             }

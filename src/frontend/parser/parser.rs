@@ -1891,12 +1891,27 @@ impl Parser {
             TokenKind::UIntLiteral(val) => {
                 let span = self.peek_span();
                 self.advance();
-                Expr::IntLiteral(val as i64, span)
+                Expr::UIntLiteral(val, span)
+            }
+            TokenKind::LongLiteral(val) => {
+                let span = self.peek_span();
+                self.advance();
+                Expr::LongLiteral(val, span)
+            }
+            TokenKind::ULongLiteral(val) => {
+                let span = self.peek_span();
+                self.advance();
+                Expr::ULongLiteral(val, span)
             }
             TokenKind::FloatLiteral(val) => {
                 let span = self.peek_span();
                 self.advance();
                 Expr::FloatLiteral(val, span)
+            }
+            TokenKind::FloatLiteralF32(val) => {
+                let span = self.peek_span();
+                self.advance();
+                Expr::FloatLiteralF32(val, span)
             }
             TokenKind::StringLiteral(ref s) => {
                 let mut result = s.clone();

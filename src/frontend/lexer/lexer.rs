@@ -120,13 +120,8 @@ impl Lexer {
             }
             let hex_str = std::str::from_utf8(&self.input[hex_start..self.pos]).unwrap_or("0");
             let value = u64::from_str_radix(hex_str, 16).unwrap_or(0);
-            // Check for unsigned suffix before consuming it
-            let is_unsigned = self.peek_int_suffix_unsigned();
-            self.skip_int_suffix();
-            if is_unsigned || value > i64::MAX as u64 {
-                return Token::new(TokenKind::UIntLiteral(value), Span::new(start as u32, self.pos as u32, self.file_id));
-            }
-            return Token::new(TokenKind::IntLiteral(value as i64), Span::new(start as u32, self.pos as u32, self.file_id));
+            let (is_unsigned, is_long) = self.parse_int_suffix();
+            return self.make_int_token(value, is_unsigned, is_long, start);
         }
 
         // Handle octal (but not if followed by '.' or 'e'/'E' which makes it a float)
@@ -151,12 +146,8 @@ impl Lexer {
                 } else {
                     let oct_str = std::str::from_utf8(&self.input[oct_start..self.pos]).unwrap_or("0");
                     let value = u64::from_str_radix(oct_str, 8).unwrap_or(0);
-                    let is_unsigned = self.peek_int_suffix_unsigned();
-                    self.skip_int_suffix();
-                    if is_unsigned || value > i64::MAX as u64 {
-                        return Token::new(TokenKind::UIntLiteral(value), Span::new(start as u32, self.pos as u32, self.file_id));
-                    }
-                    return Token::new(TokenKind::IntLiteral(value as i64), Span::new(start as u32, self.pos as u32, self.file_id));
+                    let (is_unsigned, is_long) = self.parse_int_suffix();
+                    return self.make_int_token(value, is_unsigned, is_long, start);
                 }
             }
         }
@@ -190,53 +181,104 @@ impl Lexer {
         let text = std::str::from_utf8(&self.input[start..self.pos]).unwrap_or("0").to_string();
 
         if is_float {
-            // Skip float suffix
-            if self.pos < self.input.len() && (self.input[self.pos] == b'f' || self.input[self.pos] == b'F'
-                || self.input[self.pos] == b'l' || self.input[self.pos] == b'L') {
+            // Check float suffix: f/F means float (32-bit), l/L means long double, none means double
+            let is_f32 = if self.pos < self.input.len() && (self.input[self.pos] == b'f' || self.input[self.pos] == b'F') {
                 self.pos += 1;
-            }
-            let value: f64 = text.parse().unwrap_or(0.0);
-            Token::new(TokenKind::FloatLiteral(value), Span::new(start as u32, self.pos as u32, self.file_id))
-        } else {
-            let is_unsigned = self.peek_int_suffix_unsigned();
-            self.skip_int_suffix();
-            // Parse as u64 first to handle values > i64::MAX (like unsigned long constants)
-            let uvalue: u64 = text.parse().unwrap_or(0);
-            if is_unsigned || uvalue > i64::MAX as u64 {
-                Token::new(TokenKind::UIntLiteral(uvalue), Span::new(start as u32, self.pos as u32, self.file_id))
-            } else {
-                Token::new(TokenKind::IntLiteral(uvalue as i64), Span::new(start as u32, self.pos as u32, self.file_id))
-            }
-        }
-    }
-
-    /// Check if the upcoming integer suffix contains 'u' or 'U' (unsigned)
-    /// without consuming the suffix.
-    fn peek_int_suffix_unsigned(&self) -> bool {
-        let mut p = self.pos;
-        while p < self.input.len() {
-            match self.input[p] {
-                b'u' | b'U' => return true,
-                b'l' | b'L' => { p += 1; }
-                _ => break,
-            }
-        }
-        false
-    }
-
-    fn skip_int_suffix(&mut self) {
-        // Skip combinations of u/U, l/L, ll/LL
-        loop {
-            if self.pos < self.input.len() && (self.input[self.pos] == b'u' || self.input[self.pos] == b'U') {
-                self.pos += 1;
+                // Also consume trailing 'i' for imaginary (GCC extension: 3.0fi)
+                if self.pos < self.input.len() && self.input[self.pos] == b'i' {
+                    self.pos += 1;
+                }
+                true
             } else if self.pos < self.input.len() && (self.input[self.pos] == b'l' || self.input[self.pos] == b'L') {
                 self.pos += 1;
+                // Also consume trailing 'i' for imaginary (GCC extension: 3.0Li)
+                if self.pos < self.input.len() && self.input[self.pos] == b'i' {
+                    self.pos += 1;
+                }
+                false // long double treated as double for now
+            } else if self.pos < self.input.len() && self.input[self.pos] == b'i' {
+                // GCC extension: imaginary suffix 'i' (3.0i)
+                self.pos += 1;
+                // Check for additional f/F/l/L after i (e.g., 3.0if, 3.0iF)
+                if self.pos < self.input.len() && (self.input[self.pos] == b'f' || self.input[self.pos] == b'F') {
+                    self.pos += 1;
+                } else if self.pos < self.input.len() && (self.input[self.pos] == b'l' || self.input[self.pos] == b'L') {
+                    self.pos += 1;
+                }
+                false
+            } else {
+                false
+            };
+            let value: f64 = text.parse().unwrap_or(0.0);
+            let span = Span::new(start as u32, self.pos as u32, self.file_id);
+            if is_f32 {
+                Token::new(TokenKind::FloatLiteralF32(value as f64), span)
+            } else {
+                Token::new(TokenKind::FloatLiteral(value), span)
+            }
+        } else {
+            let uvalue: u64 = text.parse().unwrap_or(0);
+            let (is_unsigned, is_long) = self.parse_int_suffix();
+            self.make_int_token(uvalue, is_unsigned, is_long, start)
+        }
+    }
+
+    /// Parse integer suffix and return (is_unsigned, is_long).
+    /// is_long is true for l/L or ll/LL suffixes.
+    /// Also consumes trailing 'i' suffix for GCC imaginary integer literals (e.g., 5i).
+    fn parse_int_suffix(&mut self) -> (bool, bool) {
+        // First check for standalone 'i' imaginary suffix (GCC extension: 5i)
+        // Must check this before the main loop since 'i' alone means imaginary, not a regular suffix
+        if self.pos < self.input.len() && self.input[self.pos] == b'i' {
+            // Check it's not the start of an identifier (like 'int')
+            let next = if self.pos + 1 < self.input.len() { self.input[self.pos + 1] } else { 0 };
+            if !next.is_ascii_alphanumeric() && next != b'_' {
+                self.pos += 1; // consume 'i' as imaginary suffix
+                return (false, false);
+            }
+        }
+
+        let mut is_unsigned = false;
+        let mut is_long = false;
+        loop {
+            if self.pos < self.input.len() && (self.input[self.pos] == b'u' || self.input[self.pos] == b'U') {
+                is_unsigned = true;
+                self.pos += 1;
+            } else if self.pos < self.input.len() && (self.input[self.pos] == b'l' || self.input[self.pos] == b'L') {
+                is_long = true;
+                self.pos += 1;
+                // Skip second l/L for ll/LL
                 if self.pos < self.input.len() && (self.input[self.pos] == b'l' || self.input[self.pos] == b'L') {
                     self.pos += 1;
                 }
             } else {
                 break;
             }
+        }
+        // Consume trailing 'i' for GCC imaginary suffix (e.g., 5li, 5ui, 5ULi)
+        if self.pos < self.input.len() && self.input[self.pos] == b'i' {
+            let next = if self.pos + 1 < self.input.len() { self.input[self.pos + 1] } else { 0 };
+            if !next.is_ascii_alphanumeric() && next != b'_' {
+                self.pos += 1;
+            }
+        }
+        (is_unsigned, is_long)
+    }
+
+    /// Create the appropriate token kind based on integer value and suffix info.
+    fn make_int_token(&self, value: u64, is_unsigned: bool, is_long: bool, start: usize) -> Token {
+        let span = Span::new(start as u32, self.pos as u32, self.file_id);
+        if is_unsigned && is_long {
+            Token::new(TokenKind::ULongLiteral(value), span)
+        } else if is_unsigned {
+            Token::new(TokenKind::UIntLiteral(value), span)
+        } else if is_long {
+            Token::new(TokenKind::LongLiteral(value as i64), span)
+        } else if value > i64::MAX as u64 {
+            // Value too large for signed, promote to unsigned
+            Token::new(TokenKind::ULongLiteral(value), span)
+        } else {
+            Token::new(TokenKind::IntLiteral(value as i64), span)
         }
     }
 

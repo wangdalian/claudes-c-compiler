@@ -4,9 +4,12 @@ use crate::common::source::Span;
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // Literals
-    IntLiteral(i64),
-    UIntLiteral(u64),
-    FloatLiteral(f64),
+    IntLiteral(i64),       // no suffix or value > i32::MAX
+    UIntLiteral(u64),      // u/U suffix or value > i64::MAX
+    LongLiteral(i64),      // l/L or ll/LL suffix (signed long/long long)
+    ULongLiteral(u64),     // ul/UL suffix (unsigned long/long long)
+    FloatLiteral(f64),     // no suffix (double) or l/L suffix (long double, treated as double)
+    FloatLiteralF32(f64),  // f/F suffix (float, 32-bit)
     StringLiteral(String),
     CharLiteral(char),
 

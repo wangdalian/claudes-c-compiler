@@ -167,7 +167,11 @@ pub enum ForInit {
 #[derive(Debug, Clone)]
 pub enum Expr {
     IntLiteral(i64, Span),
-    FloatLiteral(f64, Span),
+    UIntLiteral(u64, Span),
+    LongLiteral(i64, Span),
+    ULongLiteral(u64, Span),
+    FloatLiteral(f64, Span),    // double literal (no suffix or L suffix)
+    FloatLiteralF32(f64, Span), // float literal (f/F suffix)
     StringLiteral(String, Span),
     CharLiteral(char, Span),
     Identifier(String, Span),
@@ -241,7 +245,10 @@ pub enum PostfixOp {
 impl Expr {
     pub fn span(&self) -> Span {
         match self {
-            Expr::IntLiteral(_, s) | Expr::FloatLiteral(_, s) | Expr::StringLiteral(_, s)
+            Expr::IntLiteral(_, s) | Expr::UIntLiteral(_, s)
+            | Expr::LongLiteral(_, s) | Expr::ULongLiteral(_, s)
+            | Expr::FloatLiteral(_, s) | Expr::FloatLiteralF32(_, s)
+            | Expr::StringLiteral(_, s)
             | Expr::CharLiteral(_, s) | Expr::Identifier(_, s)
             | Expr::BinaryOp(_, _, _, s) | Expr::UnaryOp(_, _, s) | Expr::PostfixOp(_, _, s)
             | Expr::Assign(_, _, s) | Expr::CompoundAssign(_, _, _, s) | Expr::Conditional(_, _, _, s)

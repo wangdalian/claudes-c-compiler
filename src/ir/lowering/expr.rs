@@ -10,8 +10,20 @@ impl Lowerer {
             Expr::IntLiteral(val, _) => {
                 Operand::Const(IrConst::I64(*val))
             }
+            Expr::UIntLiteral(val, _) => {
+                Operand::Const(IrConst::I64(*val as i64))
+            }
+            Expr::LongLiteral(val, _) => {
+                Operand::Const(IrConst::I64(*val))
+            }
+            Expr::ULongLiteral(val, _) => {
+                Operand::Const(IrConst::I64(*val as i64))
+            }
             Expr::FloatLiteral(val, _) => {
                 Operand::Const(IrConst::F64(*val))
+            }
+            Expr::FloatLiteralF32(val, _) => {
+                Operand::Const(IrConst::F32(*val as f32))
             }
             Expr::CharLiteral(ch, _) => {
                 Operand::Const(IrConst::I32(*ch as i32))
@@ -1042,14 +1054,32 @@ impl Lowerer {
                 IrType::I64
             }
             Expr::IntLiteral(val, _) => {
-                if *val >= 0 && *val <= i32::MAX as i64 {
+                // Plain integer: type is int if it fits, otherwise long
+                if *val >= i32::MIN as i64 && *val <= i32::MAX as i64 {
                     IrType::I32
                 } else {
                     IrType::I64
                 }
             }
+            Expr::UIntLiteral(val, _) => {
+                // Unsigned int literal: type is unsigned int if it fits, otherwise unsigned long
+                if *val <= u32::MAX as u64 {
+                    IrType::U32
+                } else {
+                    IrType::U64
+                }
+            }
+            Expr::LongLiteral(_, _) => {
+                // Long suffix forces I64 type regardless of value
+                IrType::I64
+            }
+            Expr::ULongLiteral(_, _) => {
+                // Unsigned long suffix forces U64 type
+                IrType::U64
+            }
             Expr::CharLiteral(_, _) => IrType::I8,
             Expr::FloatLiteral(_, _) => IrType::F64,
+            Expr::FloatLiteralF32(_, _) => IrType::F32,
             Expr::Cast(ref target_type, _, _) => {
                 self.type_spec_to_ir(target_type)
             }
