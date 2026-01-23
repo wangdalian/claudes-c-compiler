@@ -1,0 +1,16 @@
+Task: Fix sizeof for pointer types and expression arguments
+Status: In Progress
+
+Problem:
+1. sizeof(int*), sizeof(void*), sizeof(char*) etc. return wrong values (4 or 0 instead of 8)
+   because the parser skips * tokens without wrapping in TypeSpecifier::Pointer
+2. sizeof(expr) always returns 4 regardless of expression type
+3. sizeof(type[N]) not supported - array dimensions after type are skipped
+
+Fix:
+- parser.rs: Wrap type in TypeSpecifier::Pointer for each * in sizeof(type*)
+- parser.rs: Parse array dimensions into TypeSpecifier::Array for sizeof(type[N])
+- types.rs: Add sizeof_expr() to compute sizeof for expression arguments
+- lowering.rs: Add alloc_size field to LocalInfo for sizeof(array_var)
+- stmt.rs: Set alloc_size at LocalInfo construction sites
+- expr.rs: Call sizeof_expr instead of returning constant 4
