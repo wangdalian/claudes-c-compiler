@@ -207,6 +207,21 @@ impl Lexer {
             return self.make_int_token(value, is_unsigned, is_long, true, start);
         }
 
+        // Handle binary (0b/0B)
+        if self.pos + 1 < self.input.len() && self.input[self.pos] == b'0'
+            && (self.input[self.pos + 1] == b'b' || self.input[self.pos + 1] == b'B')
+        {
+            self.pos += 2;
+            let bin_start = self.pos;
+            while self.pos < self.input.len() && (self.input[self.pos] == b'0' || self.input[self.pos] == b'1') {
+                self.pos += 1;
+            }
+            let bin_str = std::str::from_utf8(&self.input[bin_start..self.pos]).unwrap_or("0");
+            let value = u64::from_str_radix(bin_str, 2).unwrap_or(0);
+            let (is_unsigned, is_long) = self.parse_int_suffix();
+            return self.make_int_token(value, is_unsigned, is_long, true, start);
+        }
+
         // Handle octal (but not if followed by '.' or 'e'/'E' which makes it a float)
         if self.input[self.pos] == b'0' && self.peek_next().map_or(false, |c| c.is_ascii_digit()) {
             // Save position to backtrack if this turns out to be a float
