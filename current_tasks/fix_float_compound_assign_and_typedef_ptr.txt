@@ -1,0 +1,13 @@
+Task: Fix float compound assign, global func ptr init, typedef pointer-to-struct
+
+Problems fixed:
+1. Float compound assignment (e.g., float a; a += 56.78) produces wrong results:
+   - F32 LHS not promoted to F64 before operation with F64 RHS
+   - F64 result stored directly as F32 without narrowing cast
+2. Global function pointer initialization (int (*f)(int) = &fred) puts f in .bss:
+   - eval_global_addr_expr didn't check known_functions for &func_name
+3. Typedef pointer-to-struct member access (typedef struct Foo *FooPtr; FooPtr p; p->field) wrong:
+   - compute_decl_info didn't detect Pointer types embedded in typedef
+   - struct_layout not populated for typedef'd pointer-to-struct vars
+
+Status: IN PROGRESS
