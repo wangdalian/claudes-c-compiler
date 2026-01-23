@@ -23,6 +23,7 @@ pub struct FunctionDef {
     pub body: CompoundStmt,
     pub is_static: bool,
     pub is_inline: bool,
+    pub is_kr: bool,
     pub span: Span,
 }
 

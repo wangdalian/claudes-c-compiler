@@ -308,7 +308,8 @@ impl Parser {
 
             // Handle K&R-style parameter declarations:
             // int foo(a, b) int a; int *b; { ... }
-            let final_params = if !matches!(self.peek(), TokenKind::LBrace) {
+            let is_kr_style = !matches!(self.peek(), TokenKind::LBrace);
+            let final_params = if is_kr_style {
                 // K&R style: params only have names, types come in subsequent declarations
                 let mut kr_params = params.clone();
                 while self.is_type_specifier() && !matches!(self.peek(), TokenKind::LBrace) {
@@ -408,6 +409,7 @@ impl Parser {
                 body,
                 is_static,
                 is_inline,
+                is_kr: is_kr_style,
                 span: start,
             }))
         } else {

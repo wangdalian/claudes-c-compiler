@@ -242,8 +242,14 @@ impl Lowerer {
                     }
                 }
                 // Collect parameter types (skip variadic portion)
+                // For K&R functions, float params are promoted to double (default argument promotion)
                 let param_tys: Vec<IrType> = func.params.iter().map(|p| {
-                    self.type_spec_to_ir(&p.type_spec)
+                    let ty = self.type_spec_to_ir(&p.type_spec);
+                    if func.is_kr && ty == IrType::F32 {
+                        IrType::F64
+                    } else {
+                        ty
+                    }
                 }).collect();
                 let param_bool_flags: Vec<bool> = func.params.iter().map(|p| {
                     matches!(self.resolve_type_spec(&p.type_spec), TypeSpecifier::Bool)
@@ -398,9 +404,14 @@ impl Lowerer {
         if uses_sret {
             params.push(IrParam { name: "__sret_ptr".to_string(), ty: IrType::Ptr });
         }
-        params.extend(func.params.iter().map(|p| IrParam {
-            name: p.name.clone().unwrap_or_default(),
-            ty: self.type_spec_to_ir(&p.type_spec),
+        // For K&R functions, float params are promoted to double (default argument promotion)
+        params.extend(func.params.iter().map(|p| {
+            let ty = self.type_spec_to_ir(&p.type_spec);
+            let ty = if func.is_kr && ty == IrType::F32 { IrType::F64 } else { ty };
+            IrParam {
+                name: p.name.clone().unwrap_or_default(),
+                ty,
+            }
         }));
 
         // Start entry block
@@ -552,6 +563,55 @@ impl Lowerer {
                 c_type: None,
                 is_bool: false,
             });
+        }
+
+        // K&R float promotion: for K&R functions with float params (promoted to double for ABI),
+        // load the double value, narrow to float, and update the local to use the float alloca.
+        if func.is_kr {
+            for (i, param) in func.params.iter().enumerate() {
+                let declared_ty = self.type_spec_to_ir(&param.type_spec);
+                if declared_ty == IrType::F32 {
+                    // The param alloca currently holds an F64 (double) value
+                    if let Some(local_info) = self.locals.get(&param.name.clone().unwrap_or_default()).cloned() {
+                        let f64_alloca = local_info.alloca;
+                        // Load the F64 value
+                        let f64_val = self.fresh_value();
+                        self.emit(Instruction::Load {
+                            dest: f64_val,
+                            ptr: f64_alloca,
+                            ty: IrType::F64,
+                        });
+                        // Cast F64 -> F32
+                        let f32_val = self.fresh_value();
+                        self.emit(Instruction::Cast {
+                            dest: f32_val,
+                            src: Operand::Value(f64_val),
+                            from_ty: IrType::F64,
+                            to_ty: IrType::F32,
+                        });
+                        // Create a new F32 alloca
+                        let f32_alloca = self.fresh_value();
+                        self.emit(Instruction::Alloca {
+                            dest: f32_alloca,
+                            ty: IrType::F32,
+                            size: 4,
+                        });
+                        // Store F32 value
+                        self.emit(Instruction::Store {
+                            val: Operand::Value(f32_val),
+                            ptr: f32_alloca,
+                            ty: IrType::F32,
+                        });
+                        // Update local to point to F32 alloca
+                        let name = param.name.clone().unwrap_or_default();
+                        if let Some(local) = self.locals.get_mut(&name) {
+                            local.alloca = f32_alloca;
+                            local.ty = IrType::F32;
+                            local.alloc_size = 4;
+                        }
+                    }
+                }
+            }
         }
 
         // Lower body
