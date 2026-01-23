@@ -41,7 +41,9 @@ impl Lowerer {
             Expr::BinaryOp(op, lhs, rhs, _) => {
                 let l = self.eval_const_expr(lhs)?;
                 let r = self.eval_const_expr(rhs)?;
-                self.eval_const_binop(op, &l, &r)
+                // For shift and arithmetic operations, we need the LHS type for signedness/width
+                let lhs_ty = self.get_expr_type(lhs);
+                self.eval_const_binop(op, &l, &r, lhs_ty)
             }
             Expr::UnaryOp(UnaryOp::BitNot, inner, _) => {
                 if let Some(val) = self.eval_const_expr(inner) {
@@ -331,20 +333,49 @@ impl Lowerer {
     }
 
     /// Evaluate a constant binary operation.
-    fn eval_const_binop(&self, op: &BinOp, lhs: &IrConst, rhs: &IrConst) -> Option<IrConst> {
+    fn eval_const_binop(&self, op: &BinOp, lhs: &IrConst, rhs: &IrConst, lhs_ty: IrType) -> Option<IrConst> {
         let l = self.const_to_i64(lhs)?;
         let r = self.const_to_i64(rhs)?;
+        let is_32bit = lhs_ty.size() <= 4;
+        let is_unsigned = lhs_ty.is_unsigned();
         let result = match op {
-            BinOp::Add => l.wrapping_add(r),
-            BinOp::Sub => l.wrapping_sub(r),
-            BinOp::Mul => l.wrapping_mul(r),
+            BinOp::Add => {
+                let v = l.wrapping_add(r);
+                if is_32bit { v as i32 as i64 } else { v }
+            }
+            BinOp::Sub => {
+                let v = l.wrapping_sub(r);
+                if is_32bit { v as i32 as i64 } else { v }
+            }
+            BinOp::Mul => {
+                let v = l.wrapping_mul(r);
+                if is_32bit { v as i32 as i64 } else { v }
+            }
             BinOp::Div => if r != 0 { l.wrapping_div(r) } else { return None; },
             BinOp::Mod => if r != 0 { l.wrapping_rem(r) } else { return None; },
             BinOp::BitAnd => l & r,
             BinOp::BitOr => l | r,
             BinOp::BitXor => l ^ r,
-            BinOp::Shl => l.wrapping_shl(r as u32),
-            BinOp::Shr => (l as u64).wrapping_shr(r as u32) as i64,
+            BinOp::Shl => {
+                let v = l.wrapping_shl(r as u32);
+                if is_32bit { v as i32 as i64 } else { v }
+            }
+            BinOp::Shr => {
+                if is_unsigned {
+                    if is_32bit {
+                        // 32-bit unsigned shift: mask to 32 bits, then logical shift
+                        ((l as u32).wrapping_shr(r as u32)) as i64
+                    } else {
+                        (l as u64).wrapping_shr(r as u32) as i64
+                    }
+                } else {
+                    if is_32bit {
+                        (l as i32).wrapping_shr(r as u32) as i64
+                    } else {
+                        l.wrapping_shr(r as u32)
+                    }
+                }
+            }
             BinOp::Eq => if l == r { 1 } else { 0 },
             BinOp::Ne => if l != r { 1 } else { 0 },
             BinOp::Lt => if l < r { 1 } else { 0 },
