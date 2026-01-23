@@ -156,6 +156,10 @@ impl Lowerer {
                 let static_id = self.next_static_local;
                 let static_name = format!("{}.{}.{}", self.current_function_name, declarator.name, static_id);
 
+                // Register the bare name -> mangled name mapping before processing the initializer
+                // so that &x in another static's initializer can resolve to the mangled name.
+                self.static_local_names.insert(declarator.name.clone(), static_name.clone());
+
                 // Determine initializer (evaluated at compile time for static locals)
                 let init = if let Some(ref initializer) = declarator.init {
                     self.lower_global_init(initializer, &decl.type_spec, base_ty, is_array, elem_size, actual_alloc_size, &struct_layout, &array_dim_strides)

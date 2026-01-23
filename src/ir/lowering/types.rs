@@ -207,20 +207,32 @@ impl Lowerer {
                         if self.globals.contains_key(name) || self.known_functions.contains(name) {
                             return Some(GlobalInit::GlobalAddr(name.clone()));
                         }
+                        // Check if this is a static local variable (stored under mangled name)
+                        if let Some(mangled) = self.static_local_names.get(name) {
+                            return Some(GlobalInit::GlobalAddr(mangled.clone()));
+                        }
                         None
                     }
                     // &arr[index] -> GlobalAddrOffset("arr", index * elem_size)
                     Expr::ArraySubscript(base, index, _) => {
                         if let Expr::Identifier(name, _) = base.as_ref() {
-                            if let Some(ginfo) = self.globals.get(name.as_str()) {
-                                if ginfo.is_array {
-                                    if let Some(idx_val) = self.eval_const_expr(index) {
-                                        if let Some(idx) = self.const_to_i64(&idx_val) {
-                                            let offset = idx * ginfo.elem_size as i64;
-                                            if offset == 0 {
-                                                return Some(GlobalInit::GlobalAddr(name.clone()));
+                            // Resolve name: check globals directly, then static local aliases
+                            let resolved = if self.globals.contains_key(name.as_str()) {
+                                Some(name.clone())
+                            } else {
+                                self.static_local_names.get(name.as_str()).cloned()
+                            };
+                            if let Some(global_name) = resolved {
+                                if let Some(ginfo) = self.globals.get(&global_name) {
+                                    if ginfo.is_array {
+                                        if let Some(idx_val) = self.eval_const_expr(index) {
+                                            if let Some(idx) = self.const_to_i64(&idx_val) {
+                                                let offset = idx * ginfo.elem_size as i64;
+                                                if offset == 0 {
+                                                    return Some(GlobalInit::GlobalAddr(global_name));
+                                                }
+                                                return Some(GlobalInit::GlobalAddrOffset(global_name, offset));
                                             }
-                                            return Some(GlobalInit::GlobalAddrOffset(name.clone(), offset));
                                         }
                                     }
                                 }
@@ -231,14 +243,22 @@ impl Lowerer {
                     // &s.field -> GlobalAddrOffset("s", field_offset)
                     Expr::MemberAccess(base, field, _) => {
                         if let Expr::Identifier(name, _) = base.as_ref() {
-                            if let Some(ginfo) = self.globals.get(name) {
-                                if let Some(ref layout) = ginfo.struct_layout {
-                                    for f in &layout.fields {
-                                        if f.name == *field {
-                                            if f.offset == 0 {
-                                                return Some(GlobalInit::GlobalAddr(name.clone()));
+                            // Resolve name: check globals directly, then static local aliases
+                            let resolved = if self.globals.contains_key(name.as_str()) {
+                                Some(name.clone())
+                            } else {
+                                self.static_local_names.get(name.as_str()).cloned()
+                            };
+                            if let Some(global_name) = resolved {
+                                if let Some(ginfo) = self.globals.get(&global_name) {
+                                    if let Some(ref layout) = ginfo.struct_layout {
+                                        for f in &layout.fields {
+                                            if f.name == *field {
+                                                if f.offset == 0 {
+                                                    return Some(GlobalInit::GlobalAddr(global_name));
+                                                }
+                                                return Some(GlobalInit::GlobalAddrOffset(global_name, f.offset as i64));
                                             }
-                                            return Some(GlobalInit::GlobalAddrOffset(name.clone(), f.offset as i64));
                                         }
                                     }
                                 }
@@ -258,6 +278,14 @@ impl Lowerer {
                 if let Some(ginfo) = self.globals.get(name) {
                     if ginfo.is_array {
                         return Some(GlobalInit::GlobalAddr(name.clone()));
+                    }
+                }
+                // Check static local array names
+                if let Some(mangled) = self.static_local_names.get(name) {
+                    if let Some(ginfo) = self.globals.get(mangled) {
+                        if ginfo.is_array {
+                            return Some(GlobalInit::GlobalAddr(mangled.clone()));
+                        }
                     }
                 }
                 None

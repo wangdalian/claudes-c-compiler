@@ -120,6 +120,9 @@ pub struct Lowerer {
     pub(super) function_ptr_return_types: HashMap<String, IrType>,
     /// Function pointer variable name -> parameter types mapping.
     pub(super) function_ptr_param_types: HashMap<String, Vec<IrType>>,
+    /// Mapping from bare static local variable names to their mangled global names.
+    /// e.g., "x" -> "main.x.0" for `static int x;` inside `main()`.
+    pub(super) static_local_names: HashMap<String, String>,
 }
 
 impl Lowerer {
@@ -156,6 +159,7 @@ impl Lowerer {
             function_variadic: HashSet::new(),
             function_ptr_return_types: HashMap::new(),
             function_ptr_param_types: HashMap::new(),
+            static_local_names: HashMap::new(),
         }
     }
 
@@ -307,6 +311,7 @@ impl Lowerer {
         self.next_value = 0;
         self.current_blocks.clear();
         self.locals.clear();
+        self.static_local_names.clear();
         self.break_labels.clear();
         self.continue_labels.clear();
         self.user_labels.clear();
