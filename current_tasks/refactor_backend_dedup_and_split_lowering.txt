@@ -1,0 +1,18 @@
+Task: Major backend deduplication and lowering.rs split
+
+1. Extract duplicated code from x86/arm/riscv backends into shared modules:
+   - Common assembler (parameterized by toolchain command)
+   - Common linker (parameterized by toolchain command and flags)
+   - Shared data emission (globals, string literals, const data) into backend/common.rs
+
+2. Add a Backend trait to unify codegen/assembler/linker dispatch in the driver
+
+3. Split lowering.rs (2552 lines) into:
+   - lowering.rs (core orchestration + function lowering)
+   - expr.rs (expression lowering)
+   - stmt.rs (statement lowering)
+   - types.rs (type conversion helpers)
+
+4. Add README.md files to each major subdirectory
+
+Status: In progress
