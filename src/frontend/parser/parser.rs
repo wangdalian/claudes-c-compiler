@@ -1107,9 +1107,42 @@ impl Parser {
             };
             TypeSpecifier::Enum(name, variants)
         } else if has_typeof {
-            // TODO: proper typeof support
-            self.skip_balanced_parens();
-            TypeSpecifier::Int
+            // typeof(expr) or typeof(type-name) - GCC extension
+            self.expect(&TokenKind::LParen);
+            let save = self.pos;
+            // Try parsing as a type first
+            if self.is_type_specifier() {
+                if let Some(ts) = self.parse_type_specifier() {
+                    let mut result_type = ts;
+                    // Parse pointer declarators
+                    while self.consume_if(&TokenKind::Star) {
+                        result_type = TypeSpecifier::Pointer(Box::new(result_type));
+                        self.skip_cv_qualifiers();
+                    }
+                    // Handle array dimensions
+                    while matches!(self.peek(), TokenKind::LBracket) {
+                        self.advance();
+                        let size = if matches!(self.peek(), TokenKind::RBracket) {
+                            None
+                        } else {
+                            Some(Box::new(self.parse_expr()))
+                        };
+                        self.expect(&TokenKind::RBracket);
+                        result_type = TypeSpecifier::Array(Box::new(result_type), size);
+                    }
+                    if matches!(self.peek(), TokenKind::RParen) {
+                        self.advance();
+                        return Some(TypeSpecifier::TypeofType(Box::new(result_type)));
+                    }
+                }
+                // Didn't work as type, backtrack and try as expression
+                self.pos = save;
+                self.expect(&TokenKind::LParen);
+            }
+            // Parse as expression
+            let expr = self.parse_expr();
+            self.expect(&TokenKind::RParen);
+            TypeSpecifier::Typeof(Box::new(expr))
         } else if let Some(name) = typedef_name {
             TypeSpecifier::TypedefName(name)
         } else if has_char {
@@ -3012,6 +3045,32 @@ impl Parser {
                 let type_spec = self.parse_va_arg_type();
                 self.expect(&TokenKind::RParen);
                 Expr::VaArg(Box::new(ap_expr), type_spec, span)
+            }
+            TokenKind::BuiltinTypesCompatibleP => {
+                // __builtin_types_compatible_p(type1, type2) - GCC extension
+                // Takes two type arguments, returns 1 if compatible, 0 otherwise
+                // We always return 0 (conservative)
+                let span = self.peek_span();
+                self.advance();
+                self.expect(&TokenKind::LParen);
+                // Parse first type argument
+                self.parse_va_arg_type();
+                self.expect(&TokenKind::Comma);
+                // Parse second type argument
+                self.parse_va_arg_type();
+                self.expect(&TokenKind::RParen);
+                Expr::IntLiteral(0, span)
+            }
+            TokenKind::Typeof => {
+                // typeof used in expression context (e.g. as sizeof argument)
+                // Parse typeof(expr) or typeof(type) and treat as a type expression
+                // When used directly in expression context, just skip and return 0
+                let span = self.peek_span();
+                self.advance();
+                if matches!(self.peek(), TokenKind::LParen) {
+                    self.skip_balanced_parens();
+                }
+                Expr::IntLiteral(0, span)
             }
             TokenKind::Builtin => {
                 // __builtin_va_list used as identifier/type - treat as identifier

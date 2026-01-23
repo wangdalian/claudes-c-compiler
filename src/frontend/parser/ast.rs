@@ -121,6 +121,10 @@ pub enum TypeSpecifier {
     TypedefName(String),
     Pointer(Box<TypeSpecifier>),
     Array(Box<TypeSpecifier>, Option<Box<Expr>>),
+    /// typeof(expr) - GCC extension: type of an expression
+    Typeof(Box<Expr>),
+    /// typeof(type-name) - GCC extension: type from a type name
+    TypeofType(Box<TypeSpecifier>),
 }
 
 /// A field declaration in a struct/union.

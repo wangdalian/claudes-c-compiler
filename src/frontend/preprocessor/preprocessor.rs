@@ -1221,10 +1221,17 @@ fn strip_line_comment(line: &str) -> String {
 }
 
 /// Split a string into the first word and the rest.
+/// For preprocessor directives, '(' is also a word boundary so that
+/// `#if(expr)` is correctly parsed as keyword="if", rest="(expr)".
 fn split_first_word(s: &str) -> (&str, &str) {
     let s = s.trim();
-    if let Some(pos) = s.find(|c: char| c.is_whitespace()) {
-        (&s[..pos], s[pos..].trim())
+    if let Some(pos) = s.find(|c: char| c.is_whitespace() || c == '(') {
+        if s.as_bytes()[pos] == b'(' {
+            // Don't trim the '(' - it's part of the rest
+            (&s[..pos], &s[pos..])
+        } else {
+            (&s[..pos], s[pos..].trim())
+        }
     } else {
         (s, "")
     }

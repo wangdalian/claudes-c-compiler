@@ -525,6 +525,15 @@ impl SemanticAnalyzer {
                     CType::Int
                 }
             }
+            TypeSpecifier::Typeof(_expr) => {
+                // typeof(expr): would need expression type inference
+                // For now, treat as int (sema doesn't have full expr type resolution)
+                CType::Int
+            }
+            TypeSpecifier::TypeofType(inner) => {
+                // typeof(type-name): just resolve the inner type
+                self.type_spec_to_ctype(inner)
+            }
         }
     }
 

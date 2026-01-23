@@ -28,6 +28,24 @@ impl Lowerer {
     }
 
     pub(super) fn lower_local_decl(&mut self, decl: &Declaration) {
+        // Resolve typeof(expr) to concrete type before processing
+        let resolved_decl;
+        let decl = if matches!(&decl.type_spec, TypeSpecifier::Typeof(_) | TypeSpecifier::TypeofType(_)) {
+            let resolved_type_spec = self.resolve_typeof(&decl.type_spec);
+            resolved_decl = Declaration {
+                type_spec: resolved_type_spec,
+                declarators: decl.declarators.clone(),
+                is_typedef: decl.is_typedef,
+                is_static: decl.is_static,
+                is_extern: decl.is_extern,
+                is_const: decl.is_const,
+                span: decl.span,
+            };
+            &resolved_decl
+        } else {
+            decl
+        };
+
         // First, register any struct/union definition from the type specifier
         self.register_struct_type(&decl.type_spec);
 

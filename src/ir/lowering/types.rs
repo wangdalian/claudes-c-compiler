@@ -1110,15 +1110,98 @@ impl Lowerer {
         let mut current = ts;
         // Follow typedef chains (limit depth to prevent infinite loops)
         for _ in 0..32 {
-            if let TypeSpecifier::TypedefName(name) = current {
-                if let Some(resolved) = self.typedefs.get(name) {
-                    current = resolved;
+            match current {
+                TypeSpecifier::TypedefName(name) => {
+                    if let Some(resolved) = self.typedefs.get(name) {
+                        current = resolved;
+                        continue;
+                    }
+                }
+                TypeSpecifier::TypeofType(inner) => {
+                    // typeof(type-name): resolve the inner type directly
+                    current = inner;
                     continue;
                 }
+                _ => {}
             }
             break;
         }
         current
+    }
+
+    /// Resolve typeof(expr) to a concrete TypeSpecifier by analyzing the expression type.
+    /// Returns a new TypeSpecifier if the input is Typeof, otherwise returns a clone of the input.
+    pub(super) fn resolve_typeof(&self, ts: &TypeSpecifier) -> TypeSpecifier {
+        match ts {
+            TypeSpecifier::Typeof(expr) => {
+                if let Some(ctype) = self.get_expr_ctype(expr) {
+                    Self::ctype_to_type_spec(&ctype)
+                } else {
+                    TypeSpecifier::Int // fallback
+                }
+            }
+            TypeSpecifier::TypeofType(inner) => {
+                // Recursively resolve inner
+                self.resolve_typeof(inner)
+            }
+            TypeSpecifier::TypedefName(name) => {
+                if let Some(resolved) = self.typedefs.get(name) {
+                    // Check if the typedef itself is a typeof
+                    self.resolve_typeof(resolved)
+                } else {
+                    ts.clone()
+                }
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// Convert a CType back to a TypeSpecifier (for typeof resolution).
+    fn ctype_to_type_spec(ctype: &CType) -> TypeSpecifier {
+        match ctype {
+            CType::Void => TypeSpecifier::Void,
+            CType::Bool => TypeSpecifier::Bool,
+            CType::Char => TypeSpecifier::Char,
+            CType::UChar => TypeSpecifier::UnsignedChar,
+            CType::Short => TypeSpecifier::Short,
+            CType::UShort => TypeSpecifier::UnsignedShort,
+            CType::Int => TypeSpecifier::Int,
+            CType::UInt => TypeSpecifier::UnsignedInt,
+            CType::Long => TypeSpecifier::Long,
+            CType::ULong => TypeSpecifier::UnsignedLong,
+            CType::LongLong => TypeSpecifier::LongLong,
+            CType::ULongLong => TypeSpecifier::UnsignedLongLong,
+            CType::Float => TypeSpecifier::Float,
+            CType::Double => TypeSpecifier::Double,
+            CType::LongDouble => TypeSpecifier::LongDouble,
+            CType::ComplexFloat => TypeSpecifier::ComplexFloat,
+            CType::ComplexDouble => TypeSpecifier::ComplexDouble,
+            CType::ComplexLongDouble => TypeSpecifier::ComplexLongDouble,
+            CType::Pointer(inner) => TypeSpecifier::Pointer(Box::new(Self::ctype_to_type_spec(inner))),
+            CType::Array(elem, size) => TypeSpecifier::Array(
+                Box::new(Self::ctype_to_type_spec(elem)),
+                size.map(|s| Box::new(Expr::IntLiteral(s as i64, crate::common::source::Span::dummy()))),
+            ),
+            CType::Struct(st) => {
+                // Return as struct tag reference if possible
+                if let Some(name) = &st.name {
+                    TypeSpecifier::Struct(Some(name.clone()), None, false)
+                } else {
+                    TypeSpecifier::Int // anonymous struct fallback
+                }
+            }
+            CType::Union(st) => {
+                if let Some(name) = &st.name {
+                    TypeSpecifier::Union(Some(name.clone()), None, false)
+                } else {
+                    TypeSpecifier::Int // anonymous union fallback
+                }
+            }
+            CType::Enum(et) => {
+                TypeSpecifier::Enum(et.name.clone(), None)
+            }
+            CType::Function { .. } => TypeSpecifier::Int, // function type fallback
+        }
     }
 
     /// Pre-populate typedef mappings for builtin/standard types.
@@ -1325,6 +1408,8 @@ impl Lowerer {
             TypeSpecifier::TypedefName(_) => IrType::I64, // fallback for unresolved typedef
             TypeSpecifier::Signed => IrType::I32,
             TypeSpecifier::Unsigned => IrType::U32,
+            TypeSpecifier::Typeof(_) => IrType::I64, // fallback: typeof(expr) not resolved at IR level
+            TypeSpecifier::TypeofType(inner) => self.type_spec_to_ir(inner),
         }
     }
 
@@ -2011,6 +2096,14 @@ impl Lowerer {
             }
             TypeSpecifier::Enum(_, _) => CType::Int, // enums are int-sized
             TypeSpecifier::TypedefName(_) => CType::Int, // TODO: resolve typedef
+            TypeSpecifier::Typeof(expr) => {
+                // typeof(expr): get type from expression
+                self.get_expr_ctype(expr).unwrap_or(CType::Int)
+            }
+            TypeSpecifier::TypeofType(inner_ts) => {
+                // typeof(type): just use the inner type
+                self.type_spec_to_ctype(inner_ts)
+            }
         }
     }
 
