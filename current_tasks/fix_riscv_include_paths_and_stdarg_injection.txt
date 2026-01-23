@@ -1,0 +1,14 @@
+Task: Fix RISC-V missing GCC 13 include path and add stdarg.h header injection
+
+Problem:
+- RISC-V backend set_target() is missing /usr/lib/gcc-cross/riscv64-linux-gnu/13/include
+  in its system_include_paths list (only has versions 11 and 12)
+- This means #include <stdarg.h> silently fails on RISC-V, causing va_start/va_arg/va_end
+  to be treated as function calls instead of builtins
+- Results in 100% failure rate for all stdarg/va_list tests on RISC-V
+
+Fix:
+1. Add GCC 13 include path to RISC-V set_target()
+2. Add stdarg.h header injection (define va_start/va_arg/va_end/va_copy macros)
+   so the compiler works even without system headers
+3. Add regression test
