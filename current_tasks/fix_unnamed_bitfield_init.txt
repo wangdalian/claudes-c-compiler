@@ -1,0 +1,23 @@
+Task: Fix unnamed bitfield initialization
+Status: IN PROGRESS
+
+Problem:
+Unnamed bitfields (e.g., `unsigned int :3`) are incorrectly receiving initializer values
+during struct initialization. According to C11 6.7.9p9, unnamed members of struct types
+do not participate in initialization.
+
+Root Cause:
+1. StructLayout::for_struct() includes unnamed bitfields (non-zero width, empty name)
+   in the field_layouts list - this is correct for layout computation but causes issues
+   for initialization.
+2. resolve_init_field_idx() does not skip unnamed bitfields when doing positional init.
+   It returns current_idx directly, which may point to an unnamed bitfield.
+
+Fix:
+Modify resolve_init_field_idx() to skip over unnamed bitfield fields (name is empty
+AND bit_width is Some) during positional initialization.
+
+This should fix ~36 compiler_suite_0013 test failures plus potentially other bitfield tests.
+
+Affected files:
+- src/common/types.rs (resolve_init_field_idx)
