@@ -1,0 +1,12 @@
+Task: Implement C preprocessor macro expansion and conditionals
+
+Implementing:
+- #define object-like macros (e.g., #define N 64)
+- #define function-like macros (e.g., #define MAX(a,b) ((a)>(b)?(a):(b)))
+- #ifdef/#ifndef/#if/#else/#elif/#endif conditional compilation
+- #undef
+- Predefined macros (__LINE__, __FILE__, __DATE__, __TIME__, etc.)
+- Token pasting (##) and stringification (#)
+- Recursive macro expansion with self-reference prevention
+
+This is critical for the test suite as many tests use #define macros.
