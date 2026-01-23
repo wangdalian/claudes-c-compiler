@@ -410,20 +410,33 @@ impl Lexer {
 
     fn lex_char(&mut self, start: usize) -> Token {
         self.pos += 1; // skip opening '
-        let ch = if self.pos < self.input.len() && self.input[self.pos] == b'\\' {
-            self.pos += 1;
-            self.lex_escape_char()
-        } else if self.pos < self.input.len() {
-            let c = self.input[self.pos] as char;
-            self.pos += 1;
-            c
-        } else {
-            '\0'
-        };
+        let mut value: i32 = 0;
+        let mut char_count = 0;
+        while self.pos < self.input.len() && self.input[self.pos] != b'\'' {
+            let ch = if self.input[self.pos] == b'\\' {
+                self.pos += 1;
+                self.lex_escape_char()
+            } else {
+                let c = self.input[self.pos] as char;
+                self.pos += 1;
+                c
+            };
+            // Multi-character constant: shift previous value and add new byte
+            value = (value << 8) | (ch as u8 as i32);
+            char_count += 1;
+        }
         if self.pos < self.input.len() && self.input[self.pos] == b'\'' {
             self.pos += 1; // skip closing '
         }
-        Token::new(TokenKind::CharLiteral(ch), Span::new(start as u32, self.pos as u32, self.file_id))
+        let span = Span::new(start as u32, self.pos as u32, self.file_id);
+        if char_count <= 1 {
+            // Single character: use CharLiteral with the char value
+            let ch = if value == 0 { '\0' } else { (value as u8) as char };
+            Token::new(TokenKind::CharLiteral(ch), span)
+        } else {
+            // Multi-character constant: produce an IntLiteral with the combined value
+            Token::new(TokenKind::IntLiteral(value as i64), span)
+        }
     }
 
     fn lex_escape_char(&mut self) -> char {

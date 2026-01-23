@@ -109,6 +109,10 @@ impl Lowerer {
                 };
                 Some(IrConst::I64(size as i64))
             }
+            Expr::Alignof(ref ts, _) => {
+                let align = self.alignof_type(ts);
+                Some(IrConst::I64(align as i64))
+            }
             Expr::Conditional(cond, then_e, else_e, _) => {
                 // Ternary in constant expr: evaluate condition and pick branch
                 let cond_val = self.eval_const_expr(cond)?;
@@ -644,6 +648,34 @@ impl Lowerer {
             Expr::PostfixOp(_, inner, _) => return self.get_expr_type(inner),
             Expr::AddressOf(_, _) => return IrType::Ptr,
             Expr::Sizeof(_, _) => return IrType::U64,  // sizeof returns size_t (unsigned long)
+            Expr::GenericSelection(controlling, associations, _) => {
+                // Resolve _Generic by matching the controlling expression's type
+                let controlling_ctype = self.get_expr_ctype(controlling);
+                let controlling_ir_type = self.get_expr_type(controlling);
+                let mut default_expr: Option<&Expr> = None;
+                for assoc in associations.iter() {
+                    match &assoc.type_spec {
+                        None => { default_expr = Some(&assoc.expr); }
+                        Some(type_spec) => {
+                            let assoc_ctype = self.type_spec_to_ctype(type_spec);
+                            if let Some(ref ctrl_ct) = controlling_ctype {
+                                if self.ctype_matches_generic(ctrl_ct, &assoc_ctype) {
+                                    return self.get_expr_type(&assoc.expr);
+                                }
+                            } else {
+                                let assoc_ir_type = self.type_spec_to_ir(type_spec);
+                                if assoc_ir_type == controlling_ir_type {
+                                    return self.get_expr_type(&assoc.expr);
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(def) = default_expr {
+                    return self.get_expr_type(def);
+                }
+                return IrType::I64;
+            }
             Expr::FunctionCall(func, _, _) => {
                 // Look up the return type of the called function
                 if let Expr::Identifier(name, _) = func.as_ref() {
@@ -1072,6 +1104,42 @@ impl Lowerer {
         }
     }
 
+    /// Compute the alignment of a type in bytes (_Alignof).
+    pub(super) fn alignof_type(&self, ts: &TypeSpecifier) -> usize {
+        let ts = self.resolve_type_spec(ts);
+        match ts {
+            TypeSpecifier::Void => 1,
+            TypeSpecifier::Bool => 1,
+            TypeSpecifier::Char | TypeSpecifier::UnsignedChar => 1,
+            TypeSpecifier::Short | TypeSpecifier::UnsignedShort => 2,
+            TypeSpecifier::Int | TypeSpecifier::UnsignedInt => 4,
+            TypeSpecifier::Long | TypeSpecifier::UnsignedLong
+            | TypeSpecifier::LongLong | TypeSpecifier::UnsignedLongLong => 8,
+            TypeSpecifier::Float => 4,
+            TypeSpecifier::Double => 8,
+            TypeSpecifier::Pointer(_) => 8,
+            TypeSpecifier::Array(elem, _) => self.alignof_type(elem),
+            TypeSpecifier::Struct(_, Some(fields)) | TypeSpecifier::Union(_, Some(fields)) => {
+                let mut max_align = 1;
+                for f in fields {
+                    let a = self.alignof_type(&f.type_spec);
+                    if a > max_align { max_align = a; }
+                }
+                max_align
+            }
+            TypeSpecifier::Struct(Some(tag), None) => {
+                let key = format!("struct.{}", tag);
+                self.struct_layouts.get(&key).map(|l| l.align).unwrap_or(8)
+            }
+            TypeSpecifier::Union(Some(tag), None) => {
+                let key = format!("union.{}", tag);
+                self.struct_layouts.get(&key).map(|l| l.align).unwrap_or(8)
+            }
+            TypeSpecifier::Enum(_, _) => 4,
+            _ => 8,
+        }
+    }
+
     /// For a pointer-to-array parameter type (e.g., Pointer(Array(Array(Int, 4), 3))),
     /// compute the array dimension strides for multi-dimensional subscript access.
     /// Returns strides for depth 0, 1, 2, ... where depth 0 is the outermost subscript.
@@ -1277,8 +1345,8 @@ impl Lowerer {
                 4 // default: int element
             }
 
-            // sizeof(sizeof(...)) -> size_t = 8 on 64-bit
-            Expr::Sizeof(_, _) => 8,
+            // sizeof(sizeof(...)) or sizeof(_Alignof(...)) -> size_t = 8 on 64-bit
+            Expr::Sizeof(_, _) | Expr::Alignof(_, _) => 8,
 
             // Cast: size of the target type
             Expr::Cast(target_type, _, _) => {
@@ -1816,6 +1884,15 @@ impl Lowerer {
                     _ => None,
                 }
             }
+            // Literal types for _Generic support
+            Expr::IntLiteral(_, _) => Some(CType::Int),
+            Expr::UIntLiteral(_, _) => Some(CType::UInt),
+            Expr::LongLiteral(_, _) => Some(CType::Long),
+            Expr::ULongLiteral(_, _) => Some(CType::ULong),
+            Expr::CharLiteral(_, _) => Some(CType::Int), // char literals have type int in C
+            Expr::FloatLiteral(_, _) => Some(CType::Double),
+            Expr::FloatLiteralF32(_, _) => Some(CType::Float),
+            Expr::StringLiteral(_, _) => Some(CType::Pointer(Box::new(CType::Char))),
             Expr::FunctionCall(func, _, _) => {
                 if let Expr::Identifier(name, _) = func.as_ref() {
                     if let Some(ctype) = self.function_return_ctypes.get(name) {

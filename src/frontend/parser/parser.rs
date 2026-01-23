@@ -250,6 +250,30 @@ impl Parser {
             }));
         }
 
+        // Handle storage-class specifiers and alignment specifiers that appear after the type.
+        // In C, "struct { int i; } typedef name;" and "char _Alignas(16) x;" are valid.
+        loop {
+            match self.peek() {
+                TokenKind::Typedef => { self.advance(); self.parsing_typedef = true; }
+                TokenKind::Static => { self.advance(); self.parsing_static = true; }
+                TokenKind::Extern => { self.advance(); self.parsing_extern = true; }
+                TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict
+                | TokenKind::Inline | TokenKind::Register | TokenKind::Auto => { self.advance(); }
+                TokenKind::Alignas => {
+                    self.advance();
+                    if matches!(self.peek(), TokenKind::LParen) {
+                        self.skip_balanced_parens();
+                    }
+                }
+                TokenKind::Attribute => {
+                    self.advance();
+                    self.skip_balanced_parens();
+                }
+                TokenKind::Extension => { self.advance(); }
+                _ => break,
+            }
+        }
+
         // Parse declarator(s)
         let (name, derived) = self.parse_declarator();
 
@@ -1386,6 +1410,30 @@ impl Parser {
         self.parsing_typedef = false;
         self.parsing_inline = false;
         let type_spec = self.parse_type_specifier()?;
+
+        // Handle storage-class specifiers and alignment specifiers that appear after the type.
+        loop {
+            match self.peek() {
+                TokenKind::Typedef => { self.advance(); self.parsing_typedef = true; }
+                TokenKind::Static => { self.advance(); self.parsing_static = true; }
+                TokenKind::Extern => { self.advance(); self.parsing_extern = true; }
+                TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict
+                | TokenKind::Inline | TokenKind::Register | TokenKind::Auto => { self.advance(); }
+                TokenKind::Alignas => {
+                    self.advance();
+                    if matches!(self.peek(), TokenKind::LParen) {
+                        self.skip_balanced_parens();
+                    }
+                }
+                TokenKind::Attribute => {
+                    self.advance();
+                    self.skip_balanced_parens();
+                }
+                TokenKind::Extension => { self.advance(); }
+                _ => break,
+            }
+        }
+
         let is_static = self.parsing_static;
         let is_extern = self.parsing_extern;
 
@@ -1987,6 +2035,27 @@ impl Parser {
                 let expr = self.parse_unary_expr();
                 Expr::Sizeof(Box::new(SizeofArg::Expr(expr)), span)
             }
+            TokenKind::Alignof => {
+                let span = self.peek_span();
+                self.advance();
+                // _Alignof(type) - always requires parenthesized type
+                self.expect(&TokenKind::LParen);
+                if let Some(ts) = self.parse_type_specifier() {
+                    let mut result_type = ts;
+                    while self.consume_if(&TokenKind::Star) {
+                        result_type = TypeSpecifier::Pointer(Box::new(result_type));
+                        self.skip_cv_qualifiers();
+                    }
+                    self.expect(&TokenKind::RParen);
+                    Expr::Alignof(result_type, span)
+                } else {
+                    // Fallback: treat as sizeof-like with expression
+                    let expr = self.parse_assignment_expr();
+                    self.expect(&TokenKind::RParen);
+                    // Use 8 as default alignment (pointer alignment on x86-64)
+                    Expr::IntLiteral(8, span)
+                }
+            }
             _ => self.parse_postfix_expr(),
         }
     }
@@ -2126,6 +2195,50 @@ impl Parser {
                     self.expect(&TokenKind::RParen);
                     expr
                 }
+            }
+            TokenKind::Generic => {
+                // _Generic(controlling_expr, type1: expr1, type2: expr2, ..., default: exprN)
+                let span = self.peek_span();
+                self.advance(); // consume _Generic
+                self.expect(&TokenKind::LParen);
+                // Parse controlling expression
+                let controlling = self.parse_assignment_expr();
+                self.expect(&TokenKind::Comma);
+                // Parse associations
+                let mut associations = Vec::new();
+                loop {
+                    if matches!(self.peek(), TokenKind::RParen) {
+                        break;
+                    }
+                    let type_spec = if matches!(self.peek(), TokenKind::Default) {
+                        self.advance(); // consume 'default'
+                        None
+                    } else {
+                        // Parse type-name: type-specifier followed by optional abstract-declarator
+                        if let Some(mut ts) = self.parse_type_specifier() {
+                            // Handle pointer declarators (e.g., char *, int **, const int *)
+                            while matches!(self.peek(), TokenKind::Star) {
+                                self.advance(); // consume '*'
+                                // Skip qualifiers after pointer
+                                while matches!(self.peek(), TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict) {
+                                    self.advance();
+                                }
+                                ts = TypeSpecifier::Pointer(Box::new(ts));
+                            }
+                            Some(ts)
+                        } else {
+                            None
+                        }
+                    };
+                    self.expect(&TokenKind::Colon);
+                    let expr = self.parse_assignment_expr();
+                    associations.push(GenericAssociation { type_spec, expr });
+                    if !self.consume_if(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&TokenKind::RParen);
+                Expr::GenericSelection(Box::new(controlling), associations, span)
             }
             TokenKind::Asm => {
                 // GCC asm expression: asm [volatile] (string : outputs : inputs : clobbers)

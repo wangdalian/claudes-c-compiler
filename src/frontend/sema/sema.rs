@@ -387,7 +387,7 @@ impl SemanticAnalyzer {
             Expr::Cast(_, inner, _) => {
                 self.analyze_expr(inner);
             }
-            Expr::Sizeof(..) => {} // sizeof is always compile-time
+            Expr::Sizeof(..) | Expr::Alignof(..) => {} // sizeof/_Alignof are always compile-time
             Expr::AddressOf(inner, _) => {
                 self.analyze_expr(inner);
             }
@@ -406,6 +406,12 @@ impl SemanticAnalyzer {
             }
             Expr::VaArg(ap_expr, _, _) => {
                 self.analyze_expr(ap_expr);
+            }
+            Expr::GenericSelection(controlling, associations, _) => {
+                self.analyze_expr(controlling);
+                for assoc in associations {
+                    self.analyze_expr(&assoc.expr);
+                }
             }
             // Literals don't need analysis
             Expr::IntLiteral(_, _)
@@ -614,6 +620,9 @@ impl SemanticAnalyzer {
                     }
                 }
             }
+            Expr::Alignof(ref ts, _) => {
+                Some(self.alignof_type_spec(ts) as i64)
+            }
             _ => None,
         }
     }
@@ -640,6 +649,22 @@ impl SemanticAnalyzer {
                 }
             }
             TypeSpecifier::Array(_, None) => 8, // incomplete array
+            _ => 8, // default for structs, enums, etc.
+        }
+    }
+
+    /// Rough alignof for a type specifier.
+    fn alignof_type_spec(&self, spec: &TypeSpecifier) -> usize {
+        match spec {
+            TypeSpecifier::Void | TypeSpecifier::Bool => 1,
+            TypeSpecifier::Char | TypeSpecifier::UnsignedChar => 1,
+            TypeSpecifier::Short | TypeSpecifier::UnsignedShort => 2,
+            TypeSpecifier::Int | TypeSpecifier::UnsignedInt | TypeSpecifier::Signed | TypeSpecifier::Unsigned => 4,
+            TypeSpecifier::Long | TypeSpecifier::UnsignedLong | TypeSpecifier::LongLong | TypeSpecifier::UnsignedLongLong => 8,
+            TypeSpecifier::Float => 4,
+            TypeSpecifier::Double => 8,
+            TypeSpecifier::Pointer(_) => 8,
+            TypeSpecifier::Array(elem, _) => self.alignof_type_spec(elem),
             _ => 8, // default for structs, enums, etc.
         }
     }

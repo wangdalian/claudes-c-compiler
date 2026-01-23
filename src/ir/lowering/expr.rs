@@ -38,6 +38,10 @@ impl Lowerer {
                 self.lower_compound_literal(type_spec, init)
             }
             Expr::Sizeof(arg, _) => self.lower_sizeof(arg),
+            Expr::Alignof(ref type_spec, _) => {
+                let align = self.alignof_type(type_spec);
+                Operand::Const(IrConst::I64(align as i64))
+            }
             Expr::AddressOf(inner, _) => self.lower_address_of(inner),
             Expr::Deref(inner, _) => self.lower_deref(inner),
             Expr::ArraySubscript(base, index, _) => self.lower_array_subscript(expr, base, index),
@@ -53,6 +57,9 @@ impl Lowerer {
             }
             Expr::StmtExpr(compound, _) => self.lower_stmt_expr(compound),
             Expr::VaArg(ap_expr, type_spec, _) => self.lower_va_arg(ap_expr, type_spec),
+            Expr::GenericSelection(controlling, associations, _) => {
+                self.lower_generic_selection(controlling, associations)
+            }
         }
     }
 
@@ -70,7 +77,8 @@ impl Lowerer {
     }
 
     fn lower_identifier(&mut self, name: &str) -> Operand {
-        // Predefined function name identifiers: __func__, __FUNCTION__, __PRETTY_FUNCTION__
+        // Predefined identifiers: __func__, __FUNCTION__, __PRETTY_FUNCTION__
+        // These are implicitly defined as static const char[] containing the function name.
         if name == "__func__" || name == "__FUNCTION__" || name == "__PRETTY_FUNCTION__" {
             return self.lower_string_literal(&self.current_function_name.clone());
         }
@@ -1624,6 +1632,75 @@ impl Lowerer {
             SizeofArg::Expr(expr) => self.sizeof_expr(expr),
         };
         Operand::Const(IrConst::I64(size as i64))
+    }
+
+    /// Lower a _Generic selection expression by matching the controlling expression's
+    /// type against the type associations.
+    fn lower_generic_selection(&mut self, controlling: &Expr, associations: &[GenericAssociation]) -> Operand {
+        // Determine the C type of the controlling expression
+        let controlling_ctype = self.get_expr_ctype(controlling);
+        let controlling_ir_type = self.get_expr_type(controlling);
+
+        // Find the matching association
+        let mut default_expr: Option<&Expr> = None;
+        let mut matched_expr: Option<&Expr> = None;
+
+        for assoc in associations {
+            match &assoc.type_spec {
+                None => {
+                    // "default" association
+                    default_expr = Some(&assoc.expr);
+                }
+                Some(type_spec) => {
+                    let assoc_ctype = self.type_spec_to_ctype(type_spec);
+                    // Match based on CType if available
+                    if let Some(ref ctrl_ct) = controlling_ctype {
+                        if self.ctype_matches_generic(ctrl_ct, &assoc_ctype) {
+                            matched_expr = Some(&assoc.expr);
+                            break;
+                        }
+                    } else {
+                        // Fall back to IrType matching
+                        let assoc_ir_type = self.type_spec_to_ir(type_spec);
+                        if assoc_ir_type == controlling_ir_type {
+                            matched_expr = Some(&assoc.expr);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Use matched expression, or default, or first available
+        let selected = matched_expr.or(default_expr).unwrap_or_else(|| {
+            // If no match found, use the first association's expr (shouldn't happen in valid C)
+            &associations[0].expr
+        });
+
+        self.lower_expr(selected)
+    }
+
+    /// Check if a controlling CType matches a _Generic association CType.
+    /// This handles the standard C11 type compatibility rules for _Generic.
+    pub(super) fn ctype_matches_generic(&self, controlling: &CType, assoc: &CType) -> bool {
+        // Direct match
+        if controlling == assoc {
+            return true;
+        }
+        // In C, _Generic uses the type of the controlling expression after
+        // lvalue conversion, array-to-pointer decay, and function-to-pointer decay.
+        // For our purposes, exact match on the CType is sufficient for most cases.
+        // Handle some special cases:
+        match (controlling, assoc) {
+            // char and signed char are distinct in C but map the same in our CType
+            (CType::Char, CType::Char) => true,
+            // Long and LongLong are same size on LP64 but different types
+            (CType::Long, CType::Long) => true,
+            (CType::LongLong, CType::LongLong) => true,
+            // Pointer types: match if same pointee
+            (CType::Pointer(a), CType::Pointer(b)) => a == b,
+            _ => false,
+        }
     }
 
     // -----------------------------------------------------------------------

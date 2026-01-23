@@ -196,9 +196,19 @@ pub enum Expr {
     Sizeof(Box<SizeofArg>, Span),
     /// __builtin_va_arg(ap, type): extract next variadic argument of given type
     VaArg(Box<Expr>, TypeSpecifier, Span),
+    Alignof(TypeSpecifier, Span),
     Comma(Box<Expr>, Box<Expr>, Span),
     AddressOf(Box<Expr>, Span),
     Deref(Box<Expr>, Span),
+    /// _Generic(controlling_expr, type1: expr1, type2: expr2, ..., default: exprN)
+    GenericSelection(Box<Expr>, Vec<GenericAssociation>, Span),
+}
+
+/// A _Generic association: either a type-expression pair, or a default expression.
+#[derive(Debug, Clone)]
+pub struct GenericAssociation {
+    pub type_spec: Option<TypeSpecifier>, // None for "default"
+    pub expr: Expr,
 }
 
 /// Sizeof argument can be a type or expression.
@@ -270,8 +280,9 @@ impl Expr {
             | Expr::FunctionCall(_, _, s) | Expr::ArraySubscript(_, _, s)
             | Expr::MemberAccess(_, _, s) | Expr::PointerMemberAccess(_, _, s)
             | Expr::Cast(_, _, s) | Expr::CompoundLiteral(_, _, s) | Expr::StmtExpr(_, s)
-            | Expr::Sizeof(_, s) | Expr::VaArg(_, _, s) | Expr::Comma(_, _, s)
-            | Expr::AddressOf(_, s) | Expr::Deref(_, s) => *s,
+            | Expr::Sizeof(_, s) | Expr::VaArg(_, _, s) | Expr::Alignof(_, s) | Expr::Comma(_, _, s)
+            | Expr::AddressOf(_, s) | Expr::Deref(_, s)
+            | Expr::GenericSelection(_, _, s) => *s,
         }
     }
 }

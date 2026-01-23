@@ -121,6 +121,12 @@ static BUILTIN_MAP: LazyLock<HashMap<&'static str, BuiltinInfo>> = LazyLock::new
     m.insert("__builtin_bswap16", BuiltinInfo::intrinsic(BuiltinIntrinsic::Bswap));
     m.insert("__builtin_bswap32", BuiltinInfo::intrinsic(BuiltinIntrinsic::Bswap));
     m.insert("__builtin_bswap64", BuiltinInfo::intrinsic(BuiltinIntrinsic::Bswap));
+    m.insert("__builtin_ffs", BuiltinInfo::simple("ffs"));
+    m.insert("__builtin_ffsl", BuiltinInfo::simple("ffsl"));
+    m.insert("__builtin_ffsll", BuiltinInfo::simple("ffsll"));
+    m.insert("__builtin_parity", BuiltinInfo::intrinsic(BuiltinIntrinsic::Parity));
+    m.insert("__builtin_parityl", BuiltinInfo::intrinsic(BuiltinIntrinsic::Parity));
+    m.insert("__builtin_parityll", BuiltinInfo::intrinsic(BuiltinIntrinsic::Parity));
 
     // Atomics (map to libc atomic helpers for now)
     m.insert("__sync_synchronize", BuiltinInfo::intrinsic(BuiltinIntrinsic::Fence));
@@ -158,6 +164,7 @@ pub enum BuiltinIntrinsic {
     Bswap,
     Fence,
     FpCompare,
+    Parity,
 }
 
 impl BuiltinInfo {
