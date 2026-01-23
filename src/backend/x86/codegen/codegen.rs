@@ -655,6 +655,14 @@ impl ArchCodegen for X86Codegen {
             }
         }
 
+        // Ensure 16-byte stack alignment before call when pushing stack args.
+        // The stack is 16-byte aligned before this emit_call. Each pushq adds 8 bytes.
+        // If odd number of stack args, we need an extra 8-byte pad to maintain alignment.
+        let need_align_pad = stack_args.len() % 2 != 0;
+        if need_align_pad {
+            self.state.emit("    subq $8, %rsp");
+        }
+
         // Push stack args in reverse order
         for arg in stack_args.iter().rev() {
             self.operand_to_rax(arg);
@@ -690,7 +698,8 @@ impl ArchCodegen for X86Codegen {
         }
 
         if !stack_args.is_empty() {
-            self.state.emit(&format!("    addq ${}, %rsp", stack_args.len() * 8));
+            let cleanup = stack_args.len() * 8 + if need_align_pad { 8 } else { 0 };
+            self.state.emit(&format!("    addq ${}, %rsp", cleanup));
         }
 
         if let Some(dest) = dest {
