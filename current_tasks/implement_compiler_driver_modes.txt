@@ -1,0 +1,13 @@
+Implement compiler driver modes and CLI flags
+
+Currently -S, -c, -E, -D, -I, and -g are all stub TODOs in main.rs.
+This task implements proper handling of these GCC-compatible flags:
+
+1. -S: Output assembly to file instead of compiling to executable
+2. -c: Compile to object file only, don't link
+3. -E: Preprocess only, output to stdout
+4. -D name=value: Define preprocessor macros from command line
+5. -I path: Add include search paths
+6. -g: Track debug info flag (for future DWARF support)
+
+These are foundational driver features required by the project spec.
