@@ -110,7 +110,7 @@ impl Lowerer {
                             }
                         }
                         Initializer::List(items) => {
-                            let actual_count = self.compute_init_list_array_size(items);
+                            let actual_count = self.compute_init_list_array_size_for_char_array(items, base_ty);
                             if elem_size > 0 {
                                 alloc_size = actual_count * elem_size;
                                 // Update strides for 1D unsized array

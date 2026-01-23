@@ -552,7 +552,7 @@ impl Lowerer {
                             }
                         }
                         Initializer::List(items) => {
-                            let actual_count = self.compute_init_list_array_size(items);
+                            let actual_count = self.compute_init_list_array_size_for_char_array(items, base_ty);
                             if elem_size > 0 {
                                 alloc_size = actual_count * elem_size;
                                 if array_dim_strides.len() == 1 {
@@ -678,8 +678,20 @@ impl Lowerer {
                 GlobalInit::Zero
             }
             Initializer::List(items) => {
+                // Handle brace-wrapped string literal for char arrays:
+                // char c[] = {"hello"} or static char c[] = {"hello"}
+                if is_array && (base_ty == IrType::I8 || base_ty == IrType::U8) {
+                    if items.len() == 1 && items[0].designators.is_empty() {
+                        if let Initializer::Expr(Expr::StringLiteral(s, _)) = &items[0].init {
+                            return GlobalInit::String(s.clone());
+                        }
+                    }
+                }
+
                 if is_array && elem_size > 0 {
-                    let num_elems = total_size / elem_size;
+                    // For flat value arrays, we need total_elements = total_size / base_type_size
+                    let base_type_size = base_ty.size().max(1);
+                    let num_elems = total_size / base_type_size;
 
                     // Array of structs: emit as byte array using struct layout.
                     // But skip byte-serialization if any struct field is a pointer type
@@ -801,7 +813,8 @@ impl Lowerer {
                             if current_idx < num_elems {
                                 let val = match &item.init {
                                     Initializer::Expr(expr) => {
-                                        self.eval_const_expr(expr).unwrap_or(self.zero_const(base_ty))
+                                        let raw = self.eval_const_expr(expr).unwrap_or(self.zero_const(base_ty));
+                                        self.coerce_const_to_type(raw, base_ty)
                                     }
                                     Initializer::List(sub_items) => {
                                         // Nested list - flatten
@@ -809,7 +822,8 @@ impl Lowerer {
                                         for sub in sub_items {
                                             self.flatten_global_init_item(&sub.init, base_ty, &mut sub_vals);
                                         }
-                                        sub_vals.into_iter().next().unwrap_or(self.zero_const(base_ty))
+                                        let raw = sub_vals.into_iter().next().unwrap_or(self.zero_const(base_ty));
+                                        self.coerce_const_to_type(raw, base_ty)
                                     }
                                 };
                                 values[current_idx] = val;
@@ -1671,6 +1685,9 @@ impl Lowerer {
     }
 
     /// Flatten a multi-dimensional array initializer list for global arrays.
+    /// Handles C initialization rules:
+    /// - Braced sub-lists map to the next sub-array dimension, padded with zeros
+    /// - Bare scalar expressions fill base elements left-to-right without sub-array padding
     fn flatten_global_array_init(
         &self,
         items: &[InitializerItem],
@@ -1678,31 +1695,33 @@ impl Lowerer {
         base_ty: IrType,
         values: &mut Vec<IrConst>,
     ) {
+        let base_type_size = base_ty.size().max(1);
         if array_dim_strides.len() <= 1 {
             for item in items {
                 self.flatten_global_init_item(&item.init, base_ty, values);
             }
             return;
         }
-        let sub_elem_count = if array_dim_strides[0] > 0 && array_dim_strides.last().copied().unwrap_or(1) > 0 {
-            array_dim_strides[0] / array_dim_strides.last().copied().unwrap_or(1)
+        // Number of base elements per sub-array at this dimension level
+        let sub_elem_count = if array_dim_strides[0] > 0 && base_type_size > 0 {
+            array_dim_strides[0] / base_type_size
         } else {
             1
         };
         for item in items {
             match &item.init {
                 Initializer::List(sub_items) => {
+                    // Braced sub-list: recurse into next dimension, then pad to sub_elem_count
                     let start_len = values.len();
                     self.flatten_global_array_init(sub_items, &array_dim_strides[1..], base_ty, values);
-                    // Zero-pad sub-arrays to their full size
                     while values.len() < start_len + sub_elem_count {
                         values.push(self.zero_const(base_ty));
                     }
                 }
                 Initializer::Expr(expr) => {
-                    // Scalar in a flattened initializer - just push, don't pad
+                    // Bare scalar: fills one base element, no sub-array padding
                     if let Some(val) = self.eval_const_expr(expr) {
-                        values.push(val);
+                        values.push(self.coerce_const_to_type(val, base_ty));
                     } else {
                         values.push(self.zero_const(base_ty));
                     }
@@ -1716,7 +1735,7 @@ impl Lowerer {
         match init {
             Initializer::Expr(expr) => {
                 if let Some(val) = self.eval_const_expr(expr) {
-                    values.push(val);
+                    values.push(self.coerce_const_to_type(val, base_ty));
                 } else {
                     values.push(self.zero_const(base_ty));
                 }

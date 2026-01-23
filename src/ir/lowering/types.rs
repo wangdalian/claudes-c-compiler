@@ -54,9 +54,37 @@ impl Lowerer {
                     None
                 }
             }
-            Expr::Cast(_, inner, _) => {
-                // For now, just pass through casts in constant expressions
-                self.eval_const_expr(inner)
+            Expr::Cast(ref target_type, inner, _) => {
+                // Evaluate cast chains properly using (bits, is_signed, width) representation
+                let (bits, _src_signed) = self.eval_const_expr_as_bits(inner)?;
+                let target_ir_ty = self.type_spec_to_ir(target_type);
+                let target_width = target_ir_ty.size() * 8;
+                let target_signed = matches!(target_ir_ty, IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64);
+
+                // Truncate to target width
+                let truncated = if target_width >= 64 {
+                    bits
+                } else {
+                    bits & ((1u64 << target_width) - 1)
+                };
+
+                // Convert to IrConst based on target type
+                let result = match target_ir_ty {
+                    IrType::I8 | IrType::U8 => IrConst::I8(truncated as i8),
+                    IrType::I16 | IrType::U16 => IrConst::I16(truncated as i16),
+                    IrType::I32 | IrType::U32 => IrConst::I32(truncated as i32),
+                    IrType::I64 | IrType::U64 | IrType::Ptr => IrConst::I64(truncated as i64),
+                    IrType::F32 => {
+                        let int_val = if target_signed { truncated as i64 as f32 } else { truncated as f32 };
+                        IrConst::F32(int_val)
+                    }
+                    IrType::F64 => {
+                        let int_val = if target_signed { truncated as i64 as f64 } else { truncated as f64 };
+                        IrConst::F64(int_val)
+                    }
+                    _ => return None,
+                };
+                Some(result)
             }
             Expr::Identifier(name, _) => {
                 // Look up enum constants
@@ -99,6 +127,57 @@ impl Lowerer {
                 Some(IrConst::I64(result))
             }
             _ => None,
+        }
+    }
+
+    /// Evaluate a constant expression, returning raw u64 bits and signedness.
+    /// This preserves signedness information through cast chains.
+    /// Signedness determines how the value is widened in the next cast.
+    fn eval_const_expr_as_bits(&self, expr: &Expr) -> Option<(u64, bool)> {
+        match expr {
+            Expr::Cast(ref target_type, inner, _) => {
+                let (bits, _src_signed) = self.eval_const_expr_as_bits(inner)?;
+                let target_ir_ty = self.type_spec_to_ir(target_type);
+                let target_width = target_ir_ty.size() * 8;
+                let target_signed = matches!(target_ir_ty, IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64);
+
+                // Truncate to target width
+                let truncated = if target_width >= 64 {
+                    bits
+                } else {
+                    bits & ((1u64 << target_width) - 1)
+                };
+
+                // If target is signed, sign-extend to 64 bits for the next operation
+                let result = if target_signed && target_width < 64 {
+                    // Sign-extend
+                    let sign_bit = 1u64 << (target_width - 1);
+                    if truncated & sign_bit != 0 {
+                        truncated | !((1u64 << target_width) - 1)
+                    } else {
+                        truncated
+                    }
+                } else {
+                    // Zero-extend (unsigned or already 64 bits)
+                    truncated
+                };
+
+                Some((result, target_signed))
+            }
+            _ => {
+                // For non-cast expressions, evaluate normally and convert to bits
+                let val = self.eval_const_expr(expr)?;
+                let (bits, signed) = match val {
+                    IrConst::I8(v) => (v as i64 as u64, true),
+                    IrConst::I16(v) => (v as i64 as u64, true),
+                    IrConst::I32(v) => (v as i64 as u64, true),
+                    IrConst::I64(v) => (v as u64, true),
+                    IrConst::F32(v) => (v as i64 as u64, true),
+                    IrConst::F64(v) => (v as i64 as u64, true),
+                    IrConst::Zero => (0u64, true),
+                };
+                Some((bits, signed))
+            }
         }
     }
 
@@ -281,6 +360,26 @@ impl Lowerer {
 
     /// Compute the effective array size from an initializer list with potential designators.
     /// Returns the minimum array size needed to hold all designated (and positional) elements.
+    /// For char arrays, handles brace-wrapped string literals: char c[] = {"hello"} -> size = 6
+    pub(super) fn compute_init_list_array_size_for_char_array(
+        &self,
+        items: &[InitializerItem],
+        base_ty: IrType,
+    ) -> usize {
+        // Special case: char c[] = {"hello"} - single brace-wrapped string literal
+        if (base_ty == IrType::I8 || base_ty == IrType::U8)
+            && items.len() == 1
+            && items[0].designators.is_empty()
+        {
+            if let Initializer::Expr(Expr::StringLiteral(s, _)) = &items[0].init {
+                return s.as_bytes().len() + 1; // +1 for null terminator
+            }
+        }
+        self.compute_init_list_array_size(items)
+    }
+
+    /// Compute the effective array size from an initializer list with potential designators.
+    /// Returns the minimum array size needed to hold all designated (and positional) elements.
     pub(super) fn compute_init_list_array_size(&self, items: &[InitializerItem]) -> usize {
         let mut max_idx = 0usize;
         let mut current_idx = 0usize;
@@ -325,6 +424,48 @@ impl Lowerer {
             IrConst::Zero => Some(0),
             _ => None,
         }
+    }
+
+    /// Coerce an IrConst to match a target IrType.
+    /// This handles cases like CharLiteral('a') = I32(97) needing to become I8(97) for char arrays.
+    pub(super) fn coerce_const_to_type(&self, val: IrConst, target_ty: IrType) -> IrConst {
+        // If already the right type, return as-is
+        match (&val, target_ty) {
+            (IrConst::I8(_), IrType::I8 | IrType::U8) => return val,
+            (IrConst::I16(_), IrType::I16 | IrType::U16) => return val,
+            (IrConst::I32(_), IrType::I32 | IrType::U32) => return val,
+            (IrConst::I64(_), IrType::I64 | IrType::U64 | IrType::Ptr) => return val,
+            (IrConst::F32(_), IrType::F32) => return val,
+            (IrConst::F64(_), IrType::F64) => return val,
+            _ => {}
+        }
+        // Convert integer types
+        if let Some(int_val) = self.const_to_i64(&val) {
+            match target_ty {
+                IrType::I8 | IrType::U8 => return IrConst::I8(int_val as i8),
+                IrType::I16 | IrType::U16 => return IrConst::I16(int_val as i16),
+                IrType::I32 | IrType::U32 => return IrConst::I32(int_val as i32),
+                IrType::I64 | IrType::U64 | IrType::Ptr => return IrConst::I64(int_val),
+                IrType::F32 => return IrConst::F32(int_val as f32),
+                IrType::F64 => return IrConst::F64(int_val as f64),
+                _ => {}
+            }
+        }
+        // Convert float types
+        match (&val, target_ty) {
+            (IrConst::F64(v), IrType::F32) => return IrConst::F32(*v as f32),
+            (IrConst::F32(v), IrType::F64) => return IrConst::F64(*v as f64),
+            (IrConst::F64(v), IrType::I8 | IrType::U8) => return IrConst::I8(*v as i8),
+            (IrConst::F64(v), IrType::I16 | IrType::U16) => return IrConst::I16(*v as i16),
+            (IrConst::F64(v), IrType::I32 | IrType::U32) => return IrConst::I32(*v as i32),
+            (IrConst::F64(v), IrType::I64 | IrType::U64) => return IrConst::I64(*v as i64),
+            (IrConst::F32(v), IrType::I8 | IrType::U8) => return IrConst::I8(*v as i8),
+            (IrConst::F32(v), IrType::I16 | IrType::U16) => return IrConst::I16(*v as i16),
+            (IrConst::F32(v), IrType::I32 | IrType::U32) => return IrConst::I32(*v as i32),
+            (IrConst::F32(v), IrType::I64 | IrType::U64) => return IrConst::I64(*v as i64),
+            _ => {}
+        }
+        val
     }
 
     /// Get the zero constant for a given IR type.
