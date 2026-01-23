@@ -1148,7 +1148,30 @@ impl Lowerer {
             let field = &layout.fields[field_idx].clone();
             let field_offset = base_offset + field.offset;
 
+            // Handle nested designators (e.g., .a.j = 2): drill into sub-struct
+            let has_nested_designator = item.designators.len() > 1
+                && matches!(item.designators.first(), Some(Designator::Field(_)));
+
             match &field.ty {
+                CType::Struct(st) if has_nested_designator => {
+                    // Nested designator like .a.j = 2: create sub-item with remaining designators
+                    let sub_layout = StructLayout::for_struct(&st.fields);
+                    let sub_item = InitializerItem {
+                        designators: item.designators[1..].to_vec(),
+                        init: item.init.clone(),
+                    };
+                    self.emit_struct_init(&[sub_item], base_alloca, &sub_layout, field_offset);
+                    item_idx += 1;
+                }
+                CType::Union(st) if has_nested_designator => {
+                    let sub_layout = StructLayout::for_union(&st.fields);
+                    let sub_item = InitializerItem {
+                        designators: item.designators[1..].to_vec(),
+                        init: item.init.clone(),
+                    };
+                    self.emit_struct_init(&[sub_item], base_alloca, &sub_layout, field_offset);
+                    item_idx += 1;
+                }
                 CType::Struct(st) => {
                     // Nested struct field
                     let sub_layout = StructLayout::for_struct(&st.fields);
@@ -1179,7 +1202,7 @@ impl Lowerer {
                             } else {
                                 // Flat init: { 10, 20, 30 } - consume items for inner struct fields
                                 let consumed = self.emit_struct_init(&items[item_idx..], base_alloca, &sub_layout, field_offset);
-                                item_idx += consumed;
+                                if consumed == 0 { item_idx += 1; } else { item_idx += consumed; }
                             }
                         }
                     }
@@ -1213,7 +1236,7 @@ impl Lowerer {
                                 item_idx += 1;
                             } else {
                                 let consumed = self.emit_struct_init(&items[item_idx..], base_alloca, &sub_layout, field_offset);
-                                item_idx += consumed;
+                                if consumed == 0 { item_idx += 1; } else { item_idx += consumed; }
                             }
                         }
                     }

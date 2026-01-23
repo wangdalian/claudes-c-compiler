@@ -1298,7 +1298,29 @@ impl Lowerer {
             let field_layout = &layout.fields[field_idx];
             let field_offset = base_offset + field_layout.offset;
 
+            // Handle nested designators (e.g., .a.j = 2): drill into sub-struct
+            let has_nested_designator = item.designators.len() > 1
+                && matches!(item.designators.first(), Some(Designator::Field(_)));
+
             match &field_layout.ty {
+                CType::Struct(st) if has_nested_designator => {
+                    let sub_layout = StructLayout::for_struct(&st.fields);
+                    let sub_item = InitializerItem {
+                        designators: item.designators[1..].to_vec(),
+                        init: item.init.clone(),
+                    };
+                    self.fill_struct_global_bytes(&[sub_item], &sub_layout, bytes, field_offset);
+                    item_idx += 1;
+                }
+                CType::Union(st) if has_nested_designator => {
+                    let sub_layout = StructLayout::for_union(&st.fields);
+                    let sub_item = InitializerItem {
+                        designators: item.designators[1..].to_vec(),
+                        init: item.init.clone(),
+                    };
+                    self.fill_struct_global_bytes(&[sub_item], &sub_layout, bytes, field_offset);
+                    item_idx += 1;
+                }
                 CType::Struct(st) => {
                     let sub_layout = StructLayout::for_struct(&st.fields);
                     match &item.init {
@@ -1310,7 +1332,7 @@ impl Lowerer {
                         Initializer::Expr(_) => {
                             // Flat init: consume items for inner struct
                             let consumed = self.fill_struct_global_bytes(&items[item_idx..], &sub_layout, bytes, field_offset);
-                            item_idx += consumed;
+                            if consumed == 0 { item_idx += 1; } else { item_idx += consumed; }
                         }
                     }
                 }
@@ -1323,7 +1345,7 @@ impl Lowerer {
                         }
                         Initializer::Expr(_) => {
                             let consumed = self.fill_struct_global_bytes(&items[item_idx..], &sub_layout, bytes, field_offset);
-                            item_idx += consumed;
+                            if consumed == 0 { item_idx += 1; } else { item_idx += consumed; }
                         }
                     }
                 }
@@ -1781,6 +1803,21 @@ impl Lowerer {
 
             let field_layout = &layout.fields[field_idx];
             let field_offset = base_offset + field_layout.offset;
+
+            // Handle nested designators (e.g., .a.j = 2): drill into sub-struct
+            let has_nested_designator = item.designators.len() > 1
+                && matches!(item.designators.first(), Some(Designator::Field(_)));
+            if has_nested_designator {
+                if let Some(sub_layout) = self.get_struct_layout_for_ctype(&field_layout.ty) {
+                    let sub_item = InitializerItem {
+                        designators: item.designators[1..].to_vec(),
+                        init: item.init.clone(),
+                    };
+                    self.write_struct_init_to_bytes(bytes, field_offset, &[sub_item], &sub_layout);
+                }
+                current_field_idx = field_idx + 1;
+                continue;
+            }
 
             match &item.init {
                 Initializer::Expr(expr) => {
