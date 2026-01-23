@@ -113,8 +113,10 @@ pub enum TypeSpecifier {
     ComplexFloat,
     ComplexDouble,
     ComplexLongDouble,
-    Struct(Option<String>, Option<Vec<StructFieldDecl>>),
-    Union(Option<String>, Option<Vec<StructFieldDecl>>),
+    /// Struct: (name, fields, is_packed)
+    Struct(Option<String>, Option<Vec<StructFieldDecl>>, bool),
+    /// Union: (name, fields, is_packed)
+    Union(Option<String>, Option<Vec<StructFieldDecl>>, bool),
     Enum(Option<String>, Option<Vec<EnumVariant>>),
     TypedefName(String),
     Pointer(Box<TypeSpecifier>),

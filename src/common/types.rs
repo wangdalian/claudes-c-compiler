@@ -41,6 +41,11 @@ pub struct FunctionType {
 pub struct StructType {
     pub name: Option<String>,
     pub fields: Vec<StructField>,
+    /// If true, the struct is __attribute__((packed)) — alignment 1 for all fields.
+    pub is_packed: bool,
+    /// Maximum field alignment imposed by #pragma pack(N) or __attribute__((packed)).
+    /// None means use natural alignment. Some(1) for packed, Some(N) for #pragma pack(N).
+    pub max_field_align: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,7 +89,11 @@ pub struct StructFieldLayout {
 impl StructLayout {
     /// Compute the layout for a struct (fields laid out sequentially with alignment padding).
     /// Supports bitfield packing: adjacent bitfields share storage units.
-    pub fn for_struct(fields: &[StructField]) -> Self {
+    /// `max_field_align`: if Some(N), cap each field's alignment to min(natural, N).
+    ///   For __attribute__((packed)), pass Some(1).
+    ///   For #pragma pack(N), pass Some(N).
+    ///   For normal structs, pass None.
+    pub fn for_struct_with_packing(fields: &[StructField], max_field_align: Option<usize>) -> Self {
         let mut offset = 0usize;
         let mut max_align = 1usize;
         let mut field_layouts = Vec::with_capacity(fields.len());
@@ -96,7 +105,13 @@ impl StructLayout {
         let mut in_bitfield = false;
 
         for field in fields {
-            let field_align = field.ty.align();
+            let natural_align = field.ty.align();
+            // Apply packing: cap alignment to max_field_align if specified
+            let field_align = if let Some(max_a) = max_field_align {
+                natural_align.min(max_a)
+            } else {
+                natural_align
+            };
             let field_size = field.ty.size();
             max_align = max_align.max(field_align);
 
@@ -175,6 +190,11 @@ impl StructLayout {
             align: max_align,
             is_union: false,
         }
+    }
+
+    /// Convenience wrapper: compute layout with default (no packing).
+    pub fn for_struct(fields: &[StructField]) -> Self {
+        Self::for_struct_with_packing(fields, None)
     }
 
     /// Compute the layout for a union (all fields at offset 0, size = max field size).
@@ -354,7 +374,7 @@ impl CType {
             CType::Array(_, None) => 8, // incomplete array treated as pointer
             CType::Function(_) => 8, // function pointer size
             CType::Struct(s) => {
-                let layout = StructLayout::for_struct(&s.fields);
+                let layout = StructLayout::for_struct_with_packing(&s.fields, s.max_field_align);
                 layout.size
             }
             CType::Union(s) => {
@@ -383,7 +403,15 @@ impl CType {
             CType::Pointer(_) => 8,
             CType::Array(elem, _) => elem.align(),
             CType::Function(_) => 8,
-            CType::Struct(s) | CType::Union(s) => {
+            CType::Struct(s) => {
+                let natural = s.fields.iter().map(|f| f.ty.align()).max().unwrap_or(1);
+                if let Some(max_a) = s.max_field_align {
+                    natural.min(max_a)
+                } else {
+                    natural
+                }
+            }
+            CType::Union(s) => {
                 s.fields.iter().map(|f| f.ty.align()).max().unwrap_or(1)
             }
             CType::Enum(_) => 4,

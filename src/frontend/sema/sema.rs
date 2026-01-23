@@ -489,18 +489,22 @@ impl SemanticAnalyzer {
                 let size = size_expr.as_ref().and_then(|e| self.eval_const_expr(e).map(|v| v as usize));
                 CType::Array(Box::new(elem_type), size)
             }
-            TypeSpecifier::Struct(name, fields) => {
+            TypeSpecifier::Struct(name, fields, is_packed) => {
                 let struct_fields = fields.as_ref().map(|f| self.convert_struct_fields(f)).unwrap_or_default();
                 CType::Struct(crate::common::types::StructType {
                     name: name.clone(),
                     fields: struct_fields,
+                    is_packed: *is_packed,
+                    max_field_align: if *is_packed { Some(1) } else { None },
                 })
             }
-            TypeSpecifier::Union(name, fields) => {
+            TypeSpecifier::Union(name, fields, is_packed) => {
                 let union_fields = fields.as_ref().map(|f| self.convert_struct_fields(f)).unwrap_or_default();
                 CType::Union(crate::common::types::StructType {
                     name: name.clone(),
                     fields: union_fields,
+                    is_packed: *is_packed,
+                    max_field_align: if *is_packed { Some(1) } else { None },
                 })
             }
             TypeSpecifier::Enum(name, variants) => {

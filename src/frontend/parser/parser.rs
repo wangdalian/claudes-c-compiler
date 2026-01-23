@@ -540,19 +540,91 @@ impl Parser {
     }
 
     fn skip_gcc_extensions(&mut self) {
+        self.parse_gcc_attributes();
+    }
+
+    /// Parse __attribute__((...)) and __extension__, returning struct attribute flags.
+    /// Currently extracts: packed, aligned(N).
+    /// Returns (is_packed, aligned_value)
+    fn parse_gcc_attributes(&mut self) -> (bool, Option<usize>) {
+        let mut is_packed = false;
+        let mut _aligned = None;
         loop {
             match self.peek() {
                 TokenKind::Extension => { self.advance(); }
                 TokenKind::Attribute => {
                     self.advance();
-                    // Skip __attribute__((..))
+                    // __attribute__((attr1, attr2, ...))
+                    // Outer parens
                     if matches!(self.peek(), TokenKind::LParen) {
-                        self.skip_balanced_parens();
+                        self.advance(); // (
+                        if matches!(self.peek(), TokenKind::LParen) {
+                            self.advance(); // (
+                            // Parse comma-separated attribute list
+                            loop {
+                                match self.peek() {
+                                    TokenKind::Identifier(name) if name == "packed" || name == "__packed__" => {
+                                        is_packed = true;
+                                        self.advance();
+                                    }
+                                    TokenKind::Identifier(name) if name == "aligned" || name == "__aligned__" => {
+                                        self.advance();
+                                        // aligned may have (N) argument
+                                        if matches!(self.peek(), TokenKind::LParen) {
+                                            self.advance(); // (
+                                            // Try to parse the alignment value
+                                            if let TokenKind::IntLiteral(n) = self.peek() {
+                                                _aligned = Some(*n as usize);
+                                                self.advance();
+                                            }
+                                            // Skip to closing paren
+                                            while !matches!(self.peek(), TokenKind::RParen | TokenKind::Eof) {
+                                                self.advance();
+                                            }
+                                            if matches!(self.peek(), TokenKind::RParen) {
+                                                self.advance(); // )
+                                            }
+                                        }
+                                    }
+                                    TokenKind::Identifier(_) => {
+                                        // Unknown attribute - skip it and any arguments
+                                        self.advance();
+                                        if matches!(self.peek(), TokenKind::LParen) {
+                                            self.skip_balanced_parens();
+                                        }
+                                    }
+                                    TokenKind::Comma => { self.advance(); }
+                                    TokenKind::RParen => break,
+                                    TokenKind::Eof => break,
+                                    _ => { self.advance(); }
+                                }
+                            }
+                            // Inner )
+                            if matches!(self.peek(), TokenKind::RParen) {
+                                self.advance();
+                            }
+                        } else {
+                            // Single-paren __attribute__(packed) - less common but handle it
+                            // Just skip to matching paren
+                            while !matches!(self.peek(), TokenKind::RParen | TokenKind::Eof) {
+                                if let TokenKind::Identifier(name) = self.peek() {
+                                    if name == "packed" || name == "__packed__" {
+                                        is_packed = true;
+                                    }
+                                }
+                                self.advance();
+                            }
+                        }
+                        // Outer )
+                        if matches!(self.peek(), TokenKind::RParen) {
+                            self.advance();
+                        }
                     }
                 }
                 _ => break,
             }
         }
+        (is_packed, _aligned)
     }
 
     /// Skip __asm__("..."), __attribute__((...)), and __extension__ after declarators.
@@ -983,33 +1055,43 @@ impl Parser {
             // standalone _Complex (without float/double) defaults to _Complex double
             TypeSpecifier::ComplexDouble
         } else if has_struct {
-            self.skip_gcc_extensions();
+            let (mut is_packed, _aligned) = self.parse_gcc_attributes();
             let name = if let TokenKind::Identifier(n) = self.peek().clone() {
                 self.advance();
                 Some(n)
             } else {
                 None
             };
+            // Also check for attributes after the tag name (struct __attribute__((packed)) name { ... })
+            let (packed2, _) = self.parse_gcc_attributes();
+            is_packed = is_packed || packed2;
             let fields = if matches!(self.peek(), TokenKind::LBrace) {
                 Some(self.parse_struct_fields())
             } else {
                 None
             };
-            TypeSpecifier::Struct(name, fields)
+            // Also check for trailing attributes: struct S { ... } __attribute__((packed))
+            let (packed3, _) = self.parse_gcc_attributes();
+            is_packed = is_packed || packed3;
+            TypeSpecifier::Struct(name, fields, is_packed)
         } else if has_union {
-            self.skip_gcc_extensions();
+            let (mut is_packed, _aligned) = self.parse_gcc_attributes();
             let name = if let TokenKind::Identifier(n) = self.peek().clone() {
                 self.advance();
                 Some(n)
             } else {
                 None
             };
+            let (packed2, _) = self.parse_gcc_attributes();
+            is_packed = is_packed || packed2;
             let fields = if matches!(self.peek(), TokenKind::LBrace) {
                 Some(self.parse_struct_fields())
             } else {
                 None
             };
-            TypeSpecifier::Union(name, fields)
+            let (packed3, _) = self.parse_gcc_attributes();
+            is_packed = is_packed || packed3;
+            TypeSpecifier::Union(name, fields, is_packed)
         } else if has_enum {
             self.skip_gcc_extensions();
             let name = if let TokenKind::Identifier(n) = self.peek().clone() {

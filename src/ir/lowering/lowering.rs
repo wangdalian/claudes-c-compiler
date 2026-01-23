@@ -333,7 +333,7 @@ impl Lowerer {
                 // Detect struct/complex returns > 8 bytes that need sret (hidden pointer) convention
                 {
                     let resolved = self.resolve_type_spec(&func.return_type).clone();
-                    if matches!(resolved, TypeSpecifier::Struct(_, _) | TypeSpecifier::Union(_, _)) {
+                    if matches!(resolved, TypeSpecifier::Struct(_, _, _) | TypeSpecifier::Union(_, _, _)) {
                         let size = self.sizeof_type(&func.return_type);
                         if size > 8 {
                             self.func_meta.sret_functions.insert(func.name.clone(), size);
@@ -418,7 +418,7 @@ impl Lowerer {
                         // Detect struct/complex returns > 8 bytes that need sret
                         if ptr_count == 0 {
                             let resolved = self.resolve_type_spec(&decl.type_spec).clone();
-                            if matches!(resolved, TypeSpecifier::Struct(_, _) | TypeSpecifier::Union(_, _)) {
+                            if matches!(resolved, TypeSpecifier::Struct(_, _, _) | TypeSpecifier::Union(_, _, _)) {
                                 let size = self.sizeof_type(&decl.type_spec);
                                 if size > 8 {
                                     self.func_meta.sret_functions.insert(declarator.name.clone(), size);
@@ -615,7 +615,7 @@ impl Lowerer {
             if !param.name.is_empty() {
                 let is_struct_param = if let Some(orig_param) = func.params.get(orig_idx) {
                     let resolved = self.resolve_type_spec(&orig_param.type_spec);
-                    matches!(resolved, TypeSpecifier::Struct(_, _) | TypeSpecifier::Union(_, _))
+                    matches!(resolved, TypeSpecifier::Struct(_, _, _) | TypeSpecifier::Union(_, _, _))
                 } else {
                     false
                 };
@@ -3083,7 +3083,7 @@ impl Lowerer {
                 }
             }
             // Recurse into struct/union fields to find enum definitions within them
-            TypeSpecifier::Struct(_, Some(fields)) | TypeSpecifier::Union(_, Some(fields)) => {
+            TypeSpecifier::Struct(_, Some(fields), _) | TypeSpecifier::Union(_, Some(fields), _) => {
                 for field in fields {
                     self.collect_enum_constants(&field.type_spec);
                 }
