@@ -1,0 +1,27 @@
+Task: Implement __attribute__((packed)) for struct types
+Status: IN PROGRESS
+
+Problem:
+The parser recognizes __attribute__((packed)) but silently discards it.
+Packed structs should have alignment 1 (no padding between fields) and
+sizeof should reflect the tightly-packed layout.
+
+Example:
+  struct __attribute__((packed)) S { char a; int b; }; // sizeof == 5, not 8
+
+Fix:
+1. Parser: Extract 'packed' and 'aligned(N)' from __attribute__((...))
+2. AST/types: Add is_packed flag to StructType and StructFieldDecl
+3. StructLayout::for_struct: When packed, use alignment 1 for all fields
+   and alignment 1 for the overall struct
+4. Also handle #pragma pack(push,N) / #pragma pack(pop) / #pragma pack(N)
+
+Expected impact: Fixes packed-struct-001 test and potentially other struct
+layout tests. Also needed for real-world code like Linux kernel headers.
+
+Affected files:
+- src/frontend/parser/parser.rs (attribute parsing)
+- src/frontend/parser/ast.rs (add packed flag)
+- src/frontend/sema/sema.rs (propagate packed)
+- src/common/types.rs (StructType, StructLayout)
+- src/frontend/preprocessor/preprocessor.rs (#pragma pack)
