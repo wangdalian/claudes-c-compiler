@@ -1,0 +1,14 @@
+Implement unsigned integer type support in codegen
+
+The compiler currently doesn't properly handle unsigned types. When loading
+unsigned char/short values, it sign-extends instead of zero-extending.
+For example, `unsigned char x = -1; printf("%d", x)` prints -1 instead of 255.
+
+Plan:
+1. Add signedness tracking to the IR type system (IrType gains signed/unsigned variants)
+2. Update parser type specifier handling to track signedness
+3. Update lowering to propagate signedness information to IR
+4. Fix x86 codegen to use movzbl/movzwl for unsigned types
+5. Fix ARM codegen to use uxtb/uxth for unsigned types
+6. Fix RISC-V codegen to use zero-extend for unsigned types
+7. Fix global variable initialization to properly mask/truncate values
