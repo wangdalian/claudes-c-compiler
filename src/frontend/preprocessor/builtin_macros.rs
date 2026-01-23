@@ -191,6 +191,9 @@ fn define_stdint_macros(macros: &mut MacroTable) {
 
 /// <stddef.h> macros
 fn define_stddef_macros(macros: &mut MacroTable) {
+    // NULL macro
+    def(macros, "NULL", "((void *)0)");
+
     // offsetof macro
     macros.define(MacroDef {
         name: "offsetof".to_string(),
