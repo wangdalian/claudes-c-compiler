@@ -5,18 +5,55 @@ use super::lowering::Lowerer;
 
 impl Lowerer {
     /// Register a struct/union type definition from a TypeSpecifier, computing and
-    /// caching its layout in self.struct_layouts.
+    /// caching its layout in self.struct_layouts. Also recursively registers any
+    /// nested struct/union types defined in the fields.
     pub(super) fn register_struct_type(&mut self, ts: &TypeSpecifier) {
         match ts {
             TypeSpecifier::Struct(tag, Some(fields)) => {
+                // Recursively register nested struct/union types in fields
+                self.register_nested_struct_types(fields);
                 let layout = self.compute_struct_layout(fields, false);
                 let key = self.struct_layout_key(tag, false);
                 self.struct_layouts.insert(key, layout);
             }
             TypeSpecifier::Union(tag, Some(fields)) => {
+                // Recursively register nested struct/union types in fields
+                self.register_nested_struct_types(fields);
                 let layout = self.compute_struct_layout(fields, true);
                 let key = self.struct_layout_key(tag, true);
                 self.struct_layouts.insert(key, layout);
+            }
+            _ => {}
+        }
+    }
+
+    /// Recursively register any struct/union types defined inline in field declarations.
+    /// This handles cases like:
+    ///   struct Outer { struct Inner { int x; } field; };
+    /// where `struct Inner` needs to be registered so it can be referenced later.
+    fn register_nested_struct_types(&mut self, fields: &[StructFieldDecl]) {
+        for field in fields {
+            self.register_nested_in_type_spec(&field.type_spec);
+        }
+    }
+
+    /// Walk a TypeSpecifier and register any struct/union definitions found within it.
+    fn register_nested_in_type_spec(&mut self, ts: &TypeSpecifier) {
+        match ts {
+            TypeSpecifier::Struct(tag, Some(_fields)) if tag.is_some() => {
+                // This is a named struct definition inside a field - register it
+                self.register_struct_type(ts);
+            }
+            TypeSpecifier::Union(tag, Some(_fields)) if tag.is_some() => {
+                // This is a named union definition inside a field - register it
+                self.register_struct_type(ts);
+            }
+            TypeSpecifier::Pointer(inner) => {
+                // Walk through pointer types to find nested struct defs
+                self.register_nested_in_type_spec(inner);
+            }
+            TypeSpecifier::Array(inner, _) => {
+                self.register_nested_in_type_spec(inner);
             }
             _ => {}
         }

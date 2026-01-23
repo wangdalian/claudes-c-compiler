@@ -1079,7 +1079,7 @@ impl Lowerer {
     pub(super) fn sizeof_type(&self, ts: &TypeSpecifier) -> usize {
         let ts = self.resolve_type_spec(ts);
         match ts {
-            TypeSpecifier::Void => 0,
+            TypeSpecifier::Void => 1, // GCC extension: sizeof(void) == 1
             TypeSpecifier::Bool => 1, // _Bool is 1 byte
             TypeSpecifier::Char | TypeSpecifier::UnsignedChar => 1,
             TypeSpecifier::Short | TypeSpecifier::UnsignedShort => 2,
@@ -1207,6 +1207,12 @@ impl Lowerer {
                     if info.is_array || info.is_struct {
                         return info.alloc_size;
                     }
+                    // GCC extension: sizeof(function_type) == 1
+                    if let Some(ref ct) = info.c_type {
+                        if matches!(ct, CType::Function(_)) {
+                            return 1;
+                        }
+                    }
                     return info.ty.size();
                 }
                 if let Some(ginfo) = self.globals.get(name) {
@@ -1219,6 +1225,10 @@ impl Lowerer {
                     }
                     return ginfo.ty.size();
                 }
+                // GCC extension: sizeof(function_name) == 1
+                if self.known_functions.contains(name) {
+                    return 1;
+                }
                 4 // default: int
             }
 
@@ -1227,13 +1237,37 @@ impl Lowerer {
                 // Use CType-based resolution first
                 if let Some(inner_ctype) = self.get_expr_ctype(inner) {
                     match &inner_ctype {
-                        CType::Pointer(pointee) => return pointee.size(),
+                        CType::Pointer(pointee) => {
+                            // GCC extension: sizeof(*void_ptr) == 1, sizeof(*func_ptr) == 1
+                            if matches!(pointee.as_ref(), CType::Void | CType::Function(_)) {
+                                return 1;
+                            }
+                            let sz = pointee.size();
+                            if sz == 0 {
+                                return 1;
+                            }
+                            return sz;
+                        }
                         CType::Array(elem, _) => return elem.size(),
+                        // GCC extension: sizeof(*func) == 1 where func is a function
+                        CType::Function(_) => return 1,
                         _ => {}
                     }
                 }
                 if let Expr::Identifier(name, _) = inner.as_ref() {
                     if let Some(info) = self.locals.get(name) {
+                        // GCC extension: sizeof(*func_ptr) == 1
+                        if let Some(ref ct) = info.c_type {
+                            if matches!(ct, CType::Function(_)) {
+                                return 1;
+                            }
+                            // Function pointer dereference: sizeof(*fptr) == 1
+                            if let CType::Pointer(pointee) = ct {
+                                if matches!(pointee.as_ref(), CType::Function(_)) {
+                                    return 1;
+                                }
+                            }
+                        }
                         if info.elem_size > 0 {
                             return info.elem_size;
                         }
@@ -1242,6 +1276,10 @@ impl Lowerer {
                         if ginfo.elem_size > 0 {
                             return ginfo.elem_size;
                         }
+                    }
+                    // GCC extension: sizeof(*func_name) == 1 for known functions
+                    if self.known_functions.contains(name) {
+                        return 1;
                     }
                 }
                 8 // TODO: better type tracking for nested derefs
@@ -1652,8 +1690,26 @@ impl Lowerer {
                     });
                     result = CType::Array(Box::new(result), size);
                 }
-                DerivedDeclarator::Function(_, _) | DerivedDeclarator::FunctionPointer(_, _) => {
-                    result = CType::Pointer(Box::new(result));
+                DerivedDeclarator::Function(params, _) => {
+                    // Function declarator: result type becomes function returning result
+                    // sizeof(func) = 1 (GNU), sizeof(&func) = 8
+                    let func_type = CType::Function(Box::new(crate::common::types::FunctionType {
+                        return_type: result,
+                        params: Vec::new(), // TODO: track param types
+                        variadic: false,
+                    }));
+                    result = func_type;
+                }
+                DerivedDeclarator::FunctionPointer(_, _) => {
+                    // Function pointer declarator: the parser already emits a separate
+                    // DerivedDeclarator::Pointer for the (*name) part, so we only need
+                    // to produce CType::Function here (not Pointer(Function(...))).
+                    let func_type = CType::Function(Box::new(crate::common::types::FunctionType {
+                        return_type: result,
+                        params: Vec::new(), // TODO: track param types
+                        variadic: false,
+                    }));
+                    result = func_type;
                 }
             }
         }
