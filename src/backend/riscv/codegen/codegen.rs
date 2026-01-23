@@ -363,13 +363,55 @@ impl ArchCodegen for RiscvCodegen {
         let mut float_reg_idx = 0usize;
         // Stack-passed params are at positive offsets from s0 (s0 = old sp)
         let mut stack_param_offset: i64 = 0;
+
+        // Phase 1: If there are any F128 params in GP registers, save all GP and FP arg regs
+        // to the stack first, because __trunctfdf2 calls will clobber them.
+        // Save area layout: a0-a7 (64 bytes) then fa0-fa7 (64 bytes) = 128 bytes total.
+        let has_f128_reg_params = func.params.iter().any(|p| {
+            p.ty.is_long_double()
+        });
+        let f128_save_offset: i64 = if has_f128_reg_params && !func.is_variadic {
+            self.state.emit("    addi sp, sp, -128");
+            // Save GP arg regs a0-a7
+            for i in 0..8usize {
+                self.state.emit(&format!("    sd {}, {}(sp)", RISCV_ARG_REGS[i], i * 8));
+            }
+            // Save FP arg regs fa0-fa7
+            for i in 0..8usize {
+                self.state.emit(&format!("    fsd fa{}, {}(sp)", i, 64 + i * 8));
+            }
+            0i64 // base offset from sp where a0 is saved; fa0 at offset 64
+        } else {
+            0
+        };
+
         for (_i, param) in func.params.iter().enumerate() {
-            let is_float = param.ty.is_float();
-            let is_stack_passed = if is_float { float_reg_idx >= 8 } else { int_reg_idx >= 8 };
+            let is_long_double = param.ty.is_long_double();
+            let is_float = param.ty.is_float() && !is_long_double;
+            // F128 (long double) uses GP register pairs in RISC-V LP64D ABI
+            let is_stack_passed = if is_long_double {
+                // F128 needs an aligned pair of GP regs
+                let aligned = (int_reg_idx + 1) & !1; // align to even
+                aligned + 1 >= 8
+            } else if is_float {
+                float_reg_idx >= 8
+            } else {
+                int_reg_idx >= 8
+            };
 
             if param.name.is_empty() {
                 if is_stack_passed {
-                    stack_param_offset += 8;
+                    if is_long_double {
+                        stack_param_offset = (stack_param_offset + 15) & !15;
+                        stack_param_offset += 16;
+                        int_reg_idx = 8; // consumed all GP regs
+                    } else {
+                        stack_param_offset += 8;
+                    }
+                } else if is_long_double {
+                    // Align to even GP register
+                    if int_reg_idx % 2 != 0 { int_reg_idx += 1; }
+                    int_reg_idx += 2;
                 } else if is_float {
                     float_reg_idx += 1;
                 } else {
@@ -379,7 +421,44 @@ impl ArchCodegen for RiscvCodegen {
             }
             if let Some((dest, ty)) = find_param_alloca(func, _i) {
                 if let Some(slot) = self.state.get_slot(dest.0) {
-                    if is_stack_passed {
+                    if is_long_double && !is_stack_passed {
+                        // F128 arrives in GP register pair (aligned to even).
+                        // GP regs were saved to stack in phase 1; load from saved area.
+                        if int_reg_idx % 2 != 0 { int_reg_idx += 1; }
+                        // Load saved lo:hi from the save area
+                        let lo_off = f128_save_offset + (int_reg_idx as i64) * 8;
+                        let hi_off = f128_save_offset + ((int_reg_idx + 1) as i64) * 8;
+                        self.state.emit(&format!("    ld a0, {}(sp)", lo_off));
+                        self.state.emit(&format!("    ld a1, {}(sp)", hi_off));
+                        self.state.emit("    call __trunctfdf2");
+                        // Result is in fa0, move to GP reg and store
+                        self.state.emit("    fmv.x.d t0, fa0");
+                        self.emit_store_to_s0("t0", slot.0, "sd");
+                        int_reg_idx += 2;
+                    } else if is_long_double && is_stack_passed {
+                        // F128 stack-passed: 16 bytes, 16-byte aligned
+                        // Stack params are at positive offsets from s0, but if we pushed
+                        // the save area, add 64 to account for it.
+                        let extra = if has_f128_reg_params && !func.is_variadic { 64 } else { 0 };
+                        let adj_offset = stack_param_offset + extra;
+                        stack_param_offset = (stack_param_offset + 15) & !15;
+                        // Load the f128 from stack and call __trunctfdf2
+                        self.emit_load_from_s0(
+                            "a0",
+                            (adj_offset + 15) & !15,
+                            "ld",
+                        );
+                        self.emit_load_from_s0(
+                            "a1",
+                            ((adj_offset + 15) & !15) + 8,
+                            "ld",
+                        );
+                        self.state.emit("    call __trunctfdf2");
+                        self.state.emit("    fmv.x.d t0, fa0");
+                        self.emit_store_to_s0("t0", slot.0, "sd");
+                        stack_param_offset += 16;
+                        int_reg_idx = 8;
+                    } else if is_stack_passed {
                         // Stack-passed parameter: load from positive s0 offset
                         self.emit_load_from_s0("t0", stack_param_offset, "ld");
                         let store_instr = Self::store_for_type(ty);
@@ -387,7 +466,17 @@ impl ArchCodegen for RiscvCodegen {
                         stack_param_offset += 8;
                     } else if is_float {
                         // Float params arrive in fa0-fa7 per RISC-V calling convention
-                        if ty == IrType::F32 {
+                        if has_f128_reg_params && !func.is_variadic {
+                            // FP regs were saved to stack; load from save area
+                            let fp_off = f128_save_offset + 64 + (float_reg_idx as i64) * 8;
+                            if ty == IrType::F32 {
+                                self.state.emit(&format!("    flw ft0, {}(sp)", fp_off));
+                                self.state.emit("    fmv.x.w t0, ft0");
+                            } else {
+                                self.state.emit(&format!("    fld ft0, {}(sp)", fp_off));
+                                self.state.emit("    fmv.x.d t0, ft0");
+                            }
+                        } else if ty == IrType::F32 {
                             // F32 param: extract 32-bit float from fa-reg
                             self.state.emit(&format!("    fmv.x.w t0, {}", float_arg_regs[float_reg_idx]));
                         } else {
@@ -397,13 +486,30 @@ impl ArchCodegen for RiscvCodegen {
                         self.emit_store_to_s0("t0", slot.0, "sd");
                         float_reg_idx += 1;
                     } else {
-                        let store_instr = Self::store_for_type(ty);
-                        self.emit_store_to_s0(RISCV_ARG_REGS[int_reg_idx], slot.0, store_instr);
+                        // GP register param - load from save area if we have F128 params
+                        if has_f128_reg_params && !func.is_variadic {
+                            let off = f128_save_offset + (int_reg_idx as i64) * 8;
+                            self.state.emit(&format!("    ld t0, {}(sp)", off));
+                            let store_instr = Self::store_for_type(ty);
+                            self.emit_store_to_s0("t0", slot.0, store_instr);
+                        } else {
+                            let store_instr = Self::store_for_type(ty);
+                            self.emit_store_to_s0(RISCV_ARG_REGS[int_reg_idx], slot.0, store_instr);
+                        }
                         int_reg_idx += 1;
                     }
                 }
             } else {
-                if is_stack_passed {
+                if is_long_double {
+                    if is_stack_passed {
+                        stack_param_offset = (stack_param_offset + 15) & !15;
+                        stack_param_offset += 16;
+                        int_reg_idx = 8;
+                    } else {
+                        if int_reg_idx % 2 != 0 { int_reg_idx += 1; }
+                        int_reg_idx += 2;
+                    }
+                } else if is_stack_passed {
                     stack_param_offset += 8;
                 } else if is_float {
                     float_reg_idx += 1;
@@ -411,6 +517,11 @@ impl ArchCodegen for RiscvCodegen {
                     int_reg_idx += 1;
                 }
             }
+        }
+
+        // Phase 2: Clean up the F128 save area (128 bytes: 64 GP + 64 FP)
+        if has_f128_reg_params && !func.is_variadic {
+            self.state.emit("    addi sp, sp, 128");
         }
     }
 
@@ -464,7 +575,8 @@ impl ArchCodegen for RiscvCodegen {
             self.state.emit("    mv t1, t0");
             self.operand_to_t0(rhs);
             self.state.emit("    mv t2, t0");
-            if ty == IrType::F64 {
+            // F128 uses F64 instructions (long double computed at double precision)
+            if ty == IrType::F64 || ty == IrType::F128 {
                 self.state.emit("    fmv.d.x ft0, t1");
                 self.state.emit("    fmv.d.x ft1, t2");
                 self.state.emit(&format!("    {}.d ft0, ft0, ft1", mnemonic));
@@ -528,7 +640,8 @@ impl ArchCodegen for RiscvCodegen {
         if ty.is_float() {
             match op {
                 IrUnaryOp::Neg => {
-                    if ty == IrType::F64 {
+                    // F128 uses F64 instructions (long double computed at double precision)
+                    if ty == IrType::F64 || ty == IrType::F128 {
                         self.state.emit("    fmv.d.x ft0, t0");
                         self.state.emit("    fneg.d ft0, ft0");
                         self.state.emit("    fmv.x.d t0, ft0");
@@ -563,7 +676,8 @@ impl ArchCodegen for RiscvCodegen {
         self.state.emit("    mv t2, t0");
 
         if ty.is_float() {
-            if ty == IrType::F64 {
+            // F128 uses F64 instructions (long double computed at double precision)
+            if ty == IrType::F64 || ty == IrType::F128 {
                 self.state.emit("    fmv.d.x ft0, t1");
                 self.state.emit("    fmv.d.x ft1, t2");
                 match op {
@@ -869,7 +983,13 @@ impl ArchCodegen for RiscvCodegen {
 
         if let Some(dest) = dest {
             if let Some(slot) = self.state.get_slot(dest.0) {
-                if return_type == IrType::F32 {
+                if return_type.is_long_double() {
+                    // F128 return value is in a0:a1 (GP register pair).
+                    // Convert from f128 back to f64 using __trunctfdf2.
+                    self.state.emit("    call __trunctfdf2");
+                    self.state.emit("    fmv.x.d t0, fa0");
+                    self.emit_store_to_s0("t0", slot.0, "sd");
+                } else if return_type == IrType::F32 {
                     // F32 return value is in fa0 as single-precision
                     self.state.emit("    fmv.x.w t0, fa0");
                     self.emit_store_to_s0("t0", slot.0, "sd");
@@ -1034,7 +1154,13 @@ impl ArchCodegen for RiscvCodegen {
     fn emit_return(&mut self, val: Option<&Operand>, frame_size: i64) {
         if let Some(val) = val {
             self.operand_to_t0(val);
-            if self.current_return_type == IrType::F32 {
+            if self.current_return_type.is_long_double() {
+                // F128 return: convert f64 bit pattern to f128 via __extenddftf2.
+                // Result goes in a0:a1 (GP register pair) per RISC-V LP64D ABI.
+                self.state.emit("    fmv.d.x fa0, t0");
+                self.state.emit("    call __extenddftf2");
+                // __extenddftf2 returns f128 in a0:a1 which is the correct return convention
+            } else if self.current_return_type == IrType::F32 {
                 // F32 return: bit pattern in t0, move to fa0 as single-precision
                 self.state.emit("    fmv.w.x fa0, t0");
             } else if self.current_return_type.is_float() {

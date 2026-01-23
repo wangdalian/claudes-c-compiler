@@ -37,6 +37,14 @@ pub(super) struct LocalInfo {
     /// emit a fresh GlobalAddr instruction instead of using `alloca`, because the
     /// declaration may be in an unreachable basic block (skipped by goto/switch).
     pub static_global_name: Option<String>,
+    /// For VLA function parameters: runtime stride Values per dimension level.
+    /// Parallel to `array_dim_strides`. When `Some(value)`, use the runtime Value
+    /// instead of the compile-time stride. This supports parameters like
+    /// `int m[rows][cols]` where `cols` is a runtime variable.
+    pub vla_strides: Vec<Option<Value>>,
+    /// For VLA local variables: the runtime Value holding sizeof(this_variable).
+    /// Used when sizeof is applied to a VLA local variable.
+    pub vla_size: Option<Value>,
 }
 
 /// Information about a global variable tracked by the lowerer.
@@ -58,6 +66,19 @@ pub(super) struct GlobalInfo {
     pub array_dim_strides: Vec<usize>,
     /// Full C type for precise multi-level pointer type resolution.
     pub c_type: Option<CType>,
+}
+
+/// Information about a VLA dimension in a function parameter type.
+#[derive(Debug)]
+struct VlaDimInfo {
+    /// Whether this dimension is a VLA (runtime variable).
+    is_vla: bool,
+    /// The name of the variable providing the dimension (e.g., "cols").
+    dim_expr_name: String,
+    /// If not VLA, the constant size value.
+    const_size: Option<i64>,
+    /// The sizeof the element type at this level (for computing strides).
+    base_elem_size: usize,
 }
 
 /// Represents an lvalue - something that can be assigned to.
@@ -686,6 +707,8 @@ impl Lowerer {
                         c_type,
                         is_bool,
                         static_global_name: None,
+                        vla_strides: vec![],
+                        vla_size: None,
                     });
 
                     // For function pointer parameters, register their return type and
@@ -749,8 +772,14 @@ impl Lowerer {
                 c_type: sp.c_type,
                 is_bool: false,
                 static_global_name: None,
+                vla_strides: vec![],
+                vla_size: None,
             });
         }
+
+        // VLA stride computation: for pointer-to-array parameters with runtime dimensions
+        // (e.g., int m[rows][cols]), compute strides at runtime using the dimension parameters.
+        self.compute_vla_param_strides(func);
 
         // K&R float promotion: for K&R functions with float params (promoted to double for ABI),
         // load the double value, narrow to float, and update the local to use the float alloca.
@@ -831,6 +860,186 @@ impl Lowerer {
             stack_size: 0,
         };
         self.module.functions.push(ir_func);
+    }
+
+    /// For pointer-to-array function parameters with VLA (runtime) dimensions,
+    /// compute strides at runtime and store them in the LocalInfo.
+    /// Example: `void f(int rows, int cols, int m[rows][cols])`
+    /// The parameter `m` has type `Pointer(Array(Int, cols))` where `cols` is a runtime variable.
+    /// We need to compute stride[0] = cols * sizeof(int) at runtime.
+    fn compute_vla_param_strides(&mut self, func: &FunctionDef) {
+        // Collect VLA info first, then emit code (avoids borrow issues)
+        let mut vla_params: Vec<(String, Vec<VlaDimInfo>)> = Vec::new();
+
+        for param in &func.params {
+            let param_name = match &param.name {
+                Some(n) => n.clone(),
+                None => continue,
+            };
+
+            // Check if this parameter is a pointer-to-array with VLA dimensions
+            let ts = self.resolve_type_spec(&param.type_spec);
+            if let TypeSpecifier::Pointer(inner) = ts {
+                let dim_infos = self.collect_vla_dims(inner);
+                if dim_infos.iter().any(|d| d.is_vla) {
+                    vla_params.push((param_name, dim_infos));
+                }
+            }
+        }
+
+        // Now emit runtime stride computations
+        for (param_name, dim_infos) in vla_params {
+            let num_strides = dim_infos.len() + 1; // +1 for base element size
+            let mut vla_strides: Vec<Option<Value>> = vec![None; num_strides];
+
+            // Compute strides from innermost to outermost
+            // For int m[rows][cols]: dims = [cols], base_elem_size = 4
+            // stride[1] = 4 (base element)
+            // stride[0] = cols * 4 (row stride)
+            //
+            // For int m[a][b][c]: dims = [b, c], base_elem_size = 4
+            // stride[2] = 4
+            // stride[1] = c * 4
+            // stride[0] = b * c * 4
+
+            // Find the base element size (product of all constant inner dims * scalar size)
+            let base_elem_size = dim_infos.last().map_or(1, |d| d.base_elem_size);
+
+            // Start with base element stride
+            let mut current_stride: Option<Value> = None;
+            let mut current_const_stride = base_elem_size;
+
+            // Process dimensions from innermost to outermost
+            for (i, dim_info) in dim_infos.iter().enumerate().rev() {
+                if dim_info.is_vla {
+                    // Load the VLA dimension variable
+                    let dim_val = self.load_vla_dim_value(&dim_info.dim_expr_name);
+
+                    // Compute stride = dim_val * current_stride
+                    let stride_val = if let Some(prev) = current_stride {
+                        // Runtime stride * runtime dim
+                        let result = self.fresh_value();
+                        self.emit(Instruction::BinOp {
+                            dest: result,
+                            op: IrBinOp::Mul,
+                            lhs: Operand::Value(dim_val),
+                            rhs: Operand::Value(prev),
+                            ty: IrType::I64,
+                        });
+                        result
+                    } else {
+                        // Constant stride * runtime dim
+                        let result = self.fresh_value();
+                        self.emit(Instruction::BinOp {
+                            dest: result,
+                            op: IrBinOp::Mul,
+                            lhs: Operand::Value(dim_val),
+                            rhs: Operand::Const(IrConst::I64(current_const_stride as i64)),
+                            ty: IrType::I64,
+                        });
+                        result
+                    };
+
+                    // stride[i] is the stride for subscript at depth i
+                    // which is used when accessing a[i] where a is the array at this level
+                    vla_strides[i] = Some(stride_val);
+                    current_stride = Some(stride_val);
+                    current_const_stride = 0; // no longer constant
+                } else {
+                    // Constant dimension
+                    let const_dim = dim_info.const_size.unwrap_or(1) as usize;
+                    if let Some(prev) = current_stride {
+                        // Multiply runtime stride by constant dim
+                        let result = self.fresh_value();
+                        self.emit(Instruction::BinOp {
+                            dest: result,
+                            op: IrBinOp::Mul,
+                            lhs: Operand::Value(prev),
+                            rhs: Operand::Const(IrConst::I64(const_dim as i64)),
+                            ty: IrType::I64,
+                        });
+                        vla_strides[i] = Some(result);
+                        current_stride = Some(result);
+                    } else {
+                        current_const_stride *= const_dim;
+                        // This level's stride is still compile-time constant
+                        // vla_strides[i] remains None (use array_dim_strides)
+                    }
+                }
+            }
+
+            // Update the LocalInfo with VLA strides
+            if let Some(local) = self.locals.get_mut(&param_name) {
+                local.vla_strides = vla_strides;
+            }
+        }
+    }
+
+    /// Load the value of a VLA dimension variable (a function parameter).
+    fn load_vla_dim_value(&mut self, dim_name: &str) -> Value {
+        if let Some(info) = self.locals.get(dim_name).cloned() {
+            let loaded = self.fresh_value();
+            self.emit(Instruction::Load {
+                dest: loaded,
+                ptr: info.alloca,
+                ty: info.ty,
+            });
+            loaded
+        } else {
+            // Fallback: use constant 1
+            let val = self.fresh_value();
+            self.emit(Instruction::Copy {
+                dest: val,
+                src: Operand::Const(IrConst::I64(1)),
+            });
+            val
+        }
+    }
+
+    /// Collect VLA dimension information from a pointer-to-array type.
+    /// For `Pointer(Array(Array(Int, c), b))`, returns [{name:"b", is_vla:true}, {name:"c", is_vla:true}]
+    fn collect_vla_dims(&self, inner: &TypeSpecifier) -> Vec<VlaDimInfo> {
+        let mut dims = Vec::new();
+        let mut current = inner;
+        loop {
+            let resolved = self.resolve_type_spec(current);
+            if let TypeSpecifier::Array(elem, size_expr) = resolved {
+                let (is_vla, dim_name, const_size) = if let Some(expr) = size_expr {
+                    if let Some(val) = self.expr_as_array_size(expr) {
+                        (false, String::new(), Some(val))
+                    } else {
+                        // Non-constant dimension - extract the variable name
+                        let name = Self::extract_dim_expr_name(expr);
+                        (true, name, None)
+                    }
+                } else {
+                    (false, String::new(), None)
+                };
+
+                // Compute base_elem_size for this level
+                let base_elem_size = self.sizeof_type(elem);
+
+                dims.push(VlaDimInfo {
+                    is_vla,
+                    dim_expr_name: dim_name,
+                    const_size,
+                    base_elem_size,
+                });
+                current = elem;
+            } else {
+                break;
+            }
+        }
+        dims
+    }
+
+    /// Extract variable name from a VLA dimension expression.
+    /// Handles simple cases like Identifier("cols").
+    fn extract_dim_expr_name(expr: &Expr) -> String {
+        match expr {
+            Expr::Identifier(name, _) => name.clone(),
+            _ => String::new(),
+        }
     }
 
     fn lower_global_decl(&mut self, decl: &Declaration) {

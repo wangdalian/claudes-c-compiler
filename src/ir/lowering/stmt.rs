@@ -358,6 +358,8 @@ impl Lowerer {
                     c_type,
                     is_bool,
                     static_global_name: Some(static_name),
+                    vla_strides: vec![],
+                    vla_size: None,
                 });
 
                 self.next_static_local += 1;
@@ -365,6 +367,13 @@ impl Lowerer {
                 // not at every function call, so skip the runtime initialization below
                 continue;
             }
+
+            // Compute VLA runtime size if any array dimension is non-constant
+            let vla_size = if is_array {
+                self.compute_vla_runtime_size(&decl.type_spec, &declarator.derived)
+            } else {
+                None
+            };
 
             let alloca = self.fresh_value();
             self.emit(Instruction::Alloca {
@@ -388,6 +397,8 @@ impl Lowerer {
                 c_type,
                 is_bool,
                 static_global_name: None,
+                vla_strides: vec![],
+                vla_size,
             });
 
             // Track function pointer return and param types for correct calling convention
@@ -1725,5 +1736,143 @@ impl Lowerer {
             current_field_idx = field_idx + 1;
         }
         item_idx
+    }
+
+    /// Compute the runtime sizeof for a VLA local variable.
+    /// Returns Some(Value) if any array dimension is a non-constant expression.
+    /// The Value holds the total byte size (product of all dimensions * element_size).
+    /// Returns None if all dimensions are compile-time constants.
+    pub(super) fn compute_vla_runtime_size(
+        &mut self,
+        type_spec: &TypeSpecifier,
+        derived: &[DerivedDeclarator],
+    ) -> Option<Value> {
+        // Collect array dimensions from derived declarators
+        let array_dims: Vec<&Option<Box<Expr>>> = derived.iter().filter_map(|d| {
+            if let DerivedDeclarator::Array(size) = d {
+                Some(size)
+            } else {
+                None
+            }
+        }).collect();
+
+        if array_dims.is_empty() {
+            // Check if the type_spec itself is an Array (typedef'd VLA)
+            return self.compute_vla_size_from_type_spec(type_spec);
+        }
+
+        // Check if any dimension is non-constant
+        let mut has_vla = false;
+        for dim in &array_dims {
+            if let Some(expr) = dim {
+                if self.expr_as_array_size(expr).is_none() {
+                    has_vla = true;
+                    break;
+                }
+            }
+        }
+
+        if !has_vla {
+            return None; // All dimensions are compile-time constants
+        }
+
+        // Compute element size (the base type size)
+        let resolved = self.resolve_type_spec(type_spec);
+        let base_elem_size = self.sizeof_type(&resolved);
+
+        // Build runtime product: dim0 * dim1 * ... * base_elem_size
+        let mut result: Option<Value> = None;
+        let mut const_product: usize = base_elem_size;
+
+        for dim in &array_dims {
+            if let Some(expr) = dim {
+                if let Some(const_val) = self.expr_as_array_size(expr) {
+                    // Constant dimension - accumulate
+                    const_product *= const_val as usize;
+                } else {
+                    // Runtime dimension - emit multiplication
+                    let dim_val = self.lower_expr(expr);
+                    let dim_value = self.operand_to_value(dim_val);
+
+                    result = if let Some(prev) = result {
+                        let mul = self.fresh_value();
+                        self.emit(Instruction::BinOp {
+                            dest: mul,
+                            op: IrBinOp::Mul,
+                            lhs: Operand::Value(prev),
+                            rhs: Operand::Value(dim_value),
+                            ty: IrType::I64,
+                        });
+                        Some(mul)
+                    } else {
+                        // First runtime dim: multiply by accumulated constants
+                        if const_product > 1 {
+                            let mul = self.fresh_value();
+                            self.emit(Instruction::BinOp {
+                                dest: mul,
+                                op: IrBinOp::Mul,
+                                lhs: Operand::Value(dim_value),
+                                rhs: Operand::Const(IrConst::I64(const_product as i64)),
+                                ty: IrType::I64,
+                            });
+                            const_product = 1;
+                            Some(mul)
+                        } else {
+                            Some(dim_value)
+                        }
+                    };
+                }
+            }
+        }
+
+        // If we have remaining constant factors, multiply them in
+        if let Some(prev) = result {
+            if const_product > 1 {
+                let mul = self.fresh_value();
+                self.emit(Instruction::BinOp {
+                    dest: mul,
+                    op: IrBinOp::Mul,
+                    lhs: Operand::Value(prev),
+                    rhs: Operand::Const(IrConst::I64(const_product as i64)),
+                    ty: IrType::I64,
+                });
+                return Some(mul);
+            }
+            return Some(prev);
+        }
+
+        None
+    }
+
+    /// Compute VLA size from a typedef'd array type (e.g., typedef char buf[n]).
+    fn compute_vla_size_from_type_spec(&mut self, type_spec: &TypeSpecifier) -> Option<Value> {
+        let resolved = self.resolve_type_spec(type_spec).clone();
+        match &resolved {
+            TypeSpecifier::Array(elem, Some(size_expr)) => {
+                if self.expr_as_array_size(size_expr).is_some() {
+                    return None; // Constant size
+                }
+                // Clone what we need before mutable borrow
+                let size_expr_clone = size_expr.clone();
+                let elem_size = self.sizeof_type(elem);
+                // Runtime size expression
+                let dim_val = self.lower_expr(&size_expr_clone);
+                let dim_value = self.operand_to_value(dim_val);
+                if elem_size > 1 {
+                    let mul = self.fresh_value();
+                    self.emit(Instruction::BinOp {
+                        dest: mul,
+                        op: IrBinOp::Mul,
+                        lhs: Operand::Value(dim_value),
+                        rhs: Operand::Const(IrConst::I64(elem_size as i64)),
+                        ty: IrType::I64,
+                    });
+                    Some(mul)
+                } else {
+                    Some(dim_value)
+                }
+            }
+            _ => None,
+        }
     }
 }

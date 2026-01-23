@@ -1,21 +1,27 @@
 Task: Fix VLA function parameter strides to use runtime dimension values
-Status: IN PROGRESS
+Status: COMPLETED
 
-Problem: When a function takes a VLA parameter like int m[rows][cols], the inner 
-dimension 'cols' is a runtime variable. Currently compute_ptr_array_strides falls 
-back to 1 when the array size expression isn't a compile-time constant, causing 
+Problem: When a function takes a VLA parameter like int m[rows][cols], the inner
+dimension 'cols' is a runtime variable. Previously compute_ptr_array_strides fell
+back to 1 when the array size expression wasn't a compile-time constant, causing
 wrong strides for multi-dimensional array access through these parameters.
 
-Example:
-  void f(int rows, int cols, int m[rows][cols]) {
-      m[1][0]; // should access at offset cols*sizeof(int), but uses 1*sizeof(int)
-  }
+Fix implemented:
+1. Added vla_strides: Vec<Option<Value>> to LocalInfo for runtime stride IR values
+2. Added vla_size: Option<Value> to LocalInfo for VLA local sizeof
+3. In lower_function, detect VLA params whose dimensions reference other params
+4. Emit runtime multiply instructions to compute strides when dimension is not constant
+5. Modified compute_array_element_addr to check for VLA runtime strides first
+6. Added get_vla_stride_for_subscript to look up runtime strides by subscript depth
+7. Added compute_vla_runtime_size and compute_vla_size_from_type_spec for VLA sizeof
+8. Added get_vla_sizeof to expr.rs to intercept sizeof on VLA locals
 
-Fix approach:
-1. Add vla_stride_values: Vec<Option<Value>> to LocalInfo to store runtime stride IR values
-2. In lower_function, detect VLA params whose dimensions reference other params
-3. Emit runtime multiply instructions to compute strides when dimension is not constant
-4. In get_array_elem_size_for_subscript, use runtime stride values when available
-5. Modify compute_array_element_addr to use runtime stride operands
+Files changed:
+- src/ir/lowering/lowering.rs: LocalInfo fields, VlaDimInfo struct, compute_vla_param_strides,
+  load_vla_dim_value, collect_vla_dims, extract_dim_expr_name
+- src/ir/lowering/lvalue.rs: get_vla_stride_for_subscript, modified compute_array_element_addr
+- src/ir/lowering/stmt.rs: compute_vla_runtime_size, compute_vla_size_from_type_spec
+- src/ir/lowering/expr.rs: get_vla_sizeof, modified lower_sizeof
 
-Expected impact: Fixes ~29 VLA-related test failures plus 2D dynamic array tests.
+Verified: All 41 integration tests pass on x86 and ARM64. 39/41 on RISC-V (2 pre-existing va_arg failures).
+All 32 unit tests pass. VLA parameter stride tests work correctly on all architectures.

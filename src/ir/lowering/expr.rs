@@ -372,7 +372,14 @@ impl Lowerer {
         let is_shift = matches!(op, BinOp::Shl | BinOp::Shr);
 
         let (op_ty, is_unsigned, common_ty) = if lhs_expr_ty.is_float() || rhs_expr_ty.is_float() {
-            let ft = if lhs_expr_ty == IrType::F64 || rhs_expr_ty == IrType::F64 { IrType::F64 } else { IrType::F32 };
+            // F128 (long double) is computed at F64 precision internally
+            let ft = if lhs_expr_ty == IrType::F128 || rhs_expr_ty == IrType::F128 {
+                IrType::F128
+            } else if lhs_expr_ty == IrType::F64 || rhs_expr_ty == IrType::F64 {
+                IrType::F64
+            } else {
+                IrType::F32
+            };
             (ft, false, ft)
         } else if is_shift {
             // For shifts: result type is the promoted left operand type
@@ -1982,11 +1989,31 @@ impl Lowerer {
     // -----------------------------------------------------------------------
 
     fn lower_sizeof(&mut self, arg: &SizeofArg) -> Operand {
+        // Check for VLA runtime sizeof first
+        if let Some(vla_val) = self.get_vla_sizeof(arg) {
+            return Operand::Value(vla_val);
+        }
         let size = match arg {
             SizeofArg::Type(ts) => self.sizeof_type(ts),
             SizeofArg::Expr(expr) => self.sizeof_expr(expr),
         };
         Operand::Const(IrConst::I64(size as i64))
+    }
+
+    /// Check if sizeof argument refers to a VLA variable and return its runtime size.
+    fn get_vla_sizeof(&self, arg: &SizeofArg) -> Option<Value> {
+        match arg {
+            SizeofArg::Expr(expr) => {
+                // sizeof(identifier) where identifier is a VLA local
+                if let Expr::Identifier(name, _) = expr {
+                    if let Some(info) = self.locals.get(name) {
+                        return info.vla_size;
+                    }
+                }
+                None
+            }
+            SizeofArg::Type(_) => None,
+        }
     }
 
     /// Lower a _Generic selection expression by matching the controlling expression's
@@ -2773,6 +2800,7 @@ impl Lowerer {
 
     /// Determine common type for usual arithmetic conversions.
     pub(super) fn common_type(a: IrType, b: IrType) -> IrType {
+        if a == IrType::F128 || b == IrType::F128 { return IrType::F128; }
         if a == IrType::F64 || b == IrType::F64 { return IrType::F64; }
         if a == IrType::F32 || b == IrType::F32 { return IrType::F32; }
         if a == IrType::I64 || a == IrType::U64 || a == IrType::Ptr

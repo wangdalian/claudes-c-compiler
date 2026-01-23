@@ -132,14 +132,28 @@ impl Lowerer {
 
         let index_val = self.lower_expr(actual_index);
 
+        // Check for VLA runtime stride first
+        let vla_stride = self.get_vla_stride_for_subscript(actual_base);
+
         // Determine the element size based on subscript depth for multi-dim arrays
         let elem_size = self.get_array_elem_size_for_subscript(actual_base);
 
         // Get the base address - for nested subscripts (a[i][j]), don't load
         let base_addr = self.get_array_base_addr(actual_base);
 
-        // Compute offset = index * elem_size
-        let offset = if elem_size == 1 {
+        // Compute offset = index * stride (runtime VLA stride or compile-time elem_size)
+        let offset = if let Some(stride_val) = vla_stride {
+            // Use runtime VLA stride
+            let mul_dest = self.fresh_value();
+            self.emit(Instruction::BinOp {
+                dest: mul_dest,
+                op: IrBinOp::Mul,
+                lhs: index_val,
+                rhs: Operand::Value(stride_val),
+                ty: IrType::I64,
+            });
+            Operand::Value(mul_dest)
+        } else if elem_size == 1 {
             index_val
         } else {
             let size_const = Operand::Const(IrConst::I64(elem_size as i64));
@@ -171,6 +185,21 @@ impl Lowerer {
             ty: IrType::I64,
         });
         addr
+    }
+
+    /// Get the VLA runtime stride value for a subscript expression, if available.
+    /// For `m[i]` where m has VLA strides, returns the runtime stride at depth 0.
+    /// For `m[i][j]` where the outer subscript `m[i]` already used VLA, returns stride at depth 1.
+    fn get_vla_stride_for_subscript(&self, base: &Expr) -> Option<Value> {
+        let root_name = self.get_array_root_name_from_base(base)?;
+        let depth = self.count_subscript_depth(base);
+
+        if let Some(info) = self.locals.get(&root_name) {
+            if !info.vla_strides.is_empty() && depth < info.vla_strides.len() {
+                return info.vla_strides[depth];
+            }
+        }
+        None
     }
 
     /// Get the base address for an array expression.

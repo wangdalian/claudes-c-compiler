@@ -601,16 +601,68 @@ impl ArchCodegen for ArmCodegen {
         }
 
         // Phase 2: Store all FLOAT register params (uses x0 as scratch, but int regs already saved).
-        for (i, param) in func.params.iter().enumerate() {
-            if param_class[i] != 'f' || param.name.is_empty() { continue; }
-            if let Some((dest, ty)) = find_param_alloca(func, i) {
-                if let Some(slot) = self.state.get_slot(dest.0) {
-                    if ty == IrType::F32 {
-                        self.state.emit(&format!("    fmov w0, s{}", param_float_reg[i]));
-                        self.emit_store_to_sp("x0", slot.0, "str");
-                    } else {
-                        self.state.emit(&format!("    fmov x0, d{}", param_float_reg[i]));
-                        self.emit_store_to_sp("x0", slot.0, "str");
+        // Check if any F128 params need __trunctfdf2 conversion, which clobbers Q regs.
+        let has_f128_params = func.params.iter().enumerate().any(|(i, p)| {
+            param_class[i] == 'f' && p.ty.is_long_double()
+        });
+
+        if has_f128_params {
+            // Save all Q registers to the stack before F128 conversions clobber them.
+            // Save q0-q7 (8 regs * 16 bytes = 128 bytes).
+            self.emit_sub_sp(128);
+            for i in 0..8usize {
+                self.state.emit(&format!("    str q{}, [sp, #{}]", i, i * 16));
+            }
+
+            // Process non-F128 float params first (from saved Q area)
+            for (i, param) in func.params.iter().enumerate() {
+                if param_class[i] != 'f' || param.name.is_empty() || param.ty.is_long_double() { continue; }
+                if let Some((dest, ty)) = find_param_alloca(func, i) {
+                    if let Some(slot) = self.state.get_slot(dest.0) {
+                        let fp_reg_off = (param_float_reg[i] * 16) as i64;
+                        if ty == IrType::F32 {
+                            self.state.emit(&format!("    ldr s0, [sp, #{}]", fp_reg_off));
+                            self.state.emit("    fmov w0, s0");
+                        } else {
+                            self.state.emit(&format!("    ldr d0, [sp, #{}]", fp_reg_off));
+                            self.state.emit("    fmov x0, d0");
+                        }
+                        self.emit_store_to_sp("x0", slot.0 + 128, "str");
+                    }
+                }
+            }
+
+            // Process F128 params: load Q register from save area, call __trunctfdf2
+            for (i, param) in func.params.iter().enumerate() {
+                if param_class[i] != 'f' || param.name.is_empty() || !param.ty.is_long_double() { continue; }
+                if let Some((dest, _ty)) = find_param_alloca(func, i) {
+                    if let Some(slot) = self.state.get_slot(dest.0) {
+                        let fp_reg_off = (param_float_reg[i] * 16) as i64;
+                        // Load the saved Q register value into q0 for __trunctfdf2
+                        self.state.emit(&format!("    ldr q0, [sp, #{}]", fp_reg_off));
+                        self.state.emit("    bl __trunctfdf2");
+                        // __trunctfdf2 returns f64 in d0
+                        self.state.emit("    fmov x0, d0");
+                        self.emit_store_to_sp("x0", slot.0 + 128, "str");
+                    }
+                }
+            }
+
+            // Restore stack
+            self.emit_add_sp(128);
+        } else {
+            // No F128 params: use the simple path
+            for (i, param) in func.params.iter().enumerate() {
+                if param_class[i] != 'f' || param.name.is_empty() { continue; }
+                if let Some((dest, ty)) = find_param_alloca(func, i) {
+                    if let Some(slot) = self.state.get_slot(dest.0) {
+                        if ty == IrType::F32 {
+                            self.state.emit(&format!("    fmov w0, s{}", param_float_reg[i]));
+                            self.emit_store_to_sp("x0", slot.0, "str");
+                        } else {
+                            self.state.emit(&format!("    fmov x0, d{}", param_float_reg[i]));
+                            self.emit_store_to_sp("x0", slot.0, "str");
+                        }
                     }
                 }
             }
@@ -1169,7 +1221,12 @@ impl ArchCodegen for ArmCodegen {
         }
 
         if let Some(dest) = dest {
-            if return_type == IrType::F32 {
+            if return_type.is_long_double() {
+                // F128 return value is in q0 per AAPCS64.
+                // Convert from f128 to f64 using __trunctfdf2 (input in q0, output in d0).
+                self.state.emit("    bl __trunctfdf2");
+                self.state.emit("    fmov x0, d0");
+            } else if return_type == IrType::F32 {
                 // F32 return value is in s0 per AAPCS64
                 self.state.emit("    fmov w0, s0");
             } else if return_type.is_float() {
@@ -1451,7 +1508,13 @@ impl ArchCodegen for ArmCodegen {
     fn emit_return(&mut self, val: Option<&Operand>, frame_size: i64) {
         if let Some(val) = val {
             self.operand_to_x0(val);
-            if self.current_return_type == IrType::F32 {
+            if self.current_return_type.is_long_double() {
+                // F128 return: convert f64 bit pattern in x0 to f128 in q0 via __extenddftf2.
+                // __extenddftf2 takes input in d0, returns f128 in q0.
+                self.state.emit("    fmov d0, x0");
+                self.state.emit("    bl __extenddftf2");
+                // Result now in q0, which is the AAPCS64 return register for f128
+            } else if self.current_return_type == IrType::F32 {
                 // F32 return: bit pattern in w0, move to s0 per AAPCS64
                 self.state.emit("    fmov s0, w0");
             } else if self.current_return_type.is_float() {

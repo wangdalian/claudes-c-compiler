@@ -886,7 +886,9 @@ impl Lowerer {
                     _ => {
                         let lty = self.get_expr_type(lhs);
                         let rty = self.get_expr_type(rhs);
-                        if lty == IrType::F64 || rty == IrType::F64 {
+                        if lty == IrType::F128 || rty == IrType::F128 {
+                            return IrType::F128;
+                        } else if lty == IrType::F64 || rty == IrType::F64 {
                             return IrType::F64;
                         } else if lty == IrType::F32 || rty == IrType::F32 {
                             return IrType::F32;

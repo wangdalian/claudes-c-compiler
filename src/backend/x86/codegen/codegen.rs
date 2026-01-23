@@ -428,11 +428,22 @@ impl ArchCodegen for X86Codegen {
         // Stack-passed parameters start at 16(%rbp) (after saved rbp + return addr)
         let mut stack_param_offset: i64 = 16;
         for (_i, param) in func.params.iter().enumerate() {
-            let is_float = param.ty.is_float();
-            let is_stack_passed = if is_float { float_reg_idx >= 8 } else { int_reg_idx >= 6 };
+            let is_long_double = param.ty.is_long_double();
+            let is_float = param.ty.is_float() && !is_long_double;
+            // F128 (long double) is always passed on the stack on x86-64 (X87 class)
+            let is_stack_passed = if is_long_double {
+                true
+            } else if is_float {
+                float_reg_idx >= 8
+            } else {
+                int_reg_idx >= 6
+            };
 
             if param.name.is_empty() {
-                if is_stack_passed {
+                if is_long_double {
+                    // F128 takes 16 bytes on stack
+                    stack_param_offset += 16;
+                } else if is_stack_passed {
                     stack_param_offset += 8;
                 } else if is_float {
                     float_reg_idx += 1;
@@ -443,7 +454,17 @@ impl ArchCodegen for X86Codegen {
             }
             if let Some((dest, ty)) = find_param_alloca(func, _i) {
                 if let Some(slot) = self.state.get_slot(dest.0) {
-                    if is_stack_passed {
+                    if is_long_double {
+                        // F128 (long double) on x86-64: passed on stack as 16-byte x87 extended.
+                        // Load the x87 80-bit extended precision value and convert to f64 bit pattern.
+                        self.state.emit(&format!("    fldt {}(%rbp)", stack_param_offset));
+                        self.state.emit("    subq $8, %rsp");
+                        self.state.emit("    fstpl (%rsp)");
+                        self.state.emit("    movq (%rsp), %rax");
+                        self.state.emit("    addq $8, %rsp");
+                        self.state.emit(&format!("    movq %rax, {}(%rbp)", slot.0));
+                        stack_param_offset += 16;
+                    } else if is_stack_passed {
                         // Stack-passed parameter: copy from positive rbp offset to local slot
                         self.state.emit(&format!("    movq {}(%rbp), %rax", stack_param_offset));
                         let store_instr = Self::mov_store_for_type(ty);
@@ -469,7 +490,9 @@ impl ArchCodegen for X86Codegen {
                     }
                 }
             } else {
-                if is_stack_passed {
+                if is_long_double {
+                    stack_param_offset += 16;
+                } else if is_stack_passed {
                     stack_param_offset += 8;
                 } else if is_float {
                     float_reg_idx += 1;
@@ -534,7 +557,8 @@ impl ArchCodegen for X86Codegen {
             self.operand_to_rax(rhs);
             self.state.emit(&format!("    {}", mov_to_xmm1));
             self.state.emit("    popq %rax");
-            let suffix = if ty == IrType::F64 { "sd" } else { "ss" };
+            // F128 uses F64 instructions (long double computed at double precision)
+            let suffix = if ty == IrType::F64 || ty == IrType::F128 { "sd" } else { "ss" };
             let mnemonic = match float_op {
                 FloatOp::Add => "add",
                 FloatOp::Sub => "sub",
@@ -694,7 +718,8 @@ impl ArchCodegen for X86Codegen {
             self.operand_to_rax(rhs);
             self.state.emit(&format!("    {}", mov_to_xmm1));
             self.state.emit("    popq %rax");
-            if ty == IrType::F64 {
+            // F128 uses F64 instructions (long double computed at double precision)
+            if ty == IrType::F64 || ty == IrType::F128 {
                 self.state.emit("    ucomisd %xmm1, %xmm0");
             } else {
                 self.state.emit("    ucomiss %xmm1, %xmm0");
@@ -883,8 +908,9 @@ impl ArchCodegen for X86Codegen {
             if return_type == IrType::F32 {
                 // F32 return value is in xmm0 (low 32 bits)
                 self.state.emit("    movd %xmm0, %eax");
-            } else if return_type == IrType::F64 {
-                // F64 return value is in xmm0 (full 64 bits)
+            } else if return_type == IrType::F64 || return_type == IrType::F128 {
+                // F64/F128 return value is in xmm0 (full 64 bits)
+                // F128 internally uses f64 bit pattern
                 self.state.emit("    movq %xmm0, %rax");
             }
             self.store_rax_to(&dest);
@@ -1120,7 +1146,8 @@ impl ArchCodegen for X86Codegen {
             self.operand_to_rax(val);
             if self.current_return_type == IrType::F32 {
                 self.state.emit("    movd %eax, %xmm0");
-            } else if self.current_return_type == IrType::F64 {
+            } else if self.current_return_type == IrType::F64 || self.current_return_type == IrType::F128 {
+                // F128 internally uses f64 bit pattern, return in xmm0
                 self.state.emit("    movq %rax, %xmm0");
             }
         }
