@@ -1727,39 +1727,50 @@ impl Lowerer {
         let resolved = self.resolve_type_spec(type_spec);
         let base = self.type_spec_to_ctype(resolved);
         let mut result = base;
-        // Derived declarators are in innermost-first order: `int *arr[3]` has [Pointer, Array(3)].
-        // Process forward: first Pointer wraps Int -> Pointer(Int), then Array wraps -> Array(Pointer(Int), 3).
-        for d in derived.iter() {
-            match d {
+        // Process derived declarators in groups:
+        // - Pointers are applied immediately (forward order)
+        // - Consecutive Array dimensions are collected and applied in reverse
+        //   (so `int m[3][4]` with derived [Array(3), Array(4)] becomes Array(Array(Int,4),3))
+        let mut i = 0;
+        while i < derived.len() {
+            match &derived[i] {
                 DerivedDeclarator::Pointer => {
                     result = CType::Pointer(Box::new(result));
+                    i += 1;
                 }
-                DerivedDeclarator::Array(size_expr) => {
-                    let size = size_expr.as_ref().and_then(|e| {
-                        self.expr_as_array_size(e).map(|n| n as usize)
-                    });
-                    result = CType::Array(Box::new(result), size);
+                DerivedDeclarator::Array(_) => {
+                    // Collect all consecutive Array declarators
+                    let start = i;
+                    while i < derived.len() && matches!(&derived[i], DerivedDeclarator::Array(_)) {
+                        i += 1;
+                    }
+                    // Apply array dimensions in reverse order (innermost first)
+                    for j in (start..i).rev() {
+                        if let DerivedDeclarator::Array(size_expr) = &derived[j] {
+                            let size = size_expr.as_ref().and_then(|e| {
+                                self.expr_as_array_size(e).map(|n| n as usize)
+                            });
+                            result = CType::Array(Box::new(result), size);
+                        }
+                    }
                 }
-                DerivedDeclarator::Function(params, _) => {
-                    // Function declarator: result type becomes function returning result
-                    // sizeof(func) = 1 (GNU), sizeof(&func) = 8
+                DerivedDeclarator::Function(_, _) => {
                     let func_type = CType::Function(Box::new(crate::common::types::FunctionType {
                         return_type: result,
-                        params: Vec::new(), // TODO: track param types
+                        params: Vec::new(),
                         variadic: false,
                     }));
                     result = func_type;
+                    i += 1;
                 }
                 DerivedDeclarator::FunctionPointer(_, _) => {
-                    // Function pointer declarator: the parser already emits a separate
-                    // DerivedDeclarator::Pointer for the (*name) part, so we only need
-                    // to produce CType::Function here (not Pointer(Function(...))).
                     let func_type = CType::Function(Box::new(crate::common::types::FunctionType {
                         return_type: result,
-                        params: Vec::new(), // TODO: track param types
+                        params: Vec::new(),
                         variadic: false,
                     }));
                     result = func_type;
+                    i += 1;
                 }
             }
         }
