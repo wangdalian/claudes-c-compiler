@@ -80,7 +80,14 @@ impl Lowerer {
 
             let base_ty = self.type_spec_to_ir(&decl.type_spec);
             let (mut alloc_size, elem_size, is_array, is_pointer, mut array_dim_strides) = self.compute_decl_info(&decl.type_spec, &declarator.derived);
-            let var_ty = if is_pointer { IrType::Ptr } else { base_ty };
+            // For array-of-pointers (int *arr[N]), the element type is Ptr, not the base type.
+            // Detect: Pointer before Array in derived declarators.
+            let is_array_of_pointers = is_array && {
+                let ptr_pos = declarator.derived.iter().position(|d| matches!(d, DerivedDeclarator::Pointer));
+                let arr_pos = declarator.derived.iter().position(|d| matches!(d, DerivedDeclarator::Array(_)));
+                matches!((ptr_pos, arr_pos), (Some(pp), Some(ap)) if pp < ap)
+            };
+            let var_ty = if is_pointer || is_array_of_pointers { IrType::Ptr } else { base_ty };
 
             // For unsized arrays (int a[] = {...}), compute actual size from initializer
             let is_unsized_array = is_array && declarator.derived.iter().any(|d| {
@@ -261,7 +268,16 @@ impl Lowerer {
                                 let val = self.lower_expr(expr);
                                 self.emit(Instruction::Store { val, ptr: alloca, ty: var_ty });
                             }
-                        } else if !is_struct {
+                        } else if is_struct {
+                            // Struct copy-initialization: struct Point b = a;
+                            // Get the source struct address and memcpy to our alloca
+                            let src_addr = self.get_struct_base_addr(expr);
+                            self.emit(Instruction::Memcpy {
+                                dest: alloca,
+                                src: src_addr,
+                                size: actual_alloc_size,
+                            });
+                        } else {
                             let val = self.lower_expr(expr);
                             // Insert implicit cast for type mismatches
                             // (e.g., float f = 'a', int x = 3.14, char c = 99.0)
@@ -269,7 +285,6 @@ impl Lowerer {
                             let val = self.emit_implicit_cast(val, expr_ty, var_ty);
                             self.emit(Instruction::Store { val, ptr: alloca, ty: var_ty });
                         }
-                        // TODO: struct assignment from expression
                     }
                     Initializer::List(items) => {
                         if is_struct {

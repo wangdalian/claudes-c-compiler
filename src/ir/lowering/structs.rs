@@ -150,6 +150,28 @@ impl Lowerer {
                 });
                 inner_addr
             }
+            Expr::PointerMemberAccess(inner_base, inner_field, _) => {
+                // Nested access via pointer: p->inner.field
+                // Load the pointer, compute offset of the inner field, return address
+                let ptr_val = self.lower_expr(inner_base);
+                let base_addr = match ptr_val {
+                    Operand::Value(v) => v,
+                    Operand::Const(_) => {
+                        let tmp = self.fresh_value();
+                        self.emit(Instruction::Copy { dest: tmp, src: ptr_val });
+                        tmp
+                    }
+                };
+                let (inner_offset, _) = self.resolve_pointer_member_access(inner_base, inner_field);
+                let inner_addr = self.fresh_value();
+                self.emit(Instruction::GetElementPtr {
+                    dest: inner_addr,
+                    base: base_addr,
+                    offset: Operand::Const(IrConst::I64(inner_offset as i64)),
+                    ty: IrType::Ptr,
+                });
+                inner_addr
+            }
             _ => {
                 let val = self.lower_expr(expr);
                 match val {
@@ -246,6 +268,20 @@ impl Lowerer {
                 if let Some(outer_layout) = self.get_layout_for_expr(inner_base) {
                     if let Some((_offset, ctype)) = outer_layout.field_offset(inner_field) {
                         // If the inner field is itself a struct, get its layout
+                        if let CType::Struct(st) = ctype {
+                            return Some(StructLayout::for_struct(&st.fields));
+                        }
+                        if let CType::Union(st) = ctype {
+                            return Some(StructLayout::for_union(&st.fields));
+                        }
+                    }
+                }
+                None
+            }
+            Expr::PointerMemberAccess(inner_base, inner_field, _) => {
+                // For p->field where field is an embedded struct, get its layout
+                if let Some(pointed_layout) = self.get_pointed_struct_layout(inner_base) {
+                    if let Some((_offset, ctype)) = pointed_layout.field_offset(inner_field) {
                         if let CType::Struct(st) = ctype {
                             return Some(StructLayout::for_struct(&st.fields));
                         }
