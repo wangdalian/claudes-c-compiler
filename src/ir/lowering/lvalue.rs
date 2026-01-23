@@ -399,6 +399,13 @@ impl Lowerer {
                     }
                 }
             }
+
+            // Fallback: check CType of the subscript expression itself.
+            // This handles struct member multi-dim arrays (e.g., m.data[i] where data is int[4][4])
+            // where get_array_root_name_from_base returns None.
+            if let Some(ctype) = self.get_expr_ctype(expr) {
+                return matches!(ctype, CType::Array(_, _));
+            }
         }
         false
     }
