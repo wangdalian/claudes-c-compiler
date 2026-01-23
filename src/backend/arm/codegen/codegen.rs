@@ -1430,6 +1430,205 @@ impl ArchCodegen for ArmCodegen {
     fn emit_fence(&mut self, _ordering: AtomicOrdering) {
         self.state.emit("    dmb ish");
     }
+
+    fn emit_inline_asm(&mut self, template: &str, outputs: &[(String, Value, Option<String>)], inputs: &[(String, Operand, Option<String>)], _clobbers: &[String]) {
+        // Allocate registers for operands.
+        // outputs come first in operand numbering, then inputs.
+        // Use x9..x15 (caller-saved scratch) for GP operands.
+        let gp_regs: &[&str] = &["x9", "x10", "x11", "x12", "x13", "x14", "x15", "x19", "x20", "x21"];
+
+        // Build operand list: (reg_name, optional symbolic_name)
+        let mut op_regs: Vec<String> = Vec::new();
+        let mut op_names: Vec<Option<String>> = Vec::new();
+
+        // Assign registers to outputs
+        let mut reg_idx = 0;
+        for (_constraint, _ptr, name) in outputs {
+            let reg = if reg_idx < gp_regs.len() { gp_regs[reg_idx].to_string() } else { format!("x{}", 9 + reg_idx) };
+            op_regs.push(reg);
+            op_names.push(name.clone());
+            reg_idx += 1;
+        }
+
+        // Assign registers to inputs
+        for (_constraint, _val, name) in inputs {
+            let reg = if reg_idx < gp_regs.len() { gp_regs[reg_idx].to_string() } else { format!("x{}", 9 + reg_idx) };
+            op_regs.push(reg);
+            op_names.push(name.clone());
+            reg_idx += 1;
+        }
+
+        // For "+r" outputs: the input value was added as extra inputs during lowering.
+        // The first N inputs that correspond to "+r" outputs share the same register.
+        let mut plus_idx = 0;
+        for (i, (constraint, _, _)) in outputs.iter().enumerate() {
+            if constraint.contains('+') {
+                // The input at position `plus_idx` shares register with output `i`
+                if outputs.len() + plus_idx < op_regs.len() {
+                    op_regs[outputs.len() + plus_idx] = op_regs[i].clone();
+                }
+                plus_idx += 1;
+            }
+        }
+
+        // Load input values into their assigned registers
+        for (i, (_constraint, val, _)) in inputs.iter().enumerate() {
+            let op_idx = outputs.len() + i;
+            let reg = op_regs[op_idx].clone();
+            match val {
+                Operand::Const(c) => {
+                    let imm = c.to_i64().unwrap_or(0);
+                    if imm >= 0 && imm <= 65535 {
+                        self.state.emit(&format!("    mov {}, #{}", reg, imm));
+                    } else {
+                        self.state.emit(&format!("    movz {}, #{}", reg, imm as u64 & 0xFFFF));
+                        if (imm as u64 >> 16) & 0xFFFF != 0 {
+                            self.state.emit(&format!("    movk {}, #{}, lsl #16", reg, (imm as u64 >> 16) & 0xFFFF));
+                        }
+                        if (imm as u64 >> 32) & 0xFFFF != 0 {
+                            self.state.emit(&format!("    movk {}, #{}, lsl #32", reg, (imm as u64 >> 32) & 0xFFFF));
+                        }
+                        if (imm as u64 >> 48) & 0xFFFF != 0 {
+                            self.state.emit(&format!("    movk {}, #{}, lsl #48", reg, (imm as u64 >> 48) & 0xFFFF));
+                        }
+                    }
+                }
+                Operand::Value(v) => {
+                    if let Some(slot) = self.state.get_slot(v.0) {
+                        self.emit_load_from_sp(&reg, slot.0, "ldr");
+                    }
+                }
+            }
+        }
+
+        // Substitute operand references in template and emit
+        // Handle: %0, %1, %[name], %w0, %x0, %w[name], %x[name]
+        // Split on literal \n (escaped newline in the string)
+        let lines: Vec<&str> = template.split('\n').collect();
+        for line in &lines {
+            let line = line.trim().trim_start_matches('\t').trim();
+            if line.is_empty() {
+                continue;
+            }
+            let resolved = Self::substitute_asm_operands_static(line, &op_regs, &op_names);
+            self.state.emit(&format!("    {}", resolved));
+        }
+
+        // Store output register values back to their stack slots
+        for (i, (constraint, ptr, _)) in outputs.iter().enumerate() {
+            if constraint.contains('=') || constraint.contains('+') {
+                let reg = &op_regs[i];
+                if let Some(slot) = self.state.get_slot(ptr.0) {
+                    self.emit_store_to_sp(reg, slot.0, "str");
+                }
+            }
+        }
+    }
+}
+
+impl ArmCodegen {
+    fn substitute_asm_operands_static(line: &str, op_regs: &[String], op_names: &[Option<String>]) -> String {
+        let mut result = String::new();
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '%' && i + 1 < chars.len() {
+                i += 1;
+                // Check for %% (literal %)
+                if chars[i] == '%' {
+                    result.push('%');
+                    i += 1;
+                    continue;
+                }
+                // Check for modifier: w, x, h, b, s, d, q
+                let mut modifier = None;
+                if chars[i] == 'w' || chars[i] == 'x' || chars[i] == 'h' || chars[i] == 'b'
+                    || chars[i] == 's' || chars[i] == 'd' || chars[i] == 'q'
+                {
+                    // Check if next char is digit or [, meaning this is a modifier
+                    if i + 1 < chars.len() && (chars[i + 1].is_ascii_digit() || chars[i + 1] == '[') {
+                        modifier = Some(chars[i]);
+                        i += 1;
+                    }
+                }
+
+                if chars[i] == '[' {
+                    // Named operand: %[name] or %w[name]
+                    i += 1;
+                    let name_start = i;
+                    while i < chars.len() && chars[i] != ']' {
+                        i += 1;
+                    }
+                    let name: String = chars[name_start..i].iter().collect();
+                    if i < chars.len() { i += 1; } // skip ]
+
+                    // Look up by name in operands
+                    let mut found = false;
+                    for (idx, op_name) in op_names.iter().enumerate() {
+                        if let Some(ref n) = op_name {
+                            if n == &name {
+                                result.push_str(&Self::format_reg_static(&op_regs[idx], modifier));
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !found {
+                        // Fallback: emit raw
+                        result.push('%');
+                        if let Some(m) = modifier { result.push(m); }
+                        result.push('[');
+                        result.push_str(&name);
+                        result.push(']');
+                    }
+                } else if chars[i].is_ascii_digit() {
+                    // Positional operand: %0, %1, %w2, etc.
+                    let mut num = 0usize;
+                    while i < chars.len() && chars[i].is_ascii_digit() {
+                        num = num * 10 + (chars[i] as usize - '0' as usize);
+                        i += 1;
+                    }
+                    if num < op_regs.len() {
+                        result.push_str(&Self::format_reg_static(&op_regs[num], modifier));
+                    } else {
+                        result.push_str(&format!("x{}", num));
+                    }
+                } else {
+                    // Not a recognized pattern, emit as-is
+                    result.push('%');
+                    if let Some(m) = modifier { result.push(m); }
+                    result.push(chars[i]);
+                    i += 1;
+                }
+            } else {
+                result.push(chars[i]);
+                i += 1;
+            }
+        }
+        result
+    }
+
+    fn format_reg_static(reg: &str, modifier: Option<char>) -> String {
+        match modifier {
+            Some('w') => {
+                // Convert x-register to w-register
+                if reg.starts_with('x') {
+                    format!("w{}", &reg[1..])
+                } else {
+                    reg.to_string()
+                }
+            }
+            Some('x') => {
+                // Force x-register
+                if reg.starts_with('w') {
+                    format!("x{}", &reg[1..])
+                } else {
+                    reg.to_string()
+                }
+            }
+            _ => reg.to_string(),
+        }
+    }
 }
 
 impl ArmCodegen {

@@ -1099,6 +1099,45 @@ impl Lowerer {
                 self.start_block(label);
                 self.lower_stmt(stmt);
             }
+            Stmt::InlineAsm { template, outputs, inputs, clobbers } => {
+                let mut ir_outputs = Vec::new();
+                let mut ir_inputs = Vec::new();
+
+                // Process output operands: get the address (pointer) to store result
+                for out in outputs {
+                    let constraint = out.constraint.clone();
+                    let name = out.name.clone();
+                    // Get the lvalue address for the output expression
+                    if let Some(lv) = self.lower_lvalue(&out.expr) {
+                        let ptr = match lv {
+                            super::lowering::LValue::Variable(v) | super::lowering::LValue::Address(v) => v,
+                        };
+                        // For "+r" (read-write), also treat as input (load current value)
+                        if constraint.contains('+') {
+                            let cur_val = self.fresh_value();
+                            let ty = self.get_expr_type(&out.expr);
+                            self.emit(Instruction::Load { dest: cur_val, ptr, ty });
+                            ir_inputs.push((constraint.replace('+', "").to_string(), Operand::Value(cur_val), name.clone()));
+                        }
+                        ir_outputs.push((constraint, ptr, name));
+                    }
+                }
+
+                // Process input operands: evaluate expression to get value
+                for inp in inputs {
+                    let constraint = inp.constraint.clone();
+                    let name = inp.name.clone();
+                    let val = self.lower_expr(&inp.expr);
+                    ir_inputs.push((constraint, val, name));
+                }
+
+                self.emit(Instruction::InlineAsm {
+                    template: template.clone(),
+                    outputs: ir_outputs,
+                    inputs: ir_inputs,
+                    clobbers: clobbers.clone(),
+                });
+            }
         }
     }
 

@@ -993,6 +993,11 @@ impl ArchCodegen for RiscvCodegen {
     fn emit_fence(&mut self, _ordering: AtomicOrdering) {
         self.state.emit("    fence rw, rw");
     }
+
+    fn emit_inline_asm(&mut self, _template: &str, _outputs: &[(String, Value, Option<String>)], _inputs: &[(String, Operand, Option<String>)], _clobbers: &[String]) {
+        // RISC-V inline asm stub - not implemented
+        self.state.emit("    # inline asm not supported on riscv target");
+    }
 }
 
 impl RiscvCodegen {

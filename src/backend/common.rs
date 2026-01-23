@@ -395,5 +395,6 @@ pub fn instruction_dest(inst: &Instruction) -> Option<Value> {
         Instruction::AtomicStore { .. } => None,
         Instruction::Fence { .. } => None,
         Instruction::Phi { dest, .. } => Some(*dest),
+        Instruction::InlineAsm { .. } => None,
     }
 }

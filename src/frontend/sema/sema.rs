@@ -309,6 +309,14 @@ impl SemanticAnalyzer {
                 self.analyze_stmt(body);
             }
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Goto(_, _) => {}
+            Stmt::InlineAsm { outputs, inputs, .. } => {
+                for out in outputs {
+                    self.analyze_expr(&out.expr);
+                }
+                for inp in inputs {
+                    self.analyze_expr(&inp.expr);
+                }
+            }
         }
     }
 

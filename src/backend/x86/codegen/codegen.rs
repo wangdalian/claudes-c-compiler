@@ -1183,6 +1183,11 @@ impl ArchCodegen for X86Codegen {
     fn emit_fence(&mut self, _ordering: AtomicOrdering) {
         self.state.emit("    mfence");
     }
+
+    fn emit_inline_asm(&mut self, _template: &str, _outputs: &[(String, Value, Option<String>)], _inputs: &[(String, Operand, Option<String>)], _clobbers: &[String]) {
+        // x86 inline asm stub - not implemented
+        self.state.emit("    # inline asm not supported on x86 target");
+    }
 }
 
 impl Default for X86Codegen {

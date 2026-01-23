@@ -482,14 +482,6 @@ impl Parser {
                         self.skip_balanced_parens();
                     }
                 }
-                TokenKind::Asm => {
-                    // GNU asm label: __asm__("name") on declarations
-                    self.advance();
-                    self.consume_if(&TokenKind::Volatile);
-                    if matches!(self.peek(), TokenKind::LParen) {
-                        self.skip_balanced_parens();
-                    }
-                }
                 _ => break,
             }
         }
@@ -1762,21 +1754,7 @@ impl Parser {
                 }
             }
             TokenKind::Asm => {
-                // Skip inline asm statement: asm [volatile] [goto] (...)  ;
-                self.advance();
-                // Skip optional qualifiers: volatile, goto, inline
-                while matches!(self.peek(), TokenKind::Volatile)
-                    || matches!(self.peek(), TokenKind::Goto)
-                    || matches!(self.peek(), TokenKind::Inline)
-                {
-                    self.advance();
-                }
-                if matches!(self.peek(), TokenKind::LParen) {
-                    self.skip_balanced_parens();
-                }
-                self.consume_if(&TokenKind::Semicolon);
-                // TODO: properly lower inline asm
-                Stmt::Expr(None)
+                self.parse_inline_asm()
             }
             TokenKind::Semicolon => {
                 self.advance();
@@ -1789,6 +1767,149 @@ impl Parser {
                 Stmt::Expr(Some(expr))
             }
         }
+    }
+
+    // === Inline assembly parsing ===
+
+    fn parse_inline_asm(&mut self) -> Stmt {
+        use crate::frontend::parser::ast::AsmOperand;
+        self.advance(); // consume 'asm' / '__asm__'
+        // Skip optional qualifiers: volatile, goto, inline
+        while matches!(self.peek(), TokenKind::Volatile)
+            || matches!(self.peek(), TokenKind::Goto)
+            || matches!(self.peek(), TokenKind::Inline)
+        {
+            self.advance();
+        }
+        self.expect(&TokenKind::LParen);
+
+        // Parse template string (may be concatenated string literals)
+        let template = self.parse_asm_string();
+
+        // Parse optional sections separated by ':'
+        let mut outputs = Vec::new();
+        let mut inputs = Vec::new();
+        let mut clobbers = Vec::new();
+
+        // First colon: outputs
+        if matches!(self.peek(), TokenKind::Colon) {
+            self.advance();
+            outputs = self.parse_asm_operands();
+
+            // Second colon: inputs
+            if matches!(self.peek(), TokenKind::Colon) {
+                self.advance();
+                inputs = self.parse_asm_operands();
+
+                // Third colon: clobbers
+                if matches!(self.peek(), TokenKind::Colon) {
+                    self.advance();
+                    clobbers = self.parse_asm_clobbers();
+
+                    // Fourth colon: goto labels (just skip)
+                    if matches!(self.peek(), TokenKind::Colon) {
+                        self.advance();
+                        // Skip goto labels
+                        while !matches!(self.peek(), TokenKind::RParen | TokenKind::Eof) {
+                            self.advance();
+                        }
+                    }
+                }
+            }
+        }
+
+        self.expect(&TokenKind::RParen);
+        self.consume_if(&TokenKind::Semicolon);
+
+        Stmt::InlineAsm { template, outputs, inputs, clobbers }
+    }
+
+    fn parse_asm_string(&mut self) -> String {
+        let mut result = String::new();
+        while let TokenKind::StringLiteral(ref s) = self.peek() {
+            result.push_str(s);
+            self.advance();
+        }
+        result
+    }
+
+    fn parse_asm_operands(&mut self) -> Vec<crate::frontend::parser::ast::AsmOperand> {
+        let mut operands = Vec::new();
+        // Check if we have operands (not : or ) )
+        if matches!(self.peek(), TokenKind::Colon | TokenKind::RParen) {
+            return operands;
+        }
+        loop {
+            let operand = self.parse_one_asm_operand();
+            operands.push(operand);
+            if matches!(self.peek(), TokenKind::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        operands
+    }
+
+    fn parse_one_asm_operand(&mut self) -> crate::frontend::parser::ast::AsmOperand {
+        // Optional [name]
+        let name = if matches!(self.peek(), TokenKind::LBracket) {
+            self.advance(); // [
+            let n = if let TokenKind::Identifier(ref id) = self.peek() {
+                let id = id.clone();
+                self.advance();
+                Some(id)
+            } else {
+                None
+            };
+            self.expect(&TokenKind::RBracket);
+            n
+        } else {
+            None
+        };
+
+        // Constraint string
+        let constraint = if let TokenKind::StringLiteral(ref s) = self.peek() {
+            let c = s.clone();
+            self.advance();
+            // Concatenate adjacent string literals in constraint
+            let mut full = c;
+            while let TokenKind::StringLiteral(ref s2) = self.peek() {
+                full.push_str(s2);
+                self.advance();
+            }
+            full
+        } else {
+            String::new()
+        };
+
+        // (expr)
+        self.expect(&TokenKind::LParen);
+        let expr = self.parse_expr();
+        self.expect(&TokenKind::RParen);
+
+        crate::frontend::parser::ast::AsmOperand { name, constraint, expr }
+    }
+
+    fn parse_asm_clobbers(&mut self) -> Vec<String> {
+        let mut clobbers = Vec::new();
+        if matches!(self.peek(), TokenKind::Colon | TokenKind::RParen) {
+            return clobbers;
+        }
+        loop {
+            if let TokenKind::StringLiteral(ref s) = self.peek() {
+                clobbers.push(s.clone());
+                self.advance();
+            } else {
+                break;
+            }
+            if matches!(self.peek(), TokenKind::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        clobbers
     }
 
     // === Expression parsing (precedence climbing) ===

@@ -241,6 +241,14 @@ fn instruction_used_values(inst: &Instruction) -> Vec<u32> {
                 add_operand_values(op, &mut used);
             }
         }
+        Instruction::InlineAsm { outputs, inputs, .. } => {
+            for (_, ptr, _) in outputs {
+                used.push(ptr.0);
+            }
+            for (_, op, _) in inputs {
+                add_operand_values(op, &mut used);
+            }
+        }
     }
     used
 }

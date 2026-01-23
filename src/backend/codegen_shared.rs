@@ -172,6 +172,9 @@ pub trait ArchCodegen {
     /// Emit a memory fence.
     fn emit_fence(&mut self, ordering: AtomicOrdering);
 
+    /// Emit inline assembly.
+    fn emit_inline_asm(&mut self, template: &str, outputs: &[(String, Value, Option<String>)], inputs: &[(String, Operand, Option<String>)], clobbers: &[String]);
+
     /// Emit a return terminator.
     fn emit_return(&mut self, val: Option<&Operand>, frame_size: i64);
 
@@ -317,6 +320,9 @@ fn generate_instruction(cg: &mut dyn ArchCodegen, inst: &Instruction) {
             // Phi nodes are resolved before codegen by lowering them to copies
             // at the end of predecessor blocks. This case should not be reached
             // in normal operation, but is a no-op for safety.
+        }
+        Instruction::InlineAsm { template, outputs, inputs, clobbers } => {
+            cg.emit_inline_asm(template, outputs, inputs, clobbers);
         }
     }
 }
