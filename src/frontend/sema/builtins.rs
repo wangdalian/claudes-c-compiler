@@ -65,8 +65,11 @@ static BUILTIN_MAP: LazyLock<HashMap<&'static str, BuiltinInfo>> = LazyLock::new
     m.insert("__builtin_nanf", BuiltinInfo::simple("nanf"));
     m.insert("__builtin_inf", BuiltinInfo::constant_f64(f64::INFINITY));
     m.insert("__builtin_inff", BuiltinInfo::constant_f64(f64::INFINITY));
+    m.insert("__builtin_infl", BuiltinInfo::constant_f64(f64::INFINITY));
     m.insert("__builtin_huge_val", BuiltinInfo::constant_f64(f64::INFINITY));
     m.insert("__builtin_huge_valf", BuiltinInfo::constant_f64(f64::INFINITY));
+    m.insert("__builtin_huge_vall", BuiltinInfo::constant_f64(f64::INFINITY));
+    m.insert("__builtin_nanl", BuiltinInfo::simple("nan"));
 
     // I/O
     m.insert("__builtin_printf", BuiltinInfo::simple("printf"));
@@ -107,6 +110,17 @@ static BUILTIN_MAP: LazyLock<HashMap<&'static str, BuiltinInfo>> = LazyLock::new
     m.insert("__builtin_islessequal", BuiltinInfo::intrinsic(BuiltinIntrinsic::FpCompare));
     m.insert("__builtin_islessgreater", BuiltinInfo::intrinsic(BuiltinIntrinsic::FpCompare));
     m.insert("__builtin_isunordered", BuiltinInfo::intrinsic(BuiltinIntrinsic::FpCompare));
+
+    // Floating-point classification builtins
+    m.insert("__builtin_fpclassify", BuiltinInfo::intrinsic(BuiltinIntrinsic::FpClassify));
+    m.insert("__builtin_isnan", BuiltinInfo::intrinsic(BuiltinIntrinsic::IsNan));
+    m.insert("__builtin_isinf", BuiltinInfo::intrinsic(BuiltinIntrinsic::IsInf));
+    m.insert("__builtin_isfinite", BuiltinInfo::intrinsic(BuiltinIntrinsic::IsFinite));
+    m.insert("__builtin_isnormal", BuiltinInfo::intrinsic(BuiltinIntrinsic::IsNormal));
+    m.insert("__builtin_signbit", BuiltinInfo::intrinsic(BuiltinIntrinsic::SignBit));
+    m.insert("__builtin_signbitf", BuiltinInfo::intrinsic(BuiltinIntrinsic::SignBit));
+    m.insert("__builtin_signbitl", BuiltinInfo::intrinsic(BuiltinIntrinsic::SignBit));
+    m.insert("__builtin_isinf_sign", BuiltinInfo::intrinsic(BuiltinIntrinsic::IsInfSign));
 
     // Bit manipulation
     m.insert("__builtin_clz", BuiltinInfo::intrinsic(BuiltinIntrinsic::Clz));
@@ -188,6 +202,20 @@ pub enum BuiltinIntrinsic {
     ComplexImag,
     /// conj/conjf/conjl: compute complex conjugate
     ComplexConj,
+    /// __builtin_fpclassify(nan, inf, norm, subnorm, zero, x) -> int
+    FpClassify,
+    /// __builtin_isnan(x) -> int (1 if NaN, 0 otherwise)
+    IsNan,
+    /// __builtin_isinf(x) -> int (1 if +/-inf, 0 otherwise)
+    IsInf,
+    /// __builtin_isfinite(x) -> int (1 if finite, 0 otherwise)
+    IsFinite,
+    /// __builtin_isnormal(x) -> int (1 if normal, 0 otherwise)
+    IsNormal,
+    /// __builtin_signbit(x) -> int (nonzero if sign bit set)
+    SignBit,
+    /// __builtin_isinf_sign(x) -> int (-1 if -inf, 1 if +inf, 0 otherwise)
+    IsInfSign,
 }
 
 impl BuiltinInfo {

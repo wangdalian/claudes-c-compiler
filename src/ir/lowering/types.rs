@@ -815,6 +815,43 @@ impl Lowerer {
         }
     }
 
+    /// Return the IR type for known builtins that return float or specific types.
+    /// Returns None for builtins without special return type handling.
+    pub(super) fn builtin_return_type(name: &str) -> Option<IrType> {
+        match name {
+            // Float-returning builtins
+            "__builtin_inf" | "__builtin_huge_val" => Some(IrType::F64),
+            "__builtin_inff" | "__builtin_huge_valf" => Some(IrType::F32),
+            "__builtin_infl" | "__builtin_huge_vall" => Some(IrType::F128),
+            "__builtin_nan" => Some(IrType::F64),
+            "__builtin_nanf" => Some(IrType::F32),
+            "__builtin_nanl" => Some(IrType::F128),
+            "__builtin_fabs" | "__builtin_sqrt" | "__builtin_sin" | "__builtin_cos"
+            | "__builtin_log" | "__builtin_log2" | "__builtin_exp" | "__builtin_pow"
+            | "__builtin_floor" | "__builtin_ceil" | "__builtin_round"
+            | "__builtin_fmin" | "__builtin_fmax" | "__builtin_copysign" => Some(IrType::F64),
+            "__builtin_fabsf" | "__builtin_sqrtf" | "__builtin_sinf" | "__builtin_cosf"
+            | "__builtin_logf" | "__builtin_expf" | "__builtin_powf"
+            | "__builtin_floorf" | "__builtin_ceilf" | "__builtin_roundf"
+            | "__builtin_copysignf" => Some(IrType::F32),
+            "__builtin_fabsl" => Some(IrType::F128),
+            // Integer-returning classification builtins
+            "__builtin_fpclassify" | "__builtin_isnan" | "__builtin_isinf"
+            | "__builtin_isfinite" | "__builtin_isnormal" | "__builtin_signbit"
+            | "__builtin_signbitf" | "__builtin_signbitl" | "__builtin_isinf_sign"
+            | "__builtin_isgreater" | "__builtin_isgreaterequal"
+            | "__builtin_isless" | "__builtin_islessequal"
+            | "__builtin_islessgreater" | "__builtin_isunordered" => Some(IrType::I32),
+            // Bit manipulation builtins return int
+            "__builtin_clz" | "__builtin_clzl" | "__builtin_clzll"
+            | "__builtin_ctz" | "__builtin_ctzl" | "__builtin_ctzll"
+            | "__builtin_popcount" | "__builtin_popcountl" | "__builtin_popcountll"
+            | "__builtin_parity" | "__builtin_parityl" | "__builtin_parityll"
+            | "__builtin_ffs" | "__builtin_ffsl" | "__builtin_ffsll" => Some(IrType::I32),
+            _ => None,
+        }
+    }
+
     /// Get the IR type for an expression (best-effort, based on locals/globals info).
     pub(super) fn get_expr_type(&self, expr: &Expr) -> IrType {
         match expr {
@@ -945,6 +982,10 @@ impl Lowerer {
                         return ret_ty;
                     }
                     if let Some(&ret_ty) = self.func_meta.ptr_return_types.get(name) {
+                        return ret_ty;
+                    }
+                    // Handle builtins that return float types
+                    if let Some(ret_ty) = Self::builtin_return_type(name) {
                         return ret_ty;
                     }
                 }

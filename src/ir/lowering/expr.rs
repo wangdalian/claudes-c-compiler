@@ -934,9 +934,13 @@ impl Lowerer {
                 let n_fixed = if variadic {
                     self.func_meta.param_types.get(libc_name.as_str()).map(|p| p.len()).unwrap_or(arg_vals.len())
                 } else { arg_vals.len() };
+                // Determine the return type from the builtin name or the libc alias
+                let return_type = Self::builtin_return_type(name)
+                    .or_else(|| self.func_meta.return_types.get(libc_name.as_str()).copied())
+                    .unwrap_or(IrType::I64);
                 self.emit(Instruction::Call {
                     dest: Some(dest), func: libc_name.clone(),
-                    args: arg_vals, arg_types, return_type: IrType::I64, is_variadic: variadic, num_fixed_args: n_fixed,
+                    args: arg_vals, arg_types, return_type, is_variadic: variadic, num_fixed_args: n_fixed,
                 });
                 Some(Operand::Value(dest))
             }
@@ -944,7 +948,17 @@ impl Lowerer {
                 Some(args.first().map_or(Operand::Const(IrConst::I64(0)), |a| self.lower_expr(a)))
             }
             BuiltinKind::ConstantI64(val) => Some(Operand::Const(IrConst::I64(*val))),
-            BuiltinKind::ConstantF64(_) => Some(Operand::Const(IrConst::I64(0))), // TODO: handle float constants
+            BuiltinKind::ConstantF64(val) => {
+                // Return the appropriate float type based on the builtin name
+                // __builtin_inff, __builtin_huge_valf return float (F32)
+                let is_float_variant = name == "__builtin_inff"
+                    || name == "__builtin_huge_valf";
+                if is_float_variant {
+                    Some(Operand::Const(IrConst::F32(*val as f32)))
+                } else {
+                    Some(Operand::Const(IrConst::F64(*val)))
+                }
+            }
             BuiltinKind::Intrinsic(intrinsic) => {
                 match intrinsic {
                     BuiltinIntrinsic::FpCompare => {
@@ -1029,6 +1043,27 @@ impl Lowerer {
                         // __sync_synchronize: emit a fence/barrier (no-op for now)
                         Some(Operand::Const(IrConst::I64(0)))
                     }
+                    BuiltinIntrinsic::FpClassify => {
+                        self.lower_builtin_fpclassify(args)
+                    }
+                    BuiltinIntrinsic::IsNan => {
+                        self.lower_builtin_isnan(args)
+                    }
+                    BuiltinIntrinsic::IsInf => {
+                        self.lower_builtin_isinf(args)
+                    }
+                    BuiltinIntrinsic::IsFinite => {
+                        self.lower_builtin_isfinite(args)
+                    }
+                    BuiltinIntrinsic::IsNormal => {
+                        self.lower_builtin_isnormal(args)
+                    }
+                    BuiltinIntrinsic::SignBit => {
+                        self.lower_builtin_signbit(args)
+                    }
+                    BuiltinIntrinsic::IsInfSign => {
+                        self.lower_builtin_isinf_sign(args)
+                    }
                 }
             }
         }
@@ -1085,6 +1120,513 @@ impl Lowerer {
             lhs: Operand::Value(pop), rhs: Operand::Const(IrConst::I64(1)), ty,
         });
         Some(Operand::Value(dest))
+    }
+
+    // =========================================================================
+    // Floating-point classification builtins
+    // =========================================================================
+
+    /// Helper: get the type of the last argument for fp classification builtins.
+    /// Returns the IrType and the lowered operand.
+    fn lower_fp_classify_arg(&mut self, args: &[Expr]) -> (IrType, Operand) {
+        let arg_expr = args.last().unwrap();
+        let arg_ty = self.get_expr_type(arg_expr);
+        let arg_val = self.lower_expr(arg_expr);
+        (arg_ty, arg_val)
+    }
+
+    /// Bitcast a float/double to its integer bit representation via memory.
+    /// F32 -> I32, F64 -> I64. Uses alloca+store+load for a true bitcast
+    /// (not a numeric conversion like Cast does).
+    fn bitcast_float_to_int(&mut self, val: Operand, float_ty: IrType) -> (Operand, IrType) {
+        let int_ty = match float_ty {
+            IrType::F32 => IrType::I32,
+            _ => IrType::I64, // F64 and F128/long double treated as F64
+        };
+        let size = if float_ty == IrType::F32 { 4 } else { 8 };
+
+        // Allocate a temporary stack slot
+        let tmp_alloca = self.fresh_value();
+        self.emit(Instruction::Alloca {
+            dest: tmp_alloca, size, ty: float_ty,
+        });
+
+        // Store the float value to the slot
+        let val_v = self.operand_to_value(val);
+        self.emit(Instruction::Store {
+            val: Operand::Value(val_v), ptr: tmp_alloca, ty: float_ty,
+        });
+
+        // Load it back as integer
+        let result = self.fresh_value();
+        self.emit(Instruction::Load {
+            dest: result, ptr: tmp_alloca, ty: int_ty,
+        });
+
+        (Operand::Value(result), int_ty)
+    }
+
+    /// Lower __builtin_fpclassify(nan_val, inf_val, norm_val, subnorm_val, zero_val, x)
+    /// Returns one of the first 5 arguments based on the classification of x.
+    fn lower_builtin_fpclassify(&mut self, args: &[Expr]) -> Option<Operand> {
+        if args.len() < 6 {
+            return Some(Operand::Const(IrConst::I64(0)));
+        }
+
+        // Lower the classification constants (args 0-4)
+        let nan_val = self.lower_expr(&args[0]);
+        let inf_val = self.lower_expr(&args[1]);
+        let norm_val = self.lower_expr(&args[2]);
+        let subnorm_val = self.lower_expr(&args[3]);
+        let zero_val = self.lower_expr(&args[4]);
+
+        // Lower the value to classify (arg 5)
+        let arg_ty = self.get_expr_type(&args[5]);
+        let arg_val = self.lower_expr(&args[5]);
+
+        // Bitcast to integer to examine bits
+        let (bits, int_ty) = self.bitcast_float_to_int(arg_val, arg_ty);
+
+        // Get exponent and mantissa masks based on float type
+        let (exp_mask, mant_mask, exp_shift) = match arg_ty {
+            IrType::F32 => (0x7F800000_u64, 0x007FFFFF_u64, 23_u64),
+            _ => (0x7FF0000000000000_u64, 0x000FFFFFFFFFFFFF_u64, 52_u64),
+        };
+
+        // Extract exponent: (bits >> exp_shift) & exp_field_mask
+        let shifted = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: shifted, op: IrBinOp::LShr,
+            lhs: bits.clone(), rhs: Operand::Const(IrConst::I64(exp_shift as i64)), ty: int_ty,
+        });
+        let exp_field_mask = if arg_ty == IrType::F32 { 0xFF_i64 } else { 0x7FF_i64 };
+        let exponent = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: exponent, op: IrBinOp::And,
+            lhs: Operand::Value(shifted), rhs: Operand::Const(IrConst::I64(exp_field_mask)), ty: int_ty,
+        });
+
+        // Extract mantissa: bits & mant_mask
+        let mantissa = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: mantissa, op: IrBinOp::And,
+            lhs: bits, rhs: Operand::Const(IrConst::I64(mant_mask as i64)), ty: int_ty,
+        });
+
+        // Classification logic using select chains:
+        // if exp == all_ones && mant != 0 => NaN
+        // if exp == all_ones && mant == 0 => Inf
+        // if exp == 0 && mant == 0 => Zero
+        // if exp == 0 && mant != 0 => Subnormal
+        // else => Normal
+
+        let exp_all_ones = exp_field_mask;
+
+        // Check: exp == all_ones
+        let exp_is_max = self.fresh_value();
+        self.emit(Instruction::Cmp {
+            dest: exp_is_max, op: IrCmpOp::Eq,
+            lhs: Operand::Value(exponent), rhs: Operand::Const(IrConst::I64(exp_all_ones)), ty: int_ty,
+        });
+
+        // Check: exp == 0
+        let exp_is_zero = self.fresh_value();
+        self.emit(Instruction::Cmp {
+            dest: exp_is_zero, op: IrCmpOp::Eq,
+            lhs: Operand::Value(exponent), rhs: Operand::Const(IrConst::I64(0)), ty: int_ty,
+        });
+
+        // Check: mant == 0
+        let mant_is_zero = self.fresh_value();
+        self.emit(Instruction::Cmp {
+            dest: mant_is_zero, op: IrCmpOp::Eq,
+            lhs: Operand::Value(mantissa), rhs: Operand::Const(IrConst::I64(0)), ty: int_ty,
+        });
+
+        // Use control flow to select the result:
+        // We'll build this as a series of branches.
+        // Result starts as norm_val (normal), then we override for special cases.
+        //
+        // Actually, let's use arithmetic select pattern:
+        // result = norm_val (default for normal numbers)
+        // if exp_is_max && !mant_is_zero: result = nan_val
+        // if exp_is_max && mant_is_zero: result = inf_val
+        // if exp_is_zero && mant_is_zero: result = zero_val
+        // if exp_is_zero && !mant_is_zero: result = subnorm_val
+        //
+        // We can implement with conditional moves via multiply-and-add:
+        // is_nan = exp_is_max & !mant_is_zero
+        // is_inf = exp_is_max & mant_is_zero
+        // is_zero = exp_is_zero & mant_is_zero
+        // is_subnorm = exp_is_zero & !mant_is_zero
+        //
+        // result = nan_val * is_nan + inf_val * is_inf + norm_val * is_normal +
+        //          subnorm_val * is_subnorm + zero_val * is_zero
+
+        // mant_not_zero = !mant_is_zero
+        let mant_not_zero = self.fresh_value();
+        self.emit(Instruction::Cmp {
+            dest: mant_not_zero, op: IrCmpOp::Ne,
+            lhs: Operand::Value(mantissa), rhs: Operand::Const(IrConst::I64(0)), ty: int_ty,
+        });
+
+        // is_nan = exp_is_max & mant_not_zero
+        let is_nan = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: is_nan, op: IrBinOp::And,
+            lhs: Operand::Value(exp_is_max), rhs: Operand::Value(mant_not_zero), ty: IrType::I32,
+        });
+
+        // is_inf = exp_is_max & mant_is_zero
+        let is_inf = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: is_inf, op: IrBinOp::And,
+            lhs: Operand::Value(exp_is_max), rhs: Operand::Value(mant_is_zero), ty: IrType::I32,
+        });
+
+        // is_zero = exp_is_zero & mant_is_zero
+        let is_zero = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: is_zero, op: IrBinOp::And,
+            lhs: Operand::Value(exp_is_zero), rhs: Operand::Value(mant_is_zero), ty: IrType::I32,
+        });
+
+        // is_subnorm = exp_is_zero & mant_not_zero
+        let is_subnorm = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: is_subnorm, op: IrBinOp::And,
+            lhs: Operand::Value(exp_is_zero), rhs: Operand::Value(mant_not_zero), ty: IrType::I32,
+        });
+
+        // result = nan_val * is_nan + inf_val * is_inf + norm_val * is_normal +
+        //          subnorm_val * is_subnorm + zero_val * is_zero
+        // is_normal = !exp_is_max & !exp_is_zero (implicit: it's the else case)
+
+        // Compute: nan_val * is_nan
+        let nan_contrib = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: nan_contrib, op: IrBinOp::Mul,
+            lhs: nan_val, rhs: Operand::Value(is_nan), ty: IrType::I64,
+        });
+
+        // inf_val * is_inf
+        let inf_contrib = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: inf_contrib, op: IrBinOp::Mul,
+            lhs: inf_val, rhs: Operand::Value(is_inf), ty: IrType::I64,
+        });
+
+        // subnorm_val * is_subnorm
+        let sub_contrib = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: sub_contrib, op: IrBinOp::Mul,
+            lhs: subnorm_val, rhs: Operand::Value(is_subnorm), ty: IrType::I64,
+        });
+
+        // zero_val * is_zero
+        let zero_contrib = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: zero_contrib, op: IrBinOp::Mul,
+            lhs: zero_val, rhs: Operand::Value(is_zero), ty: IrType::I64,
+        });
+
+        // is_normal = !(is_nan | is_inf | is_zero | is_subnorm)
+        let special1 = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: special1, op: IrBinOp::Or,
+            lhs: Operand::Value(is_nan), rhs: Operand::Value(is_inf), ty: IrType::I32,
+        });
+        let special2 = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: special2, op: IrBinOp::Or,
+            lhs: Operand::Value(special1), rhs: Operand::Value(is_zero), ty: IrType::I32,
+        });
+        let is_special = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: is_special, op: IrBinOp::Or,
+            lhs: Operand::Value(special2), rhs: Operand::Value(is_subnorm), ty: IrType::I32,
+        });
+        // is_normal = is_special ^ 1
+        let is_normal = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: is_normal, op: IrBinOp::Xor,
+            lhs: Operand::Value(is_special), rhs: Operand::Const(IrConst::I64(1)), ty: IrType::I32,
+        });
+
+        // norm_val * is_normal
+        let norm_contrib = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: norm_contrib, op: IrBinOp::Mul,
+            lhs: norm_val, rhs: Operand::Value(is_normal), ty: IrType::I64,
+        });
+
+        // Sum all contributions
+        let sum1 = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: sum1, op: IrBinOp::Add,
+            lhs: Operand::Value(nan_contrib), rhs: Operand::Value(inf_contrib), ty: IrType::I64,
+        });
+        let sum2 = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: sum2, op: IrBinOp::Add,
+            lhs: Operand::Value(sum1), rhs: Operand::Value(sub_contrib), ty: IrType::I64,
+        });
+        let sum3 = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: sum3, op: IrBinOp::Add,
+            lhs: Operand::Value(sum2), rhs: Operand::Value(zero_contrib), ty: IrType::I64,
+        });
+        let result = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: result, op: IrBinOp::Add,
+            lhs: Operand::Value(sum3), rhs: Operand::Value(norm_contrib), ty: IrType::I64,
+        });
+
+        Some(Operand::Value(result))
+    }
+
+    /// Lower __builtin_isnan(x) -> 1 if x is NaN, 0 otherwise.
+    /// NaN: exponent all 1s AND mantissa non-zero.
+    fn lower_builtin_isnan(&mut self, args: &[Expr]) -> Option<Operand> {
+        if args.is_empty() {
+            return Some(Operand::Const(IrConst::I64(0)));
+        }
+        let (arg_ty, arg_val) = self.lower_fp_classify_arg(args);
+        let (bits, int_ty) = self.bitcast_float_to_int(arg_val, arg_ty);
+
+        // NaN check: (bits & abs_mask) > exp_mask
+        // where abs_mask strips the sign bit, exp_mask has all exponent bits set
+        let (abs_mask, exp_only) = match arg_ty {
+            IrType::F32 => (0x7FFFFFFF_i64, 0x7F800000_i64),
+            _ => (0x7FFFFFFFFFFFFFFF_i64, 0x7FF0000000000000_u64 as i64),
+        };
+
+        let abs_val = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: abs_val, op: IrBinOp::And,
+            lhs: bits, rhs: Operand::Const(IrConst::I64(abs_mask)), ty: int_ty,
+        });
+
+        let is_nan = self.fresh_value();
+        self.emit(Instruction::Cmp {
+            dest: is_nan, op: IrCmpOp::Ugt,
+            lhs: Operand::Value(abs_val), rhs: Operand::Const(IrConst::I64(exp_only)), ty: int_ty,
+        });
+
+        Some(Operand::Value(is_nan))
+    }
+
+    /// Lower __builtin_isinf(x) -> nonzero if x is +/-infinity.
+    /// Inf: exponent all 1s AND mantissa zero.
+    fn lower_builtin_isinf(&mut self, args: &[Expr]) -> Option<Operand> {
+        if args.is_empty() {
+            return Some(Operand::Const(IrConst::I64(0)));
+        }
+        let (arg_ty, arg_val) = self.lower_fp_classify_arg(args);
+        let (bits, int_ty) = self.bitcast_float_to_int(arg_val, arg_ty);
+
+        let abs_mask = match arg_ty {
+            IrType::F32 => 0x7FFFFFFF_i64,
+            _ => 0x7FFFFFFFFFFFFFFF_i64,
+        };
+        let exp_only = match arg_ty {
+            IrType::F32 => 0x7F800000_i64,
+            _ => 0x7FF0000000000000_u64 as i64,
+        };
+
+        let abs_val = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: abs_val, op: IrBinOp::And,
+            lhs: bits, rhs: Operand::Const(IrConst::I64(abs_mask)), ty: int_ty,
+        });
+
+        let is_inf = self.fresh_value();
+        self.emit(Instruction::Cmp {
+            dest: is_inf, op: IrCmpOp::Eq,
+            lhs: Operand::Value(abs_val), rhs: Operand::Const(IrConst::I64(exp_only)), ty: int_ty,
+        });
+
+        Some(Operand::Value(is_inf))
+    }
+
+    /// Lower __builtin_isfinite(x) -> 1 if x is finite (not inf or nan).
+    fn lower_builtin_isfinite(&mut self, args: &[Expr]) -> Option<Operand> {
+        if args.is_empty() {
+            return Some(Operand::Const(IrConst::I64(0)));
+        }
+        let (arg_ty, arg_val) = self.lower_fp_classify_arg(args);
+        let (bits, int_ty) = self.bitcast_float_to_int(arg_val, arg_ty);
+
+        // Finite: exponent != all 1s
+        let exp_mask = match arg_ty {
+            IrType::F32 => 0x7F800000_i64,
+            _ => 0x7FF0000000000000_u64 as i64,
+        };
+
+        let exp_bits = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: exp_bits, op: IrBinOp::And,
+            lhs: bits, rhs: Operand::Const(IrConst::I64(exp_mask)), ty: int_ty,
+        });
+
+        let is_finite = self.fresh_value();
+        self.emit(Instruction::Cmp {
+            dest: is_finite, op: IrCmpOp::Ne,
+            lhs: Operand::Value(exp_bits), rhs: Operand::Const(IrConst::I64(exp_mask)), ty: int_ty,
+        });
+
+        Some(Operand::Value(is_finite))
+    }
+
+    /// Lower __builtin_isnormal(x) -> 1 if x is a normal number.
+    fn lower_builtin_isnormal(&mut self, args: &[Expr]) -> Option<Operand> {
+        if args.is_empty() {
+            return Some(Operand::Const(IrConst::I64(0)));
+        }
+        let (arg_ty, arg_val) = self.lower_fp_classify_arg(args);
+        let (bits, int_ty) = self.bitcast_float_to_int(arg_val, arg_ty);
+
+        // Normal: exponent != 0 AND exponent != all 1s
+        let (exp_mask, exp_shift) = match arg_ty {
+            IrType::F32 => (0x7F800000_i64, 23_i64),
+            _ => (0x7FF0000000000000_u64 as i64, 52_i64),
+        };
+        let exp_field_max = match arg_ty {
+            IrType::F32 => 0xFF_i64,
+            _ => 0x7FF_i64,
+        };
+
+        // Extract exponent bits
+        let exp_bits = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: exp_bits, op: IrBinOp::And,
+            lhs: bits, rhs: Operand::Const(IrConst::I64(exp_mask)), ty: int_ty,
+        });
+        let exponent = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: exponent, op: IrBinOp::LShr,
+            lhs: Operand::Value(exp_bits), rhs: Operand::Const(IrConst::I64(exp_shift)), ty: int_ty,
+        });
+
+        // exp != 0
+        let exp_nonzero = self.fresh_value();
+        self.emit(Instruction::Cmp {
+            dest: exp_nonzero, op: IrCmpOp::Ne,
+            lhs: Operand::Value(exponent), rhs: Operand::Const(IrConst::I64(0)), ty: int_ty,
+        });
+
+        // exp != max
+        let exp_not_max = self.fresh_value();
+        self.emit(Instruction::Cmp {
+            dest: exp_not_max, op: IrCmpOp::Ne,
+            lhs: Operand::Value(exponent), rhs: Operand::Const(IrConst::I64(exp_field_max)), ty: int_ty,
+        });
+
+        // result = exp_nonzero & exp_not_max
+        let result = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: result, op: IrBinOp::And,
+            lhs: Operand::Value(exp_nonzero), rhs: Operand::Value(exp_not_max), ty: IrType::I32,
+        });
+
+        Some(Operand::Value(result))
+    }
+
+    /// Lower __builtin_signbit(x) -> nonzero if the sign bit of x is set.
+    fn lower_builtin_signbit(&mut self, args: &[Expr]) -> Option<Operand> {
+        if args.is_empty() {
+            return Some(Operand::Const(IrConst::I64(0)));
+        }
+        let (arg_ty, arg_val) = self.lower_fp_classify_arg(args);
+        let (bits, int_ty) = self.bitcast_float_to_int(arg_val, arg_ty);
+
+        // Sign bit is the MSB
+        let shift = match arg_ty {
+            IrType::F32 => 31_i64,
+            _ => 63_i64,
+        };
+
+        let shifted = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: shifted, op: IrBinOp::LShr,
+            lhs: bits, rhs: Operand::Const(IrConst::I64(shift)), ty: int_ty,
+        });
+
+        let result = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: result, op: IrBinOp::And,
+            lhs: Operand::Value(shifted), rhs: Operand::Const(IrConst::I64(1)), ty: int_ty,
+        });
+
+        Some(Operand::Value(result))
+    }
+
+    /// Lower __builtin_isinf_sign(x) -> -1 if -inf, +1 if +inf, 0 otherwise.
+    fn lower_builtin_isinf_sign(&mut self, args: &[Expr]) -> Option<Operand> {
+        if args.is_empty() {
+            return Some(Operand::Const(IrConst::I64(0)));
+        }
+        let (arg_ty, arg_val) = self.lower_fp_classify_arg(args);
+        let (bits, int_ty) = self.bitcast_float_to_int(arg_val, arg_ty);
+
+        let abs_mask = match arg_ty {
+            IrType::F32 => 0x7FFFFFFF_i64,
+            _ => 0x7FFFFFFFFFFFFFFF_i64,
+        };
+        let exp_only = match arg_ty {
+            IrType::F32 => 0x7F800000_i64,
+            _ => 0x7FF0000000000000_u64 as i64,
+        };
+        let sign_shift = match arg_ty {
+            IrType::F32 => 31_i64,
+            _ => 63_i64,
+        };
+
+        // Check if infinite
+        let abs_val = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: abs_val, op: IrBinOp::And,
+            lhs: bits.clone(), rhs: Operand::Const(IrConst::I64(abs_mask)), ty: int_ty,
+        });
+
+        let is_inf = self.fresh_value();
+        self.emit(Instruction::Cmp {
+            dest: is_inf, op: IrCmpOp::Eq,
+            lhs: Operand::Value(abs_val), rhs: Operand::Const(IrConst::I64(exp_only)), ty: int_ty,
+        });
+
+        // Get sign: (bits >> sign_shift) & 1
+        let sign_shifted = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: sign_shifted, op: IrBinOp::LShr,
+            lhs: bits, rhs: Operand::Const(IrConst::I64(sign_shift)), ty: int_ty,
+        });
+        let sign_bit = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: sign_bit, op: IrBinOp::And,
+            lhs: Operand::Value(sign_shifted), rhs: Operand::Const(IrConst::I64(1)), ty: int_ty,
+        });
+
+        // direction = sign_bit ? -1 : 1  =>  1 - 2*sign_bit
+        let sign_x2 = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: sign_x2, op: IrBinOp::Mul,
+            lhs: Operand::Value(sign_bit), rhs: Operand::Const(IrConst::I64(2)), ty: IrType::I64,
+        });
+        let direction = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: direction, op: IrBinOp::Sub,
+            lhs: Operand::Const(IrConst::I64(1)), rhs: Operand::Value(sign_x2), ty: IrType::I64,
+        });
+
+        // result = is_inf * direction
+        let result = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: result, op: IrBinOp::Mul,
+            lhs: Operand::Value(is_inf), rhs: Operand::Value(direction), ty: IrType::I64,
+        });
+
+        Some(Operand::Value(result))
     }
 
     /// Try to lower a GCC atomic builtin (__atomic_* or __sync_*).

@@ -215,6 +215,10 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule) -> String {
         }
     }
 
+    // Emit .note.GNU-stack section to indicate non-executable stack
+    cg.state().emit("");
+    cg.state().emit(".section .note.GNU-stack,\"\",@progbits");
+
     std::mem::take(&mut cg.state().out.buf)
 }
 
