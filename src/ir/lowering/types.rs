@@ -65,9 +65,40 @@ impl Lowerer {
                 }
             }
             Expr::Cast(ref target_type, inner, _) => {
-                // Evaluate cast chains properly using (bits, is_signed, width) representation
-                let (bits, _src_signed) = self.eval_const_expr_as_bits(inner)?;
                 let target_ir_ty = self.type_spec_to_ir(target_type);
+                let src_val = self.eval_const_expr(inner)?;
+
+                // Handle float source types: use value-based conversion, not bit manipulation
+                match &src_val {
+                    IrConst::F64(v) => {
+                        let fv = *v;
+                        return Some(match target_ir_ty {
+                            IrType::F64 => IrConst::F64(fv),
+                            IrType::F32 => IrConst::F32(fv as f32),
+                            IrType::I8 | IrType::U8 => IrConst::I8(fv as i8),
+                            IrType::I16 | IrType::U16 => IrConst::I16(fv as i16),
+                            IrType::I32 | IrType::U32 => IrConst::I32(fv as i32),
+                            IrType::I64 | IrType::U64 | IrType::Ptr => IrConst::I64(fv as i64),
+                            _ => return None,
+                        });
+                    }
+                    IrConst::F32(v) => {
+                        let fv = *v;
+                        return Some(match target_ir_ty {
+                            IrType::F64 => IrConst::F64(fv as f64),
+                            IrType::F32 => IrConst::F32(fv),
+                            IrType::I8 | IrType::U8 => IrConst::I8(fv as i8),
+                            IrType::I16 | IrType::U16 => IrConst::I16(fv as i16),
+                            IrType::I32 | IrType::U32 => IrConst::I32(fv as i32),
+                            IrType::I64 | IrType::U64 | IrType::Ptr => IrConst::I64(fv as i64),
+                            _ => return None,
+                        });
+                    }
+                    _ => {}
+                }
+
+                // Integer source: use bit-based cast chain evaluation
+                let (bits, _src_signed) = self.eval_const_expr_as_bits(inner)?;
                 let target_width = target_ir_ty.size() * 8;
                 let target_signed = matches!(target_ir_ty, IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64);
 
@@ -79,8 +110,6 @@ impl Lowerer {
                 };
 
                 // Convert to IrConst based on target type
-                // For unsigned types, use I64 to preserve zero-extension semantics
-                // (IrConst::I32 would sign-extend when later converted to i64)
                 let result = match target_ir_ty {
                     IrType::I8 => IrConst::I8(truncated as i8),
                     IrType::U8 => IrConst::I64(truncated as u8 as i64),
@@ -90,11 +119,11 @@ impl Lowerer {
                     IrType::U32 => IrConst::I64(truncated as u32 as i64),
                     IrType::I64 | IrType::U64 | IrType::Ptr => IrConst::I64(truncated as i64),
                     IrType::F32 => {
-                        let int_val = if target_signed { truncated as i64 as f32 } else { truncated as f32 };
+                        let int_val = if target_signed { truncated as i64 as f32 } else { truncated as u64 as f32 };
                         IrConst::F32(int_val)
                     }
                     IrType::F64 => {
-                        let int_val = if target_signed { truncated as i64 as f64 } else { truncated as f64 };
+                        let int_val = if target_signed { truncated as i64 as f64 } else { truncated as u64 as f64 };
                         IrConst::F64(int_val)
                     }
                     _ => return None,
@@ -128,6 +157,8 @@ impl Lowerer {
                     IrConst::I32(v) => v != 0,
                     IrConst::I8(v) => v != 0,
                     IrConst::I16(v) => v != 0,
+                    IrConst::F32(v) => v != 0.0,
+                    IrConst::F64(v) => v != 0.0,
                     _ => return None,
                 };
                 if is_true {
@@ -141,6 +172,10 @@ impl Lowerer {
                 let result = match val {
                     IrConst::I64(v) => if v == 0 { 1i64 } else { 0 },
                     IrConst::I32(v) => if v == 0 { 1i64 } else { 0 },
+                    IrConst::I8(v) => if v == 0 { 1i64 } else { 0 },
+                    IrConst::I16(v) => if v == 0 { 1i64 } else { 0 },
+                    IrConst::F32(v) => if v == 0.0 { 1i64 } else { 0 },
+                    IrConst::F64(v) => if v == 0.0 { 1i64 } else { 0 },
                     _ => return None,
                 };
                 Some(IrConst::I64(result))
@@ -376,6 +411,14 @@ impl Lowerer {
 
     /// Evaluate a constant binary operation.
     fn eval_const_binop(&self, op: &BinOp, lhs: &IrConst, rhs: &IrConst, lhs_ty: IrType) -> Option<IrConst> {
+        // Check if either operand is floating-point
+        let lhs_is_float = matches!(lhs, IrConst::F32(_) | IrConst::F64(_));
+        let rhs_is_float = matches!(rhs, IrConst::F32(_) | IrConst::F64(_));
+
+        if lhs_is_float || rhs_is_float {
+            return self.eval_const_binop_float(op, lhs, rhs);
+        }
+
         let l = self.const_to_i64(lhs)?;
         let r = self.const_to_i64(rhs)?;
         let is_32bit = lhs_ty.size() <= 4;
@@ -464,6 +507,64 @@ impl Lowerer {
             _ => return None,
         };
         Some(IrConst::I64(result))
+    }
+
+    /// Evaluate a binary operation on floating-point constant operands.
+    /// Promotes both operands to the wider float type (f64 if either is f64).
+    fn eval_const_binop_float(&self, op: &BinOp, lhs: &IrConst, rhs: &IrConst) -> Option<IrConst> {
+        // Determine if result should be f32 (both are f32) or f64 (either is f64 or int)
+        let use_f64 = matches!(lhs, IrConst::F64(_)) || matches!(rhs, IrConst::F64(_))
+            || (!matches!(lhs, IrConst::F32(_)) && !matches!(rhs, IrConst::F32(_)));
+
+        // Convert both operands to f64 for computation
+        let l = self.const_to_f64(lhs)?;
+        let r = self.const_to_f64(rhs)?;
+
+        match op {
+            // Arithmetic operations return float
+            BinOp::Add => {
+                let v = l + r;
+                Some(if use_f64 { IrConst::F64(v) } else { IrConst::F32(v as f32) })
+            }
+            BinOp::Sub => {
+                let v = l - r;
+                Some(if use_f64 { IrConst::F64(v) } else { IrConst::F32(v as f32) })
+            }
+            BinOp::Mul => {
+                let v = l * r;
+                Some(if use_f64 { IrConst::F64(v) } else { IrConst::F32(v as f32) })
+            }
+            BinOp::Div => {
+                // IEEE 754: division by zero produces infinity or NaN, which is valid
+                let v = l / r;
+                Some(if use_f64 { IrConst::F64(v) } else { IrConst::F32(v as f32) })
+            }
+            // Comparison operations return int
+            BinOp::Eq => Some(IrConst::I64(if l == r { 1 } else { 0 })),
+            BinOp::Ne => Some(IrConst::I64(if l != r { 1 } else { 0 })),
+            BinOp::Lt => Some(IrConst::I64(if l < r { 1 } else { 0 })),
+            BinOp::Gt => Some(IrConst::I64(if l > r { 1 } else { 0 })),
+            BinOp::Le => Some(IrConst::I64(if l <= r { 1 } else { 0 })),
+            BinOp::Ge => Some(IrConst::I64(if l >= r { 1 } else { 0 })),
+            // Logical operations
+            BinOp::LogicalAnd => Some(IrConst::I64(if l != 0.0 && r != 0.0 { 1 } else { 0 })),
+            BinOp::LogicalOr => Some(IrConst::I64(if l != 0.0 || r != 0.0 { 1 } else { 0 })),
+            // Bitwise/shift operations are not valid on floats
+            _ => None,
+        }
+    }
+
+    /// Convert an IrConst to f64 for floating-point constant evaluation.
+    fn const_to_f64(&self, c: &IrConst) -> Option<f64> {
+        match c {
+            IrConst::F64(v) => Some(*v),
+            IrConst::F32(v) => Some(*v as f64),
+            IrConst::I64(v) => Some(*v as f64),
+            IrConst::I32(v) => Some(*v as f64),
+            IrConst::I16(v) => Some(*v as f64),
+            IrConst::I8(v) => Some(*v as f64),
+            IrConst::Zero => Some(0.0),
+        }
     }
 
     /// Compute the effective array size from an initializer list with potential designators.

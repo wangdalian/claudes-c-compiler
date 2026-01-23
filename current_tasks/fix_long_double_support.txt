@@ -1,0 +1,26 @@
+Task: Fix long double support across the compiler
+
+Problems:
+1. IrType has no F80/long double representation - LongDouble maps to F64
+   causing 8 bytes of data written into 16-byte allocated slots.
+
+2. Long double global initializers emit .quad (8 bytes) instead of
+   proper x87 80-bit extended precision (10 bytes + 6 padding = 16 bytes total).
+   Example: long double ld = 3.5L; -> ld is 0.0
+
+3. va_arg for long double falls through to IrType::I64 default in
+   resolve_va_arg_type, not handled correctly.
+   On x86-64, long double should be passed via overflow area (stack).
+
+4. Function argument passing sends long double in XMM registers as F64
+   instead of on the stack per x86-64 SysV ABI.
+
+5. On ARM64/RISC-V, long double is 128-bit IEEE quad precision, which
+   also needs special handling.
+
+Plan:
+- Add IrType::F80 to the IR type system
+- Fix global initializer emission for x87 80-bit encoding
+- Fix va_arg for long double
+- Fix calling convention for long double arguments
+- Test all three architectures

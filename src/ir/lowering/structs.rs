@@ -355,55 +355,127 @@ impl Lowerer {
             Expr::UnaryOp(UnaryOp::PreInc | UnaryOp::PreDec, inner, _) => {
                 self.get_pointed_struct_layout(inner)
             }
-            Expr::Cast(type_spec, _inner, _) => {
-                // (struct Foo *)expr - unwrap pointer to get struct layout
-                let resolved = self.resolve_type_spec(type_spec);
-                match resolved {
-                    TypeSpecifier::Pointer(inner_ts) => {
-                        self.get_struct_layout_for_type(&inner_ts)
-                    }
-                    _ => None,
+            Expr::PostfixOp(_, inner, _) => {
+                self.get_pointed_struct_layout(inner)
+            }
+            Expr::BinaryOp(op, lhs, rhs, _) if matches!(op, BinOp::Add | BinOp::Sub) => {
+                // Pointer arithmetic: (p + i) or (p - i) preserves the pointed-to struct type
+                if let Some(layout) = self.get_pointed_struct_layout(lhs) {
+                    return Some(layout);
                 }
+                // Try rhs for commutative case: (i + p)
+                if matches!(op, BinOp::Add) {
+                    if let Some(layout) = self.get_pointed_struct_layout(rhs) {
+                        return Some(layout);
+                    }
+                }
+                None
+            }
+            Expr::Cast(type_spec, inner, _) => {
+                // Cast to struct pointer type
+                if let Some(layout) = self.get_struct_layout_for_pointer_type(type_spec) {
+                    return Some(layout);
+                }
+                // Try inner expression
+                self.get_pointed_struct_layout(inner)
             }
             Expr::AddressOf(inner, _) => {
                 // &expr - result is a pointer to expr's type
-                // If expr is a struct, we get the struct layout
                 self.get_layout_for_expr(inner)
             }
             Expr::Deref(inner, _) => {
-                // *expr where expr is a pointer-to-pointer-to-struct,
-                // result is a pointer to struct
+                // *pp where pp is a pointer to pointer to struct
+                if let Some(ctype) = self.get_expr_ctype(inner) {
+                    if let CType::Pointer(inner_ct) = &ctype {
+                        if let CType::Pointer(pointee) = inner_ct.as_ref() {
+                            return self.struct_layout_from_ctype(pointee);
+                        }
+                    }
+                }
+                // Fallback: propagate through inner
                 self.get_pointed_struct_layout(inner)
-                    .or_else(|| {
-                        // Try: the deref result might itself be a pointer to struct
-                        // e.g., *pp where pp is struct Foo **
-                        None
-                    })
+            }
+            Expr::ArraySubscript(base, _, _) => {
+                // pp[i] where pp is an array of struct pointers
+                if let Some(ctype) = self.get_expr_ctype(base) {
+                    match &ctype {
+                        CType::Array(elem, _) | CType::Pointer(elem) => {
+                            if let CType::Pointer(pointee) = elem.as_ref() {
+                                return self.struct_layout_from_ctype(pointee);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                // Fallback: try base directly
+                self.get_pointed_struct_layout(base)
             }
             Expr::FunctionCall(func, _, _) => {
-                // Function returning a pointer to struct
+                // Function returning a struct pointer
                 if let Expr::Identifier(name, _) = func.as_ref() {
                     if let Some(ctype) = self.function_return_ctypes.get(name) {
-                        match ctype {
-                            CType::Pointer(inner) => {
-                                match inner.as_ref() {
-                                    CType::Struct(st) => return Some(StructLayout::for_struct(&st.fields)),
-                                    CType::Union(st) => return Some(StructLayout::for_union(&st.fields)),
-                                    _ => {}
-                                }
-                            }
-                            _ => {}
+                        if let CType::Pointer(pointee) = ctype {
+                            return self.struct_layout_from_ctype(pointee);
                         }
                     }
                 }
                 None
             }
-            Expr::ArraySubscript(base, _, _) => {
-                // arr[i] where arr is an array of struct pointers or similar
-                self.get_pointed_struct_layout(base)
+            Expr::Conditional(_, then_expr, _, _) => {
+                self.get_pointed_struct_layout(then_expr)
+            }
+            Expr::Comma(_, last, _) => {
+                self.get_pointed_struct_layout(last)
+            }
+            Expr::Assign(_, rhs, _) | Expr::CompoundAssign(_, _, rhs, _) => {
+                self.get_pointed_struct_layout(rhs)
+            }
+            _ => {
+                // Generic fallback: try CType-based resolution
+                if let Some(ctype) = self.get_expr_ctype(expr) {
+                    if let CType::Pointer(pointee) = &ctype {
+                        return self.struct_layout_from_ctype(pointee);
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    /// Get struct layout from a CType (struct or union)
+    fn struct_layout_from_ctype(&self, ctype: &CType) -> Option<StructLayout> {
+        match ctype {
+            CType::Struct(st) => {
+                if st.fields.is_empty() {
+                    // Forward-declared or self-referential: look up by tag name
+                    if let Some(ref tag) = st.name {
+                        let key = format!("struct.{}", tag);
+                        return self.struct_layouts.get(&key).cloned();
+                    }
+                }
+                Some(StructLayout::for_struct(&st.fields))
+            }
+            CType::Union(st) => {
+                if st.fields.is_empty() {
+                    if let Some(ref tag) = st.name {
+                        let key = format!("union.{}", tag);
+                        return self.struct_layouts.get(&key).cloned();
+                    }
+                }
+                Some(StructLayout::for_union(&st.fields))
             }
             _ => None,
         }
+    }
+
+    /// Get struct layout from a type specifier that should be a pointer to struct
+    fn get_struct_layout_for_pointer_type(&self, type_spec: &TypeSpecifier) -> Option<StructLayout> {
+        let resolved = self.resolve_type_spec(type_spec);
+        let ctype = self.type_spec_to_ctype(resolved);
+        if let CType::Pointer(pointee) = &ctype {
+            return self.struct_layout_from_ctype(pointee);
+        }
+        None
     }
 
     /// Try to get the struct layout for an expression.
