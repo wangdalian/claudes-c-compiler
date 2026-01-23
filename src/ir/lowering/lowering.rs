@@ -62,6 +62,8 @@ pub struct Lowerer {
     switch_end_labels: Vec<String>,
     switch_cases: Vec<Vec<(i64, String)>>,
     switch_default: Vec<Option<String>>,
+    /// Alloca holding the switch expression value for the current switch.
+    switch_val_allocas: Vec<Value>,
 }
 
 impl Lowerer {
@@ -82,6 +84,7 @@ impl Lowerer {
             switch_end_labels: Vec::new(),
             switch_cases: Vec::new(),
             switch_default: Vec::new(),
+            switch_val_allocas: Vec::new(),
         }
     }
 
@@ -628,34 +631,129 @@ impl Lowerer {
                 }
             }
             Stmt::Switch(expr, body, _span) => {
-                let _val = self.lower_expr(expr);
+                // Evaluate switch expression and store it in an alloca so we can
+                // reload it in the dispatch chain (which is emitted after the body).
+                let val = self.lower_expr(expr);
+                let switch_alloca = self.fresh_value();
+                self.emit(Instruction::Alloca {
+                    dest: switch_alloca,
+                    ty: IrType::I64,
+                    size: 8,
+                });
+                self.emit(Instruction::Store {
+                    val,
+                    ptr: switch_alloca,
+                    ty: IrType::I64,
+                });
+
+                let dispatch_label = self.fresh_label("switch_dispatch");
                 let end_label = self.fresh_label("switch_end");
+                let body_label = self.fresh_label("switch_body");
+
+                // Push switch context
                 self.switch_end_labels.push(end_label.clone());
                 self.break_labels.push(end_label.clone());
                 self.switch_cases.push(Vec::new());
                 self.switch_default.push(None);
+                self.switch_val_allocas.push(switch_alloca);
 
-                // TODO: proper switch lowering with jump table
-                // For now, just lower the body
+                // Jump to dispatch (which will be emitted after the body)
+                self.terminate(Terminator::Branch(dispatch_label.clone()));
+
+                // Lower the switch body - case/default stmts will register
+                // their labels in switch_cases/switch_default
+                self.start_block(body_label.clone());
                 self.lower_stmt(body);
+                // Fall off end of switch body -> go to end
                 self.terminate(Terminator::Branch(end_label.clone()));
 
+                // Pop switch context and collect the case/default info
                 self.switch_end_labels.pop();
                 self.break_labels.pop();
-                self.switch_cases.pop();
-                self.switch_default.pop();
+                let cases = self.switch_cases.pop().unwrap_or_default();
+                let default_label = self.switch_default.pop().flatten();
+                self.switch_val_allocas.pop();
+
+                // Now emit the dispatch chain: a series of comparison blocks
+                // that check each case value and branch accordingly.
+                let fallback = default_label.unwrap_or_else(|| end_label.clone());
+
+                self.start_block(dispatch_label);
+
+                if cases.is_empty() {
+                    // No cases, just go to default or end
+                    self.terminate(Terminator::Branch(fallback));
+                } else {
+                    // Emit comparison chain: each check block loads the switch
+                    // value, compares against a case constant, and branches.
+                    for (i, (case_val, case_label)) in cases.iter().enumerate() {
+                        // Load the switch value in this block
+                        let loaded = self.fresh_value();
+                        self.emit(Instruction::Load {
+                            dest: loaded,
+                            ptr: switch_alloca,
+                            ty: IrType::I64,
+                        });
+
+                        let cmp_result = self.fresh_value();
+                        self.emit(Instruction::Cmp {
+                            dest: cmp_result,
+                            op: IrCmpOp::Eq,
+                            lhs: Operand::Value(loaded),
+                            rhs: Operand::Const(IrConst::I64(*case_val)),
+                            ty: IrType::I64,
+                        });
+
+                        let next_check = if i + 1 < cases.len() {
+                            self.fresh_label("switch_check")
+                        } else {
+                            fallback.clone()
+                        };
+
+                        self.terminate(Terminator::CondBranch {
+                            cond: Operand::Value(cmp_result),
+                            true_label: case_label.clone(),
+                            false_label: next_check.clone(),
+                        });
+
+                        // Start next check block (unless this was the last case)
+                        if i + 1 < cases.len() {
+                            self.start_block(next_check);
+                        }
+                    }
+                }
 
                 self.start_block(end_label);
             }
-            Stmt::Case(_expr, stmt, _span) => {
-                // TODO: proper case handling
+            Stmt::Case(expr, stmt, _span) => {
+                // Evaluate the case constant expression
+                let case_val = self.eval_const_expr(expr)
+                    .and_then(|c| self.const_to_i64(&c))
+                    .unwrap_or(0);
+
+                // Create a label for this case
                 let label = self.fresh_label("case");
+
+                // Register this case with the enclosing switch
+                if let Some(cases) = self.switch_cases.last_mut() {
+                    cases.push((case_val, label.clone()));
+                }
+
+                // Terminate current block and start the case block.
+                // The previous case falls through to this one (C semantics).
                 self.terminate(Terminator::Branch(label.clone()));
                 self.start_block(label);
                 self.lower_stmt(stmt);
             }
             Stmt::Default(stmt, _span) => {
                 let label = self.fresh_label("default");
+
+                // Register as default with enclosing switch
+                if let Some(default) = self.switch_default.last_mut() {
+                    *default = Some(label.clone());
+                }
+
+                // Fallthrough from previous case
                 self.terminate(Terminator::Branch(label.clone()));
                 self.start_block(label);
                 self.lower_stmt(stmt);

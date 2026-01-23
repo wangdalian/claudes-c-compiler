@@ -11,7 +11,7 @@ A C compiler written in Rust, targeting x86-64, AArch64, and RISC-V 64.
 - Assembly and linking via system tools (gcc/gas)
 
 ### Test Results (1% sample)
-- x86-64: ~19% passing
+- x86-64: ~22% passing
 - AArch64: ~12% passing
 - RISC-V 64: ~17% passing
 
@@ -39,6 +39,10 @@ A C compiler written in Rust, targeting x86-64, AArch64, and RISC-V 64.
 - Short-circuit evaluation for `&&` and `||`
 - Proper `sizeof` for basic types and arrays
 - 32-bit arithmetic operations for `int` type (addl/subl/imull/idivl on x86)
+- **Switch statements**: proper dispatch via if-else comparison chain
+  - Case with break, fallthrough, default
+  - Nested switch statements
+  - Constant case expressions (integer literals, char literals, arithmetic)
 - **Global variables**: declarations with initializers, arrays, zero-initialized (.bss)
   - Global scalar initializers (`int x = 42;`)
   - Global array initializers (`int arr[5] = {1, 2, 3, 4, 5};`)
@@ -47,10 +51,9 @@ A C compiler written in Rust, targeting x86-64, AArch64, and RISC-V 64.
   - Constant expression evaluation for initializers
 
 ### What's Not Yet Implemented
-- Preprocessor (macros, includes, conditionals)
+- Full #include resolution (only built-in headers for now)
 - Type checking (sema is a stub)
 - Structs, unions, enums (parsed but not lowered)
-- Switch statements (stub)
 - Floating point
 - Static local variables
 - Type casts
