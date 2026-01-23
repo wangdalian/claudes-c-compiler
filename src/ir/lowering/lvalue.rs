@@ -112,14 +112,29 @@ impl Lowerer {
 
     /// Compute the address of an array element: base_addr + index * elem_size.
     /// For multi-dimensional arrays, uses the correct stride for the subscript depth.
+    /// Handles reverse subscript (e.g., 3[arr]) by normalizing operands so that
+    /// the pointer/array is always the base and the integer is the index.
     pub(super) fn compute_array_element_addr(&mut self, base: &Expr, index: &Expr) -> Value {
-        let index_val = self.lower_expr(index);
+        // In C, a[i] == i[a] == *(a + i). The parser always puts the expression
+        // before '[' as base and the one inside as index. We normalize so the
+        // pointer/array is always the base.
+        let (actual_base, actual_index) = if self.expr_is_pointer(base) || self.expr_is_array_name(base) {
+            (base, index)
+        } else if self.expr_is_pointer(index) || self.expr_is_array_name(index) {
+            // Reverse subscript: integer[array] -> swap to array[integer]
+            (index, base)
+        } else {
+            // Default: assume first is base
+            (base, index)
+        };
+
+        let index_val = self.lower_expr(actual_index);
 
         // Determine the element size based on subscript depth for multi-dim arrays
-        let elem_size = self.get_array_elem_size_for_subscript(base);
+        let elem_size = self.get_array_elem_size_for_subscript(actual_base);
 
         // Get the base address - for nested subscripts (a[i][j]), don't load
-        let base_addr = self.get_array_base_addr(base);
+        let base_addr = self.get_array_base_addr(actual_base);
 
         // Compute offset = index * elem_size
         let offset = if elem_size == 1 {
@@ -313,10 +328,18 @@ impl Lowerer {
     }
 
     /// Get the root array name from a full expression (including outer subscript).
+    /// Handles reverse subscript by checking both base and index.
     pub(super) fn get_array_root_name(&self, expr: &Expr) -> Option<String> {
         match expr {
             Expr::Identifier(name, _) => Some(name.clone()),
-            Expr::ArraySubscript(base, _, _) => self.get_array_root_name(base),
+            Expr::ArraySubscript(base, index, _) => {
+                // Try base first (normal case: arr[i])
+                if let Some(name) = self.get_array_root_name(base) {
+                    return Some(name);
+                }
+                // Try index (reverse subscript: i[arr])
+                self.get_array_root_name(index)
+            }
             _ => None,
         }
     }
@@ -328,5 +351,19 @@ impl Lowerer {
             TypeSpecifier::Array(inner, _) => self.sizeof_type(inner),
             _ => 0,
         }
+    }
+
+    /// Check if an expression is an array name (identifier declared as an array).
+    /// Used for normalizing reverse subscript: 3[arr] -> arr[3].
+    pub(super) fn expr_is_array_name(&self, expr: &Expr) -> bool {
+        if let Expr::Identifier(name, _) = expr {
+            if let Some(info) = self.locals.get(name) {
+                return info.is_array;
+            }
+            if let Some(ginfo) = self.globals.get(name) {
+                return ginfo.is_array;
+            }
+        }
+        false
     }
 }

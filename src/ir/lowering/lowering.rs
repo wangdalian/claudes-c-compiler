@@ -450,8 +450,26 @@ impl Lowerer {
             }
 
             let base_ty = self.type_spec_to_ir(&decl.type_spec);
-            let (alloc_size, elem_size, is_array, is_pointer, array_dim_strides) = self.compute_decl_info(&decl.type_spec, &declarator.derived);
+            let (mut alloc_size, elem_size, is_array, is_pointer, array_dim_strides) = self.compute_decl_info(&decl.type_spec, &declarator.derived);
             let var_ty = if is_pointer { IrType::Ptr } else { base_ty };
+
+            // Fix alloc size for unsized char arrays initialized with string literals
+            if is_array && (base_ty == IrType::I8 || base_ty == IrType::U8) {
+                let has_unsized_array = declarator.derived.iter().any(|d| {
+                    matches!(d, DerivedDeclarator::Array(None))
+                });
+                if has_unsized_array {
+                    if let Some(ref init) = declarator.init {
+                        if let Initializer::Expr(expr) = init {
+                            if let Expr::StringLiteral(s, _) = expr {
+                                alloc_size = s.as_bytes().len() + 1;
+                            }
+                        } else if let Initializer::List(items) = init {
+                            alloc_size = items.len();
+                        }
+                    }
+                }
+            }
 
             // Determine struct layout for global struct/pointer-to-struct variables
             let struct_layout = self.get_struct_layout_for_type(&decl.type_spec);
@@ -536,12 +554,18 @@ impl Lowerer {
                 if let Some(val) = self.eval_const_expr(expr) {
                     return GlobalInit::Scalar(val);
                 }
-                // String literal initializer for pointer globals
+                // String literal initializer
                 if let Expr::StringLiteral(s, _) = expr {
-                    let label = format!(".Lstr{}", self.next_string);
-                    self.next_string += 1;
-                    self.module.string_literals.push((label.clone(), s.clone()));
-                    return GlobalInit::GlobalAddr(label);
+                    if is_array && (base_ty == IrType::I8 || base_ty == IrType::U8) {
+                        // Char array: char s[] = "hello" -> inline the string bytes
+                        return GlobalInit::String(s.clone());
+                    } else {
+                        // Pointer: const char *s = "hello" -> reference .rodata label
+                        let label = format!(".Lstr{}", self.next_string);
+                        self.next_string += 1;
+                        self.module.string_literals.push((label.clone(), s.clone()));
+                        return GlobalInit::GlobalAddr(label);
+                    }
                 }
                 // Can't evaluate - zero init as fallback
                 GlobalInit::Zero

@@ -167,8 +167,9 @@ impl Lowerer {
                 }
                 IrType::I64
             }
-            Expr::ArraySubscript(base, _, _) => {
-                // For multi-dim arrays, find the root identifier
+            Expr::ArraySubscript(base, index, _) => {
+                // For multi-dim arrays, find the root identifier.
+                // Handle reverse subscript (3[arr]) by checking both operands.
                 let root_name = self.get_array_root_name(expr);
                 if let Some(name) = root_name {
                     if let Some(info) = self.locals.get(&name) {
@@ -182,27 +183,34 @@ impl Lowerer {
                         }
                     }
                 }
-                // Fallback: check direct base with pointee_type
-                if let Expr::Identifier(name, _) = base.as_ref() {
-                    if let Some(info) = self.locals.get(name) {
-                        if let Some(pt) = info.pointee_type {
-                            return pt;
+                // Check both base and index for identifier with type info
+                // (handles reverse subscript like 3[arr] where index is the array)
+                for operand in [base.as_ref(), index.as_ref()] {
+                    if let Expr::Identifier(name, _) = operand {
+                        if let Some(info) = self.locals.get(name) {
+                            if let Some(pt) = info.pointee_type {
+                                return pt;
+                            }
+                            if info.is_array {
+                                return info.ty;
+                            }
                         }
-                        if info.is_array {
-                            return info.ty;
-                        }
-                    }
-                    if let Some(ginfo) = self.globals.get(name) {
-                        if let Some(pt) = ginfo.pointee_type {
-                            return pt;
-                        }
-                        if ginfo.is_array {
-                            return ginfo.ty;
+                        if let Some(ginfo) = self.globals.get(name) {
+                            if let Some(pt) = ginfo.pointee_type {
+                                return pt;
+                            }
+                            if ginfo.is_array {
+                                return ginfo.ty;
+                            }
                         }
                     }
                 }
                 // For complex base expressions, try to resolve pointee type
                 if let Some(pt) = self.get_pointee_type_of_expr(base) {
+                    return pt;
+                }
+                // Also try the index (reverse subscript with complex pointer expr)
+                if let Some(pt) = self.get_pointee_type_of_expr(index) {
                     return pt;
                 }
                 IrType::I64
