@@ -1,0 +1,12 @@
+Task: Fix parser, comparison, shift sizeof, and compound literal issues
+
+Fixes:
+1. Parser: struct/union function pointer field declarations (int (*name)(params))
+2. Lexer: C99 hex/octal literal type promotion (unsigned int for values > INT_MAX)
+3. IR: comparison type uses common_ty for correct 32-bit signed/unsigned cmp
+4. sizeof_expr: left-shift result type is promoted left operand only
+5. Global compound literal: &(struct S){...} creates anonymous global
+6. Compound init: nested struct list initializer serialization in compound globals
+
+Tests fixed: c_testsuite 89, 104, 149, 150, 200
+Score: c_testsuite 204/220 (up from 199/220)
