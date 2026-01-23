@@ -2049,6 +2049,11 @@ impl Lowerer {
     /// Shared implementation for pre/post increment/decrement.
     /// `return_new`: if true, returns the new value (pre-inc/dec); if false, returns original (post-inc/dec).
     fn lower_inc_dec_impl(&mut self, inner: &Expr, is_inc: bool, return_new: bool) -> Operand {
+        // Check for bitfield increment/decrement: needs read-modify-write
+        if let Some(result) = self.try_lower_bitfield_inc_dec(inner, is_inc, return_new) {
+            return result;
+        }
+
         let ty = self.get_expr_type(inner);
         if let Some(lv) = self.lower_lvalue(inner) {
             let loaded = self.load_lvalue_typed(&lv, ty);
@@ -2070,6 +2075,71 @@ impl Lowerer {
             return if return_new { store_op } else { loaded };
         }
         self.lower_expr(inner)
+    }
+
+    /// Try to lower bitfield increment/decrement using read-modify-write.
+    fn try_lower_bitfield_inc_dec(&mut self, inner: &Expr, is_inc: bool, return_new: bool) -> Option<Operand> {
+        let (base_expr, field_name, is_pointer) = match inner {
+            Expr::MemberAccess(base, field, _) => (base.as_ref(), field.as_str(), false),
+            Expr::PointerMemberAccess(base, field, _) => (base.as_ref(), field.as_str(), true),
+            _ => return None,
+        };
+
+        let (field_offset, storage_ty, bitfield) = if is_pointer {
+            self.resolve_pointer_member_access_full(base_expr, field_name)
+        } else {
+            self.resolve_member_access_full(base_expr, field_name)
+        };
+
+        let (bit_offset, bit_width) = bitfield?;
+
+        // Compute base address
+        let base_addr = if is_pointer {
+            let ptr_val = self.lower_expr(base_expr);
+            self.operand_to_value(ptr_val)
+        } else {
+            self.get_struct_base_addr(base_expr)
+        };
+
+        let field_addr = self.fresh_value();
+        self.emit(Instruction::GetElementPtr {
+            dest: field_addr,
+            base: base_addr,
+            offset: Operand::Const(IrConst::I64(field_offset as i64)),
+            ty: storage_ty,
+        });
+
+        // Load and extract current bitfield value
+        let loaded = self.fresh_value();
+        self.emit(Instruction::Load { dest: loaded, ptr: field_addr, ty: storage_ty });
+        let current_val = self.extract_bitfield(loaded, storage_ty, bit_offset, bit_width);
+
+        // Perform inc/dec
+        let ir_op = if is_inc { IrBinOp::Add } else { IrBinOp::Sub };
+        let result = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: result,
+            op: ir_op,
+            lhs: current_val.clone(),
+            rhs: Operand::Const(IrConst::I64(1)),
+            ty: IrType::I64,
+        });
+
+        // Store back via read-modify-write
+        self.store_bitfield(field_addr, storage_ty, bit_offset, bit_width, Operand::Value(result));
+
+        // Return value masked to bit_width
+        let mask = (1u64 << bit_width) - 1;
+        let ret_val = if return_new { Operand::Value(result) } else { current_val };
+        let masked = self.fresh_value();
+        self.emit(Instruction::BinOp {
+            dest: masked,
+            op: IrBinOp::And,
+            ty: IrType::I64,
+            lhs: ret_val,
+            rhs: Operand::Const(IrConst::I64(mask as i64)),
+        });
+        Some(Operand::Value(masked))
     }
 
     /// Get the step value and operation type for increment/decrement.
