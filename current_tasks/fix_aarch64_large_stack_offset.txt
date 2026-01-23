@@ -1,0 +1,16 @@
+Task: Fix AArch64 immediate offset out of range for large stack frames
+
+Problem:
+- emit_store_to_sp and emit_load_from_sp use a fixed threshold of 32760 for all instructions
+- AArch64 unsigned immediate offsets are scaled by access size:
+  - strb/ldrb: max 4095
+  - strh/ldrh: max 8190
+  - str w/ldr w/ldrsw: max 16380
+  - str x/ldr x: max 32760
+- Tests with large stack frames (>16KB) fail when accessing 4-byte values at high offsets
+
+Fix:
+- Determine max offset from the instruction type in emit_store_to_sp/emit_load_from_sp
+- Also check other places where [sp, #offset] is emitted directly
+
+Affected tests: 11 tests (compiler_suite_0011_0109, 0054_0208, 0104_0968, etc.)
