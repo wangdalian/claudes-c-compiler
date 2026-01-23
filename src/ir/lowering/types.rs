@@ -2214,28 +2214,37 @@ impl Lowerer {
                 match op {
                     BinOp::Add => {
                         if let Some(lct) = self.get_expr_ctype(lhs) {
-                            if matches!(&lct, CType::Pointer(_) | CType::Array(_, _)) {
-                                return Some(lct);
+                            match lct {
+                                CType::Pointer(_) => return Some(lct),
+                                // Array decays to pointer-to-element in arithmetic context
+                                CType::Array(elem, _) => return Some(CType::Pointer(elem)),
+                                _ => {}
                             }
                         }
                         if let Some(rct) = self.get_expr_ctype(rhs) {
-                            if matches!(&rct, CType::Pointer(_) | CType::Array(_, _)) {
-                                return Some(rct);
+                            match rct {
+                                CType::Pointer(_) => return Some(rct),
+                                CType::Array(elem, _) => return Some(CType::Pointer(elem)),
+                                _ => {}
                             }
                         }
                         None
                     }
                     BinOp::Sub => {
                         if let Some(lct) = self.get_expr_ctype(lhs) {
-                            if matches!(&lct, CType::Pointer(_) | CType::Array(_, _)) {
+                            let is_ptr = matches!(&lct, CType::Pointer(_) | CType::Array(_, _));
+                            if is_ptr {
                                 // Check if rhs is also pointer (ptr - ptr = ptrdiff_t)
                                 if let Some(rct) = self.get_expr_ctype(rhs) {
                                     if matches!(&rct, CType::Pointer(_) | CType::Array(_, _)) {
                                         return Some(CType::Long);
                                     }
                                 }
-                                // ptr - int = same pointer type
-                                return Some(lct);
+                                // ptr - int = decayed pointer type
+                                return Some(match lct {
+                                    CType::Array(elem, _) => CType::Pointer(elem),
+                                    other => other,
+                                });
                             }
                         }
                         None

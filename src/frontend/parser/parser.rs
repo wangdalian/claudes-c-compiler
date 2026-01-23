@@ -395,17 +395,66 @@ impl Parser {
 
             let is_static = self.parsing_static;
             let is_inline = self.parsing_inline;
-            // Wrap return type with any pointer derivations before the Function
-            // e.g., for `char *func()`, derived = [Pointer, Function(...)]
-            // so return_type should be Pointer(Char) not just Char
+            // Build the complete return type from derived declarators.
+            // For `int (*func())[3]`, derived = [Pointer, Function(...), Array(3)]
+            // Return type should be Pointer(Array(Int, 3)):
+            //   1. Start with base type (Int)
+            //   2. Apply post-Function derivations (Array dims) to base type
+            //   3. Apply pre-Function derivations (Pointer) to the result
             let mut return_type = type_spec;
-            for d in &derived {
-                match d {
-                    DerivedDeclarator::Pointer => {
-                        return_type = TypeSpecifier::Pointer(Box::new(return_type));
+
+            // Find the Function position in derived list
+            let func_pos = derived.iter().position(|d|
+                matches!(d, DerivedDeclarator::Function(_, _)));
+
+            if let Some(fpos) = func_pos {
+                // Apply post-Function derivations (Array/Pointer) to base type.
+                // These are in inside-out order from combine_declarator_parts:
+                // e.g., for (*func())[3], derived = [Function, Array(3), Pointer]
+                // Post-func = [Array(3), Pointer], applied in order:
+                //   Int -> Array(Int, 3) -> Pointer(Array(Int, 3))
+                for d in &derived[fpos+1..] {
+                    match d {
+                        DerivedDeclarator::Array(size_expr) => {
+                            return_type = TypeSpecifier::Array(
+                                Box::new(return_type),
+                                size_expr.clone(),
+                            );
+                        }
+                        DerivedDeclarator::Pointer => {
+                            return_type = TypeSpecifier::Pointer(Box::new(return_type));
+                        }
+                        _ => {}
                     }
-                    DerivedDeclarator::Function(_, _) => break,
-                    _ => {}
+                }
+                // Apply pre-Function derivations (Array dims and Pointers).
+                // For `int (*func())[3]`, derived = [Array(3), Pointer, Function]
+                // Pre-func = [Array(3), Pointer], applied in order:
+                //   Int -> Array(Int, 3) -> Pointer(Array(Int, 3))
+                for d in &derived[..fpos] {
+                    match d {
+                        DerivedDeclarator::Pointer => {
+                            return_type = TypeSpecifier::Pointer(Box::new(return_type));
+                        }
+                        DerivedDeclarator::Array(size_expr) => {
+                            return_type = TypeSpecifier::Array(
+                                Box::new(return_type),
+                                size_expr.clone(),
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+
+            } else {
+                // No Function in derived - just apply pointer derivations
+                for d in &derived {
+                    match d {
+                        DerivedDeclarator::Pointer => {
+                            return_type = TypeSpecifier::Pointer(Box::new(return_type));
+                        }
+                        _ => break,
+                    }
                 }
             }
             // Shadow typedef names that are used as parameter names,

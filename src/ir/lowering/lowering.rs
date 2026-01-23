@@ -3306,6 +3306,21 @@ impl Lowerer {
                 }
                 false
             }
+            Expr::Deref(_, _) => {
+                // Dereferencing a pointer-to-array yields an array which decays to pointer.
+                // Dereferencing a pointer-to-pointer yields a pointer.
+                if let Some(ctype) = self.get_expr_ctype(expr) {
+                    return matches!(ctype, CType::Array(_, _) | CType::Pointer(_));
+                }
+                false
+            }
+            Expr::Assign(_, _, _) | Expr::CompoundAssign(_, _, _, _) => {
+                // Assignment result has the type of the LHS
+                if let Some(ctype) = self.get_expr_ctype(expr) {
+                    return matches!(ctype, CType::Array(_, _) | CType::Pointer(_));
+                }
+                false
+            }
             _ => false,
         }
     }
