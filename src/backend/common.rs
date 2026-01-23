@@ -269,10 +269,33 @@ fn emit_global_def(out: &mut AsmOutput, g: &IrGlobal, ptr_dir: PtrDirective) {
 
 /// Emit a constant data value as an assembly directive.
 pub fn emit_const_data(out: &mut AsmOutput, c: &IrConst, ty: IrType, ptr_dir: PtrDirective) {
+    // If the constant type is narrower than the global's declared type, widen it
+    // (sign-extend for signed, zero-extend for unsigned).
     match c {
-        IrConst::I8(v) => out.emit(&format!("    .byte {}", *v as u8)),
-        IrConst::I16(v) => out.emit(&format!("    .short {}", *v as u16)),
-        IrConst::I32(v) => out.emit(&format!("    .long {}", *v as u32)),
+        IrConst::I8(v) => {
+            match ty {
+                IrType::I8 | IrType::U8 => out.emit(&format!("    .byte {}", *v as u8)),
+                IrType::I16 | IrType::U16 => out.emit(&format!("    .short {}", *v as i16 as u16)),
+                IrType::I32 | IrType::U32 => out.emit(&format!("    .long {}", *v as i32 as u32)),
+                _ => out.emit(&format!("    {} {}", ptr_dir.as_str(), *v as i64)),
+            }
+        }
+        IrConst::I16(v) => {
+            match ty {
+                IrType::I8 | IrType::U8 => out.emit(&format!("    .byte {}", *v as u8)),
+                IrType::I16 | IrType::U16 => out.emit(&format!("    .short {}", *v as u16)),
+                IrType::I32 | IrType::U32 => out.emit(&format!("    .long {}", *v as i32 as u32)),
+                _ => out.emit(&format!("    {} {}", ptr_dir.as_str(), *v as i64)),
+            }
+        }
+        IrConst::I32(v) => {
+            match ty {
+                IrType::I8 | IrType::U8 => out.emit(&format!("    .byte {}", *v as u8)),
+                IrType::I16 | IrType::U16 => out.emit(&format!("    .short {}", *v as u16)),
+                IrType::I32 | IrType::U32 => out.emit(&format!("    .long {}", *v as u32)),
+                _ => out.emit(&format!("    {} {}", ptr_dir.as_str(), *v as i64)),
+            }
+        }
         IrConst::I64(v) => {
             match ty {
                 IrType::I8 | IrType::U8 => out.emit(&format!("    .byte {}", *v as u8)),
