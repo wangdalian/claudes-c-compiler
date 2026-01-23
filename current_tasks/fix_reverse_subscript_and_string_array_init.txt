@@ -1,0 +1,24 @@
+Task: Fix reverse array subscript and char array string initialization
+Status: In Progress
+
+Problem 1: Reverse array subscript (3[arr]) causes segfaults
+- In C, a[i] == i[a] == *(a + i)
+- Parser always puts first operand as base, second as index
+- When integer is base and array is index, the GEP computation is wrong:
+  computes GEP(base=3, offset=arr_ptr * 8) instead of GEP(base=arr_ptr, offset=3 * elem_size)
+- Need to normalize operands so pointer/array is always the base
+
+Problem 2: char s[] = "hello" stores pointer instead of copying chars
+- Local: stores .rodata pointer into alloca instead of copying string bytes
+- Global: emits GlobalInit::GlobalAddr (pointer) instead of inline string data
+- Need to detect string literal initializer for char arrays and emit per-byte stores
+
+Problem 3: Partial array initialization doesn't zero-fill trailing elements
+- int a[10] = {1, 2} leaves elements 2-9 uninitialized
+- Need to zero-fill before or after explicit initializer stores
+
+Files to modify:
+- src/ir/lowering/lvalue.rs - Fix reverse subscript normalization
+- src/ir/lowering/expr.rs - Fix subscript type detection
+- src/ir/lowering/stmt.rs - Fix string init and array zero-fill
+- src/ir/lowering/lowering.rs - Fix global string array init
