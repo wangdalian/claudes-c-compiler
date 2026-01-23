@@ -443,8 +443,10 @@ impl Lowerer {
     }
 
     /// Compute the element size for a pointer type specifier.
+    /// Resolves typedef names before pattern matching.
     pub(super) fn pointee_elem_size(&self, type_spec: &TypeSpecifier) -> usize {
-        match type_spec {
+        let resolved = self.resolve_type_spec(type_spec);
+        match &resolved {
             TypeSpecifier::Pointer(inner) => self.sizeof_type(inner),
             TypeSpecifier::Array(inner, _) => self.sizeof_type(inner),
             _ => 0,

@@ -270,7 +270,7 @@ impl Parser {
             };
 
             // Handle K&R-style parameter declarations:
-            // int foo(a, b) int a; int b; { ... }
+            // int foo(a, b) int a; int *b; { ... }
             let final_params = if !matches!(self.peek(), TokenKind::LBrace) {
                 // K&R style: params only have names, types come in subsequent declarations
                 let mut kr_params = params.clone();
@@ -279,12 +279,32 @@ impl Parser {
                     if let Some(type_spec) = self.parse_type_specifier() {
                         // Parse the declarator(s) for this type
                         loop {
-                            let (pname, _pderived) = self.parse_declarator();
+                            let (pname, pderived) = self.parse_declarator();
                             if let Some(ref name) = pname {
+                                // Build the full type by applying derived declarators
+                                // e.g., for `int *a`, type_spec=Int, pderived=[Pointer]
+                                // result should be Pointer(Int)
+                                let mut full_type = type_spec.clone();
+                                for d in &pderived {
+                                    match d {
+                                        DerivedDeclarator::Pointer => {
+                                            full_type = TypeSpecifier::Pointer(Box::new(full_type));
+                                        }
+                                        DerivedDeclarator::Array(_) => {
+                                            // Array params decay to pointers
+                                            full_type = TypeSpecifier::Pointer(Box::new(full_type));
+                                        }
+                                        DerivedDeclarator::Function(_, _) |
+                                        DerivedDeclarator::FunctionPointer(_, _) => {
+                                            // Function pointer parameter
+                                            full_type = TypeSpecifier::Pointer(Box::new(full_type));
+                                        }
+                                    }
+                                }
                                 // Find the matching param and update its type
                                 for param in kr_params.iter_mut() {
                                     if param.name.as_deref() == Some(name.as_str()) {
-                                        param.type_spec = type_spec.clone();
+                                        param.type_spec = full_type.clone();
                                         break;
                                     }
                                 }

@@ -165,6 +165,34 @@ impl Lowerer {
         // Seed known libc math function signatures for correct calling convention
         self.seed_libc_math_functions();
 
+        // Pass 0: Collect all global typedef declarations so that function return
+        // types and parameter types that use typedefs can be resolved in pass 1.
+        for decl in &tu.decls {
+            if let ExternalDecl::Declaration(decl) = decl {
+                if decl.is_typedef {
+                    for declarator in &decl.declarators {
+                        if !declarator.name.is_empty() {
+                            let mut resolved_type = decl.type_spec.clone();
+                            for d in &declarator.derived {
+                                match d {
+                                    DerivedDeclarator::Pointer => {
+                                        resolved_type = TypeSpecifier::Pointer(Box::new(resolved_type));
+                                    }
+                                    DerivedDeclarator::Array(size) => {
+                                        resolved_type = TypeSpecifier::Array(Box::new(resolved_type), size.clone());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            self.typedefs.insert(declarator.name.clone(), resolved_type);
+                        }
+                    }
+                }
+                // Also register struct/union type definitions so sizeof works for typedefs
+                self.register_struct_type(&decl.type_spec);
+            }
+        }
+
         // First pass: collect all function names, return types, and parameter types
         // so we can distinguish function references from global variable references,
         // insert proper narrowing casts after calls, and insert implicit argument casts.
@@ -1684,8 +1712,10 @@ impl Lowerer {
     /// For `Pointer(Char)`, returns Some(I8).
     /// For `Pointer(Int)`, returns Some(I32).
     /// For `Array(Int, _)`, returns Some(I32).
+    /// Resolves typedef names before pattern matching.
     pub(super) fn pointee_ir_type(&self, type_spec: &TypeSpecifier) -> Option<IrType> {
-        match type_spec {
+        let resolved = self.resolve_type_spec(type_spec);
+        match &resolved {
             TypeSpecifier::Pointer(inner) => Some(self.type_spec_to_ir(inner)),
             TypeSpecifier::Array(inner, _) => Some(self.type_spec_to_ir(inner)),
             _ => None,
