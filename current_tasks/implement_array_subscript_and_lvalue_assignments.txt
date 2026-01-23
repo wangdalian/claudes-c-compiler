@@ -1,0 +1,16 @@
+Task: Implement array subscript (read/write) and lvalue assignments
+
+Currently:
+- Array subscript (a[i]) always returns 0 (placeholder)
+- Assignment only works for simple identifiers, not arr[i] = val or *p = val
+- Compound assign / pre/post inc/dec only work for identifiers
+- Short-circuit evaluation (&&, ||) not implemented (uses bitwise AND/OR)
+- Declarations with array sizes don't allocate correct amount
+
+Plan:
+1. Fix array declaration to allocate element_size * array_length bytes
+2. Implement GetElementPtr for array subscripts in lowering
+3. Implement lvalue-aware assignments for arr[i], *p
+4. Implement short-circuit evaluation for && and ||
+5. Handle compound assign and pre/post inc/dec for array elements and deref
+6. Update all three backends (x86, arm, riscv) as needed
