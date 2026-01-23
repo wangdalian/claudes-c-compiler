@@ -1,0 +1,18 @@
+Function Pointer Indirect Calls
+
+The parser now correctly parses function pointer declarations, but the lowering
+doesn't properly handle indirect function calls through function pointers.
+
+Currently, when a variable `f` holds a function pointer and we call `f(x, y)`,
+the lowering treats `f` as a direct function name rather than a pointer value
+that needs to be loaded and used as an indirect call target.
+
+Fix needed in ir/lowering/lowering.rs:
+- In the FunctionCall lowering, check if the callee is a local variable
+  (function pointer) rather than a direct function name
+- Generate an indirect call instruction
+- The x86 codegen needs `call *%rax` instead of `call funcname`
+
+This would fix tests using function pointers as parameters.
+
+Priority: MEDIUM (affects ~10-20 tests)
