@@ -222,6 +222,11 @@ fn get_inst_dest(inst: &Instruction) -> Option<Value> {
         Instruction::VaStart { .. } => None,
         Instruction::VaEnd { .. } => None,
         Instruction::VaCopy { .. } => None,
+        Instruction::AtomicRmw { dest, .. } => Some(*dest),
+        Instruction::AtomicCmpxchg { dest, .. } => Some(*dest),
+        Instruction::AtomicLoad { dest, .. } => Some(*dest),
+        Instruction::AtomicStore { .. } => None,
+        Instruction::Fence { .. } => None,
     }
 }
 

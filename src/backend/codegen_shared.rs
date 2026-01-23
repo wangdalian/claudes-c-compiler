@@ -155,6 +155,21 @@ pub trait ArchCodegen {
     /// Emit va_copy: copy src va_list to dest va_list.
     fn emit_va_copy(&mut self, dest_ptr: &Value, src_ptr: &Value);
 
+    /// Emit an atomic read-modify-write operation.
+    fn emit_atomic_rmw(&mut self, dest: &Value, op: AtomicRmwOp, ptr: &Operand, val: &Operand, ty: IrType, ordering: AtomicOrdering);
+
+    /// Emit an atomic compare-and-exchange operation.
+    fn emit_atomic_cmpxchg(&mut self, dest: &Value, ptr: &Operand, expected: &Operand, desired: &Operand, ty: IrType, success_ordering: AtomicOrdering, failure_ordering: AtomicOrdering, returns_bool: bool);
+
+    /// Emit an atomic load.
+    fn emit_atomic_load(&mut self, dest: &Value, ptr: &Operand, ty: IrType, ordering: AtomicOrdering);
+
+    /// Emit an atomic store.
+    fn emit_atomic_store(&mut self, ptr: &Operand, val: &Operand, ty: IrType, ordering: AtomicOrdering);
+
+    /// Emit a memory fence.
+    fn emit_fence(&mut self, ordering: AtomicOrdering);
+
     /// Emit a return terminator.
     fn emit_return(&mut self, val: Option<&Operand>, frame_size: i64);
 
@@ -280,6 +295,21 @@ fn generate_instruction(cg: &mut dyn ArchCodegen, inst: &Instruction) {
         }
         Instruction::VaCopy { dest_ptr, src_ptr } => {
             cg.emit_va_copy(dest_ptr, src_ptr);
+        }
+        Instruction::AtomicRmw { dest, op, ptr, val, ty, ordering } => {
+            cg.emit_atomic_rmw(dest, *op, ptr, val, *ty, *ordering);
+        }
+        Instruction::AtomicCmpxchg { dest, ptr, expected, desired, ty, success_ordering, failure_ordering, returns_bool } => {
+            cg.emit_atomic_cmpxchg(dest, ptr, expected, desired, *ty, *success_ordering, *failure_ordering, *returns_bool);
+        }
+        Instruction::AtomicLoad { dest, ptr, ty, ordering } => {
+            cg.emit_atomic_load(dest, ptr, *ty, *ordering);
+        }
+        Instruction::AtomicStore { ptr, val, ty, ordering } => {
+            cg.emit_atomic_store(ptr, val, *ty, *ordering);
+        }
+        Instruction::Fence { ordering } => {
+            cg.emit_fence(*ordering);
         }
     }
 }

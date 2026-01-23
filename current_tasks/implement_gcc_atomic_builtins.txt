@@ -1,9 +1,0 @@
-Implement GCC atomic builtins (__atomic_* and __sync_*) to fix 46+ test failures.
-
-Scope:
-- Add AtomicRmw and AtomicCmpxchg IR instructions
-- Add all __atomic_* and __sync_* builtins to the builtin system
-- Lower them to IR atomic instructions
-- Generate proper atomic codegen for x86 (lock prefix), ARM (ldxr/stxr or ldadd), RISC-V (amoadd etc)
-
-This will fix compiler_suite_0055 tests (46 tests) and compiler_suite_0108 atomic tests (5 tests).

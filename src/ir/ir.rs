@@ -132,6 +132,53 @@ pub enum Instruction {
 
     /// va_copy: copy one va_list to another.
     VaCopy { dest_ptr: Value, src_ptr: Value },
+
+    /// Atomic read-modify-write: %dest = atomicrmw op ptr, val
+    /// Performs: old = *ptr; *ptr = op(old, val); dest = old (fetch_and_*) or dest = op(old, val) (*_and_fetch)
+    AtomicRmw {
+        dest: Value,
+        op: AtomicRmwOp,
+        ptr: Operand,
+        val: Operand,
+        ty: IrType,
+        ordering: AtomicOrdering,
+    },
+
+    /// Atomic compare-exchange: %dest = cmpxchg ptr, expected, desired
+    /// Returns whether the exchange succeeded (as a boolean i8 for __atomic_compare_exchange_n)
+    /// or the old value (for __sync_val_compare_and_swap).
+    AtomicCmpxchg {
+        dest: Value,
+        ptr: Operand,
+        expected: Operand,
+        desired: Operand,
+        ty: IrType,
+        success_ordering: AtomicOrdering,
+        failure_ordering: AtomicOrdering,
+        /// If true, dest gets the success/failure boolean; if false, dest gets the old value.
+        returns_bool: bool,
+    },
+
+    /// Atomic load: %dest = atomic_load ptr
+    AtomicLoad {
+        dest: Value,
+        ptr: Operand,
+        ty: IrType,
+        ordering: AtomicOrdering,
+    },
+
+    /// Atomic store: atomic_store ptr, val
+    AtomicStore {
+        ptr: Operand,
+        val: Operand,
+        ty: IrType,
+        ordering: AtomicOrdering,
+    },
+
+    /// Memory fence
+    Fence {
+        ordering: AtomicOrdering,
+    },
 }
 
 /// Block terminator.
@@ -276,6 +323,37 @@ impl IrConst {
             _ => IrConst::I64(0),
         }
     }
+}
+
+/// Atomic read-modify-write operations.
+#[derive(Debug, Clone, Copy)]
+pub enum AtomicRmwOp {
+    /// Add: *ptr += val
+    Add,
+    /// Sub: *ptr -= val
+    Sub,
+    /// And: *ptr &= val
+    And,
+    /// Or: *ptr |= val
+    Or,
+    /// Xor: *ptr ^= val
+    Xor,
+    /// Nand: *ptr = ~(*ptr & val)
+    Nand,
+    /// Exchange: *ptr = val (returns old value)
+    Xchg,
+    /// Test and set: *ptr = 1 (returns old value)
+    TestAndSet,
+}
+
+/// Memory ordering for atomic operations.
+#[derive(Debug, Clone, Copy)]
+pub enum AtomicOrdering {
+    Relaxed,
+    Acquire,
+    Release,
+    AcqRel,
+    SeqCst,
 }
 
 /// Binary operations.

@@ -14,9 +14,9 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
 - Three backend targets with correct ABI handling
 
 ### Test Results (10% sample, ratio 10)
-- x86-64: ~69.6% passing (2081/2991)
-- AArch64: ~73.5% passing (2108/2869)
-- RISC-V 64: ~65.2% passing (1866/2861)
+- x86-64: ~70.9% passing (2120/2991)
+- AArch64: ~72.8% passing (2088/2869)
+- RISC-V 64: ~69.1% passing (1978/2861)
 
 ### What Works
 - `int main() { return N; }` for any integer N
@@ -54,6 +54,13 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
   - Constant expression evaluation for initializers
 
 ### Recent Additions
+- **GCC atomic builtins**: Full implementation of `__atomic_*` (C11-style) and `__sync_*` (legacy)
+  builtin families across all three backends. Includes `__atomic_fetch_add/sub/and/or/xor`,
+  `__atomic_add/sub/and/or/xor_fetch`, `__atomic_compare_exchange_n`, `__atomic_exchange_n`,
+  `__atomic_load_n`, `__atomic_store_n`, `__atomic_thread_fence`, `__sync_fetch_and_add/sub/and/or/xor`,
+  `__sync_val_compare_and_swap`, `__sync_bool_compare_and_swap`, `__sync_lock_test_and_set/release`,
+  and `__sync_synchronize`. x86 uses `lock` prefix instructions, ARM64 uses ldxr/stxr exclusive
+  access, RISC-V uses AMO instructions and lr/sc.
 - **Flat struct/array initialization fix**: Fixed struct initialization with flat (non-braced)
   initializer lists when the struct contains array fields. Now correctly consumes multiple
   items from the init list for array fields (e.g., `struct { int a[10]; int b; } x = {1,2,...,10,11}`).

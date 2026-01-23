@@ -860,6 +860,180 @@ impl ArchCodegen for RiscvCodegen {
     fn emit_unreachable(&mut self) {
         self.state.emit("    ebreak");
     }
+
+    fn emit_atomic_rmw(&mut self, dest: &Value, op: AtomicRmwOp, ptr: &Operand, val: &Operand, ty: IrType, ordering: AtomicOrdering) {
+        // Load ptr into t1, val into t2
+        self.operand_to_t0(ptr);
+        self.state.emit("    mv t1, t0"); // t1 = ptr
+        self.operand_to_t0(val);
+        self.state.emit("    mv t2, t0"); // t2 = val
+
+        let aq_rl = Self::amo_ordering(ordering);
+        let suffix = Self::amo_width_suffix(ty);
+
+        match op {
+            AtomicRmwOp::Add => {
+                self.state.emit(&format!("    amoadd.{}{} t0, t2, (t1)", suffix, aq_rl));
+            }
+            AtomicRmwOp::Sub => {
+                // No amosub; negate and use amoadd
+                self.state.emit("    neg t2, t2");
+                self.state.emit(&format!("    amoadd.{}{} t0, t2, (t1)", suffix, aq_rl));
+            }
+            AtomicRmwOp::And => {
+                self.state.emit(&format!("    amoand.{}{} t0, t2, (t1)", suffix, aq_rl));
+            }
+            AtomicRmwOp::Or => {
+                self.state.emit(&format!("    amoor.{}{} t0, t2, (t1)", suffix, aq_rl));
+            }
+            AtomicRmwOp::Xor => {
+                self.state.emit(&format!("    amoxor.{}{} t0, t2, (t1)", suffix, aq_rl));
+            }
+            AtomicRmwOp::Xchg => {
+                self.state.emit(&format!("    amoswap.{}{} t0, t2, (t1)", suffix, aq_rl));
+            }
+            AtomicRmwOp::Nand => {
+                // No amonand; use lr/sc loop
+                let label_id = self.state.next_label_id();
+                let loop_label = format!(".Latomic_{}", label_id);
+                self.state.emit(&format!("{}:", loop_label));
+                self.state.emit(&format!("    lr.{}{} t0, (t1)", suffix, aq_rl));
+                self.state.emit("    and t3, t0, t2");
+                self.state.emit("    not t3, t3");
+                self.state.emit(&format!("    sc.{}{} t4, t3, (t1)", suffix, aq_rl));
+                self.state.emit(&format!("    bnez t4, {}", loop_label));
+            }
+            AtomicRmwOp::TestAndSet => {
+                // test_and_set: set byte to 1, return old
+                self.state.emit("    li t2, 1");
+                self.state.emit(&format!("    amoswap.{}{} t0, t2, (t1)", suffix, aq_rl));
+            }
+        }
+        // Sign-extend result for sub-word types
+        Self::sign_extend_riscv(&mut self.state, ty);
+        self.store_t0_to(dest);
+    }
+
+    fn emit_atomic_cmpxchg(&mut self, dest: &Value, ptr: &Operand, expected: &Operand, desired: &Operand, ty: IrType, ordering: AtomicOrdering, _failure_ordering: AtomicOrdering, returns_bool: bool) {
+        // t1 = ptr, t2 = expected, t3 = desired
+        self.operand_to_t0(ptr);
+        self.state.emit("    mv t1, t0");
+        self.operand_to_t0(desired);
+        self.state.emit("    mv t3, t0");
+        self.operand_to_t0(expected);
+        self.state.emit("    mv t2, t0");
+
+        let aq_rl = Self::amo_ordering(ordering);
+        let suffix = Self::amo_width_suffix(ty);
+
+        let label_id = self.state.next_label_id();
+        let loop_label = format!(".Lcas_loop_{}", label_id);
+        let fail_label = format!(".Lcas_fail_{}", label_id);
+        let done_label = format!(".Lcas_done_{}", label_id);
+
+        self.state.emit(&format!("{}:", loop_label));
+        self.state.emit(&format!("    lr.{}{} t0, (t1)", suffix, aq_rl));
+        // Mask for sub-word comparison
+        Self::mask_for_cmp(&mut self.state, ty);
+        self.state.emit(&format!("    bne t0, t2, {}", fail_label));
+        self.state.emit(&format!("    sc.{}{} t4, t3, (t1)", suffix, aq_rl));
+        self.state.emit(&format!("    bnez t4, {}", loop_label));
+        if returns_bool {
+            self.state.emit("    li t0, 1");
+        }
+        self.state.emit(&format!("    j {}", done_label));
+        self.state.emit(&format!("{}:", fail_label));
+        if returns_bool {
+            self.state.emit("    li t0, 0");
+        }
+        // t0 has old value if !returns_bool
+        self.state.emit(&format!("{}:", done_label));
+        self.store_t0_to(dest);
+    }
+
+    fn emit_atomic_load(&mut self, dest: &Value, ptr: &Operand, ty: IrType, _ordering: AtomicOrdering) {
+        self.operand_to_t0(ptr);
+        // Use lr for atomic load (conservative but correct)
+        let suffix = Self::amo_width_suffix(ty);
+        self.state.emit(&format!("    lr.{}.aq t0, (t0)", suffix));
+        Self::sign_extend_riscv(&mut self.state, ty);
+        self.store_t0_to(dest);
+    }
+
+    fn emit_atomic_store(&mut self, ptr: &Operand, val: &Operand, ty: IrType, ordering: AtomicOrdering) {
+        self.operand_to_t0(val);
+        self.state.emit("    mv t1, t0"); // t1 = val
+        self.operand_to_t0(ptr);
+        // Use amoswap with zero dest for atomic store
+        let aq_rl = Self::amo_ordering(ordering);
+        let suffix = Self::amo_width_suffix(ty);
+        self.state.emit(&format!("    amoswap.{}{} zero, t1, (t0)", suffix, aq_rl));
+    }
+
+    fn emit_fence(&mut self, _ordering: AtomicOrdering) {
+        self.state.emit("    fence rw, rw");
+    }
+}
+
+impl RiscvCodegen {
+    /// Get the AMO ordering suffix.
+    fn amo_ordering(ordering: AtomicOrdering) -> &'static str {
+        match ordering {
+            AtomicOrdering::Relaxed => "",
+            AtomicOrdering::Acquire => ".aq",
+            AtomicOrdering::Release => ".rl",
+            AtomicOrdering::AcqRel => ".aqrl",
+            AtomicOrdering::SeqCst => ".aqrl",
+        }
+    }
+
+    /// Get the AMO width suffix.
+    fn amo_width_suffix(ty: IrType) -> &'static str {
+        match ty {
+            IrType::I32 | IrType::U32 | IrType::I8 | IrType::U8 | IrType::I16 | IrType::U16 => "w",
+            _ => "d",
+        }
+    }
+
+    /// Sign-extend result for sub-word types after atomic ops.
+    fn sign_extend_riscv(state: &mut CodegenState, ty: IrType) {
+        match ty {
+            IrType::I8 => {
+                state.emit("    slli t0, t0, 56");
+                state.emit("    srai t0, t0, 56");
+            }
+            IrType::U8 => {
+                state.emit("    andi t0, t0, 0xff");
+            }
+            IrType::I16 => {
+                state.emit("    slli t0, t0, 48");
+                state.emit("    srai t0, t0, 48");
+            }
+            IrType::U16 => {
+                state.emit("    slli t0, t0, 48");
+                state.emit("    srli t0, t0, 48");
+            }
+            IrType::I32 => {
+                state.emit("    sext.w t0, t0");
+            }
+            _ => {}
+        }
+    }
+
+    /// Mask values for sub-word CAS comparison.
+    fn mask_for_cmp(state: &mut CodegenState, ty: IrType) {
+        match ty {
+            IrType::I8 | IrType::U8 => {
+                state.emit("    andi t0, t0, 0xff");
+            }
+            IrType::I16 | IrType::U16 => {
+                // Mask to 16 bits
+                state.emit("    slli t0, t0, 48");
+                state.emit("    srli t0, t0, 48");
+            }
+            _ => {}
+        }
+    }
 }
 
 impl Default for RiscvCodegen {

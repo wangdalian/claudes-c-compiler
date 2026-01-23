@@ -145,6 +145,23 @@ fn collect_instruction_uses(inst: &Instruction, used: &mut HashSet<u32>) {
             used.insert(dest_ptr.0);
             used.insert(src_ptr.0);
         }
+        Instruction::AtomicRmw { ptr, val, .. } => {
+            collect_operand_uses(ptr, used);
+            collect_operand_uses(val, used);
+        }
+        Instruction::AtomicCmpxchg { ptr, expected, desired, .. } => {
+            collect_operand_uses(ptr, used);
+            collect_operand_uses(expected, used);
+            collect_operand_uses(desired, used);
+        }
+        Instruction::AtomicLoad { ptr, .. } => {
+            collect_operand_uses(ptr, used);
+        }
+        Instruction::AtomicStore { ptr, val, .. } => {
+            collect_operand_uses(ptr, used);
+            collect_operand_uses(val, used);
+        }
+        Instruction::Fence { .. } => {}
     }
 }
 
@@ -180,7 +197,12 @@ fn has_side_effects(inst: &Instruction) -> bool {
         Instruction::VaStart { .. } |
         Instruction::VaEnd { .. } |
         Instruction::VaCopy { .. } |
-        Instruction::VaArg { .. }
+        Instruction::VaArg { .. } |
+        Instruction::AtomicRmw { .. } |
+        Instruction::AtomicCmpxchg { .. } |
+        Instruction::AtomicLoad { .. } |
+        Instruction::AtomicStore { .. } |
+        Instruction::Fence { .. }
     )
 }
 
@@ -204,6 +226,11 @@ fn get_dest(inst: &Instruction) -> Option<Value> {
         Instruction::VaStart { .. } => None,
         Instruction::VaEnd { .. } => None,
         Instruction::VaCopy { .. } => None,
+        Instruction::AtomicRmw { dest, .. } => Some(*dest),
+        Instruction::AtomicCmpxchg { dest, .. } => Some(*dest),
+        Instruction::AtomicLoad { dest, .. } => Some(*dest),
+        Instruction::AtomicStore { .. } => None,
+        Instruction::Fence { .. } => None,
     }
 }
 

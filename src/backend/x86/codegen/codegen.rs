@@ -318,6 +318,58 @@ impl X86Codegen {
             }
         }
     }
+
+    /// Get the type suffix for lock-prefixed instructions (b, w, l, q).
+    fn type_suffix(ty: IrType) -> &'static str {
+        match ty {
+            IrType::I8 | IrType::U8 => "b",
+            IrType::I16 | IrType::U16 => "w",
+            IrType::I32 | IrType::U32 => "l",
+            _ => "q",
+        }
+    }
+
+    /// Emit a cmpxchg-based loop for atomic sub/and/or/xor/nand.
+    /// Expects: rax = operand val, rcx = ptr address.
+    /// After: rax = old value.
+    fn emit_x86_atomic_op_loop(&mut self, ty: IrType, op: &str) {
+        // Save val to r8
+        self.state.emit("    movq %rax, %r8"); // r8 = val
+        // Load old value
+        let load_instr = Self::mov_load_for_type(ty);
+        let load_dest = Self::load_dest_reg(ty);
+        self.state.emit(&format!("    {} (%rcx), {}", load_instr, load_dest));
+        // Loop: rax = old, compute new = op(old, val), try cmpxchg
+        let label_id = self.state.next_label_id();
+        let loop_label = format!(".Latomic_loop_{}", label_id);
+        self.state.emit(&format!("{}:", loop_label));
+        // rdx = rax (old)
+        self.state.emit("    movq %rax, %rdx");
+        // Apply operation: rdx = op(rdx, r8)
+        let size_suffix = Self::type_suffix(ty);
+        let rdx_reg = Self::reg_for_type("rdx", ty);
+        let r8_reg = match ty {
+            IrType::I8 | IrType::U8 => "r8b",
+            IrType::I16 | IrType::U16 => "r8w",
+            IrType::I32 | IrType::U32 => "r8d",
+            _ => "r8",
+        };
+        match op {
+            "sub" => self.state.emit(&format!("    sub{} %{}, %{}", size_suffix, r8_reg, rdx_reg)),
+            "and" => self.state.emit(&format!("    and{} %{}, %{}", size_suffix, r8_reg, rdx_reg)),
+            "or"  => self.state.emit(&format!("    or{} %{}, %{}", size_suffix, r8_reg, rdx_reg)),
+            "xor" => self.state.emit(&format!("    xor{} %{}, %{}", size_suffix, r8_reg, rdx_reg)),
+            "nand" => {
+                self.state.emit(&format!("    and{} %{}, %{}", size_suffix, r8_reg, rdx_reg));
+                self.state.emit(&format!("    not{} %{}", size_suffix, rdx_reg));
+            }
+            _ => {}
+        }
+        // Try cmpxchg: if [rcx] == rax (old), set [rcx] = rdx (new), else rax = [rcx]
+        self.state.emit(&format!("    lock cmpxchg{} %{}, (%rcx)", size_suffix, rdx_reg));
+        self.state.emit(&format!("    jne {}", loop_label));
+        // rax = old value on success
+    }
 }
 
 const X86_ARG_REGS: [&str; 6] = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
@@ -1011,6 +1063,102 @@ impl ArchCodegen for X86Codegen {
 
     fn emit_unreachable(&mut self) {
         self.state.emit("    ud2");
+    }
+
+    fn emit_atomic_rmw(&mut self, dest: &Value, op: AtomicRmwOp, ptr: &Operand, val: &Operand, ty: IrType, _ordering: AtomicOrdering) {
+        // Load ptr into rcx, val into rax/rdx
+        self.operand_to_rax(ptr);
+        self.state.emit("    movq %rax, %rcx"); // rcx = ptr
+        self.operand_to_rax(val);
+        // rax = val, rcx = ptr
+        let size_suffix = Self::type_suffix(ty);
+        let val_reg = Self::reg_for_type("rax", ty);
+        match op {
+            AtomicRmwOp::Add => {
+                // lock xadd stores old value in source reg, adds to dest
+                self.state.emit(&format!("    lock xadd{} %{}, (%rcx)", size_suffix, val_reg));
+                // After xadd, rax has the OLD value. Result = old + val.
+                // But we want the NEW value for __atomic_add_fetch. The caller handles this.
+                // Actually for fetch_and_add we want old value, for add_and_fetch we want new.
+                // The IR op is always "return old value" (AtomicRmwOp::Add means fetch_add).
+                // The lowering will handle computing new = old + val if needed.
+            }
+            AtomicRmwOp::Xchg => {
+                // xchg is implicitly locked
+                self.state.emit(&format!("    xchg{} %{}, (%rcx)", size_suffix, val_reg));
+                // rax now has old value
+            }
+            AtomicRmwOp::TestAndSet => {
+                // test_and_set sets byte to 1, returns old
+                self.state.emit("    movb $1, %al");
+                self.state.emit("    xchgb %al, (%rcx)");
+            }
+            AtomicRmwOp::Sub => {
+                // No lock xsub exists; use lock cmpxchg loop
+                self.emit_x86_atomic_op_loop(ty, "sub");
+            }
+            AtomicRmwOp::And => {
+                self.emit_x86_atomic_op_loop(ty, "and");
+            }
+            AtomicRmwOp::Or => {
+                self.emit_x86_atomic_op_loop(ty, "or");
+            }
+            AtomicRmwOp::Xor => {
+                self.emit_x86_atomic_op_loop(ty, "xor");
+            }
+            AtomicRmwOp::Nand => {
+                self.emit_x86_atomic_op_loop(ty, "nand");
+            }
+        }
+        self.store_rax_to(dest);
+    }
+
+    fn emit_atomic_cmpxchg(&mut self, dest: &Value, ptr: &Operand, expected: &Operand, desired: &Operand, ty: IrType, _success_ordering: AtomicOrdering, _failure_ordering: AtomicOrdering, returns_bool: bool) {
+        // For cmpxchg: rax = expected, rdx = desired, rcx = ptr
+        // lock cmpxchg compares [ptr] with rax, if equal sets [ptr]=desired and ZF=1
+        // Otherwise loads [ptr] into rax and ZF=0
+        self.operand_to_rax(ptr);
+        self.state.emit("    movq %rax, %rcx"); // rcx = ptr
+        self.operand_to_rax(desired);
+        self.state.emit("    movq %rax, %rdx"); // rdx = desired
+        self.operand_to_rax(expected);
+        // Now: rax = expected, rdx = desired, rcx = ptr
+        let size_suffix = Self::type_suffix(ty);
+        let desired_reg = Self::reg_for_type("rdx", ty);
+        self.state.emit(&format!("    lock cmpxchg{} %{}, (%rcx)", size_suffix, desired_reg));
+        if returns_bool {
+            // Return 1 if exchange succeeded (ZF set), 0 otherwise
+            self.state.emit("    sete %al");
+            self.state.emit("    movzbl %al, %eax");
+        }
+        // If !returns_bool, rax contains the old value (either expected if success, or actual)
+        self.store_rax_to(dest);
+    }
+
+    fn emit_atomic_load(&mut self, dest: &Value, ptr: &Operand, ty: IrType, _ordering: AtomicOrdering) {
+        // On x86, aligned loads are naturally atomic
+        self.operand_to_rax(ptr);
+        let load_instr = Self::mov_load_for_type(ty);
+        let dest_reg = Self::load_dest_reg(ty);
+        self.state.emit(&format!("    {} (%rax), {}", load_instr, dest_reg));
+        self.store_rax_to(dest);
+    }
+
+    fn emit_atomic_store(&mut self, ptr: &Operand, val: &Operand, ty: IrType, _ordering: AtomicOrdering) {
+        // On x86, aligned stores are naturally atomic; use xchg for seq_cst
+        self.operand_to_rax(val);
+        self.state.emit("    movq %rax, %rdx"); // rdx = val
+        self.operand_to_rax(ptr);
+        // rax = ptr, rdx = val
+        let store_reg = Self::reg_for_type("rdx", ty);
+        let store_instr = Self::mov_store_for_type(ty);
+        self.state.emit(&format!("    {} %{}, (%rax)", store_instr, store_reg));
+        // Full fence for seq_cst
+        self.state.emit("    mfence");
+    }
+
+    fn emit_fence(&mut self, _ordering: AtomicOrdering) {
+        self.state.emit("    mfence");
     }
 }
 

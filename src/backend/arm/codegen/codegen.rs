@@ -1118,6 +1118,174 @@ impl ArchCodegen for ArmCodegen {
     fn emit_unreachable(&mut self) {
         self.state.emit("    brk #0");
     }
+
+    fn emit_atomic_rmw(&mut self, dest: &Value, op: AtomicRmwOp, ptr: &Operand, val: &Operand, ty: IrType, _ordering: AtomicOrdering) {
+        // Load ptr into x1, val into x2
+        self.operand_to_x0(ptr);
+        self.state.emit("    mov x1, x0"); // x1 = ptr
+        self.operand_to_x0(val);
+        self.state.emit("    mov x2, x0"); // x2 = val
+
+        let (ldxr, stxr, reg_prefix) = Self::exclusive_instrs(ty);
+        let val_reg = format!("{}2", reg_prefix);
+        let old_reg = format!("{}0", reg_prefix);
+        let tmp_reg = format!("{}3", reg_prefix);
+
+        match op {
+            AtomicRmwOp::Xchg => {
+                // Simple exchange: old = *ptr; *ptr = val
+                let label_id = self.state.next_label_id();
+                let loop_label = format!(".Latomic_{}", label_id);
+                self.state.emit(&format!("{}:", loop_label));
+                self.state.emit(&format!("    {} {}, [x1]", ldxr, old_reg));
+                self.state.emit(&format!("    {} w4, {}, [x1]", stxr, val_reg));
+                self.state.emit(&format!("    cbnz w4, {}", loop_label));
+            }
+            AtomicRmwOp::TestAndSet => {
+                let label_id = self.state.next_label_id();
+                let loop_label = format!(".Latomic_{}", label_id);
+                self.state.emit(&format!("{}:", loop_label));
+                self.state.emit(&format!("    {} {}, [x1]", ldxr, old_reg));
+                self.state.emit("    mov w3, #1");
+                self.state.emit(&format!("    {} w4, w3, [x1]", stxr));
+                self.state.emit(&format!("    cbnz w4, {}", loop_label));
+            }
+            _ => {
+                // Generic RMW: old = *ptr; new = op(old, val); *ptr = new
+                let label_id = self.state.next_label_id();
+                let loop_label = format!(".Latomic_{}", label_id);
+                self.state.emit(&format!("{}:", loop_label));
+                self.state.emit(&format!("    {} {}, [x1]", ldxr, old_reg));
+                // Compute x3 = op(x0, x2)
+                Self::emit_atomic_op_arm(&mut self.state, op, &tmp_reg, &old_reg, &val_reg);
+                self.state.emit(&format!("    {} w4, {}, [x1]", stxr, tmp_reg));
+                self.state.emit(&format!("    cbnz w4, {}", loop_label));
+            }
+        }
+        // Result is in x0 (old value)
+        self.store_x0_to(dest);
+    }
+
+    fn emit_atomic_cmpxchg(&mut self, dest: &Value, ptr: &Operand, expected: &Operand, desired: &Operand, ty: IrType, _success_ordering: AtomicOrdering, _failure_ordering: AtomicOrdering, returns_bool: bool) {
+        // x1 = ptr, x2 = expected, x3 = desired
+        self.operand_to_x0(ptr);
+        self.state.emit("    mov x1, x0");
+        self.operand_to_x0(desired);
+        self.state.emit("    mov x3, x0");
+        self.operand_to_x0(expected);
+        self.state.emit("    mov x2, x0");
+        // x2 = expected
+
+        let (ldxr, stxr, reg_prefix) = Self::exclusive_instrs(ty);
+        let old_reg = format!("{}0", reg_prefix);
+        let desired_reg = format!("{}3", reg_prefix);
+        let expected_reg = format!("{}2", reg_prefix);
+
+        let label_id = self.state.next_label_id();
+        let loop_label = format!(".Lcas_loop_{}", label_id);
+        let fail_label = format!(".Lcas_fail_{}", label_id);
+        let done_label = format!(".Lcas_done_{}", label_id);
+
+        self.state.emit(&format!("{}:", loop_label));
+        self.state.emit(&format!("    {} {}, [x1]", ldxr, old_reg));
+        self.state.emit(&format!("    cmp {}, {}", old_reg, expected_reg));
+        self.state.emit(&format!("    b.ne {}", fail_label));
+        self.state.emit(&format!("    {} w4, {}, [x1]", stxr, desired_reg));
+        self.state.emit(&format!("    cbnz w4, {}", loop_label));
+        if returns_bool {
+            self.state.emit("    mov x0, #1");
+        }
+        // If !returns_bool, x0 already has old value (which equals expected on success)
+        self.state.emit(&format!("    b {}", done_label));
+        self.state.emit(&format!("{}:", fail_label));
+        if returns_bool {
+            self.state.emit("    mov x0, #0");
+            // Clear exclusive monitor
+            self.state.emit("    clrex");
+        } else {
+            // x0 has the old value (not equal to expected)
+            self.state.emit("    clrex");
+        }
+        self.state.emit(&format!("{}:", done_label));
+        self.store_x0_to(dest);
+    }
+
+    fn emit_atomic_load(&mut self, dest: &Value, ptr: &Operand, ty: IrType, _ordering: AtomicOrdering) {
+        self.operand_to_x0(ptr);
+        // Use ldar for acquire semantics (safe for all orderings)
+        let instr = match ty {
+            IrType::I8 | IrType::U8 => "ldarb",
+            IrType::I16 | IrType::U16 => "ldarh",
+            IrType::I32 | IrType::U32 => "ldar",
+            _ => "ldar",
+        };
+        let dest_reg = match ty {
+            IrType::I8 | IrType::U8 | IrType::I16 | IrType::U16 | IrType::I32 | IrType::U32 => "w0",
+            _ => "x0",
+        };
+        self.state.emit(&format!("    {} {}, [x0]", instr, dest_reg));
+        // Sign-extend if needed
+        match ty {
+            IrType::I8 => self.state.emit("    sxtb x0, w0"),
+            IrType::I16 => self.state.emit("    sxth x0, w0"),
+            IrType::I32 => self.state.emit("    sxtw x0, w0"),
+            _ => {}
+        }
+        self.store_x0_to(dest);
+    }
+
+    fn emit_atomic_store(&mut self, ptr: &Operand, val: &Operand, ty: IrType, _ordering: AtomicOrdering) {
+        self.operand_to_x0(val);
+        self.state.emit("    mov x1, x0"); // x1 = val
+        self.operand_to_x0(ptr);
+        // Use stlr for release semantics
+        let instr = match ty {
+            IrType::I8 | IrType::U8 => "stlrb",
+            IrType::I16 | IrType::U16 => "stlrh",
+            IrType::I32 | IrType::U32 => "stlr",
+            _ => "stlr",
+        };
+        let val_reg = match ty {
+            IrType::I8 | IrType::U8 | IrType::I16 | IrType::U16 | IrType::I32 | IrType::U32 => "w1",
+            _ => "x1",
+        };
+        self.state.emit(&format!("    {} {}, [x0]", instr, val_reg));
+    }
+
+    fn emit_fence(&mut self, _ordering: AtomicOrdering) {
+        self.state.emit("    dmb ish");
+    }
+}
+
+impl ArmCodegen {
+    /// Get the exclusive load/store instructions and register prefix for a type.
+    fn exclusive_instrs(ty: IrType) -> (&'static str, &'static str, &'static str) {
+        match ty {
+            IrType::I8 | IrType::U8 => ("ldxrb", "stxrb", "w"),
+            IrType::I16 | IrType::U16 => ("ldxrh", "stxrh", "w"),
+            IrType::I32 | IrType::U32 => ("ldxr", "stxr", "w"),
+            _ => ("ldxr", "stxr", "x"),
+        }
+    }
+
+    /// Emit the arithmetic operation for an atomic RMW.
+    fn emit_atomic_op_arm(state: &mut CodegenState, op: AtomicRmwOp, dest_reg: &str, old_reg: &str, val_reg: &str) {
+        match op {
+            AtomicRmwOp::Add => state.emit(&format!("    add {}, {}, {}", dest_reg, old_reg, val_reg)),
+            AtomicRmwOp::Sub => state.emit(&format!("    sub {}, {}, {}", dest_reg, old_reg, val_reg)),
+            AtomicRmwOp::And => state.emit(&format!("    and {}, {}, {}", dest_reg, old_reg, val_reg)),
+            AtomicRmwOp::Or  => state.emit(&format!("    orr {}, {}, {}", dest_reg, old_reg, val_reg)),
+            AtomicRmwOp::Xor => state.emit(&format!("    eor {}, {}, {}", dest_reg, old_reg, val_reg)),
+            AtomicRmwOp::Nand => {
+                state.emit(&format!("    and {}, {}, {}", dest_reg, old_reg, val_reg));
+                state.emit(&format!("    mvn {}, {}", dest_reg, dest_reg));
+            }
+            AtomicRmwOp::Xchg | AtomicRmwOp::TestAndSet => {
+                // Handled separately in emit_atomic_rmw
+                state.emit(&format!("    mov {}, {}", dest_reg, val_reg));
+            }
+        }
+    }
 }
 
 impl Default for ArmCodegen {
