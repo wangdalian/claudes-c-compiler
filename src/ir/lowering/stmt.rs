@@ -950,10 +950,29 @@ impl Lowerer {
                             self.emit_struct_init(sub_items, base_alloca, &sub_layout, field_offset);
                             item_idx += 1;
                         }
-                        Initializer::Expr(_) => {
-                            // Flat init: { 10, 20, 30 } - consume items for inner struct fields
-                            let consumed = self.emit_struct_init(&items[item_idx..], base_alloca, &sub_layout, field_offset);
-                            item_idx += consumed;
+                        Initializer::Expr(expr) => {
+                            if self.expr_is_struct_value(expr) {
+                                // Struct copy in init list: { 2, b } where b is a struct variable
+                                // Emit memcpy from source struct to the target field offset
+                                let src_addr = self.get_struct_base_addr(expr);
+                                let dest_addr = self.fresh_value();
+                                self.emit(Instruction::GetElementPtr {
+                                    dest: dest_addr,
+                                    base: base_alloca,
+                                    offset: Operand::Const(IrConst::I64(field_offset as i64)),
+                                    ty: IrType::Ptr,
+                                });
+                                self.emit(Instruction::Memcpy {
+                                    dest: dest_addr,
+                                    src: src_addr,
+                                    size: sub_layout.size,
+                                });
+                                item_idx += 1;
+                            } else {
+                                // Flat init: { 10, 20, 30 } - consume items for inner struct fields
+                                let consumed = self.emit_struct_init(&items[item_idx..], base_alloca, &sub_layout, field_offset);
+                                item_idx += consumed;
+                            }
                         }
                     }
                 }
@@ -967,9 +986,27 @@ impl Lowerer {
                             }
                             item_idx += 1;
                         }
-                        Initializer::Expr(_) => {
-                            let consumed = self.emit_struct_init(&items[item_idx..], base_alloca, &sub_layout, field_offset);
-                            item_idx += consumed;
+                        Initializer::Expr(expr) => {
+                            if self.expr_is_struct_value(expr) {
+                                // Union copy in init list
+                                let src_addr = self.get_struct_base_addr(expr);
+                                let dest_addr = self.fresh_value();
+                                self.emit(Instruction::GetElementPtr {
+                                    dest: dest_addr,
+                                    base: base_alloca,
+                                    offset: Operand::Const(IrConst::I64(field_offset as i64)),
+                                    ty: IrType::Ptr,
+                                });
+                                self.emit(Instruction::Memcpy {
+                                    dest: dest_addr,
+                                    src: src_addr,
+                                    size: sub_layout.size,
+                                });
+                                item_idx += 1;
+                            } else {
+                                let consumed = self.emit_struct_init(&items[item_idx..], base_alloca, &sub_layout, field_offset);
+                                item_idx += consumed;
+                            }
                         }
                     }
                 }
