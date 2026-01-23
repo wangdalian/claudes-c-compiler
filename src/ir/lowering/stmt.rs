@@ -1172,6 +1172,50 @@ impl Lowerer {
                     self.emit_struct_init(&[sub_item], base_alloca, &sub_layout, field_offset);
                     item_idx += 1;
                 }
+                CType::Array(elem_ty, Some(arr_size)) if has_nested_designator => {
+                    // .field[idx] = val: resolve index and store element
+                    let elem_size = elem_ty.size();
+                    let elem_ir_ty = IrType::from_ctype(elem_ty);
+                    // Find the index designator in the remaining designators
+                    let idx = item.designators[1..].iter().find_map(|d| {
+                        if let Designator::Index(ref idx_expr) = d {
+                            self.eval_const_expr(idx_expr).and_then(|c| c.to_usize())
+                        } else {
+                            None
+                        }
+                    }).unwrap_or(0);
+                    if idx < *arr_size {
+                        let elem_offset = field_offset + idx * elem_size;
+                        // Check if there are further nested designators (e.g., .a[2].b = val)
+                        let remaining_field_desigs: Vec<_> = item.designators[1..].iter()
+                            .filter(|d| matches!(d, Designator::Field(_)))
+                            .cloned()
+                            .collect();
+                        if !remaining_field_desigs.is_empty() {
+                            if let CType::Struct(ref st) = elem_ty.as_ref() {
+                                let sub_layout = StructLayout::for_struct(&st.fields);
+                                let sub_item = InitializerItem {
+                                    designators: remaining_field_desigs,
+                                    init: item.init.clone(),
+                                };
+                                self.emit_struct_init(&[sub_item], base_alloca, &sub_layout, elem_offset);
+                            }
+                        } else if let Initializer::Expr(e) = &item.init {
+                            let expr_ty = self.get_expr_type(e);
+                            let val = self.lower_expr(e);
+                            let val = self.emit_implicit_cast(val, expr_ty, elem_ir_ty);
+                            let addr = self.fresh_value();
+                            self.emit(Instruction::GetElementPtr {
+                                dest: addr,
+                                base: base_alloca,
+                                offset: Operand::Const(IrConst::I64(elem_offset as i64)),
+                                ty: elem_ir_ty,
+                            });
+                            self.emit(Instruction::Store { val, ptr: addr, ty: elem_ir_ty });
+                        }
+                    }
+                    item_idx += 1;
+                }
                 CType::Struct(st) => {
                     // Nested struct field
                     let sub_layout = StructLayout::for_struct(&st.fields);

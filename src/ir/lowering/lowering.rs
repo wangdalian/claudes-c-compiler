@@ -1321,6 +1321,39 @@ impl Lowerer {
                     self.fill_struct_global_bytes(&[sub_item], &sub_layout, bytes, field_offset);
                     item_idx += 1;
                 }
+                CType::Array(elem_ty, Some(arr_size)) if has_nested_designator => {
+                    // .field[idx] = val: resolve index and write to byte buffer
+                    let elem_size = elem_ty.size();
+                    let elem_ir_ty = IrType::from_ctype(elem_ty);
+                    let idx = item.designators[1..].iter().find_map(|d| {
+                        if let Designator::Index(ref idx_expr) = d {
+                            self.eval_const_expr(idx_expr).and_then(|c| c.to_usize())
+                        } else {
+                            None
+                        }
+                    }).unwrap_or(0);
+                    if idx < *arr_size {
+                        let elem_offset = field_offset + idx * elem_size;
+                        // Check if there are further nested field designators (e.g., .a[2].b = val)
+                        let remaining_field_desigs: Vec<_> = item.designators[1..].iter()
+                            .filter(|d| matches!(d, Designator::Field(_)))
+                            .cloned()
+                            .collect();
+                        if !remaining_field_desigs.is_empty() {
+                            if let Some(sub_layout) = self.get_struct_layout_for_ctype(elem_ty) {
+                                let sub_item = InitializerItem {
+                                    designators: remaining_field_desigs,
+                                    init: item.init.clone(),
+                                };
+                                self.fill_struct_global_bytes(&[sub_item], &sub_layout, bytes, elem_offset);
+                            }
+                        } else if let Initializer::Expr(ref expr) = item.init {
+                            let val = self.eval_const_expr(expr).unwrap_or(IrConst::I64(0));
+                            self.write_const_to_bytes(bytes, elem_offset, &val, elem_ir_ty);
+                        }
+                    }
+                    item_idx += 1;
+                }
                 CType::Struct(st) => {
                     let sub_layout = StructLayout::for_struct(&st.fields);
                     match &item.init {
