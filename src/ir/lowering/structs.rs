@@ -117,6 +117,12 @@ impl Lowerer {
     pub(super) fn get_struct_base_addr(&mut self, expr: &Expr) -> Value {
         match expr {
             Expr::Identifier(name, _) => {
+                // Static local variables: resolve via mangled global name
+                if let Some(mangled) = self.static_local_names.get(name).cloned() {
+                    let addr = self.fresh_value();
+                    self.emit(Instruction::GlobalAddr { dest: addr, name: mangled });
+                    return addr;
+                }
                 if let Some(info) = self.locals.get(name).cloned() {
                     if info.is_struct {
                         // The alloca is the struct base address
@@ -304,6 +310,12 @@ impl Lowerer {
     fn get_pointed_struct_layout(&self, expr: &Expr) -> Option<StructLayout> {
         match expr {
             Expr::Identifier(name, _) => {
+                // Check static locals first
+                if let Some(mangled) = self.static_local_names.get(name) {
+                    if let Some(ginfo) = self.globals.get(mangled) {
+                        return ginfo.struct_layout.clone();
+                    }
+                }
                 // Check if this variable has struct layout info (pointer to struct)
                 if let Some(info) = self.locals.get(name) {
                     return info.struct_layout.clone();
@@ -343,6 +355,12 @@ impl Lowerer {
     fn get_layout_for_expr(&self, expr: &Expr) -> Option<StructLayout> {
         match expr {
             Expr::Identifier(name, _) => {
+                // Check static locals first (resolved via mangled name)
+                if let Some(mangled) = self.static_local_names.get(name) {
+                    if let Some(ginfo) = self.globals.get(mangled) {
+                        return ginfo.struct_layout.clone();
+                    }
+                }
                 if let Some(info) = self.locals.get(name) {
                     return info.struct_layout.clone();
                 }
@@ -409,6 +427,17 @@ impl Lowerer {
                     }
                 }
                 None
+            }
+            Expr::Assign(lhs, _, _) | Expr::CompoundAssign(_, lhs, _, _) => {
+                // Assignment returns the type of the LHS
+                self.get_layout_for_expr(lhs)
+            }
+            Expr::Conditional(_, then_expr, _, _) => {
+                // Ternary returns the type of either branch
+                self.get_layout_for_expr(then_expr)
+            }
+            Expr::Comma(_, last, _) => {
+                self.get_layout_for_expr(last)
             }
             _ => None,
         }

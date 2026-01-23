@@ -245,7 +245,9 @@ impl Lowerer {
                 });
 
                 // Also add an alias so the local name resolves to the global
-                // We emit a GlobalAddr to get the address, then treat it like an alloca
+                // We emit a GlobalAddr to get the address, then treat it like an alloca.
+                // Note: We must still add to locals for type info even though we access
+                // the global via static_local_names in identifier resolution.
                 let addr = self.fresh_value();
                 self.emit(Instruction::GlobalAddr {
                     dest: addr,
@@ -866,6 +868,7 @@ impl Lowerer {
             Stmt::Switch(expr, body, _span) => {
                 // Evaluate switch expression and store it in an alloca so we can
                 // reload it in the dispatch chain (which is emitted after the body).
+                let switch_expr_ty = self.get_expr_type(expr);
                 let val = self.lower_expr(expr);
                 let switch_alloca = self.fresh_value();
                 self.emit(Instruction::Alloca {
@@ -889,6 +892,7 @@ impl Lowerer {
                 self.switch_cases.push(Vec::new());
                 self.switch_default.push(None);
                 self.switch_val_allocas.push(switch_alloca);
+                self.switch_expr_types.push(switch_expr_ty);
 
                 // Jump to dispatch (which will be emitted after the body)
                 self.terminate(Terminator::Branch(dispatch_label.clone()));
@@ -906,6 +910,7 @@ impl Lowerer {
                 let cases = self.switch_cases.pop().unwrap_or_default();
                 let default_label = self.switch_default.pop().flatten();
                 self.switch_val_allocas.pop();
+                self.switch_expr_types.pop();
 
                 // Now emit the dispatch chain: a series of comparison blocks
                 // that check each case value and branch accordingly.
@@ -960,9 +965,24 @@ impl Lowerer {
             }
             Stmt::Case(expr, stmt, _span) => {
                 // Evaluate the case constant expression
-                let case_val = self.eval_const_expr(expr)
+                let mut case_val = self.eval_const_expr(expr)
                     .and_then(|c| self.const_to_i64(&c))
                     .unwrap_or(0);
+
+                // Truncate case value to the switch controlling expression type.
+                // C requires case constants to be converted to the promoted type
+                // of the controlling expression (e.g., case 2^33 in switch(int) -> 0).
+                if let Some(switch_ty) = self.switch_expr_types.last() {
+                    case_val = match switch_ty {
+                        IrType::I8 => case_val as i8 as i64,
+                        IrType::U8 => case_val as u8 as i64,
+                        IrType::I16 => case_val as i16 as i64,
+                        IrType::U16 => case_val as u16 as i64,
+                        IrType::I32 => case_val as i32 as i64,
+                        IrType::U32 => case_val as u32 as i64,
+                        _ => case_val,
+                    };
+                }
 
                 // Create a label for this case
                 let label = self.fresh_label("case");

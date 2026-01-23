@@ -86,6 +86,22 @@ impl Lowerer {
             return Operand::Const(IrConst::I64(val));
         }
 
+        // Static local variables: resolve through static_local_names to their
+        // mangled global name. Emit GlobalAddr at point of use so it works
+        // regardless of control flow (goto can skip the declaration).
+        if let Some(mangled) = self.static_local_names.get(name).cloned() {
+            if let Some(ginfo) = self.globals.get(&mangled).cloned() {
+                let addr = self.fresh_value();
+                self.emit(Instruction::GlobalAddr { dest: addr, name: mangled });
+                if ginfo.is_array || ginfo.is_struct {
+                    return Operand::Value(addr);
+                }
+                let dest = self.fresh_value();
+                self.emit(Instruction::Load { dest, ptr: addr, ty: ginfo.ty });
+                return Operand::Value(dest);
+            }
+        }
+
         // Local variables: arrays/structs decay to address, scalars are loaded
         if let Some(info) = self.locals.get(name).cloned() {
             if info.is_array || info.is_struct {
@@ -913,6 +929,7 @@ impl Lowerer {
         self.emit(Instruction::Load { dest: result, ptr: result_alloca, ty: IrType::I64 });
         Operand::Value(result)
     }
+
 
     // -----------------------------------------------------------------------
     // Cast expressions

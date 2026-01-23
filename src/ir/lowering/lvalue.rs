@@ -9,6 +9,12 @@ impl Lowerer {
     pub(super) fn lower_lvalue(&mut self, expr: &Expr) -> Option<LValue> {
         match expr {
             Expr::Identifier(name, _) => {
+                // Static local variables: resolve through mangled name
+                if let Some(mangled) = self.static_local_names.get(name).cloned() {
+                    let addr = self.fresh_value();
+                    self.emit(Instruction::GlobalAddr { dest: addr, name: mangled });
+                    return Some(LValue::Address(addr));
+                }
                 if let Some(info) = self.locals.get(name).cloned() {
                     Some(LValue::Variable(info.alloca))
                 } else if self.globals.contains_key(name) {
@@ -166,6 +172,20 @@ impl Lowerer {
     pub(super) fn get_array_base_addr(&mut self, base: &Expr) -> Operand {
         match base {
             Expr::Identifier(name, _) => {
+                // Static locals: resolve via mangled name from globals
+                if let Some(mangled) = self.static_local_names.get(name).cloned() {
+                    if let Some(ginfo) = self.globals.get(&mangled).cloned() {
+                        let addr = self.fresh_value();
+                        self.emit(Instruction::GlobalAddr { dest: addr, name: mangled });
+                        if ginfo.is_array {
+                            return Operand::Value(addr);
+                        } else {
+                            let loaded = self.fresh_value();
+                            self.emit(Instruction::Load { dest: loaded, ptr: addr, ty: IrType::Ptr });
+                            return Operand::Value(loaded);
+                        }
+                    }
+                }
                 if let Some(info) = self.locals.get(name).cloned() {
                     if info.is_array {
                         return Operand::Value(info.alloca);

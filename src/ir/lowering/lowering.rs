@@ -102,6 +102,8 @@ pub struct Lowerer {
     pub(super) switch_default: Vec<Option<String>>,
     /// Alloca holding the switch expression value for the current switch.
     pub(super) switch_val_allocas: Vec<Value>,
+    /// The type of the controlling expression for each nested switch.
+    pub(super) switch_expr_types: Vec<IrType>,
     /// Struct/union layouts indexed by tag name (or anonymous id).
     pub(super) struct_layouts: HashMap<String, StructLayout>,
     /// Enum constant values collected from enum definitions.
@@ -152,6 +154,7 @@ impl Lowerer {
             switch_cases: Vec::new(),
             switch_default: Vec::new(),
             switch_val_allocas: Vec::new(),
+            switch_expr_types: Vec::new(),
             struct_layouts: HashMap::new(),
             enum_constants: HashMap::new(),
             user_labels: HashMap::new(),
