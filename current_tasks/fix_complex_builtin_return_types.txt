@@ -1,0 +1,19 @@
+Fix creal/cimag/crealf/cimagf/creall/cimagl builtin return types
+
+The complex number extraction builtins (creal, cimag, etc.) were not
+registered in builtin_return_type(), causing get_expr_type() to return
+I64 instead of F64/F32/F128 for function calls to these builtins.
+
+This caused the generated code to treat the double bit pattern as an
+integer and apply cvtsi2sd (integer-to-double conversion) instead of
+a simple movq (bit-for-bit move to XMM register).
+
+Fixes:
+1. Add creal/cimag/cabs/carg and their float/long double variants
+   to builtin_return_type() with correct IrType return values
+2. Fix the trailing _Complex type specifier in the parser (complementary
+   to the fix_trailing_complex_type_specifier task, but in a different
+   code path - the post-resolution trailing qualifier loop)
+3. Add regression test
+
+Impact: ~34 more tests pass on x86 (80.6% -> 86.3%), ~19 on ARM, ~10 on RISC-V

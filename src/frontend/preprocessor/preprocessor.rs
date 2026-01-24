@@ -371,8 +371,12 @@ impl Preprocessor {
     /// - Does not emit pending_injections (those only apply to top-level)
     /// - Only processes directives when no multi-line accumulation is pending
     fn preprocess_source(&mut self, source: &str, is_include: bool) -> String {
-        let source = Self::strip_block_comments(source);
-        let source = self.join_continued_lines(&source);
+        // Per C standard (C11 5.1.1.2), translation phases are:
+        // Phase 2: Line splicing (backslash-newline removal)
+        // Phase 3: Comment replacement
+        // So we must join continued lines BEFORE stripping comments.
+        let source = self.join_continued_lines(source);
+        let source = Self::strip_block_comments(&source);
         let mut output = String::with_capacity(source.len());
 
         // For included files, save and reset the conditional stack

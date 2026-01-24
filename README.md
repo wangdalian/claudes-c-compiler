@@ -56,6 +56,11 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
   - Constant expression evaluation for initializers
 
 ### Recent Additions
+- **Preprocessor translation phase ordering fix**: Fixed `strip_block_comments` running
+  before `join_continued_lines`, which violated C11 5.1.1.2 translation phase ordering.
+  Multi-line `/* ... */` comments inside `#define` macros with `\` continuations caused
+  the macro body to be silently truncated. This was the root cause of mbedtls psa_crypto.c
+  failing with duplicate assembly labels (65 copies of `.Luser_exit_1149`).
 - **RISC-V bit manipulation ops**: Implemented software fallbacks for CLZ, CTZ, BSWAP,
   and POPCOUNT on RISC-V (previously returned 0). Also fixed x86 to use correct
   32-bit instruction variants (bsrl, bswapl, etc.) for 32-bit types.
@@ -124,8 +129,8 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
 |---------|--------|-------|
 | lua | PASS | All 6 tests pass |
 | zlib | PASS | Build + self-test + minigzip roundtrip pass |
-| mbedtls | FAIL | Preprocessor macro expansion issues in large files (psa_crypto.c) |
-| libpng | FAIL | Preprocessor conditional issues (PNG_FLOATING_POINT_SUPPORTED) |
+| mbedtls | PARTIAL | Library builds; test programs have parser errors (expected Semicolon) |
+| libpng | PARTIAL | Builds successfully; pngtest fails at runtime (IHDR parsing issue) |
 | jq | FAIL | Build timeout |
 | sqlite | FAIL | Not yet tested |
 | libjpeg-turbo | FAIL | Not yet tested |
