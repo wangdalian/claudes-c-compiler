@@ -343,10 +343,20 @@ impl Lowerer {
         if let Some(ref cplx_ctype) = complex_elem_ctype {
             // Array of complex elements (handles both 1D and multi-dimensional)
             self.lower_array_of_complex_init(items, alloca, da, cplx_ctype);
+        } else if da.is_array_of_pointers || da.is_array_of_func_ptrs {
+            // Array of pointers (including pointer-to-struct): use scalar init with pointer stride.
+            // Note: elem_struct_layout may be set for p->field access, but the array stride
+            // is sizeof(pointer) not sizeof(struct), so we must NOT route to lower_array_of_structs_init.
+            if da.array_dim_strides.len() > 1 {
+                self.zero_init_alloca(alloca, da.alloc_size);
+                self.lower_array_init_list(items, alloca, IrType::I64, &da.array_dim_strides);
+            } else {
+                self.lower_1d_array_init(items, alloca, da, decl);
+            }
         } else if da.array_dim_strides.len() > 1 && elem_struct_layout.is_none() {
             // Multi-dimensional array of scalars
             self.zero_init_alloca(alloca, da.alloc_size);
-            let md_elem_ty = if da.is_array_of_pointers || da.is_array_of_func_ptrs { IrType::I64 } else { da.elem_ir_ty };
+            let md_elem_ty = da.elem_ir_ty;
             self.lower_array_init_list(items, alloca, md_elem_ty, &da.array_dim_strides);
         } else if let Some(ref s_layout) = elem_struct_layout {
             // Array of structs

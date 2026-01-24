@@ -1,0 +1,13 @@
+Fix array-of-pointer-to-struct initializer using wrong stride
+
+Bug: Local array initializers like `struct S *ptrs[3] = {&s0, &s1, 0}` stored
+pointer values at stride sizeof(struct S) instead of sizeof(struct S *) = 8.
+
+Root cause: lower_array_init_list_dispatch checked elem_struct_layout before
+is_array_of_pointers. When the array element type was pointer-to-struct, the
+struct layout (stored for p->field access) caused dispatch to
+lower_array_of_structs_init which used struct_size as stride.
+
+Fix: Check da.is_array_of_pointers before elem_struct_layout in dispatch.
+
+Status: DONE
