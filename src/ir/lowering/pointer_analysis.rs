@@ -190,14 +190,45 @@ impl Lowerer {
         }
     }
 
+    /// Resolve the actual size of a CType, handling forward-declared/self-referential
+    /// struct/union types that have cached_size=0. Looks up the struct layout by tag
+    /// name to get the real size.
+    pub(super) fn resolve_ctype_size(&self, ctype: &CType) -> usize {
+        let sz = ctype.size();
+        if sz > 0 {
+            return sz;
+        }
+        // For struct/union with size 0, try to look up the actual layout by tag name
+        match ctype {
+            CType::Struct(st) => {
+                if let Some(tag) = &st.name {
+                    let key = format!("struct.{}", tag);
+                    if let Some(layout) = self.struct_layouts.get(&key) {
+                        return layout.size;
+                    }
+                }
+            }
+            CType::Union(st) => {
+                if let Some(tag) = &st.name {
+                    let key = format!("union.{}", tag);
+                    if let Some(layout) = self.struct_layouts.get(&key) {
+                        return layout.size;
+                    }
+                }
+            }
+            _ => {}
+        }
+        sz
+    }
+
     /// Get the element size for a pointer expression (for scaling in pointer arithmetic).
     /// For `int *p`, returns 4. For `char *s`, returns 1.
     pub(super) fn get_pointer_elem_size_from_expr(&self, expr: &Expr) -> usize {
         // Try CType-based resolution first for accurate type information
         if let Some(ctype) = self.get_expr_ctype(expr) {
             match &ctype {
-                CType::Pointer(pointee) => return pointee.size().max(1),
-                CType::Array(elem, _) => return elem.size().max(1),
+                CType::Pointer(pointee) => return self.resolve_ctype_size(pointee).max(1),
+                CType::Array(elem, _) => return self.resolve_ctype_size(elem).max(1),
                 _ => {}
             }
         }
@@ -247,7 +278,7 @@ impl Lowerer {
             Expr::FunctionCall(_, _, _) => {
                 if let Some(ctype) = self.get_expr_ctype(expr) {
                     if let CType::Pointer(pointee) = &ctype {
-                        return pointee.size().max(1);
+                        return self.resolve_ctype_size(pointee).max(1);
                     }
                 }
                 8
@@ -268,8 +299,8 @@ impl Lowerer {
                 let is_ptr = matches!(expr, Expr::PointerMemberAccess(..));
                 if let Some(ctype) = self.resolve_field_ctype(base_expr, field_name, is_ptr) {
                     match &ctype {
-                        CType::Array(elem_ty, _) => return elem_ty.size(),
-                        CType::Pointer(pointee_ty) => return pointee_ty.size(),
+                        CType::Array(elem_ty, _) => return self.resolve_ctype_size(elem_ty).max(1),
+                        CType::Pointer(pointee_ty) => return self.resolve_ctype_size(pointee_ty).max(1),
                         _ => {}
                     }
                 }

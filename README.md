@@ -56,6 +56,15 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
   - Constant expression evaluation for initializers
 
 ### Recent Additions
+- **Self-referential struct pointer arithmetic fix**: Fixed pointer arithmetic on members of
+  self-referential struct types (e.g., `struct S { struct S *next; ... }`). When resolving the
+  pointee type for `node->next + n`, the CType for the self-referential pointer had `cached_size=0`
+  because the struct hadn't finished registering when its own fields were being typed. This caused
+  pointer stride of 1 instead of `sizeof(struct S)`. Added `resolve_ctype_size()` helper that looks
+  up the actual struct layout when encountering a zero-sized struct/union CType, fixing pointer
+  arithmetic, array indexing, sizeof, and subscript operations on self-referential struct pointers.
+  This was the root cause of redis-server crashing on startup (iterating `subcommands` array
+  with stride 1 instead of 312).
 - **Suppress va_start/va_end/va_copy implicit declaration warnings**: Registered `__builtin_va_start`,
   `__builtin_va_end`, and `__builtin_va_copy` in the sema builtin map so they are recognized as valid
   builtins. Previously these produced "implicit declaration" warnings on stderr, which caused configure
@@ -177,14 +186,14 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
 | Project | Status | Notes |
 |---------|--------|-------|
 | lua | PASS | All 6 tests pass |
-| zlib | PASS | Build + self-test + minigzip roundtrip all pass (configure now correctly detects vsnprintf) |
+| zlib | PASS | Build + self-test + minigzip roundtrip all pass |
 | mbedtls | PARTIAL | Library builds; selftest: md5/sha256/sha512/aes pass; rsa/ecp fail |
 | libpng | PASS | Builds and pngtest passes |
-| jq | PARTIAL | Builds; 139/447 jq.test pass, 0 crashes (was segfaulting on all queries) |
+| jq | PASS | All 12 tests pass |
 | sqlite | PARTIAL | Builds; 573/622 (92%) sqllogictest pass |
 | libjpeg-turbo | PASS | Builds; cjpeg/djpeg roundtrip and jpegtran pass |
-| redis | FAIL | Build fails: -shared flag needed for xxhash (in progress) |
-| postgres | PARTIAL | Configure now passes; build fails on missing SSE intrinsic builtins |
+| redis | PARTIAL | Builds; redis-cli works; redis-server crashes on startup (separate global struct issue) |
+| postgres | PARTIAL | Configure passes; build fails on missing SSE intrinsic builtins |
 
 ### What's Not Yet Implemented
 - Parser support for GNU C extensions in system headers (`__attribute__`, `__asm__` renames)

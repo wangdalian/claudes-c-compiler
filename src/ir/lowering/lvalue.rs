@@ -372,7 +372,7 @@ impl Lowerer {
                     // pointer (e.g., char *arr[] at depth 1). Use c_type to resolve
                     // the correct pointee element size rather than the array stride.
                     if let Some(ref ctype) = vi.c_type {
-                        if let Some(sz) = Self::peel_pointer_elem_size(ctype, depth) {
+                        if let Some(sz) = self.peel_pointer_elem_size(ctype, depth) {
                             return sz;
                         }
                     }
@@ -384,7 +384,7 @@ impl Lowerer {
                 // by sizeof(char) = 1. Use c_type to resolve the correct pointee size.
                 if depth > 0 {
                     if let Some(ref ctype) = vi.c_type {
-                        if let Some(sz) = Self::peel_pointer_elem_size(ctype, depth) {
+                        if let Some(sz) = self.peel_pointer_elem_size(ctype, depth) {
                             return sz;
                         }
                     }
@@ -440,11 +440,11 @@ impl Lowerer {
         if let Some(ctype) = self.get_expr_ctype(base) {
             match &ctype {
                 CType::Pointer(pointee) => {
-                    let sz = pointee.size();
+                    let sz = self.resolve_ctype_size(pointee);
                     if sz > 0 { return sz; }
                 }
                 CType::Array(elem, _) => {
-                    let sz = elem.size();
+                    let sz = self.resolve_ctype_size(elem);
                     if sz > 0 { return sz; }
                 }
                 _ => {}
@@ -496,7 +496,7 @@ impl Lowerer {
     /// For `char **` at depth 1: Pointer(Pointer(Char)) -> Pointer(Char) -> pointee is Char -> size 1.
     /// For `int **` at depth 1: Pointer(Pointer(Int)) -> Pointer(Int) -> pointee is Int -> size 4.
     /// For `char *arr[]` at depth 1: Array(Pointer(Char), _) -> Pointer(Char) -> pointee is Char -> size 1.
-    fn peel_pointer_elem_size(ctype: &CType, depth: usize) -> Option<usize> {
+    fn peel_pointer_elem_size(&self, ctype: &CType, depth: usize) -> Option<usize> {
         let mut ty = ctype;
         for _ in 0..depth {
             match ty {
@@ -509,11 +509,11 @@ impl Lowerer {
         // It should be a pointer or array; return the size of what it points to.
         match ty {
             CType::Pointer(pointee) => {
-                let sz = pointee.size();
+                let sz = self.resolve_ctype_size(pointee);
                 if sz > 0 { Some(sz) } else { None }
             }
             CType::Array(elem, _) => {
-                let sz = elem.size();
+                let sz = self.resolve_ctype_size(elem);
                 if sz > 0 { Some(sz) } else { None }
             }
             _ => None,

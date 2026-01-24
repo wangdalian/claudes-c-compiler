@@ -557,13 +557,13 @@ impl Lowerer {
                     if matches!(pointee.as_ref(), CType::Void | CType::Function(_)) {
                         return 1;
                     }
-                    let sz = pointee.size();
+                    let sz = self.resolve_ctype_size(pointee);
                     if sz == 0 {
                         return 1;
                     }
                     return sz;
                 }
-                CType::Array(elem, _) => return elem.size(),
+                CType::Array(elem, _) => return self.resolve_ctype_size(elem).max(1),
                 // GCC extension: sizeof(*func) == 1 where func is a function
                 CType::Function(_) => return 1,
                 _ => {}
@@ -599,16 +599,16 @@ impl Lowerer {
         // Use CType-based resolution first (handles string literals, typed pointers)
         if let Some(base_ctype) = self.get_expr_ctype(base) {
             match &base_ctype {
-                CType::Array(elem, _) => return elem.size(),
-                CType::Pointer(pointee) => return pointee.size(),
+                CType::Array(elem, _) => return self.resolve_ctype_size(elem).max(1),
+                CType::Pointer(pointee) => return self.resolve_ctype_size(pointee).max(1),
                 _ => {}
             }
         }
         // Also check reverse subscript (index[base])
         if let Some(idx_ctype) = self.get_expr_ctype(index) {
             match &idx_ctype {
-                CType::Array(elem, _) => return elem.size(),
-                CType::Pointer(pointee) => return pointee.size(),
+                CType::Array(elem, _) => return self.resolve_ctype_size(elem).max(1),
+                CType::Pointer(pointee) => return self.resolve_ctype_size(pointee).max(1),
                 _ => {}
             }
         }

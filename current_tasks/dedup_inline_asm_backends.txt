@@ -1,0 +1,13 @@
+Dedup inline assembly codegen across x86, ARM, and RISC-V backends.
+
+All three backends have nearly identical inline asm handling (~590 lines total) that follows
+the same 4-phase structure: assign registers to operands, resolve tied/read-write operands,
+load inputs and emit template with substitution, store outputs back.
+
+Plan:
+- Extract a shared generic inline asm framework in codegen_shared.rs
+- Each backend provides: scratch register pools, constraint-to-register mapping, operand
+  substitution format
+- The shared framework handles: register assignment, tied operand resolution, +constraint
+  handling, GCC operand numbering, template line splitting
+- Expected savings: ~300 lines of duplicated code
