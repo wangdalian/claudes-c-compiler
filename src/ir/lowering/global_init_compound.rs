@@ -1172,8 +1172,10 @@ impl Lowerer {
         bytes: &mut [u8],
         ptr_ranges: &mut Vec<(usize, GlobalInit)>,
     ) {
-        let is_ptr_array = Self::type_has_pointer_elements(&field.ty)
-            && matches!(field.ty, CType::Array(..));
+        // Only treat as a flat pointer array if elements are direct pointers/functions,
+        // NOT if elements are structs that happen to contain pointer fields.
+        let is_ptr_array = matches!(field.ty, CType::Array(ref elem_ty, _)
+            if matches!(elem_ty.as_ref(), CType::Pointer(_) | CType::Function(_)));
 
         if let Initializer::Expr(ref expr) = item.init {
             // For pointer arrays with a single expr, the first element is the addr

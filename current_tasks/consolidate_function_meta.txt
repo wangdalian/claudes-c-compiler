@@ -1,0 +1,6 @@
+Consolidate FunctionMeta parallel HashMaps into HashMap<String, FuncSig>
+
+Replace the 10 parallel HashMaps in FunctionMeta with a single HashMap<String, FuncSig>
+and a second map for function-pointer signatures. Pure refactor, zero semantic change.
+
+Then extract FunctionBuildState from Lowerer to make function-vs-module state boundary explicit.
