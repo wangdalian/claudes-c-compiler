@@ -68,12 +68,22 @@ COMPLETED:
    offsetof() expressions, so enum constants derived from offsetof differ.
    5 files changed, ~200 insertions, ~30 deletions.)
 
-REMAINING (in order):
+- Commit 8: Lowerer receives TypeContext from sema
+  (Removed the lowerer's pass-0 collect_all_enum_constants() and
+   collect_all_typedefs() calls from lower(). The lowerer now trusts
+   sema's pre-populated TypeContext for all file-scope typedefs, enum
+   constants, struct/union layouts, function typedefs, and function
+   pointer typedefs. Removed the debug assertion snapshots that verified
+   sema/lowerer agreement (no longer needed since we trust sema).
+   seed_builtin_typedefs() and seed_libc_math_functions() kept because
+   they are target-dependent and sema doesn't know the compilation target.
+   Function signature collection (register_function_meta) kept because
+   sema's FunctionInfo uses CTypes while the lowerer needs IrType-based
+   FuncSig entries in func_meta for ABI/calling convention decisions.
+   collect_all_enum_constants and collect_all_typedefs are now dead code
+   (to be removed in commit 9). 1 file changed.)
 
-8. Lowerer receives TypeContext from sema
-   - Remove the lowerer's pass-0 typedef/struct/enum collection
-   - Lowerer trusts sema's TypeContext output
-   - Risk: Medium-high (bugs surface if sema/lowerer disagree)
+REMAINING (in order):
 
 9. Delete dead code and workarounds
    - Delete resolve_ctype_size, resolve_forward_declared_ctype

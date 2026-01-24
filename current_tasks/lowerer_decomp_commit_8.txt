@@ -1,5 +1,0 @@
-Implementing lowerer decomposition commit 8: Lowerer receives TypeContext from sema.
-
-Remove the lowerer's pass-0 typedef/struct/enum collection — it now trusts sema's output.
-The lowerer still seeds builtin typedefs (target-dependent) and libc math sigs,
-and still mutates TypeContext for locally-scoped types and anonymous structs during lowering.

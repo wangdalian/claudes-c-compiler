@@ -53,9 +53,8 @@ The `Lowerer` processes a `TranslationUnit` in multiple passes:
 
 ### Key Helpers
 
-- `extract_func_typedef_info(base, derived)` - Extract function typedef info from declarator (shared by pass 0 and stmt.rs)
-- `extract_fptr_typedef_info(base, derived)` - Extract function-pointer typedef info (shared by pass 0 and stmt.rs)
-- `collect_all_typedefs(tu)` - Pass 0: collect all global typedefs into type maps
+- `extract_func_typedef_info(base, derived)` - Extract function typedef info from declarator (used by sema and stmt.rs)
+- `extract_fptr_typedef_info(base, derived)` - Extract function-pointer typedef info (used by sema and stmt.rs)
 - `shadow_local_for_scope(name)` - Remove local and track for scope restoration
 - `register_block_func_meta(name, ...)` - Register function metadata for block-scope declarations
 - `lower_return_expr(e)` - Handles all return conventions (sret, two-reg, complex, scalar)

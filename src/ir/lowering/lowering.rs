@@ -915,71 +915,12 @@ impl Lowerer {
     }
 
     pub fn lower(mut self, tu: &TranslationUnit) -> IrModule {
-        // Snapshot sema's pre-populated type info for debug assertions.
-        // After the lowerer's own pass-0 collection, we verify agreement on
-        // named types. Anonymous struct keys use independent counters so they
-        // may legitimately differ between sema and lowerer.
-        #[cfg(debug_assertions)]
-        let sema_enum_constants = self.types.enum_constants.clone();
-        #[cfg(debug_assertions)]
-        let sema_struct_layouts: HashMap<String, StructLayout> = self.types.struct_layouts.clone();
-
-        // Seed builtin typedefs (matching the parser's pre-seeded typedef names)
+        // Sema has already populated TypeContext with typedefs, enum constants,
+        // struct/union layouts, function typedefs, and function pointer typedefs.
+        // We only need to seed target-dependent builtin typedefs (va_list, size_t, etc.)
+        // and libc math function signatures that sema doesn't know about.
         self.seed_builtin_typedefs();
-        // Seed known libc math function signatures for correct calling convention
         self.seed_libc_math_functions();
-
-        // Collect all enum constants FIRST, before struct registration.
-        // Struct layouts depend on enum constants for array sizes
-        // (e.g., `void *arr[ENUM_COUNT]`), so enum constants must be available
-        // before any struct layout computation occurs.
-        self.collect_all_enum_constants(tu);
-
-        // Pass 0: Collect all global typedef declarations so that function return
-        // types and parameter types that use typedefs can be resolved in pass 1.
-        self.collect_all_typedefs(tu);
-
-        // Debug assertions: verify sema's pre-populated type info matches what the
-        // lowerer independently computed. This validates that sema and the lowerer
-        // agree on type resolution before we trust sema's output in commit 8.
-        // Note: anonymous struct keys (like __anon_struct_N) use independent counters
-        // in sema and the lowerer, so they may differ. Only check named types.
-        #[cfg(debug_assertions)]
-        {
-            // Check enum constants: sema should have collected all file-scope enums
-            for (name, sema_val) in &sema_enum_constants {
-                if let Some(lowerer_val) = self.types.enum_constants.get(name) {
-                    if sema_val != lowerer_val {
-                        eprintln!(
-                            "WARNING: sema/lowerer enum constant mismatch for '{}': sema={}, lowerer={}",
-                            name, sema_val, lowerer_val
-                        );
-                    }
-                }
-            }
-
-            // Check struct layouts for named (non-anonymous) structs/unions.
-            for (key, sema_layout) in &sema_struct_layouts {
-                // Skip anonymous struct layouts (counter divergence is expected)
-                if key.starts_with("__anon_struct_") {
-                    continue;
-                }
-                if let Some(lowerer_layout) = self.types.struct_layouts.get(key) {
-                    if sema_layout.size != lowerer_layout.size {
-                        eprintln!(
-                            "WARNING: sema/lowerer struct layout size mismatch for '{}': sema={}, lowerer={}",
-                            key, sema_layout.size, lowerer_layout.size
-                        );
-                    }
-                    if sema_layout.align != lowerer_layout.align {
-                        eprintln!(
-                            "WARNING: sema/lowerer struct layout align mismatch for '{}': sema={}, lowerer={}",
-                            key, sema_layout.align, lowerer_layout.align
-                        );
-                    }
-                }
-            }
-        }
 
         // First pass: collect all function signatures (return types, param types,
         // variadic status, sret) so we can distinguish functions from globals and
