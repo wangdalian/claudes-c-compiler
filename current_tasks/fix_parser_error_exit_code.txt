@@ -1,0 +1,22 @@
+Fix parser error propagation to exit code
+
+Problem: The compiler exits with code 0 even when there are parser errors.
+This causes autoconf type detection (AC_TYPE_SIZE_T) to fail, because
+the "sizeof((type))" negative test is expected to fail compilation but
+our compiler reports success despite parse errors.
+
+Root cause: Parser uses eprintln!() for error messages but has no error
+counter. The driver (compile_to_assembly) doesn't check for parse errors
+since Parser::parse() returns a TranslationUnit unconditionally.
+
+Impact: jq segfaults because oniguruma's configure detects size_t as
+"unsigned int" (32-bit) instead of the correct 64-bit type. This causes
+memory corruption in all size_t-based pointer arithmetic.
+
+Fix:
+1. Add error_count field to Parser struct
+2. Increment error_count in expect() on mismatch and in parse_primary_expr on unexpected token
+3. Add has_errors() method to Parser
+4. In driver's compile_to_assembly, check parser.has_errors() and return Err if so
+
+This will fix jq and any other project that relies on configure type checks.
