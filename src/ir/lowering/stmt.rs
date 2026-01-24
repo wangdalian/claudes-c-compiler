@@ -314,7 +314,29 @@ impl Lowerer {
 
             // Handle anonymous member: drill into the anonymous struct/union
             let field_idx = match &resolution {
-                InitFieldResolution::Direct(idx) => *idx,
+                InitFieldResolution::Direct(idx) => {
+                    let f = &layout.fields[*idx];
+                    // For positional init, if this is an anonymous struct/union member,
+                    // drill into it and consume multiple init items for inner fields.
+                    if desig_name.is_none() && f.name.is_empty() && f.bit_width.is_none() {
+                        if let CType::Struct(key) | CType::Union(key) = &f.ty {
+                            if let Some(sub_layout) = self.types.struct_layouts.get(key).cloned() {
+                                let anon_offset = f.offset;
+                                let sub_base = self.emit_gep_offset(base, anon_offset, IrType::Ptr);
+                                let anon_field_count = sub_layout.fields.iter()
+                                    .filter(|ff| !ff.name.is_empty() || ff.bit_width.is_none())
+                                    .count();
+                                let remaining = &items[item_idx..];
+                                let consume_count = remaining.len().min(anon_field_count);
+                                self.lower_local_struct_init(&remaining[..consume_count], sub_base, &sub_layout);
+                                item_idx += consume_count;
+                                current_field_idx = *idx + 1;
+                                continue;
+                            }
+                        }
+                    }
+                    *idx
+                }
                 InitFieldResolution::AnonymousMember { anon_field_idx, inner_name } => {
                     let anon_field = &layout.fields[*anon_field_idx].clone();
                     let anon_offset = anon_field.offset;
@@ -327,7 +349,7 @@ impl Lowerer {
                         }
                         _ => { current_field_idx = *anon_field_idx + 1; item_idx += 1; continue; }
                     };
-                    // Create a synthetic item with the inner designator
+                    // Designated init: create a synthetic item with the inner designator
                     let sub_item = InitializerItem {
                         designators: vec![Designator::Field(inner_name.clone())],
                         init: item.init.clone(),
@@ -1143,10 +1165,30 @@ impl Lowerer {
             };
             let resolution = layout.resolve_init_field(desig_name, current_field_idx, &self.types);
             let field_idx = match &resolution {
-                Some(crate::common::types::InitFieldResolution::Direct(idx)) => *idx,
+                Some(crate::common::types::InitFieldResolution::Direct(idx)) => {
+                    let f = &layout.fields[*idx];
+                    // For positional init, if this is an anonymous struct/union member,
+                    // drill into it and consume multiple init items for inner fields.
+                    if desig_name.is_none() && f.name.is_empty() && f.bit_width.is_none() {
+                        if let CType::Struct(key) | CType::Union(key) = &f.ty {
+                            if let Some(sub_layout) = self.types.struct_layouts.get(key).cloned() {
+                                let anon_offset = base_offset + f.offset;
+                                let anon_field_count = sub_layout.fields.iter()
+                                    .filter(|ff| !ff.name.is_empty() || ff.bit_width.is_none())
+                                    .count();
+                                let remaining = &items[item_idx..];
+                                let consume_count = remaining.len().min(anon_field_count);
+                                let consumed = self.emit_struct_init(&remaining[..consume_count], base_alloca, &sub_layout, anon_offset);
+                                item_idx += consumed.max(1);
+                                current_field_idx = *idx + 1;
+                                continue;
+                            }
+                        }
+                    }
+                    *idx
+                }
                 Some(crate::common::types::InitFieldResolution::AnonymousMember { anon_field_idx, inner_name }) => {
-                    // Designator targets a field inside an anonymous struct/union member.
-                    // Drill into the anonymous member with the original designator.
+                    // Designated init targets a field inside an anonymous struct/union member.
                     let anon_field = &layout.fields[*anon_field_idx].clone();
                     let anon_offset = base_offset + anon_field.offset;
                     let sub_layout = match &anon_field.ty {

@@ -1488,6 +1488,11 @@ pub fn classify_call_args(
         } else if is_float && !force_gp && float_idx < config.max_float_regs {
             result.push(CallArgClass::FloatReg { reg_idx: float_idx });
             float_idx += 1;
+        } else if is_float && !force_gp {
+            // Float arg that doesn't fit in FP registers goes to stack (x86-64, ARM64).
+            // On RISC-V variadic floats use GP regs via force_gp, so this path is
+            // only reached for non-variadic float overflow.
+            result.push(CallArgClass::Stack);
         } else if int_idx < config.max_int_regs {
             result.push(CallArgClass::IntReg { reg_idx: int_idx });
             int_idx += 1;
