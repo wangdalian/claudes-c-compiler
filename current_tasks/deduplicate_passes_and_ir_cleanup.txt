@@ -1,0 +1,24 @@
+Comprehensive code deduplication and cleanup across passes and IR modules
+
+This task addresses widespread code duplication and architecture issues:
+
+1. Move instruction_dest() to Instruction::dest() method, eliminating 3 duplicate
+   implementations (in backend/common.rs, passes/dce.rs, passes/gvn.rs)
+
+2. Add Hash/Eq/PartialOrd/Ord derives to IrBinOp, IrUnaryOp, IrCmpOp enums,
+   eliminating ~80 lines of duplicated key enums + conversion functions in GVN pass
+
+3. Extract shared for_each_defined_function helper on IrModule to eliminate
+   identical iteration boilerplate in all 4 optimization passes
+
+4. Add IrConst::is_zero()/is_one() methods and use them in simplify.rs
+
+5. Remove trivial i64_to_irconst wrapper in constant_fold.rs
+
+6. Fix format!("{:?}") comparison in GVN should_swap with proper Ord impl
+
+7. Eliminate zero_init_alloca duplication in lowering.rs
+
+8. Deduplicate binary-op parser functions using a table-driven approach
+
+Status: In progress
