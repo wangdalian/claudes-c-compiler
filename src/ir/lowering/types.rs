@@ -799,7 +799,7 @@ impl Lowerer {
             Expr::CompoundLiteral(type_spec, _, _) => {
                 // (struct foo){...} is a struct value
                 let resolved = self.resolve_type_spec(type_spec);
-                matches!(resolved, TypeSpecifier::Struct(_, _, _) | TypeSpecifier::Union(_, _, _))
+                matches!(resolved, TypeSpecifier::Struct(..) | TypeSpecifier::Union(..))
             }
             Expr::FunctionCall(_, _, _) => {
                 // Function returning struct
