@@ -1,0 +1,16 @@
+Refactor: Split expr.rs (3,366 lines) into focused submodules
+
+The largest file in the codebase (src/ir/lowering/expr.rs) handles ALL expression
+lowering in a single monolithic file. This refactoring splits it into focused
+submodules while preserving all functionality:
+
+1. expr_builtins.rs - Builtin function calls and FP classification builtins (~550 lines)
+2. expr_atomics.rs - Atomic operation builtins (~340 lines)
+3. expr_calls.rs - Function call lowering, argument handling, call dispatch (~480 lines)
+4. expr_assign.rs - Assignment, compound assignment, bitfield helpers (~350 lines)
+5. expr.rs - Remaining core: binary/unary ops, cast, conditional, deref, sizeof, etc (~1,650 lines)
+
+Also deduplicating repeated patterns:
+- classify_struct_return helper (replaces 3 inline copies)
+- Unified conditional/gnu_conditional
+- Extracted func-ptr detection helper

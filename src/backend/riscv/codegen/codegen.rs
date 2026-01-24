@@ -78,6 +78,44 @@ impl RiscvCodegen {
         }
     }
 
+    /// Emit: store `reg` to `offset(sp)`, handling large offsets via t6.
+    /// Used for stack overflow arguments in emit_call.
+    fn emit_store_to_sp(&mut self, reg: &str, offset: i64, store_instr: &str) {
+        if Self::fits_imm12(offset) {
+            self.state.emit(&format!("    {} {}, {}(sp)", store_instr, reg, offset));
+        } else {
+            self.state.emit(&format!("    li t6, {}", offset));
+            self.state.emit("    add t6, sp, t6");
+            self.state.emit(&format!("    {} {}, 0(t6)", store_instr, reg));
+        }
+    }
+
+    /// Emit: load from `offset(sp)` into `reg`, handling large offsets via t6.
+    /// Used for loading stack overflow arguments in emit_call.
+    fn emit_load_from_sp(&mut self, reg: &str, offset: i64, load_instr: &str) {
+        if Self::fits_imm12(offset) {
+            self.state.emit(&format!("    {} {}, {}(sp)", load_instr, reg, offset));
+        } else {
+            self.state.emit(&format!("    li t6, {}", offset));
+            self.state.emit("    add t6, sp, t6");
+            self.state.emit(&format!("    {} {}, 0(t6)", load_instr, reg));
+        }
+    }
+
+    /// Emit: `sp = sp + imm`, handling large immediates via t6.
+    /// Positive imm deallocates stack, negative allocates.
+    fn emit_addi_sp(&mut self, imm: i64) {
+        if Self::fits_imm12(imm) {
+            self.state.emit(&format!("    addi sp, sp, {}", imm));
+        } else if imm > 0 {
+            self.state.emit(&format!("    li t6, {}", imm));
+            self.state.emit("    add sp, sp, t6");
+        } else {
+            self.state.emit(&format!("    li t6, {}", -imm));
+            self.state.emit("    sub sp, sp, t6");
+        }
+    }
+
     /// Emit prologue: allocate stack and save ra/s0.
     ///
     /// Stack layout (s0 points to top of frame = old sp):
@@ -1205,7 +1243,7 @@ impl ArchCodegen for RiscvCodegen {
 
         if f128_temp_space > 0 {
             // Allocate temp space for F128 conversion results
-            self.state.emit(&format!("    addi sp, sp, -{}", f128_temp_space));
+            self.emit_addi_sp(-f128_temp_space);
             let mut temp_offset: i64 = 0;
             for item in &mut f128_var_temps {
                 item.1 = temp_offset;
@@ -1215,8 +1253,8 @@ impl ArchCodegen for RiscvCodegen {
                 self.state.emit("    fmv.d.x fa0, t0");
                 self.state.emit("    call __extenddftf2");
                 // Save a0:a1 to temp space
-                self.state.emit(&format!("    sd a0, {}(sp)", temp_offset));
-                self.state.emit(&format!("    sd a1, {}(sp)", temp_offset + 8));
+                self.emit_store_to_sp("a0", temp_offset, "sd");
+                self.emit_store_to_sp("a1", temp_offset + 8, "sd");
                 temp_offset += 16;
             }
         }
@@ -1239,7 +1277,7 @@ impl ArchCodegen for RiscvCodegen {
                 }
             }
             stack_arg_space = (stack_arg_space + 15) & !15;
-            self.state.emit(&format!("    addi sp, sp, -{}", stack_arg_space));
+            self.emit_addi_sp(-(stack_arg_space as i64));
             let mut offset: usize = 0;
             for &(arg_i, cls) in &stack_args {
                 if cls == 'X' {
@@ -1251,26 +1289,26 @@ impl ArchCodegen for RiscvCodegen {
                                 let low = *v as u64 as i64;
                                 let high = (*v >> 64) as u64 as i64;
                                 self.state.emit(&format!("    li t0, {}", low));
-                                self.state.emit(&format!("    sd t0, {}(sp)", offset));
+                                self.emit_store_to_sp("t0", offset as i64, "sd");
                                 self.state.emit(&format!("    li t0, {}", high));
-                                self.state.emit(&format!("    sd t0, {}(sp)", offset + 8));
+                                self.emit_store_to_sp("t0", (offset + 8) as i64, "sd");
                             } else {
                                 self.operand_to_t0(&args[arg_i]);
-                                self.state.emit(&format!("    sd t0, {}(sp)", offset));
-                                self.state.emit(&format!("    sd zero, {}(sp)", offset + 8));
+                                self.emit_store_to_sp("t0", offset as i64, "sd");
+                                self.emit_store_to_sp("zero", (offset + 8) as i64, "sd");
                             }
                         }
                         Operand::Value(v) => {
                             if let Some(slot) = self.state.get_slot(v.0) {
                                 if self.state.is_alloca(v.0) {
                                     self.emit_addi_s0("t0", slot.0);
-                                    self.state.emit(&format!("    sd t0, {}(sp)", offset));
-                                    self.state.emit(&format!("    sd zero, {}(sp)", offset + 8));
+                                    self.emit_store_to_sp("t0", offset as i64, "sd");
+                                    self.emit_store_to_sp("zero", (offset + 8) as i64, "sd");
                                 } else {
                                     self.emit_load_from_s0("t0", slot.0, "ld");
-                                    self.state.emit(&format!("    sd t0, {}(sp)", offset));
+                                    self.emit_store_to_sp("t0", offset as i64, "sd");
                                     self.emit_load_from_s0("t0", slot.0 + 8, "ld");
-                                    self.state.emit(&format!("    sd t0, {}(sp)", offset + 8));
+                                    self.emit_store_to_sp("t0", (offset + 8) as i64, "sd");
                                 }
                             }
                         }
@@ -1289,22 +1327,22 @@ impl ArchCodegen for RiscvCodegen {
                             let lo = i64::from_le_bytes(bytes[0..8].try_into().unwrap());
                             let hi = i64::from_le_bytes(bytes[8..16].try_into().unwrap());
                             self.state.emit(&format!("    li t0, {}", lo));
-                            self.state.emit(&format!("    sd t0, {}(sp)", offset));
+                            self.emit_store_to_sp("t0", offset as i64, "sd");
                             self.state.emit(&format!("    li t0, {}", hi));
-                            self.state.emit(&format!("    sd t0, {}(sp)", offset + 8));
+                            self.emit_store_to_sp("t0", (offset + 8) as i64, "sd");
                         }
                         Operand::Value(ref _v) => {
                             self.operand_to_t0(&args[arg_i]);
                             self.state.emit("    fmv.d.x fa0, t0");
                             self.state.emit("    call __extenddftf2");
-                            self.state.emit(&format!("    sd a0, {}(sp)", offset));
-                            self.state.emit(&format!("    sd a1, {}(sp)", offset + 8));
+                            self.emit_store_to_sp("a0", offset as i64, "sd");
+                            self.emit_store_to_sp("a1", (offset + 8) as i64, "sd");
                         }
                     }
                     offset += 16;
                 } else {
                     self.operand_to_t0(&args[arg_i]);
-                    self.state.emit(&format!("    sd t0, {}(sp)", offset));
+                    self.emit_store_to_sp("t0", offset as i64, "sd");
                     offset += 8;
                 }
             }
@@ -1365,8 +1403,8 @@ impl ArchCodegen for RiscvCodegen {
                     let temp_info = f128_var_temps.iter().find(|t| t.0 == i).unwrap();
                     // Adjust offset for stack_arg_space
                     let offset = temp_info.1 + stack_arg_space as i64;
-                    self.state.emit(&format!("    ld {}, {}(sp)", RISCV_ARG_REGS[base_reg], offset));
-                    self.state.emit(&format!("    ld {}, {}(sp)", RISCV_ARG_REGS[base_reg + 1], offset + 8));
+                    self.emit_load_from_sp(RISCV_ARG_REGS[base_reg], offset, "ld");
+                    self.emit_load_from_sp(RISCV_ARG_REGS[base_reg + 1], offset + 8, "ld");
                 }
             }
         }
@@ -1404,7 +1442,7 @@ impl ArchCodegen for RiscvCodegen {
 
         // Clean up F128 temp space before the call (only if no stack overflow args below it)
         if f128_temp_space > 0 && stack_arg_space == 0 {
-            self.state.emit(&format!("    addi sp, sp, {}", f128_temp_space));
+            self.emit_addi_sp(f128_temp_space);
         }
 
         if let Some(name) = direct_name {
@@ -1418,8 +1456,8 @@ impl ArchCodegen for RiscvCodegen {
         // Clean up stack space after call
         if stack_arg_space > 0 {
             // Both stack overflow args and f128 temp space (if any) need cleanup
-            let cleanup = stack_arg_space + f128_temp_space as usize;
-            self.state.emit(&format!("    addi sp, sp, {}", cleanup));
+            let cleanup = (stack_arg_space as i64) + f128_temp_space;
+            self.emit_addi_sp(cleanup);
         }
 
         if let Some(dest) = dest {
@@ -1790,9 +1828,9 @@ impl ArchCodegen for RiscvCodegen {
 
     fn emit_get_return_f64_second(&mut self, dest: &Value) {
         // After a function call, the second F64 return value is in fa1.
-        // Store it to the dest stack slot.
+        // Store it to the dest stack slot, handling large offsets.
         if let Some(slot) = self.state.get_slot(dest.0) {
-            self.state.emit(&format!("    fsd fa1, {}(s0)", slot.0));
+            self.emit_store_to_s0("fa1", slot.0, "fsd");
         }
     }
 
@@ -1801,7 +1839,7 @@ impl ArchCodegen for RiscvCodegen {
         match src {
             Operand::Value(v) => {
                 if let Some(slot) = self.state.get_slot(v.0) {
-                    self.state.emit(&format!("    fld fa1, {}(s0)", slot.0));
+                    self.emit_load_from_s0("fa1", slot.0, "fld");
                 }
             }
             Operand::Const(IrConst::F64(f)) => {

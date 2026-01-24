@@ -1908,7 +1908,7 @@ impl ArchCodegen for ArmCodegen {
 
         // Store result to dest
         if let Some(slot) = self.state.get_slot(dest.0) {
-            self.state.emit(&format!("    str x0, [x29, #{}]", slot.0));
+            self.emit_store_to_sp("x0", slot.0, "str");
         }
     }
 
@@ -2029,9 +2029,9 @@ impl ArchCodegen for ArmCodegen {
 
     fn emit_get_return_f64_second(&mut self, dest: &Value) {
         // After a function call, the second F64 return value is in d1.
-        // Store it to the dest stack slot.
+        // Store it to the dest stack slot, handling large offsets.
         if let Some(slot) = self.state.get_slot(dest.0) {
-            self.state.emit(&format!("    str d1, [x29, #{}]", slot.0));
+            self.emit_store_to_sp("d1", slot.0, "str");
         }
     }
 
@@ -2040,7 +2040,7 @@ impl ArchCodegen for ArmCodegen {
         match src {
             Operand::Value(v) => {
                 if let Some(slot) = self.state.get_slot(v.0) {
-                    self.state.emit(&format!("    ldr d1, [x29, #{}]", slot.0));
+                    self.emit_load_from_sp("d1", slot.0, "ldr");
                 }
             }
             Operand::Const(IrConst::F64(f)) => {
