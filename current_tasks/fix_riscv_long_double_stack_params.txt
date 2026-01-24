@@ -1,0 +1,14 @@
+Fix RISC-V long double stack parameter passing (in progress)
+
+Bug: When a long double (F128) parameter is stack-passed on RISC-V (because
+all 8 GP registers are exhausted), the callee reads from incorrect stack offset.
+
+Root cause: In emit_store_params for the `is_long_double && is_stack_passed`
+case (non-variadic), the code adds `extra = 64` when `has_f128_reg_params`
+is true. This is wrong because stack_param_offset is relative to s0 (old_sp),
+and the f128 register save area is at sp (below s0), not above s0.
+
+Fix: Remove the incorrect `extra` offset. Stack-passed params are always at
+s0 + stack_param_offset regardless of whether there's an f128 save area.
+
+Impact: ~43+ test failures on RISC-V (all "NG : LD" failures in compiler_suite_0096_*)
