@@ -4,7 +4,7 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
 
 ## Status
 
-**Basic compilation pipeline functional with SSA.** ~93.6% of tests passing across all architectures (full suite, 29906 tests).
+**Basic compilation pipeline functional with SSA.** ~93.9% of tests passing across all architectures (full suite, 29906 tests).
 
 ### Working Features
 - Preprocessor with `#include` file resolution (system headers, -I paths, include guards, #pragma once)
@@ -16,9 +16,9 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
 - Three backend targets with correct ABI handling
 
 ### Test Results (full suite)
-- x86-64: 93.6% passing (27989/29906)
-- AArch64: 94.1% passing (2699/2869, ratio 10 sample)
-- RISC-V 64: 93.6% passing (2677/2861, ratio 10 sample)
+- x86-64: 93.9% passing (28089/29906)
+- AArch64: 94.4% passing (2709/2869, ratio 10 sample)
+- RISC-V 64: 94.0% passing (2688/2861, ratio 10 sample)
 
 ### What Works
 - `int main() { return N; }` for any integer N
@@ -56,6 +56,15 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
   - Constant expression evaluation for initializers
 
 ### Recent Additions
+- **Fix K&R old-style default argument promotions in IR**: K&R-style function
+  definitions require default argument promotions (`float`→`double`,
+  `char`/`short`→`int`) per C calling conventions, but `build_ir_params` used
+  the raw AST types instead of promoted types. This caused backends to emit
+  wrong-sized stores (e.g. `movd` instead of `movq` for floats, byte stores for
+  chars). Fixed `build_ir_params` to promote types for K&R functions,
+  `register_function_meta` to promote char/short in caller-side signatures, and
+  extended `handle_kr_float_promotion` to also narrow int back to char/short.
+  Fixes 100+ x86 tests.
 - **Fix sret hidden pointer not stored to stack (all 3 backends)**: The hidden
   struct-return pointer parameter (for returns > 16 bytes) was never stored from
   its argument register (%rdi/x0/a0) to the stack alloca because `emit_store_params`
