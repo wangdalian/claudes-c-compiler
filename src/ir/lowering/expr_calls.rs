@@ -268,10 +268,11 @@ impl Lowerer {
                 if i < ptypes.len() {
                     let param_ty = ptypes[i];
                     arg_types.push(param_ty);
-                    let cast_val = self.emit_implicit_cast(val, arg_ty, param_ty);
                     if is_bool_param {
-                        return self.emit_bool_normalize(cast_val);
+                        // For _Bool params, normalize at source type before truncation.
+                        return self.emit_bool_normalize_typed(val, arg_ty);
                     }
+                    let cast_val = self.emit_implicit_cast(val, arg_ty, param_ty);
                     return cast_val;
                 }
             }

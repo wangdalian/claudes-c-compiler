@@ -1133,12 +1133,17 @@ impl ArchCodegen for ArmCodegen {
     fn emit_call(&mut self, args: &[Operand], arg_types: &[IrType], direct_name: Option<&str>,
                  func_ptr: Option<&Operand>, dest: Option<Value>, return_type: IrType,
                  is_variadic: bool, num_fixed_args: usize) {
-        // For indirect calls, load the function pointer into x17 BEFORE
-        // setting up arguments, to avoid clobbering x0 (first arg register).
-        if func_ptr.is_some() && direct_name.is_none() {
+        // For indirect calls, spill the function pointer to a dedicated stack slot.
+        // We cannot use x17 to hold it across argument setup because x17 is used as
+        // a scratch register by emit_load_from_sp/emit_store_to_sp/emit_add_sp_offset
+        // for large stack offsets (> 4095). Instead, push the function pointer onto
+        // the stack and reload it right before the blr instruction.
+        let indirect_call = func_ptr.is_some() && direct_name.is_none();
+        if indirect_call {
             let ptr = func_ptr.unwrap();
             self.operand_to_x0(ptr);
-            self.state.emit("    mov x17, x0");
+            // Spill function pointer to stack (pre-decrement SP by 16 for alignment)
+            self.state.emit("    str x0, [sp, #-16]!");
         }
 
         // Classify args: determine which go in registers vs stack.
@@ -1209,6 +1214,10 @@ impl ArchCodegen for ArmCodegen {
         }
         stack_arg_space = (stack_arg_space + 15) & !15; // Final 16-byte alignment
 
+        // For indirect calls, the function pointer was spilled to [sp] with a 16-byte
+        // pre-decrement. All stack slot references must account for this extra offset.
+        let fptr_spill: i64 = if indirect_call { 16 } else { 0 };
+
         // Phase 1: Handle stack args FIRST (before GP temp regs are populated).
         // Stack arg loading uses x17 as scratch for large offsets (not x16,
         // since x16 is the last GP temp register for call arguments).
@@ -1245,7 +1254,7 @@ impl ArchCodegen for ArmCodegen {
                         }
                         Operand::Value(v) => {
                             if let Some(slot) = self.state.get_slot(v.0) {
-                                let adjusted = slot.0 + stack_arg_space as i64;
+                                let adjusted = slot.0 + stack_arg_space as i64 + fptr_spill;
                                 if self.state.is_alloca(v.0) {
                                     self.emit_add_sp_offset("x0", adjusted);
                                     self.emit_store_to_sp("x0", stack_offset, "str");
@@ -1293,7 +1302,7 @@ impl ArchCodegen for ArmCodegen {
                     Operand::Value(v) => {
                         // SP moved by stack_arg_space, adjust slot offset
                         if let Some(slot) = self.state.get_slot(v.0) {
-                            let adjusted = slot.0 + stack_arg_space as i64;
+                            let adjusted = slot.0 + stack_arg_space as i64 + fptr_spill;
                             if self.state.is_alloca(v.0) {
                                 self.emit_add_sp_offset("x0", adjusted);
                             } else {
@@ -1319,6 +1328,9 @@ impl ArchCodegen for ArmCodegen {
             }
         }
 
+        // Total SP adjustment: stack args + function pointer spill (if indirect call)
+        let total_sp_adjust = stack_arg_space as i64 + fptr_spill;
+
         // Phase 2a: Load GP register args into temp registers (x9-x16).
         // operand_to_x0 may use x17 as scratch for large SP offsets (via
         // emit_load_from_sp), which is safe since x17 is not in ARM_TMP_REGS.
@@ -1326,12 +1338,12 @@ impl ArchCodegen for ArmCodegen {
         for (i, arg) in args.iter().enumerate() {
             if arg_classes[i] != 'i' { continue; }
             if gp_tmp_idx >= 8 { break; }
-            // If SP was adjusted for stack args, adjust alloca/value offsets
-            if stack_arg_space > 0 {
+            // If SP was adjusted (stack args or fptr spill), adjust alloca/value offsets
+            if total_sp_adjust > 0 {
                 match arg {
                     Operand::Value(v) => {
                         if let Some(slot) = self.state.get_slot(v.0) {
-                            let adjusted = slot.0 + stack_arg_space as i64;
+                            let adjusted = slot.0 + total_sp_adjust;
                             if self.state.is_alloca(v.0) {
                                 self.emit_add_sp_offset("x0", adjusted);
                             } else {
@@ -1392,9 +1404,9 @@ impl ArchCodegen for ArmCodegen {
         for &(arg_i, reg_i) in &fp_reg_assignments {
             if arg_classes[arg_i] != 'q' { continue; }
             if let Operand::Value(v) = &args[arg_i] {
-                if stack_arg_space > 0 || f128_temp_space_aligned > 0 {
+                if total_sp_adjust > 0 || f128_temp_space_aligned > 0 {
                     if let Some(slot) = self.state.get_slot(v.0) {
-                        let adjusted = slot.0 + stack_arg_space as i64 + f128_temp_space_aligned as i64;
+                        let adjusted = slot.0 + total_sp_adjust + f128_temp_space_aligned as i64;
                         self.emit_load_from_sp("x0", adjusted, "ldr");
                     } else {
                         self.state.emit("    mov x0, #0");
@@ -1449,11 +1461,11 @@ impl ArchCodegen for ArmCodegen {
         for &(arg_i, reg_i) in &fp_reg_assignments {
             if arg_classes[arg_i] == 'q' { continue; }
             let arg_ty = if arg_i < arg_types.len() { Some(arg_types[arg_i]) } else { None };
-            if stack_arg_space > 0 {
+            if total_sp_adjust > 0 {
                 match &args[arg_i] {
                     Operand::Value(v) => {
                         if let Some(slot) = self.state.get_slot(v.0) {
-                            let adjusted = slot.0 + stack_arg_space as i64;
+                            let adjusted = slot.0 + total_sp_adjust;
                             self.emit_load_from_sp("x0", adjusted, "ldr");
                         } else {
                             self.state.emit("    mov x0, #0");
@@ -1500,12 +1512,12 @@ impl ArchCodegen for ArmCodegen {
             for (i, _arg) in args.iter().enumerate() {
                 if arg_classes[i] == 'p' {
                     if pair_reg_idx % 2 != 0 { pair_reg_idx += 1; }
-                    // Load 128-bit value, adjusting for SP if stack args present
-                    if stack_arg_space > 0 {
+                    // Load 128-bit value, adjusting for SP if stack args or fptr spill present
+                    if total_sp_adjust > 0 {
                         match &args[i] {
                             Operand::Value(v) => {
                                 if let Some(slot) = self.state.get_slot(v.0) {
-                                    let adjusted = slot.0 + stack_arg_space as i64;
+                                    let adjusted = slot.0 + total_sp_adjust;
                                     if self.state.is_alloca(v.0) {
                                         // Alloca pointer, not 128-bit value
                                         self.emit_load_from_sp(ARM_ARG_REGS[pair_reg_idx], adjusted, "ldr");
@@ -1566,13 +1578,18 @@ impl ArchCodegen for ArmCodegen {
 
         if let Some(name) = direct_name {
             self.state.emit(&format!("    bl {}", name));
-        } else if func_ptr.is_some() {
+        } else if indirect_call {
+            // Reload function pointer from spill slot. The spill slot is at
+            // [sp + stack_arg_space] because stack args were pushed after the spill.
+            let spill_offset = stack_arg_space as i64;
+            self.emit_load_from_sp("x17", spill_offset, "ldr");
             self.state.emit("    blr x17");
         }
 
-        // Clean up stack args
-        if stack_arg_space > 0 {
-            self.emit_add_sp(stack_arg_space as i64);
+        // Clean up stack args + function pointer spill slot
+        let total_call_stack = stack_arg_space as i64 + fptr_spill;
+        if total_call_stack > 0 {
+            self.emit_add_sp(total_call_stack);
         }
 
         if let Some(dest) = dest {

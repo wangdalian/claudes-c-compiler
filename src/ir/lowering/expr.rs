@@ -1288,8 +1288,27 @@ impl Lowerer {
     }
 
     /// Normalize a value for _Bool storage: emit (val != 0) to clamp to 0 or 1.
+    /// Uses I64 comparison type (legacy — use emit_bool_normalize_typed for correctness).
     pub(super) fn emit_bool_normalize(&mut self, val: Operand) -> Operand {
         let dest = self.emit_cmp_val(IrCmpOp::Ne, val, Operand::Const(IrConst::I64(0)), IrType::I64);
+        Operand::Value(dest)
+    }
+
+    /// Normalize a value for _Bool storage at the given source type.
+    /// Emits (val != 0) for integers, (val != 0.0) for floats.
+    /// This must be called BEFORE any truncation to avoid losing high bits.
+    pub(super) fn emit_bool_normalize_typed(&mut self, val: Operand, src_ty: IrType) -> Operand {
+        let zero = match src_ty {
+            IrType::F32 => Operand::Const(IrConst::F32(0.0)),
+            IrType::F64 => Operand::Const(IrConst::F64(0.0)),
+            _ => Operand::Const(IrConst::I64(0)),
+        };
+        let cmp_ty = match src_ty {
+            IrType::F32 | IrType::F64 => src_ty,
+            // For integer types, compare at the source width to preserve all bits
+            _ => src_ty,
+        };
+        let dest = self.emit_cmp_val(IrCmpOp::Ne, val, zero, cmp_ty);
         Operand::Value(dest)
     }
 

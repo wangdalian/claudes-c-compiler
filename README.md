@@ -56,6 +56,25 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
   - Constant expression evaluation for initializers
 
 ### Recent Additions
+- **Fix ARM indirect call crash (x17 clobber)**: Fixed SIGSEGV in ARM-compiled code making
+  indirect function calls (through function pointers) in functions with large stack frames
+  (offsets > 4095 bytes). The ARM backend stored the function pointer in x17 for `blr x17`,
+  but x17 is also the scratch register for `emit_load_from_sp`/`emit_store_to_sp`/
+  `emit_add_sp_offset` when handling large stack offsets. During argument setup, x17 would be
+  overwritten with a stack address computation, causing `blr x17` to jump to the stack. Fixed
+  by spilling the function pointer to a dedicated stack slot and reloading before the call.
+  This fixed sqlite3's VDBE interpreter crash on ARM and all 291 previously-crashing
+  sqllogictest cases (they were timing out under QEMU, not producing wrong results).
+- **Fix _Bool conversion normalization (truncate-before-normalize bug)**: Fixed implicit
+  conversions to `_Bool` in initialization, assignment, return, and parameter passing.
+  Previously `emit_implicit_cast` truncated to U8 (IntNarrow) *before* `emit_bool_normalize`
+  compared to zero, so values like 256 (0x100) with a zero low byte were incorrectly converted
+  to `false`. Added `emit_bool_normalize_typed()` that compares at the source type width, and
+  restructured all four Bool conversion sites (stmt_init, expr_assign, stmt_return, expr_calls)
+  to normalize before any truncation. This was the root cause of 49 sqlite sqllogictest failures
+  — the CASE WHEN sort order corruption was actually `_Bool` flag variables being set from
+  comparison results that happened to have zero in the low byte, causing sort direction flags
+  to be silently zeroed. SQLite now passes 622/622 tests (was 573/622).
 - **Position-independent code (-fPIC) support**: Added `-fPIC`/`-fpic`/`-fPIE`/`-fpie` flag
   parsing and x86-64 PIC codegen. In PIC mode, function calls emit `@PLT` suffix and global
   variable accesses use `@GOTPCREL` (load address through GOT). Local symbols (`.L*` prefixed)
@@ -239,7 +258,7 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
 | mbedtls | PASS | All 7 selftests pass (md5, sha256, sha512, aes, rsa, ecp) |
 | libpng | PASS | Builds and pngtest passes |
 | jq | PASS | All 12 tests pass |
-| sqlite | PARTIAL | Builds; 573/622 (92%) sqllogictest pass |
+| sqlite | PASS | All 622 sqllogictest pass |
 | libjpeg-turbo | PASS | Builds; cjpeg/djpeg roundtrip and jpegtran pass |
 | redis | PASS | All tests pass (version, cli, SET/GET roundtrip) |
 | postgres | PARTIAL | Build succeeds (PIC/GOT codegen, SSE intrinsics); initdb crashes (runtime codegen bug in MemoryContextAllocZero) |

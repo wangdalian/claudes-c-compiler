@@ -1,8 +1,0 @@
-Fix ARM indirect call x17 clobber: function pointer stored in x17 gets
-clobbered by large-offset stack helpers (emit_load_from_sp, emit_store_to_sp,
-emit_add_sp_offset) during argument setup. The fix spills the function pointer
-to a dedicated stack slot and reloads it right before the blr instruction.
-
-This caused crashes (segfaults jumping to stack addresses) in any ARM-compiled
-code with indirect calls and large stack frames (offsets > 4095), including
-sqlite3's VDBE interpreter.

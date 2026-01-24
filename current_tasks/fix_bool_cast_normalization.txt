@@ -1,8 +1,0 @@
-LOCKED: Fixing _Bool cast/conversion normalization.
-
-The bug: implicit conversions to _Bool (init, assignment, return, parameter passing)
-first truncate the value to U8 via emit_implicit_cast, THEN normalize. This means
-values like 256 (0x100) get truncated to 0x00 first, then (0 != 0) = false.
-
-Fix: normalize at the source type BEFORE any truncation, using a new
-emit_bool_normalize_typed() function that compares at the source width.

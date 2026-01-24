@@ -45,8 +45,12 @@ impl Lowerer {
         let val = self.lower_expr(e);
         let ret_ty = self.current_return_type;
         let expr_ty = self.get_expr_type(e);
-        let val = self.emit_implicit_cast(val, expr_ty, ret_ty);
-        if self.current_return_is_bool { self.emit_bool_normalize(val) } else { val }
+        if self.current_return_is_bool {
+            // For _Bool return, normalize at the source type before any truncation.
+            self.emit_bool_normalize_typed(val, expr_ty)
+        } else {
+            self.emit_implicit_cast(val, expr_ty, ret_ty)
+        }
     }
 
     /// Try to handle return via sret (hidden pointer for large structs/complex).
@@ -186,8 +190,13 @@ impl Lowerer {
             let ptr = self.operand_to_value(val2);
             let real_part = self.load_complex_real(ptr, &expr_ct);
             let from_ty = Self::complex_component_ir_type(&expr_ct);
-            let val2 = self.emit_implicit_cast(real_part, from_ty, ret_ty);
-            return Some(if self.current_return_is_bool { self.emit_bool_normalize(val2) } else { val2 });
+            let val2 = if self.current_return_is_bool {
+                // For _Bool return, normalize at source type before truncation.
+                self.emit_bool_normalize_typed(real_part, from_ty)
+            } else {
+                self.emit_implicit_cast(real_part, from_ty, ret_ty)
+            };
+            return Some(val2);
         }
 
         None
