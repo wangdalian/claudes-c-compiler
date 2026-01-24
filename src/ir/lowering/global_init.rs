@@ -455,8 +455,11 @@ impl Lowerer {
     /// Check if a type contains pointer elements (either directly or as array elements)
     pub(super) fn type_has_pointer_elements(ty: &CType) -> bool {
         match ty {
-            CType::Pointer(_) => true,
+            CType::Pointer(_) | CType::Function(_) => true,
             CType::Array(inner, _) => Self::type_has_pointer_elements(inner),
+            CType::Struct(st) | CType::Union(st) => {
+                st.fields.iter().any(|f| Self::type_has_pointer_elements(&f.ty))
+            }
             _ => false,
         }
     }

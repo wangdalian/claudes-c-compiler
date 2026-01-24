@@ -574,7 +574,11 @@ impl StructLayout {
 /// Align `offset` up to the next multiple of `align`.
 pub fn align_up(offset: usize, align: usize) -> usize {
     if align == 0 { return offset; }
-    (offset + align - 1) & !(align - 1)
+    let mask = align - 1;
+    match offset.checked_add(mask) {
+        Some(v) => v & !mask,
+        None => offset, // overflow: return offset unchanged
+    }
 }
 
 impl CType {

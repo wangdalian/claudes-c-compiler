@@ -451,11 +451,11 @@ impl Lowerer {
                     // Recursive case: base_expr.intermediate_field.field
                     Expr::MemberAccess(..) => {
                         let (global_name, base_offset) = self.resolve_member_access_chain(base)?;
-                        // Get the type of the intermediate struct at base_offset
+                        // Walk the expression chain to find the CType of the intermediate field
                         let ginfo = self.globals.get(&global_name)?;
-                        let layout = ginfo.struct_layout.as_ref()?;
-                        // Walk the chain to find the sub-layout at base_offset
-                        let sub_layout = self.find_layout_at_offset(layout, base_offset)?;
+                        let root_layout = ginfo.struct_layout.as_ref()?;
+                        let field_ty = self.find_type_at_member_chain(root_layout, base)?;
+                        let sub_layout = self.get_struct_layout_for_ctype(&field_ty)?;
                         let f = sub_layout.fields.iter().find(|f| f.name == *field)?;
                         Some((global_name, base_offset + f.offset))
                     }
@@ -466,44 +466,27 @@ impl Lowerer {
         }
     }
 
-    /// Find the struct layout of the field at the given offset within a layout.
-    /// Used to resolve nested member access chains like `global.inner.field`.
-    fn find_layout_at_offset(&self, layout: &StructLayout, offset: usize) -> Option<StructLayout> {
-        for field in &layout.fields {
-            if field.offset == offset {
-                return self.get_struct_layout_for_field_type(&field.ty);
-            }
-            // Check if offset falls within this field (for nested access)
-            if let Some(sub_layout) = self.get_struct_layout_for_field_type(&field.ty) {
-                if offset >= field.offset && offset < field.offset + sub_layout.size {
-                    // The offset is within this field - recurse to find the sub-field
-                    return self.find_layout_at_offset(&sub_layout, offset - field.offset);
-                }
-            }
-        }
-        None
-    }
-
-    /// Get a StructLayout from a field's CType (handles struct, union).
-    fn get_struct_layout_for_field_type(&self, ty: &CType) -> Option<StructLayout> {
-        match ty {
-            CType::Struct(st) => {
-                if let Some(ref name) = st.name {
-                    let key = format!("struct.{}", name);
-                    if let Some(layout) = self.struct_layouts.get(&key) {
-                        return Some(layout.clone());
+    /// Given a root struct layout and a MemberAccess expression chain, find the CType
+    /// of the expression's result. For `g.inner`, returns the CType of `inner` field.
+    /// For `g.a.b`, returns the CType of `b` within `a` within the root layout.
+    fn find_type_at_member_chain(&self, root_layout: &StructLayout, expr: &Expr) -> Option<CType> {
+        match expr {
+            Expr::MemberAccess(base, field, _) => {
+                match base.as_ref() {
+                    Expr::Identifier(_, _) => {
+                        // Direct field of root struct
+                        let f = root_layout.fields.iter().find(|f| f.name == *field)?;
+                        Some(f.ty.clone())
                     }
-                }
-                Some(StructLayout::for_struct(&st.fields))
-            }
-            CType::Union(st) => {
-                if let Some(ref name) = st.name {
-                    let key = format!("union.{}", name);
-                    if let Some(layout) = self.struct_layouts.get(&key) {
-                        return Some(layout.clone());
+                    Expr::MemberAccess(..) => {
+                        // Get the type of the parent, then look up field in it
+                        let parent_ty = self.find_type_at_member_chain(root_layout, base)?;
+                        let parent_layout = self.get_struct_layout_for_ctype(&parent_ty)?;
+                        let f = parent_layout.fields.iter().find(|f| f.name == *field)?;
+                        Some(f.ty.clone())
                     }
+                    _ => None,
                 }
-                Some(StructLayout::for_union(&st.fields))
             }
             _ => None,
         }
