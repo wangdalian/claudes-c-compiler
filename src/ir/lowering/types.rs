@@ -1,7 +1,8 @@
 use crate::common::type_builder;
 use crate::frontend::parser::ast::*;
 use crate::common::types::{IrType, StructField, StructLayout, CType, FunctionType};
-use super::lowering::{Lowerer, FuncSig};
+use super::lowering::Lowerer;
+use super::definitions::FuncSig;
 
 impl Lowerer {
 

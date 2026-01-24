@@ -1,0 +1,357 @@
+//! Data structure definitions shared across the lowering module.
+//!
+//! Contains the core types that multiple lowering sub-modules reference:
+//! variable metadata (VarInfo/LocalInfo/GlobalInfo), declaration analysis
+//! (DeclAnalysis), lvalue representation, switch context, function signature
+//! metadata, and typedef helpers.
+
+use std::collections::HashMap;
+use crate::frontend::parser::ast::*;
+use crate::ir::ir::*;
+use crate::common::types::{IrType, StructLayout, CType};
+
+/// Resolve a typedef's derived declarators into the final TypeSpecifier.
+/// Still used for FunctionTypedefInfo return_type (which stores TypeSpecifier for now).
+pub(super) fn resolve_typedef_derived(base: &TypeSpecifier, derived: &[DerivedDeclarator]) -> TypeSpecifier {
+    let mut resolved_type = base.clone();
+    let mut i = 0;
+    while i < derived.len() {
+        match &derived[i] {
+            DerivedDeclarator::Pointer => {
+                resolved_type = TypeSpecifier::Pointer(Box::new(resolved_type));
+                i += 1;
+            }
+            DerivedDeclarator::Array(_) => {
+                let mut array_sizes: Vec<Option<Box<Expr>>> = Vec::new();
+                while i < derived.len() {
+                    if let DerivedDeclarator::Array(size) = &derived[i] {
+                        array_sizes.push(size.clone());
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                for size in array_sizes.into_iter().rev() {
+                    resolved_type = TypeSpecifier::Array(Box::new(resolved_type), size);
+                }
+            }
+            _ => { i += 1; }
+        }
+    }
+    resolved_type
+}
+
+/// Type metadata shared between local and global variables.
+///
+/// Both `LocalInfo` and `GlobalInfo` embed this struct via `Deref`, so field
+/// access like `info.ty` or `info.is_array` works transparently on either type.
+/// The `Lowerer::lookup_var_info()` helper returns `&VarInfo` for cases that
+/// only need these shared fields, eliminating the duplicated locals-then-globals
+/// lookup pattern.
+#[derive(Debug, Clone)]
+pub(super) struct VarInfo {
+    /// The IR type of the variable (I8 for char, I32 for int, I64 for long, Ptr for pointers).
+    pub ty: IrType,
+    /// Element size for arrays (used for pointer arithmetic on subscript).
+    /// For non-arrays this is 0.
+    pub elem_size: usize,
+    /// Whether this is an array (the alloca IS the base address, not a pointer to one).
+    pub is_array: bool,
+    /// For pointers and arrays, the type of the pointed-to/element type.
+    /// Used for correct loads through pointer dereference and subscript.
+    pub pointee_type: Option<IrType>,
+    /// If this is a struct/union variable, its layout for member access.
+    pub struct_layout: Option<StructLayout>,
+    /// Whether this variable is a struct (not a pointer to struct).
+    pub is_struct: bool,
+    /// For multi-dimensional arrays: stride (in bytes) per dimension level.
+    /// E.g., for int a[2][3][4], strides = [48, 16, 4] (row_size, inner_row, elem).
+    /// Empty for non-arrays or 1D arrays (use elem_size instead).
+    pub array_dim_strides: Vec<usize>,
+    /// Full C type for precise multi-level pointer type resolution.
+    pub c_type: Option<CType>,
+}
+
+/// Information about a local variable stored in an alloca.
+/// Derefs to `VarInfo` for shared field access.
+#[derive(Debug, Clone)]
+pub(super) struct LocalInfo {
+    /// Shared type metadata (ty, elem_size, is_array, pointee_type, etc.)
+    pub var: VarInfo,
+    /// The Value (alloca) holding the address of this local.
+    pub alloca: Value,
+    /// The total allocation size of this variable (for sizeof).
+    pub alloc_size: usize,
+    /// Whether this variable has _Bool type (needs value clamping to 0/1).
+    pub is_bool: bool,
+    /// For static local variables: the mangled global name. When set, accesses should
+    /// emit a fresh GlobalAddr instruction instead of using `alloca`, because the
+    /// declaration may be in an unreachable basic block (skipped by goto/switch).
+    pub static_global_name: Option<String>,
+    /// For VLA function parameters: runtime stride Values per dimension level.
+    /// Parallel to `array_dim_strides`. When `Some(value)`, use the runtime Value
+    /// instead of the compile-time stride. This supports parameters like
+    /// `int m[rows][cols]` where `cols` is a runtime variable.
+    pub vla_strides: Vec<Option<Value>>,
+    /// For VLA local variables: the runtime Value holding sizeof(this_variable).
+    /// Used when sizeof is applied to a VLA local variable.
+    pub vla_size: Option<Value>,
+}
+
+impl std::ops::Deref for LocalInfo {
+    type Target = VarInfo;
+    fn deref(&self) -> &VarInfo { &self.var }
+}
+
+impl std::ops::DerefMut for LocalInfo {
+    fn deref_mut(&mut self) -> &mut VarInfo { &mut self.var }
+}
+
+/// Information about a global variable tracked by the lowerer.
+/// Derefs to `VarInfo` for shared field access.
+#[derive(Debug, Clone)]
+pub(super) struct GlobalInfo {
+    /// Shared type metadata (ty, elem_size, is_array, pointee_type, etc.)
+    pub var: VarInfo,
+}
+
+impl std::ops::Deref for GlobalInfo {
+    type Target = VarInfo;
+    fn deref(&self) -> &VarInfo { &self.var }
+}
+
+impl std::ops::DerefMut for GlobalInfo {
+    fn deref_mut(&mut self) -> &mut VarInfo { &mut self.var }
+}
+
+/// Pre-computed declaration analysis shared between `lower_local_decl` and
+/// `lower_global_decl`. Extracts the common type analysis (base type, array info,
+/// pointer info, struct layout, etc.) that both paths need, eliminating the
+/// ~80 lines of duplicated computation.
+#[derive(Debug)]
+pub(super) struct DeclAnalysis {
+    /// The base IR type from the type specifier (before pointer/array derivation).
+    pub base_ty: IrType,
+    /// The final variable IR type (Ptr for pointers/arrays-of-pointers, else base_ty).
+    pub var_ty: IrType,
+    /// Total allocation size in bytes.
+    pub alloc_size: usize,
+    /// Element size for arrays (stride for indexing).
+    pub elem_size: usize,
+    /// Whether this declaration is an array.
+    pub is_array: bool,
+    /// Whether this declaration is a pointer.
+    pub is_pointer: bool,
+    /// Per-dimension strides for multi-dimensional arrays.
+    pub array_dim_strides: Vec<usize>,
+    /// Whether this is an array of pointers (int *arr[N]).
+    pub is_array_of_pointers: bool,
+    /// Whether this is an array of function pointers.
+    pub is_array_of_func_ptrs: bool,
+    /// Struct/union layout (for struct variables or pointer-to-struct).
+    pub struct_layout: Option<StructLayout>,
+    /// Whether this is a direct struct variable (not pointer-to or array-of).
+    pub is_struct: bool,
+    /// Actual allocation size (uses struct layout size for non-array structs).
+    pub actual_alloc_size: usize,
+    /// Pointee type for pointer/array types.
+    pub pointee_type: Option<IrType>,
+    /// Full C type for multi-level pointer resolution.
+    pub c_type: Option<CType>,
+    /// Whether this is a _Bool variable (not pointer or array of _Bool).
+    pub is_bool: bool,
+    /// The element IR type for arrays (accounts for typedef'd arrays).
+    pub elem_ir_ty: IrType,
+}
+
+/// Information about a VLA dimension in a function parameter type.
+#[derive(Debug)]
+pub(super) struct VlaDimInfo {
+    /// Whether this dimension is a VLA (runtime variable).
+    pub is_vla: bool,
+    /// The name of the variable providing the dimension (e.g., "cols").
+    pub dim_expr_name: String,
+    /// If not VLA, the constant size value.
+    pub const_size: Option<i64>,
+    /// The sizeof the element type at this level (for computing strides).
+    pub base_elem_size: usize,
+}
+
+/// Represents an lvalue - something that can be assigned to.
+/// Contains the address (as an IR Value) where the data resides.
+#[derive(Debug, Clone)]
+pub(super) enum LValue {
+    /// A direct variable: the alloca is the address.
+    Variable(Value),
+    /// An address computed at runtime (e.g., arr[i], *ptr).
+    Address(Value),
+}
+
+/// A single level of switch statement context, pushed/popped as switches nest.
+#[derive(Debug)]
+pub(super) struct SwitchFrame {
+    pub cases: Vec<(i64, String)>,
+    /// GNU case ranges: (low, high, label)
+    pub case_ranges: Vec<(i64, i64, String)>,
+    pub default_label: Option<String>,
+    pub expr_type: IrType,
+}
+
+/// Information about a function typedef (e.g., `typedef int func_t(int, int);`).
+/// Used to detect when a declaration like `func_t add;` is a function declaration
+/// rather than a variable declaration.
+#[derive(Debug, Clone)]
+pub struct FunctionTypedefInfo {
+    /// The return TypeSpecifier of the function typedef
+    pub return_type: TypeSpecifier,
+    /// Parameters of the function typedef
+    pub params: Vec<ParamDecl>,
+    /// Whether the function is variadic
+    pub variadic: bool,
+}
+
+/// Extract function pointer typedef info from a declarator with `FunctionPointer`
+/// derived declarators.
+///
+/// For typedefs like `typedef void *(*lua_Alloc)(void *, ...)`, finds the
+/// `FunctionPointer` derived and builds the return type. The last `Pointer` before
+/// `FunctionPointer` is the `(*)` indirection, not a return-type pointer.
+pub(super) fn extract_fptr_typedef_info(
+    base_type: &TypeSpecifier,
+    derived: &[DerivedDeclarator],
+) -> Option<FunctionTypedefInfo> {
+    let (params, variadic) = derived.iter().find_map(|d| {
+        if let DerivedDeclarator::FunctionPointer(p, v) = d { Some((p, v)) } else { None }
+    })?;
+    let ptr_count_before_fptr = derived.iter()
+        .take_while(|d| !matches!(d, DerivedDeclarator::FunctionPointer(_, _)))
+        .filter(|d| matches!(d, DerivedDeclarator::Pointer))
+        .count();
+    let ret_ptr_count = ptr_count_before_fptr.saturating_sub(1);
+    let mut return_type = base_type.clone();
+    for _ in 0..ret_ptr_count {
+        return_type = TypeSpecifier::Pointer(Box::new(return_type));
+    }
+    Some(FunctionTypedefInfo {
+        return_type,
+        params: params.clone(),
+        variadic: *variadic,
+    })
+}
+
+/// Consolidated function signature metadata.
+/// Replaces 10 parallel HashMaps with a single struct per function.
+#[derive(Debug, Clone)]
+pub(super) struct FuncSig {
+    /// IR return type for inserting narrowing casts after calls.
+    pub return_type: IrType,
+    /// CType of the return value (for pointer-returning and struct-returning functions).
+    pub return_ctype: Option<CType>,
+    /// IR types of each parameter, for inserting implicit argument casts.
+    pub param_types: Vec<IrType>,
+    /// CTypes of each parameter, for complex type argument conversions.
+    pub param_ctypes: Vec<CType>,
+    /// Flags indicating which parameters are _Bool (need normalization to 0/1).
+    pub param_bool_flags: Vec<bool>,
+    /// Whether this function is variadic.
+    pub is_variadic: bool,
+    /// If the function returns a struct > 16 bytes, the struct size (uses hidden sret pointer).
+    pub sret_size: Option<usize>,
+    /// If the function returns a struct of 9-16 bytes via two registers, the struct size.
+    pub two_reg_ret_size: Option<usize>,
+    /// Per-parameter struct sizes for by-value struct passing ABI.
+    /// Each entry is Some(size) if that parameter is a struct/union, None otherwise.
+    pub param_struct_sizes: Vec<Option<usize>>,
+}
+
+/// Metadata about known functions (signatures, variadic status, ABI handling).
+/// Uses a consolidated FuncSig per function instead of parallel HashMaps.
+#[derive(Debug, Default)]
+pub(super) struct FunctionMeta {
+    /// Function name -> consolidated signature.
+    pub sigs: HashMap<String, FuncSig>,
+    /// Function pointer variable name -> signature (return type + param types).
+    pub ptr_sigs: HashMap<String, FuncSig>,
+}
+
+/// Tracks how each original C parameter maps to IR parameters after ABI decomposition.
+///
+/// Used by `build_ir_params` to record what happened to each original parameter,
+/// so `allocate_function_params` knows which registration method to call.
+#[derive(Debug)]
+pub(super) enum ParamKind {
+    /// Normal parameter: 1 IR param at the given index
+    Normal(usize),
+    /// Struct/union or non-decomposed complex parameter passed by value
+    Struct(usize),
+    /// Complex parameter passed as two decomposed FP params (real_ir_idx, imag_ir_idx)
+    ComplexDecomposed(usize, usize),
+    /// Complex float packed into single F64 (x86-64 only)
+    ComplexFloatPacked(usize),
+}
+
+/// Result of building the IR parameter list for a function.
+///
+/// Produced by `build_ir_params`, consumed by `allocate_function_params` and
+/// `finalize_function`.
+pub(super) struct IrParamBuildResult {
+    /// The IR parameters to use for the function signature
+    pub params: Vec<IrParam>,
+    /// Per-original-parameter: how it maps to IR params (indexed by original param index)
+    pub param_kinds: Vec<ParamKind>,
+    /// Whether the function uses sret (hidden first pointer param)
+    pub uses_sret: bool,
+}
+
+// --- Construction helpers ---
+
+impl VarInfo {
+    /// Construct VarInfo from a DeclAnalysis (shared by both LocalInfo and GlobalInfo).
+    pub(super) fn from_analysis(da: &DeclAnalysis) -> Self {
+        VarInfo {
+            ty: da.var_ty,
+            elem_size: da.elem_size,
+            is_array: da.is_array,
+            pointee_type: da.pointee_type,
+            struct_layout: da.struct_layout.clone(),
+            is_struct: da.is_struct,
+            array_dim_strides: da.array_dim_strides.clone(),
+            c_type: da.c_type.clone(),
+        }
+    }
+}
+
+impl GlobalInfo {
+    /// Construct a GlobalInfo from a DeclAnalysis, avoiding repeated field construction.
+    pub(super) fn from_analysis(da: &DeclAnalysis) -> Self {
+        GlobalInfo { var: VarInfo::from_analysis(da) }
+    }
+}
+
+impl LocalInfo {
+    /// Construct a LocalInfo for a regular (non-static) local variable from DeclAnalysis.
+    pub(super) fn from_analysis(da: &DeclAnalysis, alloca: Value) -> Self {
+        LocalInfo {
+            var: VarInfo::from_analysis(da),
+            alloca,
+            alloc_size: da.actual_alloc_size,
+            is_bool: da.is_bool,
+            static_global_name: None,
+            vla_strides: vec![],
+            vla_size: None,
+        }
+    }
+
+    /// Construct a LocalInfo for a static local variable from DeclAnalysis.
+    pub(super) fn for_static(da: &DeclAnalysis, static_name: String) -> Self {
+        LocalInfo {
+            var: VarInfo::from_analysis(da),
+            alloca: Value(0), // placeholder; not used for static locals
+            alloc_size: da.actual_alloc_size,
+            is_bool: da.is_bool,
+            static_global_name: Some(static_name),
+            vla_strides: vec![],
+            vla_size: None,
+        }
+    }
+}

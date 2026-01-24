@@ -7,7 +7,8 @@
 use crate::frontend::parser::ast::*;
 use crate::ir::ir::*;
 use crate::common::types::{IrType, CType};
-use super::lowering::{Lowerer, GlobalInfo, DeclAnalysis, FuncSig};
+use super::lowering::Lowerer;
+use super::definitions::{GlobalInfo, DeclAnalysis, FuncSig};
 
 impl Lowerer {
     /// Handle extern declarations inside function bodies.

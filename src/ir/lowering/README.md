@@ -7,7 +7,10 @@ handles every C language construct. The `mem2reg` pass later promotes allocas to
 
 | File | Responsibility |
 |---|---|
-| `lowering.rs` | `Lowerer` struct, `lower()` entry point, `lower_function`, scope management, `DeclAnalysis` |
+| `definitions.rs` | Shared data structures: `VarInfo`, `LocalInfo`, `GlobalInfo`, `DeclAnalysis`, `LValue`, `SwitchFrame`, `FuncSig`, `FunctionMeta`, `ParamKind`, `IrParamBuildResult`, `FunctionTypedefInfo` |
+| `func_state.rs` | `FunctionBuildState` (per-function build state) and `FuncScopeFrame` (undo-log scope tracking for locals/statics/consts) |
+| `type_context.rs` | `TypeContext` (module-level type state: struct layouts, typedefs, enum constants, ctype cache) and `TypeScopeFrame` |
+| `lowering.rs` | `Lowerer` struct, `lower()` entry point, `lower_function` pipeline, `DeclAnalysis` computation, IR emission helpers |
 | `stmt.rs` | Statement dispatch (`lower_stmt`), `lower_local_decl`, `emit_struct_init`, control flow |
 | `stmt_init.rs` | Local variable init helpers: expr-init, list-init, extern/func-decl handling |
 | `stmt_return.rs` | Return statement: sret, two-reg struct, complex decomposition, scalar returns |
@@ -48,8 +51,12 @@ The `Lowerer` processes a `TranslationUnit` in multiple passes:
 - **`ParamKind`** - Classifies how each C parameter maps to IR params after ABI decomposition
   (Normal, Struct, ComplexDecomposed, ComplexFloatPacked)
 - **`IrParamBuildResult`** - Result of `build_ir_params`: IR param list, param kinds, sret flag
-- **`ScopeFrame`** - Records additions/shadows per block scope. `pop_scope()` undoes
-  changes in O(changes) rather than cloning entire HashMaps
+- **`FunctionBuildState`** (`func_state.rs`) - Per-function state (blocks, instrs, locals, break/continue
+  labels, switch stack, user labels). Created fresh per function, discarded after
+- **`TypeContext`** (`type_context.rs`) - Module-level type state (struct layouts, typedefs, enum constants,
+  ctype cache). Persists across functions. Uses `TypeScopeFrame` undo-log for scoping
+- **`FuncScopeFrame`** / **`TypeScopeFrame`** - Records additions/shadows per block scope.
+  `pop_scope()` undoes changes in O(changes) rather than cloning entire HashMaps
 
 ### Key Helpers
 

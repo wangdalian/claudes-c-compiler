@@ -1,7 +1,8 @@
 use crate::frontend::parser::ast::*;
 use crate::ir::ir::*;
 use crate::common::types::{IrType, CType};
-use super::lowering::{Lowerer, LValue};
+use super::lowering::Lowerer;
+use super::definitions::LValue;
 
 impl Lowerer {
     /// Try to get the lvalue (address) of an expression.

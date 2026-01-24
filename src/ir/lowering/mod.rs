@@ -1,3 +1,6 @@
+pub mod definitions;
+pub mod func_state;
+pub mod type_context;
 pub mod lowering;
 pub mod expr;
 pub mod expr_builtins;
@@ -20,5 +23,5 @@ mod pointer_analysis;
 mod ref_collection;
 
 pub use lowering::Lowerer;
-pub use lowering::TypeContext;
-pub use lowering::FunctionTypedefInfo;
+pub use type_context::TypeContext;
+pub use definitions::FunctionTypedefInfo;

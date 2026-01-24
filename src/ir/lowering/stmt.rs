@@ -1,7 +1,8 @@
 use crate::frontend::parser::ast::*;
 use crate::ir::ir::*;
 use crate::common::types::{IrType, CType, StructLayout};
-use super::lowering::{Lowerer, LocalInfo, GlobalInfo, DeclAnalysis, SwitchFrame, FuncSig, extract_fptr_typedef_info};
+use super::lowering::Lowerer;
+use super::definitions::{LocalInfo, GlobalInfo, DeclAnalysis, SwitchFrame, FuncSig, LValue, extract_fptr_typedef_info};
 
 impl Lowerer {
     pub(super) fn lower_compound_stmt(&mut self, compound: &CompoundStmt) {
@@ -1148,7 +1149,7 @@ impl Lowerer {
                     // Get the lvalue address for the output expression
                     if let Some(lv) = self.lower_lvalue(&out.expr) {
                         let ptr = match lv {
-                            super::lowering::LValue::Variable(v) | super::lowering::LValue::Address(v) => v,
+                            LValue::Variable(v) | LValue::Address(v) => v,
                         };
                         // For "+r" (read-write), also treat as input (load current value)
                         if constraint.contains('+') {
@@ -1186,7 +1187,7 @@ impl Lowerer {
                         // Use lower_lvalue to get the memory address.
                         if let Some(lv) = self.lower_lvalue(&inp.expr) {
                             let ptr = match lv {
-                                super::lowering::LValue::Variable(v) | super::lowering::LValue::Address(v) => v,
+                                LValue::Variable(v) | LValue::Address(v) => v,
                             };
                             Operand::Value(ptr)
                         } else {

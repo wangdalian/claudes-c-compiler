@@ -11,6 +11,7 @@ use crate::frontend::parser::ast::*;
 use crate::ir::ir::*;
 use crate::common::types::{IrType, CType};
 use super::lowering::Lowerer;
+use super::definitions::GlobalInfo;
 
 impl Lowerer {
     /// Mask off the sign bit of a float value for truthiness testing.
@@ -122,7 +123,7 @@ impl Lowerer {
         Operand::Value(dest)
     }
 
-    fn load_global_var(&mut self, global_name: String, ginfo: &super::lowering::GlobalInfo) -> Operand {
+    fn load_global_var(&mut self, global_name: String, ginfo: &GlobalInfo) -> Operand {
         let addr = self.fresh_value();
         self.emit(Instruction::GlobalAddr { dest: addr, name: global_name });
         if ginfo.is_array || ginfo.is_struct {
