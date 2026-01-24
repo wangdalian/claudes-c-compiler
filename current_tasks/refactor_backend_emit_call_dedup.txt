@@ -1,0 +1,15 @@
+Refactor backend: deduplicate emit_call and emit_store_params across architectures
+
+Problem:
+The three backend codegen files (x86: 2,413 lines, arm: 2,780 lines, riscv: 2,735 lines)
+have massive structural duplication. emit_call (~930 duplicated lines) and emit_store_params
+(~841 duplicated lines) follow identical multi-phase algorithms across all three architectures
+with only register names and instruction mnemonics differing.
+
+Plan:
+1. Extract shared emit_call algorithm into backend/call_emit.rs with arch-specific primitives
+2. Extract shared emit_store_params algorithm into the same module
+3. Add trait methods for arch-specific primitives needed by these shared algorithms
+4. Reduce each backend codegen file by ~300-500 lines
+
+Status: IN PROGRESS
