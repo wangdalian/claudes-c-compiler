@@ -1,6 +1,0 @@
-Task: split_preprocessor
-Status: in_progress
-
-Split preprocessor.rs (1676 lines) into submodules:
-- Extract expression evaluation and builtin/attribute detection
-- Extract include handling
