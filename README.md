@@ -224,7 +224,7 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
 | sqlite | PASS | All 622 sqllogictest pass (100%) |
 | libjpeg-turbo | PASS | Builds; cjpeg/djpeg roundtrip and jpegtran pass |
 | redis | PASS | All tests pass (version, cli, SET/GET roundtrip) |
-| postgres | PARTIAL | Build succeeds; initdb progresses past spinlock init and lock method init (fixed typedef ptr array global init); bootstrap script hits invalid memory alloc request |
+| postgres | PARTIAL | Build succeeds; initdb completes (fixed BSS struct pointer size, -rdynamic flag forwarding); make check not yet verified |
 
 ### What's Not Yet Implemented
 - Parser support for GNU C extensions in system headers (`__attribute__`, `__asm__` renames)

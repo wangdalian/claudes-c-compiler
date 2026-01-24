@@ -6,10 +6,16 @@ Multiple issues were identified and fixed:
    allocated only 8 bytes instead of 320 bytes because sizeof for arrays of
    typedef'd pointer types was computed incorrectly.
 
-2. -Wl, linker flags silently discarded (commit e1844e0) - The -W warning flag
-   catch-all matched -Wl,--export-dynamic before the -Wl, handler, causing
-   the postgres binary to be linked without --export-dynamic. This meant
-   dynamically loaded extensions (.so files) couldn't resolve symbols like
-   CurrentMemoryContext, causing initdb to fail when loading dict_snowball.so.
+2. Global struct pointer BSS size bug - `struct Foo *ptr` globals got BSS
+   allocation of sizeof(struct Foo) instead of sizeof(pointer), causing BSS
+   symbols to overlap and corrupt heap-allocated strings like file paths.
+   Fix: add `|| is_pointer` check in actual_alloc_size computation.
 
-With both fixes applied, PostgreSQL initdb completes successfully.
+3. -Wl, linker flags silently discarded - The -W warning flag catch-all
+   matched -Wl,--export-dynamic before the -Wl, handler. Fix: move -Wl,
+   handler before -W catch-all.
+
+4. -rdynamic flag silently ignored - needed for dlopen'd shared libraries
+   (like dict_snowball.so) to resolve symbols. Fix: forward to linker args.
+
+With all fixes applied, PostgreSQL initdb completes successfully.
