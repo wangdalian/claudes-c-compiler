@@ -1,0 +1,11 @@
+Fix long double (F128) x87 st(0) return value ABI on x86-64
+
+Issue: Functions returning long double must use x87 st(0) register per SysV ABI,
+but the compiler was reading/writing xmm0 instead. This caused library functions
+like sqrtl(), powl(), logl(), sinl() etc. to return garbage values.
+
+Fix: In emit_call, after calling a function that returns F128, use fstpl to read
+from st(0) and convert to f64 bit pattern. In emit_return, when returning F128,
+use fldl to load f64 bit pattern onto x87 st(0) stack.
+
+Files changed: src/backend/x86/codegen/codegen.rs
