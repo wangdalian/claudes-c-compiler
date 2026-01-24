@@ -685,6 +685,18 @@ impl CType {
         matches!(self, CType::Float | CType::Double | CType::LongDouble)
     }
 
+    /// Apply C integer promotion rules (C11 6.3.1.1):
+    /// Types smaller than int are promoted to int (or unsigned int if int cannot
+    /// represent all values, but for our targets int is 32-bit so Bool/Char/UChar/
+    /// Short/UShort all fit in int).
+    pub fn integer_promoted(&self) -> CType {
+        match self {
+            CType::Bool | CType::Char | CType::UChar
+            | CType::Short | CType::UShort => CType::Int,
+            other => other.clone(),
+        }
+    }
+
     /// Whether this is an arithmetic type (integer, floating, or complex).
     pub fn is_arithmetic(&self) -> bool {
         self.is_integer() || self.is_floating() || self.is_complex()

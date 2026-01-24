@@ -381,7 +381,14 @@ impl Lowerer {
                 inner_ct.complex_component_type()
             }
             Expr::UnaryOp(UnaryOp::Neg, inner, _) | Expr::UnaryOp(UnaryOp::Plus, inner, _) => {
-                self.expr_ctype(inner)
+                let inner_ct = self.expr_ctype(inner);
+                // Per C11 6.5.3.3, unary +/- perform integer promotion on their operand.
+                // e.g. -(unsigned short) has type int, not unsigned short.
+                if inner_ct.is_integer() {
+                    inner_ct.integer_promoted()
+                } else {
+                    inner_ct
+                }
             }
             Expr::Cast(type_spec, _, _) => {
                 self.type_spec_to_ctype(type_spec)

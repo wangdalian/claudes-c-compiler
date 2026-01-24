@@ -1,0 +1,20 @@
+Fix inline assembly typed operand loads/stores and memory indirection
+
+Problem: Inline assembly output/input operands always used 64-bit movq for
+loads and stores regardless of the actual operand type. For byte-sized types
+(like PostgreSQL's slock_t used in spinlocks), this read garbage from adjacent
+stack bytes and wrote too many bytes back, corrupting stack data.
+
+Additionally, memory operands (+m) for dereferenced pointers (*ptr) used the
+stack slot of the pointer value directly instead of indirecting through it.
+
+Fix:
+1. Added operand_type field to AsmOperand to track IR type
+2. x86 preload_readwrite_output: use movzbq/movzwq/movslq/movl based on type
+3. x86 load_input_to_reg: use type-appropriate load instructions
+4. x86 store_output_from_reg: use movb/movw/movl/movq based on type
+5. x86 resolve_memory_operand: load non-alloca pointer into r11 for indirect addressing
+6. Reordered emit_inline_asm_common to resolve memory operands before + propagation
+
+This fixes the PostgreSQL initdb hang (spinlock spinning forever due to xchgb
+always reading garbage instead of the lock byte value).
