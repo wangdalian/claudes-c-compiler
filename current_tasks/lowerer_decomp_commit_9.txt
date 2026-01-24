@@ -1,0 +1,10 @@
+Lowerer Decomposition Commit 9: Delete dead code and workarounds
+
+Plan:
+- Delete collect_all_enum_constants and collect_all_typedefs (now dead - sema provides these)
+- Delete resolve_ctype_size, resolve_forward_declared_ctype if no longer needed
+- Delete stale SemaResult fields that TypeContext replaced
+- Delete any remaining dead TypeSpecifier→CType conversion helpers
+- Pure deletion commit, zero semantic change
+
+Status: IN PROGRESS
