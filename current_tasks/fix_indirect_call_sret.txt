@@ -1,0 +1,11 @@
+Fix indirect call struct return (sret) handling
+
+The jq project's map/select test fails because function calls through
+function pointers that return structs larger than 16 bytes (or 2 registers)
+don't properly use the sret calling convention. This causes wrong results
+when jq's 16-byte jv type is returned through indirect calls.
+
+The fix needs to:
+1. Detect when an indirect call returns a struct that needs sret
+2. Pass the sret pointer as an implicit first argument
+3. Read the return value from the sret buffer after the call
