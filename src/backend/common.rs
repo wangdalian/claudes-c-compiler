@@ -404,10 +404,12 @@ pub fn emit_const_data(out: &mut AsmOutput, c: &IrConst, ty: IrType, ptr_dir: Pt
 }
 
 /// Emit string literal as .byte directives with null terminator.
-/// Each char in the string represents a single byte (C string semantics).
+/// Each char in the string is treated as a raw byte value (0-255),
+/// not as a UTF-8 encoded character. This is correct for C narrow
+/// string literals where \xNN escapes produce single bytes.
 pub fn emit_string_bytes(out: &mut AsmOutput, s: &str) {
     let bytes: Vec<String> = s.chars()
-        .map(|c| c as u8)  // C strings: each char is a byte value (0-255)
+        .map(|c| c as u8)
         .chain(std::iter::once(0u8))
         .map(|b| format!("{}", b))
         .collect();
@@ -415,21 +417,20 @@ pub fn emit_string_bytes(out: &mut AsmOutput, s: &str) {
 }
 
 /// Escape a string for use in assembly .asciz directives.
-/// Each char in the string represents a single byte (C string semantics).
 pub fn escape_string(s: &str) -> String {
     let mut result = String::new();
     for c in s.chars() {
-        let byte_val = c as u8;
-        match byte_val {
-            b'\\' => result.push_str("\\\\"),
-            b'"' => result.push_str("\\\""),
-            b'\n' => result.push_str("\\n"),
-            b'\t' => result.push_str("\\t"),
-            b'\r' => result.push_str("\\r"),
-            0 => result.push_str("\\0"),
-            b if b >= 0x20 && b < 0x7f => result.push(b as char),
-            b => {
-                result.push_str(&format!("\\{:03o}", b));
+        match c {
+            '\\' => result.push_str("\\\\"),
+            '"' => result.push_str("\\\""),
+            '\n' => result.push_str("\\n"),
+            '\t' => result.push_str("\\t"),
+            '\r' => result.push_str("\\r"),
+            '\0' => result.push_str("\\0"),
+            c if c.is_ascii_graphic() || c == ' ' => result.push(c),
+            c => {
+                // Emit the raw byte value (char as u8), not UTF-8 encoding
+                result.push_str(&format!("\\{:03o}", c as u8));
             }
         }
     }

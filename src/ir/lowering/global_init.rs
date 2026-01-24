@@ -211,7 +211,7 @@ impl Lowerer {
                     // But skip byte-serialization if any struct field is a pointer type
                     // (pointers need .quad directives for address relocations).
                     let has_ptr_fields = struct_layout.as_ref().map_or(false, |layout| {
-                        layout.fields.iter().any(|f| Self::type_has_pointer_elements(&f.ty) || matches!(f.ty, CType::Function(_)))
+                        layout.fields.iter().any(|f| matches!(f.ty, CType::Pointer(_) | CType::Function(_)))
                     });
                     if let Some(ref layout) = struct_layout {
                         if has_ptr_fields {
@@ -611,28 +611,8 @@ impl Lowerer {
                     let field_idx = self.resolve_struct_init_field_idx(item, layout, current_field_idx);
                     if field_idx == last_field_idx {
                         let num_elems = match &item.init {
-                            Initializer::List(sub_items) => {
-                                // Check if the list contains a single string literal
-                                // initializing a char FAM (e.g., .chunk = {"hello"})
-                                if sub_items.len() == 1 {
-                                    if let Initializer::Expr(Expr::StringLiteral(s, _)) = &sub_items[0].init {
-                                        if matches!(elem_ty.as_ref(), CType::Char | CType::UChar) {
-                                            return s.len() + 1; // string bytes + null terminator
-                                        }
-                                    }
-                                }
-                                sub_items.len()
-                            }
-                            Initializer::Expr(expr) => {
-                                // String literal directly initializing a char FAM
-                                // (e.g., struct { char *p; char data[]; } s = {0, "hello"};)
-                                if let Expr::StringLiteral(s, _) = expr {
-                                    if matches!(elem_ty.as_ref(), CType::Char | CType::UChar) {
-                                        return s.len() + 1; // string bytes + null terminator
-                                    }
-                                }
-                                items.len() - item_idx
-                            }
+                            Initializer::List(sub_items) => sub_items.len(),
+                            Initializer::Expr(_) => items.len() - item_idx,
                         };
                         return num_elems * elem_size;
                     }
@@ -723,6 +703,7 @@ impl Lowerer {
         &self, s: &str, sub_elem_count: usize, base_ty: IrType, values: &mut Vec<IrConst>,
     ) {
         let start_len = values.len();
+        // Use chars() to get raw byte values (each char U+0000..U+00FF)
         for c in s.chars() {
             values.push(IrConst::I64(c as u8 as i64));
         }
@@ -867,6 +848,7 @@ impl Lowerer {
             Initializer::Expr(expr) => {
                 if let Expr::StringLiteral(s, _) = expr {
                     // String literal initializing a char array element: inline bytes
+                    // Use chars() to get raw byte values (each char U+0000..U+00FF)
                     for c in s.chars() {
                         values.push(IrConst::I64(c as u8 as i64));
                     }

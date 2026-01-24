@@ -260,20 +260,19 @@ impl Lowerer {
                         elements.push(GlobalInit::GlobalAddr(label));
                     } else {
                         // String literal initializing a char array field
-                        let s_bytes: Vec<u8> = s.chars().map(|c| c as u8).collect();
-                        for (i, &b) in s_bytes.iter().enumerate() {
+                        // Use chars() to get raw byte values (each char is U+0000..U+00FF)
+                        let s_chars: Vec<u8> = s.chars().map(|c| c as u8).collect();
+                        for (i, &b) in s_chars.iter().enumerate() {
                             if i >= field_size { break; }
                             elements.push(GlobalInit::Scalar(IrConst::I8(b as i8)));
                         }
                         // null terminator + remaining zero fill
-                        for _ in s_bytes.len()..field_size {
+                        for _ in s_chars.len()..field_size {
                             elements.push(GlobalInit::Scalar(IrConst::I8(0)));
                         }
                     }
                 } else if let Some(val) = self.eval_const_expr(expr) {
-                    // Scalar constant - coerce to field type before emitting as bytes.
-                    // This handles int-to-float conversion (e.g., { 2, &ptr } where
-                    // the first field is double and 2 must become 2.0 in IEEE 754).
+                    // Scalar constant - coerce to field type and emit as bytes
                     let field_ir_ty = IrType::from_ctype(field_ty);
                     let coerced = val.coerce_to(field_ir_ty);
                     self.push_const_as_bytes(elements, &coerced, field_size);
@@ -372,7 +371,17 @@ impl Lowerer {
             if ai >= arr_size { break; }
 
             if let Initializer::Expr(ref expr) = item.init {
-                self.emit_ptr_expr_to_elements(elements, expr, ptr_size);
+                if let Expr::StringLiteral(s, _) = expr {
+                    let label = self.intern_string_literal(s);
+                    elements.push(GlobalInit::GlobalAddr(label));
+                } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
+                    elements.push(addr_init);
+                } else if let Some(val) = self.eval_const_expr(expr) {
+                    self.push_const_as_bytes(elements, &val, ptr_size);
+                } else {
+                    // zero
+                    push_zero_bytes(elements, ptr_size);
+                }
             } else {
                 // Nested list - zero fill this element
                 push_zero_bytes(elements, ptr_size);
@@ -420,7 +429,16 @@ impl Lowerer {
         for ai in 0..arr_size {
             if let Some(init) = index_inits[ai] {
                 if let Initializer::Expr(ref expr) = init {
-                    self.emit_ptr_expr_to_elements(elements, expr, ptr_size);
+                    if let Expr::StringLiteral(s, _) = expr {
+                        let label = self.intern_string_literal(s);
+                        elements.push(GlobalInit::GlobalAddr(label));
+                    } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
+                        elements.push(addr_init);
+                    } else if let Some(val) = self.eval_const_expr(expr) {
+                        self.push_const_as_bytes(elements, &val, ptr_size);
+                    } else {
+                        push_zero_bytes(elements, ptr_size);
+                    }
                 } else {
                     push_zero_bytes(elements, ptr_size);
                 }
@@ -464,10 +482,18 @@ impl Lowerer {
 
             if let Initializer::Expr(ref expr) = item.init {
                 if elem_is_pointer {
-                    self.emit_ptr_expr_to_elements(elements, expr, ptr_size);
+                    if let Expr::StringLiteral(s, _) = expr {
+                        let label = self.intern_string_literal(s);
+                        elements.push(GlobalInit::GlobalAddr(label));
+                    } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
+                        elements.push(addr_init);
+                    } else if let Some(val) = self.eval_const_expr(expr) {
+                        self.push_const_as_bytes(elements, &val, ptr_size);
+                    } else {
+                        push_zero_bytes(elements, ptr_size);
+                    }
                 } else {
                     if let Some(val) = self.eval_const_expr(expr) {
-                        // Coerce to element type for correct byte representation
                         let elem_ir_ty = IrType::from_ctype(elem_ty);
                         let coerced = val.coerce_to(elem_ir_ty);
                         self.push_const_as_bytes(elements, &coerced, elem_size);
@@ -502,27 +528,6 @@ impl Lowerer {
         };
         layout.resolve_init_field_idx(designator_name, current_field_idx)
             .unwrap_or(current_field_idx)
-    }
-
-    /// Emit a pointer expression's initialization into compound elements.
-    /// Handles string literals (→ GlobalAddr), global address expressions,
-    /// evaluated constants, and falls back to zero-fill.
-    fn emit_ptr_expr_to_elements(
-        &mut self,
-        elements: &mut Vec<GlobalInit>,
-        expr: &Expr,
-        ptr_size: usize,
-    ) {
-        if let Expr::StringLiteral(s, _) = expr {
-            let label = self.intern_string_literal(s);
-            elements.push(GlobalInit::GlobalAddr(label));
-        } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
-            elements.push(addr_init);
-        } else if let Some(val) = self.eval_const_expr(expr) {
-            self.push_const_as_bytes(elements, &val, ptr_size);
-        } else {
-            push_zero_bytes(elements, ptr_size);
-        }
     }
 
     /// Resolve a pointer field's initializer expression to a GlobalInit.
@@ -620,7 +625,6 @@ impl Lowerer {
                             let field_offset = base_offset + field.offset;
                             let field_ir_ty = IrType::from_ctype(&field.ty);
                             let is_ptr_field = matches!(field.ty, CType::Pointer(_) | CType::Function(_));
-                            let is_ptr_array_field = matches!(&field.ty, CType::Array(inner, _) if Self::type_has_pointer_elements(inner));
 
                             if let Initializer::Expr(expr) = &sub_item.init {
                                 if is_ptr_field {
@@ -629,42 +633,14 @@ impl Lowerer {
                                     } else if let Some(val) = self.eval_const_expr(expr) {
                                         self.write_const_to_bytes(&mut bytes, field_offset, &val, field_ir_ty);
                                     }
-                                } else if is_ptr_array_field {
-                                    // Single expression initializing a pointer array field
-                                    // (e.g. first element only)
-                                    if let Some(addr_init) = self.resolve_ptr_field_init(expr) {
-                                        ptr_ranges.push((field_offset, addr_init));
-                                    }
                                 } else if let (Some(bit_offset), Some(bit_width)) = (field.bit_offset, field.bit_width) {
+                                    // Bitfield: use read-modify-write to pack into storage unit
                                     let val = self.eval_init_scalar(&sub_item.init);
                                     self.write_bitfield_to_bytes(&mut bytes, field_offset, &val, field_ir_ty, bit_offset, bit_width);
                                 } else {
                                     if let Some(val) = self.eval_const_expr(expr) {
                                         self.write_const_to_bytes(&mut bytes, field_offset, &val, field_ir_ty);
                                     }
-                                }
-                            } else if let Initializer::List(ref nested_items) = sub_item.init {
-                                if is_ptr_array_field {
-                                    // Braced list initializing a pointer array field
-                                    // e.g. { {f1, f1}, {&c, &c} } for int (*a[2])() or int *b[2]
-                                    if let CType::Array(ref _elem_ty, Some(ref arr_size)) = field.ty {
-                                        let arr_size = *arr_size;
-                                        let ptr_size = 8usize;
-                                        for (ai, arr_item) in nested_items.iter().enumerate() {
-                                            if ai >= arr_size { break; }
-                                            let elem_offset = field_offset + ai * ptr_size;
-                                            if let Initializer::Expr(ref expr) = arr_item.init {
-                                                if let Some(addr_init) = self.resolve_ptr_field_init(expr) {
-                                                    ptr_ranges.push((elem_offset, addr_init));
-                                                } else if let Some(val) = self.eval_const_expr(expr) {
-                                                    self.write_const_to_bytes(&mut bytes, elem_offset, &val, IrType::I64);
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else if let Some(nested_layout) = self.get_struct_layout_for_ctype(&field.ty.clone()) {
-                                    // Nested struct initialization
-                                    self.fill_struct_global_bytes(nested_items, &nested_layout, &mut bytes, field_offset);
                                 }
                             }
                             current_field_idx = field_idx + 1;
