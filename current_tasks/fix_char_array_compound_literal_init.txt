@@ -1,0 +1,19 @@
+Task: Fix char array compound literal string initialization
+
+Bug: Compound literals of char array type with string initializer produce garbage.
+    char *p = (char[]){ "hello" };    // BROKEN - prints garbage
+    printf("%s\n", (char[]){"world"});  // BROKEN - prints garbage
+
+But these work fine:
+    char a[] = "hello";          // OK
+    char b[] = { "hello" };      // OK
+
+The issue is in compound literal lowering - when the compound literal has
+char array type and a string initializer, the string data isn't being
+properly copied into the compound literal's stack allocation.
+
+Fix: Find the compound literal lowering code and ensure it handles
+string initializers for char array compound literals the same way
+regular variable initialization handles them.
+
+Status: IN PROGRESS
