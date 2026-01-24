@@ -1,0 +1,41 @@
+HIGH PRIORITY: Introduce ValueLocation abstraction for eventual register allocation
+
+Problem:
+CodegenState (codegen_shared.rs:24) hardwires value_locations: HashMap<u32, StackSlot>.
+calculate_stack_space_common unconditionally assigns every IR value a stack slot --
+there is no liveness analysis, no register allocation, no "keep in register" path.
+The x86 backend uses pushq %rax / popq %rax as scratch register management (14+
+push/pop sites). ARM and RISC-V use mov x1,x0 / mv t1,t0 for the same purpose.
+
+The ArchCodegen trait has 118 methods, all assuming stack-slot-based value locations.
+The three backends total ~7,800 lines of codegen, all built on this assumption.
+Every new IR instruction or optimization that the compiler adds deepens the
+commitment to stack-only codegen.
+
+What to do (incremental, not a rewrite):
+1. Introduce a ValueLocation enum:
+     enum ValueLocation {
+         Stack(StackSlot),
+         Register(PhysReg),  // for future use
+     }
+2. Change value_locations to HashMap<u32, ValueLocation>
+3. Initially, all values still get ValueLocation::Stack -- behavior unchanged
+4. Update emit_load_operand / emit_store_result to dispatch on ValueLocation
+5. This creates the abstraction boundary so that a future register allocator
+   can assign ValueLocation::Register to some values without rewriting all
+   118 trait methods at once
+
+This is NOT implementing a register allocator. It's adding the abstraction layer
+that makes a register allocator possible without a full codegen rewrite. The longer
+this is deferred, the more codegen code hardwires stack assumptions.
+
+Key files:
+- src/backend/codegen_shared.rs (CodegenState, StackSlot, calculate_stack_space_common,
+  ArchCodegen trait: 118 methods)
+- src/backend/x86/codegen/codegen.rs (2,391 lines, 14+ pushq %rax sites)
+- src/backend/arm/codegen/codegen.rs (2,747 lines)
+- src/backend/riscv/codegen/codegen.rs (2,690 lines)
+
+Relationship to ideas/register_allocator.txt:
+That idea describes the full register allocator. This idea is the prerequisite
+abstraction step that should happen first.

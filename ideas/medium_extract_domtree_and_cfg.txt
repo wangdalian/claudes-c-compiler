@@ -1,0 +1,42 @@
+MEDIUM PRIORITY: Extract dominator tree and CFG utilities into shared analysis module
+
+Problem:
+mem2reg privately computes a full dominator tree (Cooper-Harvey-Kennedy), CFG
+predecessor/successor lists, reverse postorder, and dominance frontiers -- then
+discards all of it. These are all private functions in mem2reg.rs (lines 307-533):
+  build_label_map, build_cfg, compute_dominators, compute_reverse_postorder,
+  compute_dominance_frontiers, build_dom_tree_children, intersect
+
+The optimization pass pipeline (passes/mod.rs) is a hardcoded for-loop with no
+shared analysis. When GVN is extended to dominator-based (its own TODO says this),
+it will need to recompute the same dominator tree that mem2reg just built and
+threw away. Same for LICM, loop detection, and any future dominator-based pass.
+
+There is no AnalysisManager, no analysis caching, no invalidation protocol.
+Pass ordering is manual with no dependency checking. The run_passes function
+ignores the change counts returned by each pass (no convergence detection).
+
+What to do (two steps):
+Step 1 - Extract shared analysis utilities:
+  1. Create src/ir/analysis.rs (or src/ir/analysis/ module)
+  2. Move build_cfg, compute_dominators, compute_reverse_postorder,
+     compute_dominance_frontiers, build_dom_tree_children to it as pub functions
+  3. Define DomTree struct holding idom array and children list
+  4. Define CFG struct holding preds and succs Vec<Vec<usize>>
+  5. Update mem2reg to use the shared module
+  6. ~230 lines of code to relocate, zero logic changes
+
+Step 2 - Basic analysis caching (optional, for later):
+  1. Add AnalysisCache struct that holds Option<DomTree>, Option<CFG>
+  2. Passes request analyses from the cache; cache computes on first request
+  3. When a pass mutates the IR, it marks the cache as dirty
+  4. This prevents recomputation when consecutive passes need the same analysis
+
+Step 1 is a prerequisite for dominator-based GVN (ideas/medium_global_gvn.txt)
+and any future pass that needs dominator or CFG information.
+
+Key files:
+- src/ir/mem2reg/mem2reg.rs (lines 307-533: 6 private analysis functions)
+- src/passes/mod.rs (run_passes: hardcoded loop, ignores change counts)
+- src/passes/gvn.rs (TODO comment: "requires dominator tree analysis")
+- src/driver/driver.rs (lines 328-332: pipeline orchestration)

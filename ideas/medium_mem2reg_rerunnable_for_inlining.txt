@@ -1,0 +1,43 @@
+MEDIUM PRIORITY: Make mem2reg re-runnable for future inlining support
+
+Problem:
+The pipeline is fixed: lower -> mem2reg -> optimize -> phi-eliminate -> codegen.
+If an inlining pass is added, it would inline function bodies that contain allocas
+(since the inlined code hasn't been through mem2reg). But mem2reg already ran and
+the pipeline has no mechanism to re-run it.
+
+mem2reg is technically re-runnable (it recalculates max Value IDs, returns early if
+no promotable allocas found). However, three issues prevent it from correctly handling
+post-inlining IR:
+
+1. Parameter-alloca skip is positional (mem2reg.rs:79-91): skips the first N allocas
+   in the entry block where N = func.params.len(). After inlining, callee parameter
+   allocas are in the caller but are NOT caller parameters. The positional heuristic
+   would incorrectly skip promotable allocas or fail to skip real parameter allocas.
+
+2. Entry-block-only alloca scanning (mem2reg.rs:83): only entry block allocas are
+   considered promotable. An inliner would splice callee allocas at the call site,
+   which may not be the entry block. Either the inliner must hoist allocas to entry
+   (LLVM's approach) or mem2reg must scan all blocks.
+
+3. No module-level value counter: next_value lives on FunctionBuildState during
+   lowering and is not persisted on IrFunction. mem2reg re-derives it by scanning
+   (lines 556-564), which works but is wasteful. An inliner would benefit from
+   having next_value on IrFunction.
+
+What to do (preparation, not full inlining):
+1. Change parameter-alloca detection from positional to annotation-based:
+   add is_param: bool to Instruction::Alloca, or store param alloca Value IDs
+   on IrFunction. Have lowering set the flag for parameter allocas.
+2. Persist next_value on IrFunction so passes can mint fresh Value IDs efficiently.
+3. Document that an inliner must hoist callee allocas to the caller's entry block
+   (following LLVM's convention, which keeps mem2reg simple and fast).
+
+These are small, low-risk changes that unblock a future inlining pass without
+requiring any pipeline restructuring today.
+
+Key files:
+- src/ir/mem2reg/mem2reg.rs (find_promotable_allocas, promote_function)
+- src/ir/ir.rs (IrFunction struct, Instruction::Alloca)
+- src/ir/lowering/lowering.rs (FunctionBuildState.next_value, lower_function)
+- src/driver/driver.rs (pipeline ordering)

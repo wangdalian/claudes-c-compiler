@@ -1,0 +1,42 @@
+LOW PRIORITY: Wire up the structured error infrastructure
+
+Problem:
+Error reporting uses 5 different ad-hoc patterns across compilation phases:
+1. Parser: bare eprintln! + manual error_count integer, no spans
+2. Sema: eprintln! immediately + push to Vec<String> that nobody reads
+3. Preprocessor: #error pushed to Vec<String> driver never checks; #warning to eprintln!
+4. IR lowering: standalone eprintln! with no buffering
+5. DiagnosticEngine/Diagnostic in common/error.rs: span-aware, severity-tagged,
+   note-capable, buffered -- but entirely dead code (never instantiated by any phase)
+
+The DiagnosticEngine already supports:
+- Diagnostic with severity, message, span, and notes
+- emit() method that resolves span to file:line:col
+- print_all() for deferred batch rendering
+- has_errors() / error_count() queries
+
+But it has no source-snippet rendering (no caret, no context line, no underline).
+SourceManager has the file content to do this, but no code extracts source lines.
+
+What to do (incremental):
+1. Wire DiagnosticEngine into the driver -- create one instance, thread it through
+   each phase (or use a global/thread-local)
+2. Have the parser emit Diagnostics instead of eprintln! (parser already tracks
+   token positions via Span)
+3. Have sema emit Diagnostics instead of eprintln! + warnings Vec
+4. Have the preprocessor report errors through DiagnosticEngine
+5. Have the driver check for errors after each phase and print_all at the end
+6. Add source-snippet rendering to Diagnostic::emit() -- extract the source line
+   from SourceManager, print a caret/underline under the span
+
+This is low priority because the compiler works correctly without it -- users just
+get unhelpful error messages. It becomes higher priority when adding better parse
+error recovery or type-checking diagnostics.
+
+Key files:
+- src/common/error.rs (DiagnosticEngine, Diagnostic -- dead code)
+- src/common/source.rs (SourceManager, has file content for snippets)
+- src/frontend/parser/parser.rs (eprintln! sites: lines 122, 182, 546, 695)
+- src/frontend/sema/sema.rs (eprintln! + warnings Vec, lines 433-454)
+- src/frontend/preprocessor/preprocessor.rs (errors Vec, eprintln! for #warning)
+- src/driver/driver.rs (never reads preprocessor.errors() or sema_result.warnings)

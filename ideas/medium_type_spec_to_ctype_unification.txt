@@ -1,0 +1,40 @@
+MEDIUM PRIORITY: Unify remaining type_spec_to_ctype duplication between sema and lowering
+
+Problem:
+Despite the type_builder module extraction (commit 263f82d) which unified
+build_full_ctype and convert_param_decls_to_ctypes, the core type_spec_to_ctype()
+dispatch still exists as two separate implementations:
+
+- Sema: sema.rs:574-716 (143 lines)
+- Lowering: types.rs:1103-1168 (66 lines) + struct_or_union_to_ctype helper (100 lines)
+
+The 22 primitive-type arms are pure boilerplate duplication. The intentional
+differences are:
+- Typeof(expr): Sema returns CType::Int (stub), lowering calls get_expr_ctype
+- TypedefName: Lowering also checks build_function_pointer_ctype_from_typedef
+- Struct/Union: Sema does inline layout, lowering delegates to cached helper
+- Enum: Sema returns CType::Enum with name, lowering returns plain CType::Int
+
+The TypeConvertContext trait already has resolve_type_spec_to_ctype() which both
+sides implement by delegating to their own type_spec_to_ctype(). The unification
+would move the match dispatch into type_builder and add trait methods for the
+divergent arms.
+
+What to do:
+1. Add trait methods to TypeConvertContext for the divergent cases:
+   - resolve_typeof_expr(&self, expr: &Expr) -> CType
+   - resolve_typedef_name(&self, name: &str) -> CType
+   - resolve_struct_or_union(&self, ...) -> CType
+   - resolve_enum(&self, ...) -> CType
+2. Move the shared match dispatch (all 22 primitive arms + Pointer + Array +
+   FunctionPointer) into a default method on TypeConvertContext
+3. Each side implements only the 4 divergent trait methods
+4. Delete the duplicated type_spec_to_ctype methods from sema and lowering
+
+Benefits: eliminates ~150 lines of boilerplate duplication, ensures primitive type
+mapping can never diverge, makes adding new TypeSpecifier variants a single-point change.
+
+Key files:
+- src/common/type_builder.rs (TypeConvertContext trait)
+- src/frontend/sema/sema.rs (type_spec_to_ctype, lines 574-716)
+- src/ir/lowering/types.rs (type_spec_to_ctype, lines 1103-1168)

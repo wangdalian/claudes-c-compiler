@@ -1,0 +1,37 @@
+MEDIUM PRIORITY: Replace String block labels with integer block indices in the IR
+
+Problem:
+BasicBlock::label is String. Terminator::Branch/CondBranch/IndirectBranch all store
+String labels. Phi incoming edges are Vec<(Operand, String)>. Every pass that needs
+a CFG must call build_label_map() to create HashMap<String, usize>. Both mem2reg
+and phi_eliminate independently build this same map. There are 67 .clone() sites
+across the codebase cloning labels into terminators, phi edges, and successor lists.
+
+The only consumer that genuinely needs the String label is the backend codegen,
+which formats it into assembly text. All other uses (CFG edges, dominators, phi
+predecessors) would work with integer block indices.
+
+What to do:
+1. Change Terminator branches to store BlockId(u32) instead of String
+2. Change Phi incoming to Vec<(Operand, BlockId)>
+3. Store the String label once per BasicBlock (for assembly emission only),
+   or generate it on-the-fly during codegen from the block index
+4. Remove build_label_map() -- block index IS the identity
+5. Update the ~67 clone sites to use Copy-able BlockId values
+6. Update lowering to emit BlockId references (fresh_label returns BlockId,
+   keeps a label string table for debug/asm purposes)
+
+Benefits:
+- Eliminates all String hashing, allocation, and comparison for CFG traversal
+- CFG successor/predecessor lookup becomes direct array indexing, not HashMap lookup
+- BlockId is Copy, eliminating 67 .clone() sites and the Vec<String> allocations
+- Phi nodes become cheaper (no String per incoming edge)
+- Removes the fragility of silently-stale string references after block removal
+
+Key files:
+- src/ir/ir.rs (BasicBlock, Terminator, Instruction::Phi)
+- src/ir/mem2reg/mem2reg.rs (build_label_map, build_cfg, get_successor_labels)
+- src/ir/mem2reg/phi_eliminate.rs (builds its own label_to_idx map)
+- src/ir/lowering/stmt.rs (40 label clones)
+- src/ir/lowering/expr.rs (11 label clones)
+- src/backend/codegen_shared.rs (emits labels to assembly)

@@ -1,0 +1,38 @@
+MEDIUM PRIORITY: Extend GVN from block-local to dominator-tree-based
+
+Problem:
+gvn.rs is named "GVN" but implements Local Value Numbering (LVN) only. The hash
+maps (expr_to_value, value_numbers) are created fresh per block in run_lvn_block
+(line 50-53). No cross-block information is propagated. The file's own doc comment
+admits this and has a TODO to extend to dominator-based GVN.
+
+This misses all cross-block redundancies:
+- Diamond patterns: entry computes add %a,%b, merge recomputes it (entry dominates merge)
+- Loop-invariant expressions computed in both header and body
+- Casts and comparisons duplicated across branches
+- Address/GEP computations in headers reused in successors
+
+Additionally, ExprKey only covers BinOp, UnaryOp, and Cmp. Cast and GetElementPtr
+are not value-numbered at all (fall through to _ => None in make_expr_key).
+
+Prerequisite: ideas/medium_extract_domtree_and_cfg.txt (shared dominator tree)
+
+What to do:
+1. Use the shared dominator tree from the analysis module
+2. Change run_lvn_function to walk the dominator tree (DFS) instead of iterating
+   blocks linearly
+3. Use a scoped hash map: on entering a block, record snapshot; on backtracking,
+   truncate to snapshot (same pattern as rename_block in mem2reg.rs:620-732)
+4. Extend ExprKey to cover Cast and GetElementPtr instructions
+5. Existing single-block tests remain valid (degenerate case of domtree GVN)
+6. Add tests with diamond and loop CFGs
+
+The domtree-DFS-with-scoped-tables pattern is well-established (Simpson/Cooper)
+and already has a working template in this codebase's own rename_block in mem2reg.
+
+Estimated scope: ~250-350 lines of diff, medium complexity. The hardest decision
+is the scoping strategy for hash maps (rollback-log vs persistent data structure).
+
+Key files:
+- src/passes/gvn.rs (run_lvn_function, run_lvn_block, ExprKey, make_expr_key)
+- src/ir/mem2reg/mem2reg.rs (rename_block: template for scoped domtree DFS)
