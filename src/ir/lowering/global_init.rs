@@ -1792,6 +1792,10 @@ impl Lowerer {
                                     } else if let Some(val) = self.eval_const_expr(expr) {
                                         self.write_const_to_bytes(&mut bytes, field_offset, &val, field_ir_ty);
                                     }
+                                } else if let (Some(bit_offset), Some(bit_width)) = (field.bit_offset, field.bit_width) {
+                                    // Bitfield: use read-modify-write to pack into storage unit
+                                    let val = self.eval_init_scalar(&sub_item.init);
+                                    self.write_bitfield_to_bytes(&mut bytes, field_offset, &val, field_ir_ty, bit_offset, bit_width);
                                 } else {
                                     if let Some(val) = self.eval_const_expr(expr) {
                                         self.write_const_to_bytes(&mut bytes, field_offset, &val, field_ir_ty);
