@@ -1,0 +1,16 @@
+Refactor stmt.rs: decompose mega-functions and extract shared helpers
+
+The stmt.rs file (2092 lines) contains several extremely long functions:
+- lower_local_decl: 552 lines - handles too many concerns in one function
+- lower_stmt: 601 lines - massive match arms that should be separate methods
+- emit_struct_init: 438 lines - deeply nested match with repeated patterns
+
+Plan:
+1. Extract lower_return_stmt (~194 lines) from lower_stmt's Return arm
+2. Extract lower_switch_stmt (~100 lines) from lower_stmt's Switch arm
+3. Extract lower_inline_asm_stmt from lower_stmt
+4. Split lower_local_decl into: extern/func decl handling, init-from-expr, init-from-list
+5. Extract duplicated function meta registration pattern (3 inline copies vs register_function_meta)
+6. Extract scope-tracked removal helper (3 identical inline instances)
+7. Split emit_struct_init array handling into focused helpers
+8. Add README.md for ir/lowering/
