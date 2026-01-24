@@ -1103,34 +1103,59 @@ impl ArchCodegen for X86Codegen {
             return;
         }
         if ty.is_float() {
-            // Float comparison using SSE
+            // Float comparison using SSE ucomisd/ucomiss.
+            // NaN handling: ucomisd sets CF=1, ZF=1, PF=1 for unordered (NaN) operands.
+            // C ordered comparisons must return false for NaN (except !=).
+            // Strategy:
+            //   Eq:  setnp + sete → AND (both ZF=1 and PF=0 required)
+            //   Ne:  setp + setne → OR (either ZF=0 or PF=1 sufficient)
+            //   Lt/Le: reverse operand order, use seta/setae (NaN → CF=1 → false)
+            //   Gt/Ge: seta/setae directly (NaN → CF=1 → false)
             let (mov_to_xmm0, mov_to_xmm1) = if ty == IrType::F32 {
                 ("movd %eax, %xmm0", "movd %eax, %xmm1")
             } else {
                 ("movq %rax, %xmm0", "movq %rax, %xmm1")
             };
-            self.operand_to_rax(lhs);
+            // For Lt/Le, we swap operand loading order so we can use seta/setae
+            let swap_operands = matches!(op, IrCmpOp::Slt | IrCmpOp::Ult | IrCmpOp::Sle | IrCmpOp::Ule);
+            let (first, second) = if swap_operands { (rhs, lhs) } else { (lhs, rhs) };
+            self.operand_to_rax(first);
             self.state.emit(&format!("    {}", mov_to_xmm0));
             self.state.emit("    pushq %rax");
-            self.operand_to_rax(rhs);
+            self.operand_to_rax(second);
             self.state.emit(&format!("    {}", mov_to_xmm1));
             self.state.emit("    popq %rax");
             // F128 uses F64 instructions (long double computed at double precision)
+            // ucomisd %xmm1, %xmm0 compares xmm0 vs xmm1 (AT&T: src, dst → compares dst to src)
             if ty == IrType::F64 || ty == IrType::F128 {
                 self.state.emit("    ucomisd %xmm1, %xmm0");
             } else {
                 self.state.emit("    ucomiss %xmm1, %xmm0");
             }
-            // For float: use unsigned-style setcc (above/below) since ucomisd sets CF/ZF
-            let set_instr = match op {
-                IrCmpOp::Eq => "sete",
-                IrCmpOp::Ne => "setne",
-                IrCmpOp::Slt | IrCmpOp::Ult => "setb",
-                IrCmpOp::Sle | IrCmpOp::Ule => "setbe",
-                IrCmpOp::Sgt | IrCmpOp::Ugt => "seta",
-                IrCmpOp::Sge | IrCmpOp::Uge => "setae",
-            };
-            self.state.emit(&format!("    {} %al", set_instr));
+            match op {
+                IrCmpOp::Eq => {
+                    // Ordered equal: ZF=1 AND PF=0 (not unordered)
+                    self.state.emit("    setnp %al");
+                    self.state.emit("    sete %cl");
+                    self.state.emit("    andb %cl, %al");
+                }
+                IrCmpOp::Ne => {
+                    // Unordered not-equal: ZF=0 OR PF=1 (NaN → true)
+                    self.state.emit("    setp %al");
+                    self.state.emit("    setne %cl");
+                    self.state.emit("    orb %cl, %al");
+                }
+                IrCmpOp::Slt | IrCmpOp::Ult | IrCmpOp::Sgt | IrCmpOp::Ugt => {
+                    // With operands swapped for Lt, seta gives correct ordered result
+                    // seta: CF=0 AND ZF=0 (NaN sets CF=1, so returns false)
+                    self.state.emit("    seta %al");
+                }
+                IrCmpOp::Sle | IrCmpOp::Ule | IrCmpOp::Sge | IrCmpOp::Uge => {
+                    // With operands swapped for Le, setae gives correct ordered result
+                    // setae: CF=0 (NaN sets CF=1, so returns false)
+                    self.state.emit("    setae %al");
+                }
+            }
             self.state.emit("    movzbq %al, %rax");
             self.store_rax_to(dest);
             return;
