@@ -1,0 +1,23 @@
+Task: Fix backend consistency bugs across x86, ARM, and RISC-V
+
+Three bugs identified by cross-backend comparison:
+
+1. ARM emit_va_start/emit_va_copy large-offset bug:
+   Lines 1386, 1439, 1446 use `add x0/x1, x29, #slot` without handling
+   offsets > 4095 (the ARM immediate limit). Will produce invalid assembly
+   for stack frames larger than 4095 bytes. Fix: use emit_add_fp_offset
+   helper pattern (check offset, use x17 scratch for large values).
+
+2. classify_float_binop fallback bug (all three backends):
+   All backends use `classify_float_binop(op).unwrap_or(FloatOp::Add)` which
+   silently emits fadd for invalid float operations (bitwise, shifts, remainder).
+   Fix: panic or emit integer fallback for these impossible cases.
+
+3. ARM emit_call variadic float arg handling:
+   ARM's emit_call does not use num_fixed_args to distinguish named from
+   variadic float arguments. Currently forces ALL float args into GP registers
+   for variadic calls. Per AAPCS64, named float params should still go in FP
+   registers; only unnamed (variadic) float args need GP registers.
+   Fix: use num_fixed_args to classify args correctly.
+
+Status: In progress
