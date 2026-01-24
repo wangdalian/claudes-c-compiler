@@ -1,0 +1,14 @@
+Fix ARM (AArch64) long double (F128) stack parameter passing in callee
+
+Bug: When more than 8 long double params are passed to a function on AArch64,
+the callee's emit_store_params incorrectly handles overflow F128 params:
+
+1. Classification: stack_offset only increments by 8 for overflow float params,
+   but F128 needs 16 bytes and 16-byte alignment.
+2. Loading: Phase 3 loads stack params with a single 8-byte ldr, but F128 params
+   need 16 bytes loaded (and then converted from f128 to f64 via __trunctfdf2).
+
+The caller (emit_call) correctly handles this with 'S' class, but the callee
+doesn't distinguish F128 stack overflow from regular float stack overflow.
+
+Status: LOCKED
