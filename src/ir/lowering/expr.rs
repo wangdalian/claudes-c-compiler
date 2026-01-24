@@ -1273,12 +1273,7 @@ impl Lowerer {
             }
             Expr::Sizeof(_, _) => IrType::U64,
             Expr::FunctionCall(func, _, _) => {
-                if let Expr::Identifier(name, _) = func.as_ref() {
-                    if let Some(ret_ty) = self.func_meta.sigs.get(name.as_str()).map(|s| s.return_type) {
-                        return ret_ty;
-                    }
-                }
-                IrType::I64
+                self.get_call_return_type(func)
             }
             Expr::Deref(_, _) | Expr::ArraySubscript(_, _, _)
             | Expr::MemberAccess(_, _, _) | Expr::PointerMemberAccess(_, _, _) => {

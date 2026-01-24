@@ -129,7 +129,7 @@ impl Lowerer {
             }
             let union_size = layout.size;
             if let Some(fi) = init_fi {
-                let field_size = layout.fields[fi].ty.size();
+                let field_size = self.resolve_ctype_size(&layout.fields[fi].ty);
                 let field_is_pointer = matches!(layout.fields[fi].ty, CType::Pointer(_) | CType::Function(_));
                 let inits = &field_inits[fi];
                 if inits.len() == 1 {
@@ -268,7 +268,7 @@ impl Lowerer {
         let mut fi = 0;
         while fi < layout.fields.len() {
             let field_offset = layout.fields[fi].offset;
-            let field_size = layout.fields[fi].ty.size();
+            let field_size = self.resolve_ctype_size(&layout.fields[fi].ty);
             let field_is_pointer = matches!(layout.fields[fi].ty, CType::Pointer(_) | CType::Function(_));
 
             // Check if this is a bitfield: if so, we need to pack all bitfields
@@ -751,7 +751,7 @@ impl Lowerer {
 
         let sub_offset = drill.byte_offset;
         let current_ty = drill.target_ty;
-        let sub_size = current_ty.size();
+        let sub_size = self.resolve_ctype_size(&current_ty);
         let sub_is_pointer = matches!(current_ty, CType::Pointer(_) | CType::Function(_));
 
         // If the target is a struct/union and the init is a List, use compound struct init
@@ -928,7 +928,7 @@ impl Lowerer {
         };
 
         let elem_is_pointer = Self::type_has_pointer_elements_ctx(elem_ty, &self.types);
-        let elem_size = elem_ty.size();
+        let elem_size = self.resolve_ctype_size(elem_ty);
         let ptr_size = 8; // 64-bit
 
         let mut ai = 0usize;
@@ -1811,7 +1811,7 @@ impl Lowerer {
                 }
             } else {
                 // Array of non-composite elements (scalars, pointers, etc.)
-                let elem_size = elem_ty.size();
+                let elem_size = self.resolve_ctype_size(elem_ty);
                 let elem_ir_ty = IrType::from_ctype(elem_ty);
                 for (ai, item) in items.iter().enumerate() {
                     let elem_offset = offset + ai * elem_size;

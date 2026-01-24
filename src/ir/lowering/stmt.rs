@@ -398,7 +398,7 @@ impl Lowerer {
                     let is_struct_field = matches!(field.ty, CType::Struct(_) | CType::Union(_));
                     if is_struct_field && self.struct_value_size(e).is_some() {
                         let src_addr = self.get_struct_base_addr(e);
-                        let field_size = field.ty.size();
+                        let field_size = self.resolve_ctype_size(&field.ty);
                         let field_addr = self.emit_gep_offset(base, field_offset, IrType::Ptr);
                         self.emit(Instruction::Memcpy {
                             dest: field_addr,
@@ -504,7 +504,7 @@ impl Lowerer {
                 }
                 // Array field: init elements with [idx]=val designator support
                 let elem_ir_ty = IrType::from_ctype(elem_ty);
-                let elem_size = elem_ty.size();
+                let elem_size = self.resolve_ctype_size(elem_ty);
                 let mut ai = 0usize;
                 for item in items.iter() {
                     // Check for index designator: [idx]=val
@@ -1224,7 +1224,7 @@ impl Lowerer {
                     // .field[idx] = val: resolve index and store element, then
                     // continue consuming subsequent non-designated items for the
                     // remaining array positions (C11 6.7.9p17).
-                    let elem_size = elem_ty.size();
+                    let elem_size = self.resolve_ctype_size(elem_ty);
                     let elem_ir_ty = IrType::from_ctype(elem_ty);
                     let arr_size = *arr_size;
 
@@ -1276,7 +1276,7 @@ impl Lowerer {
                                     }
                                 }).unwrap_or(0);
                                 if inner_idx < *inner_size {
-                                    let inner_elem_size = inner_elem_ty.size();
+                                    let inner_elem_size = self.resolve_ctype_size(inner_elem_ty);
                                     let inner_ir_ty = IrType::from_ctype(inner_elem_ty);
                                     let inner_offset = elem_offset + inner_idx * inner_elem_size;
                                     if let Initializer::Expr(e) = &item.init {
@@ -1307,7 +1307,7 @@ impl Lowerer {
                             // Handle list init for array element (e.g., .a[1] = {1,2,3})
                             match elem_ty.as_ref() {
                                 CType::Array(inner_elem_ty, Some(inner_size)) => {
-                                    let inner_elem_size = inner_elem_ty.size();
+                                    let inner_elem_size = self.resolve_ctype_size(inner_elem_ty);
                                     let inner_ir_ty = IrType::from_ctype(inner_elem_ty);
                                     let mut si = 0;
                                     for sub_item in sub_items.iter() {
@@ -1384,7 +1384,7 @@ impl Lowerer {
                 }
                 CType::Array(elem_ty, Some(arr_size)) => {
                     // Array field: init elements
-                    let elem_size = elem_ty.size();
+                    let elem_size = self.resolve_ctype_size(elem_ty);
                     match &item.init {
                         Initializer::List(sub_items) => {
                             // Check for brace-wrapped string literal: {"hello"} for char[]
@@ -1447,7 +1447,7 @@ impl Lowerer {
                                         // Handle braced sub-init for array elements (e.g., int arr[2][3] = {{1,2,3},{4,5,6}})
                                         if let CType::Array(inner_elem_ty, Some(inner_size)) = elem_ty.as_ref() {
                                             let inner_elem_ir_ty = IrType::from_ctype(inner_elem_ty);
-                                            let inner_elem_size = inner_elem_ty.size();
+                                            let inner_elem_size = self.resolve_ctype_size(inner_elem_ty);
                                             for (ii, inner_item) in inner_items.iter().enumerate() {
                                                 if ii >= *inner_size { break; }
                                                 if let Initializer::Expr(e) = &inner_item.init {

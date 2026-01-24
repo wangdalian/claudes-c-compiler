@@ -1,0 +1,18 @@
+Fix struct member array subscript using wrong element stride
+
+The get_member_array_elem_size() function in lvalue.rs called elem_ty.size()
+and pointee_ty.size() on CTypes that could be Struct/Union, which returns 0.
+This caused container.arr[i] to always compute address of arr[0] when arr
+is an array of structs (or via flexible array member).
+
+Root cause: CType::Struct(name) and CType::Union(name) store only a key,
+not layout data. Their .size() method returns 0. Must use resolve_ctype_size()
+which looks up the actual layout.
+
+This was missed by the fix_ctype_size_struct_zero commit which fixed 26 sites
+in initializer lowering but not in lvalue.rs.
+
+Impact: Fixes jq crash (all 12 tests fail -> pass), likely fixes other
+struct-array-member access patterns in real codebases.
+
+Status: IN PROGRESS

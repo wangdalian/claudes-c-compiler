@@ -688,7 +688,8 @@ impl Lowerer {
             Expr::ArraySubscript(base, index, _) => {
                 let base_val = self.lower_expr(base);
                 let idx_val = self.lower_expr(index);
-                let elem_size = self.expr_ctype(expr).size();
+                let ct = self.expr_ctype(expr);
+                let elem_size = self.resolve_ctype_size(&ct);
                 let scaled = self.scale_index(idx_val, elem_size);
                 let dest = self.emit_binop_val(IrBinOp::Add, base_val, scaled, IrType::I64);
                 dest

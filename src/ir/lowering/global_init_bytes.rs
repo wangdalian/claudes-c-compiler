@@ -125,7 +125,7 @@ impl Lowerer {
                     item_idx += 1;
                     // Continue consuming subsequent non-designated items for positions
                     // desig_idx+1, desig_idx+2, ... within the same array field
-                    let elem_size = elem_ty.size();
+                    let elem_size = self.resolve_ctype_size(elem_ty);
                     let elem_ir_ty = IrType::from_ctype(elem_ty);
                     let mut ai = desig_idx + 1;
                     while ai < arr_size && item_idx < items.len() {
@@ -242,7 +242,7 @@ impl Lowerer {
                         let idx = self.eval_const_expr(idx_expr)
                             .and_then(|c| c.to_usize())
                             .unwrap_or(0);
-                        byte_offset += idx * elem_ty.size();
+                        byte_offset += idx * self.resolve_ctype_size(elem_ty);
                         current_ty = elem_ty.as_ref().clone();
                     } else {
                         return None;
@@ -331,7 +331,7 @@ impl Lowerer {
         &self, item: &InitializerItem, elem_ty: &CType, arr_size: usize,
         bytes: &mut [u8], field_offset: usize,
     ) -> usize {
-        let elem_size = elem_ty.size();
+        let elem_size = self.resolve_ctype_size(elem_ty);
         let elem_ir_ty = IrType::from_ctype(elem_ty);
 
         // Collect all Index and Field designators after the first (which is Field("name"))
@@ -404,7 +404,7 @@ impl Lowerer {
                     }
                 }).unwrap_or(0);
                 if inner_idx < *inner_size {
-                    let inner_elem_size = inner_elem_ty.size();
+                    let inner_elem_size = self.resolve_ctype_size(inner_elem_ty);
                     let inner_ir_ty = IrType::from_ctype(inner_elem_ty);
                     let inner_offset = elem_offset + inner_idx * inner_elem_size;
 
@@ -474,7 +474,7 @@ impl Lowerer {
             // Handle list init for array element (e.g., .a[1] = {1,2,3})
             match elem_ty {
                 CType::Array(inner_elem_ty, Some(inner_size)) => {
-                    let inner_elem_size = inner_elem_ty.size();
+                    let inner_elem_size = self.resolve_ctype_size(inner_elem_ty);
                     let inner_ir_ty = IrType::from_ctype(inner_elem_ty);
                     for (si, sub_item) in sub_items.iter().enumerate() {
                         if si >= *inner_size { break; }
@@ -527,7 +527,7 @@ impl Lowerer {
         array_start_idx: Option<usize>,
     ) -> ArrayFillResult {
         let item = &items[item_idx];
-        let elem_size = elem_ty.size();
+        let elem_size = self.resolve_ctype_size(elem_ty);
         let elem_ir_ty = IrType::from_ctype(elem_ty);
 
         match &item.init {
@@ -570,7 +570,7 @@ impl Lowerer {
                     )
                 } else if let Some(composite_ty) = leaf_composite {
                     // Multi-dimensional array of structs/unions: flat init fills composites
-                    let composite_size = composite_ty.size();
+                    let composite_size = self.resolve_ctype_size(composite_ty);
                     let composite_ir_ty = IrType::from_ctype(composite_ty);
                     let total_composites = if composite_size > 0 { (arr_size * elem_size) / composite_size } else { 0 };
                     self.fill_flat_array_of_composites(
@@ -579,7 +579,7 @@ impl Lowerer {
                     )
                 } else if matches!(elem_ty, CType::Array(_, _)) {
                     // Multi-dimensional array of scalars: use leaf element size
-                    let leaf_size = Self::leaf_elem_size(elem_ty);
+                    let leaf_size = self.leaf_elem_size(elem_ty);
                     let leaf_ir_ty = Self::leaf_ir_type(elem_ty);
                     let total_scalars = if leaf_size > 0 { (arr_size * elem_size) / leaf_size } else { 0 };
                     self.fill_flat_array_of_scalars(
@@ -610,7 +610,7 @@ impl Lowerer {
         bytes: &mut [u8],
         field_offset: usize,
     ) {
-        let inner_elem_size = inner_elem_ty.size();
+        let inner_elem_size = self.resolve_ctype_size(inner_elem_ty);
         let mut sub_idx = 0usize;
         let mut ai = 0usize;
         while ai < outer_arr_size && sub_idx < sub_items.len() {
@@ -631,7 +631,7 @@ impl Lowerer {
                     if let Some(composite_ty) = leaf_composite {
                         // The leaf elements are structs/unions: fill them field by field
                         let composite_layout = self.get_composite_layout(composite_ty);
-                        let composite_size = composite_ty.size();
+                        let composite_size = self.resolve_ctype_size(composite_ty);
                         let composites_per_outer = if composite_size > 0 { outer_elem_size / composite_size } else { 0 };
                         let mut ci = 0usize;
                         while sub_idx < sub_items.len() && ci < composites_per_outer {
@@ -644,7 +644,7 @@ impl Lowerer {
                         }
                     } else {
                         // Leaf elements are scalars
-                        let leaf_size = Self::leaf_elem_size(inner_elem_ty);
+                        let leaf_size = self.leaf_elem_size(inner_elem_ty);
                         let scalars_per_outer = if leaf_size > 0 { outer_elem_size / leaf_size } else { 1 };
                         let leaf_ir_ty = Self::leaf_ir_type(inner_elem_ty);
                         let mut filled = 0usize;
@@ -675,7 +675,7 @@ impl Lowerer {
         bytes: &mut [u8],
         field_offset: usize,
     ) {
-        let elem_size = elem_ty.size();
+        let elem_size = self.resolve_ctype_size(elem_ty);
 
         if let CType::Array(inner_elem, Some(inner_size)) = elem_ty {
             // Still multi-dimensional: recurse
@@ -692,10 +692,10 @@ impl Lowerer {
     }
 
     /// Get the leaf (innermost non-array) element size for a possibly nested array type.
-    fn leaf_elem_size(ty: &CType) -> usize {
+    fn leaf_elem_size(&self, ty: &CType) -> usize {
         match ty {
-            CType::Array(inner, _) => Self::leaf_elem_size(inner),
-            _ => ty.size(),
+            CType::Array(inner, _) => self.leaf_elem_size(inner),
+            _ => self.resolve_ctype_size(ty),
         }
     }
 
@@ -726,7 +726,7 @@ impl Lowerer {
         bytes: &mut [u8],
         field_offset: usize,
     ) -> ArrayFillResult {
-        let elem_size = elem_ty.size();
+        let elem_size = self.resolve_ctype_size(elem_ty);
         let elem_ir_ty = IrType::from_ctype(elem_ty);
 
         match &items[item_idx].init {

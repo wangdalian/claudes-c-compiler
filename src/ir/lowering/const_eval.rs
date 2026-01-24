@@ -209,7 +209,7 @@ impl Lowerer {
                             // Get the element size of the array member
                             if let Some(ctype) = self.get_expr_ctype(base) {
                                 let elem_size = match &ctype {
-                                    CType::Array(elem, _) => elem.size(),
+                                    CType::Array(elem, _) => self.resolve_ctype_size(elem),
                                     _ => return None,
                                 };
                                 return Some(IrConst::I64(boff + idx * elem_size as i64));

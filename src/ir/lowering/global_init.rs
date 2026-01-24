@@ -525,7 +525,7 @@ impl Lowerer {
     fn compute_fam_extra_size(&self, items: &[InitializerItem], layout: &StructLayout) -> usize {
         if let Some(last_field) = layout.fields.last() {
             if let CType::Array(ref elem_ty, None) = last_field.ty {
-                let elem_size = elem_ty.size();
+                let elem_size = self.resolve_ctype_size(elem_ty);
                 let last_field_idx = layout.fields.len() - 1;
                 let mut current_field_idx = 0usize;
                 for (item_idx, item) in items.iter().enumerate() {
