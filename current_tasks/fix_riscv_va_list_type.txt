@@ -1,0 +1,22 @@
+Task: Fix RISC-V va_list type definition and va_start/va_end/va_copy lowering
+Status: in progress
+
+Problem:
+- va_list was defined as char[32] for all architectures, but on RISC-V it should be void* (8 bytes)
+- When char[32] va_list is passed to vsnprintf, array decay gives pointer to the buffer, but glibc
+  expects the actual va_list pointer value (one indirection too many)
+- va_start/va_end/va_copy/va_arg used lower_expr which loads the value, but they need the ADDRESS
+  of the va_list variable
+
+Fix:
+- Make va_list type target-dependent in seed_builtin_typedefs:
+  - RISC-V: Pointer(Void) - just void*
+  - AArch64: Array(Char, 32) - 32-byte struct
+  - x86-64: Array(Char, 24) - 24-byte struct
+- Use lower_address_of instead of lower_expr for va_start/va_end/va_copy/va_arg
+- Make lower_address_of pub(super) for cross-module access
+
+Files modified:
+- src/ir/lowering/types.rs
+- src/ir/lowering/expr_builtins.rs
+- src/ir/lowering/expr.rs

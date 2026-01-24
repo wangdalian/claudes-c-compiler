@@ -94,11 +94,14 @@ impl ArmCodegen {
     /// Emit store to [sp, #offset], handling large offsets via x17.
     /// Uses x17 (IP1) as scratch to avoid conflicts with x9-x16 call argument temps.
     fn emit_store_to_sp(&mut self, reg: &str, offset: i64, instr: &str) {
+        // When DynAlloca is present, SP may have been modified at runtime.
+        // Use x29 (frame pointer) as the base instead, since x29 = SP after prologue.
+        let base = if self.state.has_dyn_alloca { "x29" } else { "sp" };
         if Self::is_valid_imm_offset(offset, instr, reg) {
-            self.state.emit(&format!("    {} {}, [sp, #{}]", instr, reg, offset));
+            self.state.emit(&format!("    {} {}, [{}, #{}]", instr, reg, base, offset));
         } else {
             self.load_large_imm("x17", offset);
-            self.state.emit("    add x17, sp, x17");
+            self.state.emit(&format!("    add x17, {}, x17", base));
             self.state.emit(&format!("    {} {}, [x17]", instr, reg));
         }
     }
@@ -106,23 +109,26 @@ impl ArmCodegen {
     /// Emit load from [sp, #offset], handling large offsets via x17.
     /// Uses x17 (IP1) as scratch to avoid conflicts with x9-x16 call argument temps.
     fn emit_load_from_sp(&mut self, reg: &str, offset: i64, instr: &str) {
+        // When DynAlloca is present, use x29 (frame pointer) as base.
+        let base = if self.state.has_dyn_alloca { "x29" } else { "sp" };
         if Self::is_valid_imm_offset(offset, instr, reg) {
-            self.state.emit(&format!("    {} {}, [sp, #{}]", instr, reg, offset));
+            self.state.emit(&format!("    {} {}, [{}, #{}]", instr, reg, base, offset));
         } else {
             self.load_large_imm("x17", offset);
-            self.state.emit("    add x17, sp, x17");
+            self.state.emit(&format!("    add x17, {}, x17", base));
             self.state.emit(&format!("    {} {}, [x17]", instr, reg));
         }
     }
 
     /// Emit `stp reg1, reg2, [sp, #offset]` handling large offsets.
     fn emit_stp_to_sp(&mut self, reg1: &str, reg2: &str, offset: i64) {
+        let base = if self.state.has_dyn_alloca { "x29" } else { "sp" };
         // stp supports signed offsets in [-512, 504] range (multiples of 8)
         if offset >= -512 && offset <= 504 {
-            self.state.emit(&format!("    stp {}, {}, [sp, #{}]", reg1, reg2, offset));
+            self.state.emit(&format!("    stp {}, {}, [{}, #{}]", reg1, reg2, base, offset));
         } else {
             self.load_large_imm("x17", offset);
-            self.state.emit("    add x17, sp, x17");
+            self.state.emit(&format!("    add x17, {}, x17", base));
             self.state.emit(&format!("    stp {}, {}, [x17]", reg1, reg2));
         }
     }
@@ -130,11 +136,12 @@ impl ArmCodegen {
     /// Emit `add dest, sp, #offset` handling large offsets.
     /// Uses x17 (IP1) as scratch to avoid conflicts with x9-x16 call argument temps.
     fn emit_add_sp_offset(&mut self, dest: &str, offset: i64) {
+        let base = if self.state.has_dyn_alloca { "x29" } else { "sp" };
         if offset >= 0 && offset <= 4095 {
-            self.state.emit(&format!("    add {}, sp, #{}", dest, offset));
+            self.state.emit(&format!("    add {}, {}, #{}", dest, base, offset));
         } else {
             self.load_large_imm("x17", offset);
-            self.state.emit(&format!("    add {}, sp, x17", dest));
+            self.state.emit(&format!("    add {}, {}, x17", dest, base));
         }
     }
 
@@ -193,6 +200,10 @@ impl ArmCodegen {
 
     /// Emit function epilogue: restore fp/lr and deallocate stack.
     fn emit_epilogue_arm(&mut self, frame_size: i64) {
+        if self.state.has_dyn_alloca {
+            // DynAlloca modified SP at runtime; restore from frame pointer.
+            self.state.emit("    mov sp, x29");
+        }
         if frame_size > 0 && frame_size <= 504 {
             self.state.emit(&format!("    ldp x29, x30, [sp], #{}", frame_size));
         } else {

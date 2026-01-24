@@ -157,14 +157,16 @@ impl RiscvCodegen {
     /// Emit epilogue: restore ra/s0 and deallocate stack.
     fn emit_epilogue_riscv(&mut self, frame_size: i64) {
         let total_alloc = if self.is_variadic { frame_size + 64 } else { frame_size };
-        if Self::fits_imm12(-total_alloc) && Self::fits_imm12(total_alloc) {
+        // When DynAlloca is used, SP was modified at runtime, so we must restore
+        // from s0 (frame pointer) rather than using SP-relative offsets.
+        if !self.state.has_dyn_alloca && Self::fits_imm12(-total_alloc) && Self::fits_imm12(total_alloc) {
             // Small frame: restore from known sp offsets
             // ra/s0 saved at sp + frame_size - 8/16 (relative to current sp)
             self.state.emit(&format!("    ld ra, {}(sp)", frame_size - 8));
             self.state.emit(&format!("    ld s0, {}(sp)", frame_size - 16));
             self.state.emit(&format!("    addi sp, sp, {}", total_alloc));
         } else {
-            // Large frame: restore from s0-relative offsets (always fit in imm12).
+            // Large frame or DynAlloca: restore from s0-relative offsets (always fit in imm12).
             self.state.emit("    ld ra, -8(s0)");
             self.state.emit("    ld t0, -16(s0)");
             // For variadic functions, s0 + 64 = old_sp, so sp = s0 + 64

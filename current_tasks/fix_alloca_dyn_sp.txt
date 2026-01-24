@@ -1,7 +1,0 @@
-Fix __builtin_alloca segfault on ARM/RISC-V
-
-DynAlloca (__builtin_alloca) modifies SP at runtime, but ARM/RISC-V backends
-used SP-relative addressing for local variables and SP-fixup-based epilogues.
-
-Fix: Use frame pointer (x29 on ARM, s0 on RISC-V) for stack access when
-DynAlloca is present. Also use frame-pointer-based SP restore in epilogue.

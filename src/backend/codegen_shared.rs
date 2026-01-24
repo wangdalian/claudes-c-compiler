@@ -40,6 +40,10 @@ pub struct CodegenState {
     /// Set of symbol names that are locally defined (not extern) and have internal
     /// linkage (static) — these can use direct addressing even in PIC mode.
     pub local_symbols: HashSet<String>,
+    /// Whether the current function contains DynAlloca instructions.
+    /// When true, the epilogue must restore SP from the frame pointer instead of
+    /// adding back the compile-time frame size.
+    pub has_dyn_alloca: bool,
 }
 
 impl CodegenState {
@@ -55,6 +59,7 @@ impl CodegenState {
             label_counter: 0,
             pic_mode: false,
             local_symbols: HashSet::new(),
+            has_dyn_alloca: false,
         }
     }
 
@@ -81,6 +86,7 @@ impl CodegenState {
         self.alloca_types.clear();
         self.alloca_alignments.clear();
         self.i128_values.clear();
+        self.has_dyn_alloca = false;
     }
 
     /// Get the over-alignment requirement for an alloca (> 16 bytes), or None.
@@ -795,6 +801,13 @@ fn generate_function(cg: &mut dyn ArchCodegen, func: &IrFunction) {
     }
     cg.state().emit(&format!(".type {}, {}", func.name, type_dir));
     cg.state().emit(&format!("{}:", func.name));
+
+    // Pre-scan for DynAlloca: if present, the epilogue must restore SP from
+    // the frame pointer instead of adding back the compile-time frame size.
+    let has_dyn_alloca = func.blocks.iter().any(|block| {
+        block.instructions.iter().any(|inst| matches!(inst, Instruction::DynAlloca { .. }))
+    });
+    cg.state().has_dyn_alloca = has_dyn_alloca;
 
     // Calculate stack space and emit prologue
     let raw_space = cg.calculate_stack_space(func);
