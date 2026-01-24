@@ -386,6 +386,17 @@ impl Lowerer {
             Expr::Assign(_, rhs, _) => {
                 self.get_pointee_type_of_expr(rhs)
             }
+            Expr::MemberAccess(base_expr, field_name, _) | Expr::PointerMemberAccess(base_expr, field_name, _) => {
+                let is_ptr = matches!(expr, Expr::PointerMemberAccess(..));
+                if let Some(ctype) = self.resolve_field_ctype(base_expr, field_name, is_ptr) {
+                    match ctype {
+                        CType::Pointer(inner) => return Some(IrType::from_ctype(&inner)),
+                        CType::Array(elem, _) => return Some(IrType::from_ctype(&elem)),
+                        _ => {}
+                    }
+                }
+                None
+            }
             _ => None,
         }
     }

@@ -344,6 +344,9 @@ impl Lowerer {
                     if let CType::Array(elem_ty, _) = &ctype {
                         return IrType::from_ctype(elem_ty);
                     }
+                    if let CType::Pointer(pointee) = &ctype {
+                        return IrType::from_ctype(pointee);
+                    }
                 }
             }
             _ => {}
