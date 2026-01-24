@@ -439,66 +439,6 @@ impl Lowerer {
         }
     }
 
-    /// Resolve a chain of MemberAccess expressions (e.g., `global.a.b.c`) to
-    /// the global symbol name and cumulative byte offset from the struct base.
-    /// Returns (global_name, total_offset) or None if the chain doesn't resolve
-    /// to a known global struct variable.
-    fn resolve_member_access_chain(&self, expr: &Expr) -> Option<(String, usize)> {
-        match expr {
-            Expr::MemberAccess(base, field, _) => {
-                match base.as_ref() {
-                    // Base case: global.field
-                    Expr::Identifier(name, _) => {
-                        let global_name = self.resolve_to_global_name(name)?;
-                        let ginfo = self.globals.get(&global_name)?;
-                        let layout = ginfo.struct_layout.as_ref()?;
-                        let f = layout.fields.iter().find(|f| f.name == *field)?;
-                        Some((global_name, f.offset))
-                    }
-                    // Recursive case: base_expr.intermediate_field.field
-                    Expr::MemberAccess(..) => {
-                        let (global_name, base_offset) = self.resolve_member_access_chain(base)?;
-                        // Walk the expression chain to find the CType of the intermediate field
-                        let ginfo = self.globals.get(&global_name)?;
-                        let root_layout = ginfo.struct_layout.as_ref()?;
-                        let field_ty = self.find_type_at_member_chain(root_layout, base)?;
-                        let sub_layout = self.get_struct_layout_for_ctype(&field_ty)?;
-                        let f = sub_layout.fields.iter().find(|f| f.name == *field)?;
-                        Some((global_name, base_offset + f.offset))
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// Given a root struct layout and a MemberAccess expression chain, find the CType
-    /// of the expression's result. For `g.inner`, returns the CType of `inner` field.
-    /// For `g.a.b`, returns the CType of `b` within `a` within the root layout.
-    fn find_type_at_member_chain(&self, root_layout: &StructLayout, expr: &Expr) -> Option<CType> {
-        match expr {
-            Expr::MemberAccess(base, field, _) => {
-                match base.as_ref() {
-                    Expr::Identifier(_, _) => {
-                        // Direct field of root struct
-                        let f = root_layout.fields.iter().find(|f| f.name == *field)?;
-                        Some(f.ty.clone())
-                    }
-                    Expr::MemberAccess(..) => {
-                        // Get the type of the parent, then look up field in it
-                        let parent_ty = self.find_type_at_member_chain(root_layout, base)?;
-                        let parent_layout = self.get_struct_layout_for_ctype(&parent_ty)?;
-                        let f = parent_layout.fields.iter().find(|f| f.name == *field)?;
-                        Some(f.ty.clone())
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-
     /// Helper for pointer arithmetic: base_expr + offset_expr where base is an address
     fn eval_global_addr_base_and_offset(&self, base_expr: &Expr, offset_expr: &Expr) -> Option<GlobalInit> {
         let base_init = self.eval_global_addr_expr(base_expr)?;
@@ -645,7 +585,6 @@ impl Lowerer {
             },
             BinOp::LogicalAnd => bool_to_i64(l != 0 && r != 0),
             BinOp::LogicalOr => bool_to_i64(l != 0 || r != 0),
-            _ => return None,
         };
         Some(IrConst::I64(result))
     }

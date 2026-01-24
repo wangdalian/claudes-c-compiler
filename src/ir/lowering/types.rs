@@ -1,7 +1,5 @@
 use crate::frontend::parser::ast::*;
-use crate::ir::ir::*;
 use crate::common::types::{IrType, StructField, StructLayout, CType, FunctionType};
-use crate::common::source::Span;
 use super::lowering::{Lowerer, FuncSig};
 
 impl Lowerer {
@@ -22,13 +20,6 @@ impl Lowerer {
             break;
         }
         current
-    }
-
-    /// Resolve a TypeSpecifier to its CType, following typedef chains.
-    /// This is the primary way to get from a TypeSpecifier to a resolved type
-    /// now that typedefs store CType directly.
-    pub(super) fn resolve_type_to_ctype(&self, ts: &TypeSpecifier) -> CType {
-        self.type_spec_to_ctype(ts)
     }
 
     /// Check if a TypeSpecifier resolves to a Bool type (through typedefs).
@@ -91,22 +82,6 @@ impl Lowerer {
                 }
             }
             TypeSpecifier::TypeofType(inner) => self.is_type_pointer(inner),
-            _ => false,
-        }
-    }
-
-    /// Check if a TypeSpecifier resolves to an array type (through typedefs).
-    pub(super) fn is_type_array(&self, ts: &TypeSpecifier) -> bool {
-        match ts {
-            TypeSpecifier::Array(_, _) => true,
-            TypeSpecifier::TypedefName(name) => {
-                if let Some(ctype) = self.types.typedefs.get(name) {
-                    matches!(ctype, CType::Array(_, _))
-                } else {
-                    false
-                }
-            }
-            TypeSpecifier::TypeofType(inner) => self.is_type_array(inner),
             _ => false,
         }
     }
@@ -1359,7 +1334,7 @@ impl Lowerer {
             while i < derived.len() {
                 match &derived[i] {
                     DerivedDeclarator::Pointer => {
-                        if i + 1 < derived.len() && matches!(&derived[i + 1], DerivedDeclarator::FunctionPointer(params, _) | DerivedDeclarator::Function(params, _)) {
+                        if i + 1 < derived.len() && matches!(&derived[i + 1], DerivedDeclarator::FunctionPointer(_params, _) | DerivedDeclarator::Function(_params, _)) {
                             let (params, variadic) = match &derived[i + 1] {
                                 DerivedDeclarator::FunctionPointer(p, v) | DerivedDeclarator::Function(p, v) => (p, *v),
                                 _ => unreachable!(),

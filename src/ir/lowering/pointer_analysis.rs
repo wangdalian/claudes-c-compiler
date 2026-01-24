@@ -5,7 +5,6 @@
 //! IR types (for correct loads/stores through pointer dereference and subscript).
 
 use crate::frontend::parser::ast::*;
-use crate::ir::ir::*;
 use crate::common::types::{IrType, StructLayout, CType};
 use super::lowering::Lowerer;
 

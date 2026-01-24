@@ -804,7 +804,7 @@ impl Lowerer {
         &mut self,
         elements: &mut Vec<GlobalInit>,
         items: &[InitializerItem],
-        elem_ty: &CType,
+        _elem_ty: &CType,
         arr_size: usize,
     ) {
         let ptr_size = 8; // 64-bit pointers
@@ -858,7 +858,7 @@ impl Lowerer {
         &mut self,
         elements: &mut Vec<GlobalInit>,
         items: &[&InitializerItem],
-        elem_ty: &CType,
+        _elem_ty: &CType,
         arr_size: usize,
     ) {
         let ptr_size = 8; // 64-bit pointers
@@ -970,152 +970,6 @@ impl Lowerer {
         }
     }
 
-    /// Collect pointer relocations from a nested designator init item.
-    /// Drills into the sub-composite using the item's designators to find pointer fields
-    /// and resolves their address expressions for proper relocation tracking.
-    fn collect_ptr_ranges_from_nested_init(
-        &mut self,
-        item: &InitializerItem,
-        layout: &StructLayout,
-        base_offset: usize,
-        ptr_ranges: &mut Vec<(usize, GlobalInit)>,
-    ) {
-        // Resolve which field this designator targets
-        let resolution = self.resolve_struct_init_field(item, layout, 0);
-        let field_idx = match resolution {
-            Some(InitFieldResolution::Direct(idx)) => idx,
-            Some(InitFieldResolution::AnonymousMember { anon_field_idx, inner_name }) => {
-                // Drill into anonymous member
-                let anon_field = &layout.fields[anon_field_idx];
-                let anon_offset = base_offset + anon_field.offset;
-                if let Some(sub_layout) = self.get_struct_layout_for_ctype(&anon_field.ty) {
-                    let sub_item = InitializerItem {
-                        designators: vec![Designator::Field(inner_name)],
-                        init: item.init.clone(),
-                    };
-                    self.collect_ptr_ranges_from_nested_init(&sub_item, &sub_layout, anon_offset, ptr_ranges);
-                }
-                return;
-            }
-            None => return,
-        };
-        if field_idx >= layout.fields.len() { return; }
-
-        let field = &layout.fields[field_idx];
-        let field_offset = base_offset + field.offset;
-
-        // If there are more nested designators, recurse
-        if item.designators.len() > 1 && matches!(item.designators.first(), Some(Designator::Field(_))) {
-            let sub_item = InitializerItem {
-                designators: item.designators[1..].to_vec(),
-                init: item.init.clone(),
-            };
-            if let Some(sub_layout) = self.get_struct_layout_for_ctype(&field.ty) {
-                self.collect_ptr_ranges_from_nested_init(&sub_item, &sub_layout, field_offset, ptr_ranges);
-            }
-            return;
-        }
-
-        // Terminal designator: check if this field or its sub-fields contain pointers
-        let is_ptr_field = matches!(field.ty, CType::Pointer(_) | CType::Function(_));
-        if is_ptr_field {
-            if let Initializer::Expr(ref expr) = item.init {
-                if let Some(addr_init) = self.resolve_ptr_field_init(expr) {
-                    ptr_ranges.push((field_offset, addr_init));
-                }
-            }
-        } else if let Initializer::List(ref sub_items) = item.init {
-            // The init is a list for a struct/union - scan its fields for pointers
-            if let Some(sub_layout) = self.get_struct_layout_for_ctype(&field.ty) {
-                self.collect_ptr_ranges_from_struct_init_list(
-                    sub_items, &sub_layout, field_offset, ptr_ranges);
-            }
-        }
-    }
-
-    /// Scan a braced init list for a struct and collect pointer/function-pointer
-    /// relocations. This handles the case where a nested struct field is initialized
-    /// with `{ .fn1 = hello, .fn2 = world }` and needs address relocations collected
-    /// for its pointer-typed sub-fields. Recurses into further nested structs.
-    fn collect_ptr_ranges_from_struct_init_list(
-        &mut self,
-        items: &[InitializerItem],
-        layout: &StructLayout,
-        base_offset: usize,
-        ptr_ranges: &mut Vec<(usize, GlobalInit)>,
-    ) {
-        let mut current_fi = 0usize;
-        for si in items {
-            // Resolve field, handling anonymous members
-            let si_resolution = self.resolve_struct_init_field(si, layout, current_fi);
-            let si_fi = match si_resolution {
-                Some(InitFieldResolution::Direct(idx)) => idx,
-                Some(InitFieldResolution::AnonymousMember { anon_field_idx, inner_name }) => {
-                    // Drill into anonymous member to collect ptr ranges
-                    let anon_field = &layout.fields[anon_field_idx];
-                    let anon_offset = base_offset + anon_field.offset;
-                    if let Some(sub_layout) = self.get_struct_layout_for_ctype(&anon_field.ty) {
-                        let sub_item = InitializerItem {
-                            designators: vec![Designator::Field(inner_name)],
-                            init: si.init.clone(),
-                        };
-                        self.collect_ptr_ranges_from_struct_init_list(
-                            &[sub_item], &sub_layout, anon_offset, ptr_ranges);
-                    }
-                    current_fi = anon_field_idx + 1;
-                    continue;
-                }
-                None => { continue; }
-            };
-
-            // Handle nested designators (e.g., .config.i = &server.field)
-            // by following the designator chain to the actual target field
-            let has_nested_desig = si.designators.len() > 1
-                && matches!(si.designators.first(), Some(Designator::Field(_)));
-            if has_nested_desig {
-                self.collect_ptr_ranges_from_nested_init(si, layout, base_offset, ptr_ranges);
-                current_fi = si_fi + 1;
-                continue;
-            }
-
-            if si_fi >= layout.fields.len() { continue; }
-            let si_field = &layout.fields[si_fi];
-            let si_offset = base_offset + si_field.offset;
-            let si_is_ptr = matches!(si_field.ty, CType::Pointer(_) | CType::Function(_));
-
-            if si_is_ptr {
-                if let Initializer::Expr(ref expr) = si.init {
-                    if let Some(addr_init) = self.resolve_ptr_field_init(expr) {
-                        ptr_ranges.push((si_offset, addr_init));
-                    }
-                }
-            } else if let Initializer::List(ref nested_items) = si.init {
-                // Recurse into nested structs/unions that may also contain pointers
-                if let Some(sub_layout) = self.get_struct_layout_for_ctype(&si_field.ty) {
-                    self.collect_ptr_ranges_from_struct_init_list(
-                        nested_items, &sub_layout, si_offset, ptr_ranges);
-                }
-                // Handle arrays of pointers within nested struct
-                if Self::type_has_pointer_elements_ctx(&si_field.ty, &self.types) && matches!(si_field.ty, CType::Array(..)) {
-                    let arr_size = match &si_field.ty {
-                        CType::Array(_, Some(s)) => *s,
-                        _ => nested_items.len(),
-                    };
-                    for (ai, inner_item) in nested_items.iter().enumerate() {
-                        if ai >= arr_size { break; }
-                        let elem_offset = si_offset + ai * 8;
-                        if let Initializer::Expr(ref expr) = inner_item.init {
-                            if let Some(addr_init) = self.resolve_ptr_field_init(expr) {
-                                ptr_ranges.push((elem_offset, addr_init));
-                            }
-                        }
-                    }
-                }
-            }
-            current_fi = si_fi + 1;
-        }
-    }
-
     /// Resolve which struct field a positional or designated initializer targets.
     pub(super) fn resolve_struct_init_field_idx(
         &self,
@@ -1129,20 +983,6 @@ impl Lowerer {
         };
         layout.resolve_init_field_idx(designator_name, current_field_idx, &self.types)
             .unwrap_or(current_field_idx)
-    }
-
-    /// Resolve struct field with full anonymous member info.
-    pub(super) fn resolve_struct_init_field(
-        &self,
-        item: &InitializerItem,
-        layout: &StructLayout,
-        current_field_idx: usize,
-    ) -> Option<InitFieldResolution> {
-        let designator_name = match item.designators.first() {
-            Some(Designator::Field(ref name)) => Some(name.as_str()),
-            _ => None,
-        };
-        layout.resolve_init_field(designator_name, current_field_idx, &self.types)
     }
 
     /// Resolve a pointer field's initializer expression to a GlobalInit.

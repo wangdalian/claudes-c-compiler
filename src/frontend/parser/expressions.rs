@@ -12,7 +12,6 @@
 //   -> parse_cast_expr -> parse_unary_expr -> parse_postfix_expr
 //   -> parse_primary_expr
 
-use crate::common::source::Span;
 use crate::frontend::lexer::token::TokenKind;
 use super::ast::*;
 use super::parser::Parser;

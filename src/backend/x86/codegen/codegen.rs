@@ -2222,7 +2222,7 @@ impl InlineAsmEmitter for X86Codegen {
         }
     }
 
-    fn setup_operand_metadata(&self, op: &mut AsmOperand, val: &Operand, is_output: bool) {
+    fn setup_operand_metadata(&self, op: &mut AsmOperand, val: &Operand, _is_output: bool) {
         if matches!(op.kind, AsmOperandKind::Memory) {
             match val {
                 Operand::Value(v) => {

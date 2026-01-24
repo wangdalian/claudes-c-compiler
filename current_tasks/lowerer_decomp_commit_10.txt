@@ -1,9 +1,0 @@
-Task: Remove global #![allow(dead_code)] and fix what it reveals (lowerer decomposition commit 10)
-
-Remove #![allow(dead_code, unused_variables, unused_imports, unreachable_patterns)] from lib.rs.
-Fix or delete whatever the compiler flags. After commits 1-9, there will be newly dead code from
-the old conversion paths, redundant fields, and unused imports. Let rustc find them.
-
-This is a compiler-guided cleanup - pure deletion and minor fixes.
-
-Status: IN PROGRESS

@@ -7,7 +7,7 @@
 use crate::frontend::parser::ast::*;
 use crate::ir::ir::*;
 use crate::common::types::{IrType, CType};
-use super::lowering::{Lowerer, LocalInfo, GlobalInfo, DeclAnalysis, FuncSig};
+use super::lowering::{Lowerer, GlobalInfo, DeclAnalysis, FuncSig};
 
 impl Lowerer {
     /// Handle extern declarations inside function bodies.
@@ -222,7 +222,7 @@ impl Lowerer {
         // array size evaluation (e.g., const int len = 5000; int arr[len];)
         if decl.is_const && !da.is_pointer && !da.is_array && !da.is_struct {
             if let Some(const_val) = self.eval_const_expr(expr) {
-                if let Some(ival) = self.const_to_i64(&const_val) {
+                if let Some(_ival) = self.const_to_i64(&const_val) {
                     // Use declarator name from the declaration context
                     // (passed via da which carries the name context)
                     // Actually we need the name; we'll handle this at the call site

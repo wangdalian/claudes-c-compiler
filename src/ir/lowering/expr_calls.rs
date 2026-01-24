@@ -419,7 +419,7 @@ impl Lowerer {
                 indirect_ret_ty
             }
             _ => {
-                let n = arg_vals.len();
+                let _n = arg_vals.len();
                 let sas = struct_arg_sizes;
                 let func_ptr = self.lower_expr(func);
                 self.emit(Instruction::CallIndirect {

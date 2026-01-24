@@ -343,25 +343,6 @@ impl ArmCodegen {
         }
     }
 
-    fn ldr_for_type(ty: IrType) -> &'static str {
-        match ty {
-            IrType::I8 => "ldrsb",
-            IrType::U8 => "ldrb",
-            IrType::I16 => "ldrsh",
-            IrType::U16 => "ldrh",
-            IrType::I32 => "ldrsw",
-            IrType::U32 | IrType::F32 => "ldr",  // 32-bit load
-            _ => "ldr",
-        }
-    }
-
-    fn load_dest_reg(ty: IrType) -> &'static str {
-        match ty {
-            IrType::U8 | IrType::U16 | IrType::U32 | IrType::F32 => "w0",
-            _ => "x0",
-        }
-    }
-
     /// Get the appropriate register name for a given base and type.
     fn reg_for_type(base: &str, ty: IrType) -> &'static str {
         let use_w = matches!(ty,

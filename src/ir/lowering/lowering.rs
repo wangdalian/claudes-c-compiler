@@ -5,37 +5,6 @@ use crate::ir::ir::*;
 use crate::common::types::{IrType, StructLayout, CType};
 use crate::backend::Target;
 
-/// Resolve a typedef's derived declarators into the final TypeSpecifier.
-/// Still used for FunctionTypedefInfo return_type (which stores TypeSpecifier for now).
-pub(super) fn resolve_typedef_derived(base: &TypeSpecifier, derived: &[DerivedDeclarator]) -> TypeSpecifier {
-    let mut resolved_type = base.clone();
-    let mut i = 0;
-    while i < derived.len() {
-        match &derived[i] {
-            DerivedDeclarator::Pointer => {
-                resolved_type = TypeSpecifier::Pointer(Box::new(resolved_type));
-                i += 1;
-            }
-            DerivedDeclarator::Array(_) => {
-                let mut array_sizes: Vec<Option<Box<Expr>>> = Vec::new();
-                while i < derived.len() {
-                    if let DerivedDeclarator::Array(size) = &derived[i] {
-                        array_sizes.push(size.clone());
-                        i += 1;
-                    } else {
-                        break;
-                    }
-                }
-                for size in array_sizes.into_iter().rev() {
-                    resolved_type = TypeSpecifier::Array(Box::new(resolved_type), size);
-                }
-            }
-            _ => { i += 1; }
-        }
-    }
-    resolved_type
-}
-
 /// Type metadata shared between local and global variables.
 ///
 /// Both `LocalInfo` and `GlobalInfo` embed this struct via `Deref`, so field
@@ -484,18 +453,6 @@ impl FunctionBuildState {
         self.const_local_values.insert(name, value);
     }
 
-    /// Insert a var ctype, tracking the change in the current scope frame.
-    pub fn insert_var_ctype_scoped(&mut self, name: String, ctype: CType) {
-        if let Some(frame) = self.scope_stack.last_mut() {
-            if let Some(prev) = self.var_ctypes.remove(&name) {
-                frame.var_ctypes_shadowed.push((name.clone(), prev));
-            } else {
-                frame.var_ctypes_added.push(name.clone());
-            }
-        }
-        self.var_ctypes.insert(name, ctype);
-    }
-
     /// Remove a local variable from `locals`, tracking the removal in the
     /// current scope frame so `pop_scope()` restores it.
     pub fn shadow_local_for_scope(&mut self, name: &str) {
@@ -859,11 +816,6 @@ impl Lowerer {
     /// Insert a const local value, tracking the change in the current scope frame.
     pub(super) fn insert_const_local_scoped(&mut self, name: String, value: i64) {
         self.func_mut().insert_const_local_scoped(name, value);
-    }
-
-    /// Insert a var ctype, tracking the change in the current scope frame.
-    pub(super) fn insert_var_ctype_scoped(&mut self, name: String, ctype: CType) {
-        self.func_mut().insert_var_ctype_scoped(name, ctype);
     }
 
     pub fn lower(mut self, tu: &TranslationUnit) -> IrModule {

@@ -171,7 +171,7 @@ impl Parser {
             // Show context around error
             let start = if self.pos > 20 { self.pos - 20 } else { 0 };
             let end = std::cmp::min(self.pos + 5, self.tokens.len());
-            let context: Vec<_> = self.tokens[start..end].iter().map(|t| {
+            let _context: Vec<_> = self.tokens[start..end].iter().map(|t| {
                 match &t.kind {
                     TokenKind::Identifier(name) => format!("Id({})", name),
                     TokenKind::IntLiteral(v) => format!("Int({})", v),

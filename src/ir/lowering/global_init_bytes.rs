@@ -313,18 +313,6 @@ impl Lowerer {
         }
     }
 
-    /// Handle nested designator drilling into a struct/union sub-field (e.g., .a.b = val).
-    pub(super) fn fill_nested_designator_composite(
-        &self, item: &InitializerItem, sub_layout: &StructLayout,
-        bytes: &mut [u8], field_offset: usize,
-    ) {
-        let sub_item = InitializerItem {
-            designators: item.designators[1..].to_vec(),
-            init: item.init.clone(),
-        };
-        self.fill_struct_global_bytes(&[sub_item], sub_layout, bytes, field_offset);
-    }
-
     /// Process a nested designator into an array field (e.g., .field[idx] = val).
     /// Returns the array index that was designated.
     pub(super) fn fill_nested_designator_array(
@@ -411,7 +399,7 @@ impl Lowerer {
                     // Check for even more Index designators (3D+ arrays)
                     let further_indices: Vec<_> = remaining_index_desigs[1..].to_vec();
                     if !further_indices.is_empty() {
-                        if let CType::Array(deeper_elem, Some(deeper_size)) = inner_elem_ty.as_ref() {
+                        if let CType::Array(_deeper_elem, Some(_deeper_size)) = inner_elem_ty.as_ref() {
                             // Build sub-item with remaining indices as [Field("dummy"), Index(...)]
                             // Actually we can recursively call ourselves
                             let sub_item = InitializerItem {
@@ -610,7 +598,7 @@ impl Lowerer {
         bytes: &mut [u8],
         field_offset: usize,
     ) {
-        let inner_elem_size = self.resolve_ctype_size(inner_elem_ty);
+        let _inner_elem_size = self.resolve_ctype_size(inner_elem_ty);
         let mut sub_idx = 0usize;
         let mut ai = 0usize;
         while ai < outer_arr_size && sub_idx < sub_items.len() {
@@ -983,7 +971,7 @@ impl Lowerer {
                                 }
                             } else {
                                 // Scalar value at the computed sub-position
-                                if let Some(val) = self.eval_const_expr(expr) {
+                                if let Some(_val) = self.eval_const_expr(expr) {
                                     let write_offset = elem_offset + sub_byte_offset;
                                     // Write struct fields sequentially from this position
                                     self.fill_struct_global_bytes(std::slice::from_ref(item), layout, bytes, write_offset);

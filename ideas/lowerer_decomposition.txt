@@ -97,7 +97,14 @@ COMPLETED:
    each). These will be candidates for future cleanup when more lowering paths
    are migrated to CType-native resolution. 3 files changed, pure deletion.)
 
-REMAINING (in order):
+- Commit 10: Remove global #![allow(dead_code)] and fix what it reveals
+  (Removed #![allow(dead_code, unused_variables, unused_imports, unreachable_patterns)]
+   from lib.rs. Fixed 6 unused imports (removed), 13 unused variables (prefixed with _),
+   1 unreachable pattern (removed), 12 dead functions/methods (deleted):
+   resolve_typedef_derived, insert_var_ctype_scoped (2x: FunctionBuildState + Lowerer),
+   resolve_type_to_ctype, is_type_array, fill_nested_designator_composite,
+   collect_ptr_ranges_from_nested_init, collect_ptr_ranges_from_struct_init_list,
+   resolve_struct_init_field, resolve_member_access_chain, find_type_at_member_chain,
+   ldr_for_type, load_dest_reg. Build is now warning-free. Pure cleanup.)
 
-10. Remove global #![allow(dead_code)] and fix what it reveals
-   - Risk: Low (compiler-guided cleanup)
+ALL 10 COMMITS COMPLETE. The lowerer decomposition is finished.

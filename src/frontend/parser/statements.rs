@@ -233,7 +233,6 @@ impl Parser {
     // === Inline assembly parsing ===
 
     fn parse_inline_asm(&mut self) -> Stmt {
-        use crate::frontend::parser::ast::AsmOperand;
         self.advance(); // consume 'asm' / '__asm__'
         // Skip optional qualifiers: volatile, goto, inline
         while matches!(self.peek(), TokenKind::Volatile)

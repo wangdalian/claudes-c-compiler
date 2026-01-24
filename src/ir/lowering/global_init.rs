@@ -724,7 +724,7 @@ impl Lowerer {
         let base_type_size = base_ty.size().max(1);
         if array_dim_strides.len() <= 1 {
             // 1D array: support designated initializers [idx] = val
-            let total_elems = if !array_dim_strides.is_empty() && base_type_size > 0 {
+            let _total_elems = if !array_dim_strides.is_empty() && base_type_size > 0 {
                 array_dim_strides[0] / base_type_size
             } else {
                 0
@@ -778,7 +778,7 @@ impl Lowerer {
                         // Figure out which dimension level the remaining designators cover
                         let remaining_dims = array_dim_strides.len().saturating_sub(index_designators.len());
                         let sub_strides = &array_dim_strides[array_dim_strides.len() - remaining_dims..];
-                        let start_len = values.len();
+                        let _start_len = values.len();
                         // Set values length to flat_idx so recursion appends from there
                         values.truncate(flat_idx);
                         while values.len() < flat_idx {

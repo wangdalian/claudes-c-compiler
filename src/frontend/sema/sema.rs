@@ -753,7 +753,7 @@ impl SemanticAnalyzer {
                 }
                 DerivedDeclarator::Array(_) => {
                     // Collect consecutive array dimensions
-                    let start = i;
+                    let _start = i;
                     let mut array_sizes: Vec<Option<usize>> = Vec::new();
                     while i < derived.len() {
                         if let DerivedDeclarator::Array(size_expr) = &derived[i] {
