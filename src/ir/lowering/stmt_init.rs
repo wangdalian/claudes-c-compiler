@@ -543,7 +543,13 @@ impl Lowerer {
                     if let Some(ref fname) = field_designator_name {
                         if let Some(field) = s_layout.fields.iter().find(|f| &f.name == fname) {
                             let field_ty = IrType::from_ctype(&field.ty);
-                            let val = self.lower_and_cast_init_expr(e, field_ty);
+                            let val = if field.ty == CType::Bool {
+                                let v = self.lower_expr(e);
+                                let et = self.get_expr_type(e);
+                                self.emit_bool_normalize_typed(v, et)
+                            } else {
+                                self.lower_and_cast_init_expr(e, field_ty)
+                            };
                             self.emit_store_at_offset(alloca, base_byte_offset + field.offset, val, field_ty);
                         }
                         item_idx += 1;
@@ -656,6 +662,7 @@ impl Lowerer {
         }
 
         let is_complex_elem_array = self.is_type_complex(&decl.type_spec);
+        let is_bool_elem_array = self.is_type_bool(&decl.type_spec);
 
         let elem_store_ty = if da.is_array_of_pointers || da.is_array_of_func_ptrs { IrType::I64 } else { da.elem_ir_ty };
 
@@ -685,6 +692,12 @@ impl Lowerer {
                     let val = self.lower_expr(e);
                     let src = self.operand_to_value(val);
                     self.emit_memcpy_at_offset(alloca, current_idx * da.elem_size, src, da.elem_size);
+                } else if is_bool_elem_array {
+                    // _Bool array elements: normalize (any nonzero -> 1) per C11 6.3.1.2
+                    let val = self.lower_expr(e);
+                    let expr_ty = self.get_expr_type(e);
+                    let val = self.emit_bool_normalize_typed(val, expr_ty);
+                    self.emit_array_element_store(alloca, val, current_idx * da.elem_size, elem_store_ty);
                 } else {
                     let val = self.lower_expr(e);
                     let expr_ty = self.get_expr_type(e);

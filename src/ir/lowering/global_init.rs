@@ -26,6 +26,8 @@ impl Lowerer {
     ) -> GlobalInit {
         // Check if the target type is long double (need to emit as x87 80-bit)
         let is_long_double_target = self.is_type_spec_long_double(_type_spec);
+        // Check if the target element type is _Bool (C11 6.3.1.2 normalization needed)
+        let is_bool_target = self.is_type_bool(_type_spec);
 
         match init {
             Initializer::Expr(expr) => {
@@ -34,7 +36,11 @@ impl Lowerer {
                     // Convert integer constants to float if target type is float/double
                     // Use the expression's type for signedness (e.g., unsigned long long -> float)
                     let src_ty = self.get_expr_type(expr);
-                    let val = self.coerce_const_to_type_with_src(val, base_ty, src_ty);
+                    let val = if is_bool_target {
+                        val.bool_normalize()
+                    } else {
+                        self.coerce_const_to_type_with_src(val, base_ty, src_ty)
+                    };
                     // If target is long double, promote F64 to LongDouble for proper encoding
                     let val = if is_long_double_target {
                         match val {
@@ -297,7 +303,7 @@ impl Lowerer {
                         };
                         let mut values_flat = vec![self.typed_zero_const(base_ty, is_long_double_target); total_scalar_elems];
                         let mut flat = Vec::with_capacity(total_scalar_elems);
-                        self.flatten_global_array_init(items, array_dim_strides, base_ty, &mut flat);
+                        self.flatten_global_array_init_bool(items, array_dim_strides, base_ty, &mut flat, is_bool_target);
                         for (i, v) in flat.into_iter().enumerate() {
                             if i < total_scalar_elems {
                                 values_flat[i] = Self::maybe_promote_long_double(v, is_long_double_target);
@@ -317,8 +323,12 @@ impl Lowerer {
                                 let val = match &item.init {
                                     Initializer::Expr(expr) => {
                                         let raw = self.eval_const_expr(expr).unwrap_or(self.zero_const(base_ty));
-                                        let expr_ty = self.get_expr_type(expr);
-                                        self.coerce_const_to_type_with_src(raw, base_ty, expr_ty)
+                                        if is_bool_target {
+                                            raw.bool_normalize()
+                                        } else {
+                                            let expr_ty = self.get_expr_type(expr);
+                                            self.coerce_const_to_type_with_src(raw, base_ty, expr_ty)
+                                        }
                                     }
                                     Initializer::List(sub_items) => {
                                         let mut sub_vals = Vec::new();
@@ -326,7 +336,11 @@ impl Lowerer {
                                             self.flatten_global_init_item(&sub.init, base_ty, &mut sub_vals);
                                         }
                                         let raw = sub_vals.into_iter().next().unwrap_or(self.zero_const(base_ty));
-                                        raw.coerce_to(base_ty)
+                                        if is_bool_target {
+                                            raw.bool_normalize()
+                                        } else {
+                                            raw.coerce_to(base_ty)
+                                        }
                                     }
                                 };
                                 values[current_idx] = Self::maybe_promote_long_double(val, is_long_double_target);
@@ -721,6 +735,17 @@ impl Lowerer {
         base_ty: IrType,
         values: &mut Vec<IrConst>,
     ) {
+        self.flatten_global_array_init_bool(items, array_dim_strides, base_ty, values, false)
+    }
+
+    fn flatten_global_array_init_bool(
+        &self,
+        items: &[InitializerItem],
+        array_dim_strides: &[usize],
+        base_ty: IrType,
+        values: &mut Vec<IrConst>,
+        is_bool_target: bool,
+    ) {
         let base_type_size = base_ty.size().max(1);
         if array_dim_strides.len() <= 1 {
             // 1D array: support designated initializers [idx] = val
@@ -740,7 +765,7 @@ impl Lowerer {
                 while values.len() < current_idx {
                     values.push(self.zero_const(base_ty));
                 }
-                self.flatten_global_init_item(&item.init, base_ty, values);
+                self.flatten_global_init_item_bool(&item.init, base_ty, values, is_bool_target);
                 current_idx = values.len();
             }
             return;
@@ -785,9 +810,9 @@ impl Lowerer {
                             values.push(self.zero_const(base_ty));
                         }
                         if sub_strides.is_empty() || remaining_dims == 0 {
-                            self.flatten_global_init_item(&item.init, base_ty, values);
+                            self.flatten_global_init_item_bool(&item.init, base_ty, values, is_bool_target);
                         } else {
-                            self.flatten_global_array_init(sub_items, sub_strides, base_ty, values);
+                            self.flatten_global_array_init_bool(sub_items, sub_strides, base_ty, values, is_bool_target);
                         }
                         // Don't pad here - designated init doesn't imply sub-array boundary
                     }
@@ -812,8 +837,12 @@ impl Lowerer {
                         } else {
                             // Scalar at designated flat position
                             if let Some(val) = self.eval_const_expr(expr) {
-                                let expr_ty = self.get_expr_type(expr);
-                                values[flat_idx] = self.coerce_const_to_type_with_src(val, base_ty, expr_ty);
+                                values[flat_idx] = if is_bool_target {
+                                    val.bool_normalize()
+                                } else {
+                                    let expr_ty = self.get_expr_type(expr);
+                                    self.coerce_const_to_type_with_src(val, base_ty, expr_ty)
+                                };
                             }
                         }
                     }
@@ -841,7 +870,7 @@ impl Lowerer {
                     }
                     // Braced sub-list: recurse into next dimension, then pad to sub_elem_count
                     let start_len = values.len();
-                    self.flatten_global_array_init(sub_items, &array_dim_strides[1..], base_ty, values);
+                    self.flatten_global_array_init_bool(sub_items, &array_dim_strides[1..], base_ty, values, is_bool_target);
                     while values.len() < start_len + sub_elem_count {
                         values.push(self.zero_const(base_ty));
                     }
@@ -859,8 +888,12 @@ impl Lowerer {
                         self.inline_string_to_values(s, sub_elem_count, base_ty, values);
                         current_outer_idx += 1;
                     } else if let Some(val) = self.eval_const_expr(expr) {
-                        let expr_ty = self.get_expr_type(expr);
-                        values.push(self.coerce_const_to_type_with_src(val, base_ty, expr_ty));
+                        values.push(if is_bool_target {
+                            val.bool_normalize()
+                        } else {
+                            let expr_ty = self.get_expr_type(expr);
+                            self.coerce_const_to_type_with_src(val, base_ty, expr_ty)
+                        });
                         // Update current_outer_idx based on relative position from start
                         let relative_pos = values.len() - start_len;
                         if sub_elem_count > 0 {
@@ -966,6 +999,11 @@ impl Lowerer {
 
     /// Flatten a single initializer item, recursing into nested lists.
     fn flatten_global_init_item(&self, init: &Initializer, base_ty: IrType, values: &mut Vec<IrConst>) {
+        self.flatten_global_init_item_bool(init, base_ty, values, false)
+    }
+
+    /// Flatten a single initializer item with _Bool awareness.
+    fn flatten_global_init_item_bool(&self, init: &Initializer, base_ty: IrType, values: &mut Vec<IrConst>, is_bool_target: bool) {
         match init {
             Initializer::Expr(expr) => {
                 if let Expr::StringLiteral(s, _) = expr {
@@ -977,15 +1015,19 @@ impl Lowerer {
                     // Add null terminator
                     values.push(IrConst::I64(0));
                 } else if let Some(val) = self.eval_const_expr(expr) {
-                    let expr_ty = self.get_expr_type(expr);
-                    values.push(self.coerce_const_to_type_with_src(val, base_ty, expr_ty));
+                    values.push(if is_bool_target {
+                        val.bool_normalize()
+                    } else {
+                        let expr_ty = self.get_expr_type(expr);
+                        self.coerce_const_to_type_with_src(val, base_ty, expr_ty)
+                    });
                 } else {
                     values.push(self.zero_const(base_ty));
                 }
             }
             Initializer::List(items) => {
                 for item in items {
-                    self.flatten_global_init_item(&item.init, base_ty, values);
+                    self.flatten_global_init_item_bool(&item.init, base_ty, values, is_bool_target);
                 }
             }
         }

@@ -655,6 +655,24 @@ impl IrConst {
         self.coerce_to_with_src(target_ty, None)
     }
 
+    /// Normalize a constant for _Bool storage: any nonzero value becomes I8(1), zero becomes I8(0).
+    /// This implements C11 6.3.1.2: "When any scalar value is converted to _Bool, the result
+    /// is 0 if the value compares equal to 0; otherwise, the result is 1."
+    pub fn bool_normalize(&self) -> IrConst {
+        let is_nonzero = match self {
+            IrConst::I8(v) => *v != 0,
+            IrConst::I16(v) => *v != 0,
+            IrConst::I32(v) => *v != 0,
+            IrConst::I64(v) => *v != 0,
+            IrConst::I128(v) => *v != 0,
+            IrConst::F32(v) => *v != 0.0,
+            IrConst::F64(v) => *v != 0.0,
+            IrConst::LongDouble(v) => *v != 0.0,
+            IrConst::Zero => false,
+        };
+        IrConst::I8(if is_nonzero { 1 } else { 0 })
+    }
+
     /// Get the zero constant for a given IR type.
     pub fn zero(ty: IrType) -> IrConst {
         match ty {

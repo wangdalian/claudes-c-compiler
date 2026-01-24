@@ -498,9 +498,19 @@ impl Lowerer {
 
     /// Lower an expression, cast to target type, then store at base + byte_offset.
     pub(super) fn emit_init_expr_to_offset(&mut self, e: &Expr, base: Value, byte_offset: usize, target_ty: IrType) {
+        self.emit_init_expr_to_offset_bool(e, base, byte_offset, target_ty, false)
+    }
+
+    /// Like emit_init_expr_to_offset, but with _Bool awareness.
+    /// When target_is_bool is true, normalizes the value (any nonzero -> 1) per C11 6.3.1.2.
+    pub(super) fn emit_init_expr_to_offset_bool(&mut self, e: &Expr, base: Value, byte_offset: usize, target_ty: IrType, target_is_bool: bool) {
         let expr_ty = self.get_expr_type(e);
         let val = self.lower_expr(e);
-        let val = self.emit_implicit_cast(val, expr_ty, target_ty);
+        let val = if target_is_bool {
+            self.emit_bool_normalize_typed(val, expr_ty)
+        } else {
+            self.emit_implicit_cast(val, expr_ty, target_ty)
+        };
         self.emit_store_at_offset(base, byte_offset, val, target_ty);
     }
 

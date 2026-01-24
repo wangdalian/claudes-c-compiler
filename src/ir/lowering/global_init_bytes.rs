@@ -127,6 +127,7 @@ impl Lowerer {
                     // desig_idx+1, desig_idx+2, ... within the same array field
                     let elem_size = self.resolve_ctype_size(elem_ty);
                     let elem_ir_ty = IrType::from_ctype(elem_ty);
+                    let elem_is_bool = **elem_ty == CType::Bool;
                     let mut ai = desig_idx + 1;
                     while ai < arr_size && item_idx < items.len() {
                         let next_item = &items[item_idx];
@@ -135,6 +136,7 @@ impl Lowerer {
                         }
                         if let Initializer::Expr(ref expr) = next_item.init {
                             let val = self.eval_const_expr(expr).unwrap_or(IrConst::I64(0));
+                            let val = if elem_is_bool { val.bool_normalize() } else { val };
                             let elem_offset = field_offset + ai * elem_size;
                             self.write_const_to_bytes(bytes, elem_offset, &val, elem_ir_ty);
                         } else {
@@ -187,7 +189,13 @@ impl Lowerer {
                 // Scalar field (possibly bitfield)
                 _ => {
                     let field_ir_ty = IrType::from_ctype(&field_layout.ty);
-                    let val = self.eval_init_scalar(&item.init);
+                    let raw_val = self.eval_init_scalar(&item.init);
+                    // _Bool fields: normalize (any nonzero -> 1) per C11 6.3.1.2
+                    let val = if field_layout.ty == CType::Bool {
+                        raw_val.bool_normalize()
+                    } else {
+                        raw_val
+                    };
                     if let (Some(bit_offset), Some(bit_width)) = (field_layout.bit_offset, field_layout.bit_width) {
                         self.write_bitfield_to_bytes(bytes, field_offset, &val, field_ir_ty, bit_offset, bit_width);
                     } else {
@@ -456,6 +464,8 @@ impl Lowerer {
                 }
             } else {
                 let val = self.eval_const_expr(expr).unwrap_or(IrConst::I64(0));
+                // _Bool elements: normalize (any nonzero -> 1) per C11 6.3.1.2
+                let val = if *elem_ty == CType::Bool { val.bool_normalize() } else { val };
                 self.write_const_to_bytes(bytes, elem_offset, &val, elem_ir_ty);
             }
         } else if let Initializer::List(ref sub_items) = item.init {
@@ -464,10 +474,12 @@ impl Lowerer {
                 CType::Array(inner_elem_ty, Some(inner_size)) => {
                     let inner_elem_size = self.resolve_ctype_size(inner_elem_ty);
                     let inner_ir_ty = IrType::from_ctype(inner_elem_ty);
+                    let inner_is_bool = **inner_elem_ty == CType::Bool;
                     for (si, sub_item) in sub_items.iter().enumerate() {
                         if si >= *inner_size { break; }
                         if let Initializer::Expr(ref expr) = sub_item.init {
                             let val = self.eval_const_expr(expr).unwrap_or(IrConst::I64(0));
+                            let val = if inner_is_bool { val.bool_normalize() } else { val };
                             let inner_offset = elem_offset + si * inner_elem_size;
                             self.write_const_to_bytes(bytes, inner_offset, &val, inner_ir_ty);
                         }

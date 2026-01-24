@@ -576,8 +576,13 @@ impl Lowerer {
                     }
                 } else if let Some(val) = self.eval_const_expr(expr) {
                     // Scalar constant - coerce to field type and emit as bytes
-                    let field_ir_ty = IrType::from_ctype(field_ty);
-                    let coerced = val.coerce_to(field_ir_ty);
+                    // _Bool fields: normalize (any nonzero -> 1) per C11 6.3.1.2
+                    let coerced = if *field_ty == CType::Bool {
+                        val.bool_normalize()
+                    } else {
+                        let field_ir_ty = IrType::from_ctype(field_ty);
+                        val.coerce_to(field_ir_ty)
+                    };
                     self.push_const_as_bytes(elements, &coerced, field_size);
                 } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
                     // Address expression - emit as relocation
