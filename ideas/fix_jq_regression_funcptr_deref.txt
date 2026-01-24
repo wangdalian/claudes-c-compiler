@@ -1,0 +1,26 @@
+Fix jq regression: function pointer dereference through typedef'd pointers
+
+jq was passing all 12 tests but now only passes 1 (--version). All other tests
+segfault with exit -11. This is a pre-existing regression from recent merges
+(present before the stmt-expr-float-type fix).
+
+Root cause: jq uses typedef'd function pointer callbacks extensively. The
+resolve_typedef_derived function discards FunctionPointer derived declarators
+(the _ => arm at line 40 of lowering.rs), so typedef'd function pointers like
+`typedef void (*jv_free_func)(void*)` get stored as CType::Pointer(Void)
+instead of CType::Pointer(Function(...)). This causes is_function_pointer_deref
+to not detect them, and lower_deref incorrectly loads from the function address.
+
+The emit_call_instruction fix (using lower_expr(inner) for Expr::Deref) handles
+the call context, but jq may have non-call-context function pointer dereferences
+that still fail, or there may be additional issues.
+
+To investigate:
+1. Build jq with mixed GCC/CCC compilation to find the miscompiled source files
+2. Create minimal reproducer from the problematic pattern
+3. Consider fixing resolve_typedef_derived to preserve function type info
+   (would need to add a Function variant to TypeSpecifier)
+4. Or add typedef'd function pointer detection to is_function_pointer_deref
+   (e.g., check if VarInfo has a func_ptr_sig stored)
+
+Priority: HIGH - this is a regression from previously passing tests.
