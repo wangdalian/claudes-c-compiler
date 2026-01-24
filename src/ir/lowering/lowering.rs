@@ -234,6 +234,48 @@ pub(super) struct FunctionMeta {
     pub sret_functions: HashMap<String, usize>,
 }
 
+/// Records undo operations for scope-based variable management.
+/// Instead of cloning entire HashMaps on scope entry, we track what was changed
+/// and undo it on scope exit. This reduces O(total_map_size) clone cost to
+/// O(number_of_changes_in_scope).
+#[derive(Debug)]
+pub(super) struct ScopeFrame {
+    /// Keys that were newly inserted into `locals` (not present before scope entry).
+    pub locals_added: Vec<String>,
+    /// Keys that were overwritten in `locals`: (key, previous_value).
+    pub locals_shadowed: Vec<(String, LocalInfo)>,
+    /// Keys newly inserted into `enum_constants`.
+    pub enums_added: Vec<String>,
+    /// Keys newly inserted into `static_local_names`.
+    pub statics_added: Vec<String>,
+    /// Keys that were overwritten in `static_local_names`: (key, previous_value).
+    pub statics_shadowed: Vec<(String, String)>,
+    /// Keys newly inserted into `const_local_values`.
+    pub consts_added: Vec<String>,
+    /// Keys that were overwritten in `const_local_values`: (key, previous_value).
+    pub consts_shadowed: Vec<(String, i64)>,
+    /// Keys newly inserted into `var_ctypes`.
+    pub var_ctypes_added: Vec<String>,
+    /// Keys that were overwritten in `var_ctypes`: (key, previous_value).
+    pub var_ctypes_shadowed: Vec<(String, CType)>,
+}
+
+impl ScopeFrame {
+    fn new() -> Self {
+        Self {
+            locals_added: Vec::new(),
+            locals_shadowed: Vec::new(),
+            enums_added: Vec::new(),
+            statics_added: Vec::new(),
+            statics_shadowed: Vec::new(),
+            consts_added: Vec::new(),
+            consts_shadowed: Vec::new(),
+            var_ctypes_added: Vec::new(),
+            var_ctypes_shadowed: Vec::new(),
+        }
+    }
+}
+
 /// Lowers AST to IR (alloca-based, not yet SSA).
 pub struct Lowerer {
     pub(super) next_value: u32,
@@ -297,6 +339,10 @@ pub struct Lowerer {
     /// Set of global variable names that have been emitted to module.globals.
     /// Used for O(1) duplicate checking instead of linear scan.
     pub(super) emitted_global_names: HashSet<String>,
+    /// Scope stack for efficient scope-based variable management.
+    /// Each frame tracks what was added/shadowed in that scope, so we can undo
+    /// changes on scope exit without cloning entire HashMaps.
+    pub(super) scope_stack: Vec<ScopeFrame>,
 }
 
 impl Lowerer {
@@ -334,6 +380,7 @@ impl Lowerer {
             var_ctypes: HashMap::new(),
             func_return_ctypes: HashMap::new(),
             emitted_global_names: HashSet::new(),
+            scope_stack: Vec::new(),
         }
     }
 
@@ -367,6 +414,115 @@ impl Lowerer {
         } else {
             self.resolve_member_field_ctype(base_expr, field_name)
         }
+    }
+
+
+    /// Push a new scope frame onto the scope stack.
+    /// Call this at the start of a compound statement or function body.
+    pub(super) fn push_scope(&mut self) {
+        self.scope_stack.push(ScopeFrame::new());
+    }
+
+    /// Pop the top scope frame and undo all local variable/enum/const changes
+    /// made in that scope, restoring the maps to their state at scope entry.
+    pub(super) fn pop_scope(&mut self) {
+        if let Some(frame) = self.scope_stack.pop() {
+            // Undo locals: remove added keys, restore shadowed keys
+            for key in frame.locals_added {
+                self.locals.remove(&key);
+            }
+            for (key, val) in frame.locals_shadowed {
+                self.locals.insert(key, val);
+            }
+
+            // Undo enum_constants: remove added keys
+            for key in frame.enums_added {
+                self.enum_constants.remove(&key);
+            }
+
+            // Undo static_local_names: remove added keys, restore shadowed keys
+            for key in frame.statics_added {
+                self.static_local_names.remove(&key);
+            }
+            for (key, val) in frame.statics_shadowed {
+                self.static_local_names.insert(key, val);
+            }
+
+            // Undo const_local_values: remove added keys, restore shadowed keys
+            for key in frame.consts_added {
+                self.const_local_values.remove(&key);
+            }
+            for (key, val) in frame.consts_shadowed {
+                self.const_local_values.insert(key, val);
+            }
+
+            // Undo var_ctypes: remove added keys, restore shadowed keys
+            for key in frame.var_ctypes_added {
+                self.var_ctypes.remove(&key);
+            }
+            for (key, val) in frame.var_ctypes_shadowed {
+                self.var_ctypes.insert(key, val);
+            }
+        }
+    }
+
+    /// Insert a local variable, tracking the change in the current scope frame.
+    pub(super) fn insert_local_scoped(&mut self, name: String, info: LocalInfo) {
+        if let Some(frame) = self.scope_stack.last_mut() {
+            if let Some(prev) = self.locals.remove(&name) {
+                frame.locals_shadowed.push((name.clone(), prev));
+            } else {
+                frame.locals_added.push(name.clone());
+            }
+        }
+        self.locals.insert(name, info);
+    }
+
+    /// Insert an enum constant, tracking the change in the current scope frame.
+    pub(super) fn insert_enum_scoped(&mut self, name: String, value: i64) {
+        if let Some(frame) = self.scope_stack.last_mut() {
+            if !self.enum_constants.contains_key(&name) {
+                frame.enums_added.push(name.clone());
+            }
+            // Enum constants don't get shadowed in C (redefinition is UB), so just add
+        }
+        self.enum_constants.insert(name, value);
+    }
+
+    /// Insert a static local name, tracking the change in the current scope frame.
+    pub(super) fn insert_static_local_scoped(&mut self, name: String, mangled: String) {
+        if let Some(frame) = self.scope_stack.last_mut() {
+            if let Some(prev) = self.static_local_names.remove(&name) {
+                frame.statics_shadowed.push((name.clone(), prev));
+            } else {
+                frame.statics_added.push(name.clone());
+            }
+        }
+        self.static_local_names.insert(name, mangled);
+    }
+
+    /// Insert a const local value, tracking the change in the current scope frame.
+    pub(super) fn insert_const_local_scoped(&mut self, name: String, value: i64) {
+        if let Some(frame) = self.scope_stack.last_mut() {
+            if let Some(prev) = self.const_local_values.remove(&name) {
+                frame.consts_shadowed.push((name.clone(), prev));
+            } else {
+                frame.consts_added.push(name.clone());
+            }
+        }
+        self.const_local_values.insert(name, value);
+    }
+
+    /// Insert a var ctype, tracking the change in the current scope frame.
+    pub(super) fn insert_var_ctype_scoped(&mut self, name: String, ctype: CType) {
+        if let Some(frame) = self.scope_stack.last_mut() {
+            if let Some(prev) = self.var_ctypes.remove(&name) {
+                frame.var_ctypes_shadowed.push((name.clone(), prev));
+            } else {
+                frame.var_ctypes_added.push(name.clone());
+            }
+        }
+        self.var_ctypes.insert(name, ctype);
     }
 
     pub fn lower(mut self, tu: &TranslationUnit) -> IrModule {
@@ -472,10 +628,21 @@ impl Lowerer {
         // Second pass: collect all enum constants from the entire AST
         self.collect_all_enum_constants(tu);
 
+        // Pass 2.5: collect referenced static functions so we can skip unreferenced ones.
+        // Static/inline functions from headers that are never called don't need to be lowered.
+        let referenced_statics = self.collect_referenced_static_functions(tu);
+
         // Third pass: lower everything
         for decl in &tu.decls {
             match decl {
                 ExternalDecl::FunctionDef(func) => {
+                    // Skip unreferenced static functions (e.g., static inline from headers
+                    // that are never called). This avoids lowering 100+ unused header functions.
+                    if (func.is_static || func.is_inline)
+                        && !referenced_statics.contains(&func.name)
+                    {
+                        continue;
+                    }
                     self.lower_function(func);
                 }
                 ExternalDecl::Declaration(decl) => {
@@ -484,6 +651,191 @@ impl Lowerer {
             }
         }
         self.module
+    }
+
+    /// Collect all function names referenced from non-static function bodies and
+    /// global initializers. Static/inline functions from headers that are never
+    /// referenced can be skipped during lowering for a significant performance win.
+    fn collect_referenced_static_functions(&self, tu: &TranslationUnit) -> HashSet<String> {
+        let mut referenced = HashSet::new();
+
+        for decl in &tu.decls {
+            match decl {
+                ExternalDecl::FunctionDef(func) => {
+                    // Non-static functions always reference identifiers that might be static functions
+                    // Static functions also reference other static functions
+                    self.collect_refs_from_compound(&func.body, &mut referenced);
+                }
+                ExternalDecl::Declaration(decl) => {
+                    // Check global variable initializers for function references
+                    for declarator in &decl.declarators {
+                        if let Some(ref init) = declarator.init {
+                            self.collect_refs_from_initializer(init, &mut referenced);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Transitively close: if static func A references static func B,
+        // and A is referenced, then B is also referenced.
+        // We already collected all references from all function bodies above,
+        // including from static functions, so the transitive closure is handled.
+
+        referenced
+    }
+
+    /// Collect function name references from a compound statement.
+    fn collect_refs_from_compound(&self, compound: &CompoundStmt, refs: &mut HashSet<String>) {
+        for item in &compound.items {
+            match item {
+                BlockItem::Declaration(decl) => {
+                    for declarator in &decl.declarators {
+                        if let Some(ref init) = declarator.init {
+                            self.collect_refs_from_initializer(init, refs);
+                        }
+                    }
+                }
+                BlockItem::Statement(stmt) => {
+                    self.collect_refs_from_stmt(stmt, refs);
+                }
+            }
+        }
+    }
+
+    /// Collect function name references from a statement.
+    fn collect_refs_from_stmt(&self, stmt: &Stmt, refs: &mut HashSet<String>) {
+        match stmt {
+            Stmt::Expr(Some(expr)) => {
+                self.collect_refs_from_expr(expr, refs);
+            }
+            Stmt::Return(Some(expr), _) => {
+                self.collect_refs_from_expr(expr, refs);
+            }
+            Stmt::Compound(compound) => {
+                self.collect_refs_from_compound(compound, refs);
+            }
+            Stmt::If(cond, then_s, else_s, _) => {
+                self.collect_refs_from_expr(cond, refs);
+                self.collect_refs_from_stmt(then_s, refs);
+                if let Some(e) = else_s {
+                    self.collect_refs_from_stmt(e, refs);
+                }
+            }
+            Stmt::While(cond, body, _) => {
+                self.collect_refs_from_expr(cond, refs);
+                self.collect_refs_from_stmt(body, refs);
+            }
+            Stmt::DoWhile(body, cond, _) => {
+                self.collect_refs_from_stmt(body, refs);
+                self.collect_refs_from_expr(cond, refs);
+            }
+            Stmt::For(init, cond, inc, body, _) => {
+                if let Some(init) = init {
+                    match init.as_ref() {
+                        ForInit::Expr(e) => self.collect_refs_from_expr(e, refs),
+                        ForInit::Declaration(d) => {
+                            for declarator in &d.declarators {
+                                if let Some(ref init) = declarator.init {
+                                    self.collect_refs_from_initializer(init, refs);
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(c) = cond { self.collect_refs_from_expr(c, refs); }
+                if let Some(i) = inc { self.collect_refs_from_expr(i, refs); }
+                self.collect_refs_from_stmt(body, refs);
+            }
+            Stmt::Switch(expr, body, _) => {
+                self.collect_refs_from_expr(expr, refs);
+                self.collect_refs_from_stmt(body, refs);
+            }
+            Stmt::Case(expr, stmt, _) => {
+                self.collect_refs_from_expr(expr, refs);
+                self.collect_refs_from_stmt(stmt, refs);
+            }
+            Stmt::Default(stmt, _) | Stmt::Label(_, stmt, _) => {
+                self.collect_refs_from_stmt(stmt, refs);
+            }
+            Stmt::GotoIndirect(expr, _) => {
+                self.collect_refs_from_expr(expr, refs);
+            }
+            Stmt::InlineAsm { inputs, outputs, .. } => {
+                for op in inputs.iter().chain(outputs.iter()) {
+                    self.collect_refs_from_expr(&op.expr, refs);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Collect function name references from an expression.
+    fn collect_refs_from_expr(&self, expr: &Expr, refs: &mut HashSet<String>) {
+        match expr {
+            Expr::Identifier(name, _) => {
+                if self.known_functions.contains(name) {
+                    refs.insert(name.clone());
+                }
+            }
+            Expr::FunctionCall(callee, args, _) => {
+                self.collect_refs_from_expr(callee, refs);
+                for arg in args { self.collect_refs_from_expr(arg, refs); }
+            }
+            Expr::BinaryOp(_, lhs, rhs, _) | Expr::Assign(lhs, rhs, _)
+            | Expr::CompoundAssign(_, lhs, rhs, _) => {
+                self.collect_refs_from_expr(lhs, refs);
+                self.collect_refs_from_expr(rhs, refs);
+            }
+            Expr::UnaryOp(_, operand, _) | Expr::PostfixOp(_, operand, _)
+            | Expr::Cast(_, operand, _) => {
+                self.collect_refs_from_expr(operand, refs);
+            }
+            Expr::Conditional(c, t, f, _) => {
+                self.collect_refs_from_expr(c, refs);
+                self.collect_refs_from_expr(t, refs);
+                self.collect_refs_from_expr(f, refs);
+            }
+            Expr::Comma(lhs, rhs, _) => {
+                self.collect_refs_from_expr(lhs, refs);
+                self.collect_refs_from_expr(rhs, refs);
+            }
+            Expr::MemberAccess(base, _, _) | Expr::PointerMemberAccess(base, _, _) => {
+                self.collect_refs_from_expr(base, refs);
+            }
+            Expr::ArraySubscript(base, idx, _) => {
+                self.collect_refs_from_expr(base, refs);
+                self.collect_refs_from_expr(idx, refs);
+            }
+            Expr::Deref(inner, _) | Expr::AddressOf(inner, _) | Expr::VaArg(inner, _, _) => {
+                self.collect_refs_from_expr(inner, refs);
+            }
+            Expr::CompoundLiteral(_, init, _) => {
+                self.collect_refs_from_initializer(init, refs);
+            }
+            Expr::StmtExpr(compound, _) => {
+                self.collect_refs_from_compound(compound, refs);
+            }
+            Expr::GenericSelection(ctrl, assocs, _) => {
+                self.collect_refs_from_expr(ctrl, refs);
+                for assoc in assocs {
+                    self.collect_refs_from_expr(&assoc.expr, refs);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Collect function name references from an initializer.
+    fn collect_refs_from_initializer(&self, init: &Initializer, refs: &mut HashSet<String>) {
+        match init {
+            Initializer::Expr(e) => self.collect_refs_from_expr(e, refs),
+            Initializer::List(items) => {
+                for item in items {
+                    self.collect_refs_from_initializer(&item.init, refs);
+                }
+            }
+        }
     }
 
     /// Register function metadata (return type, param types, variadic, sret) for
@@ -688,12 +1040,14 @@ impl Lowerer {
         self.locals.clear();
         self.static_local_names.clear();
         self.const_local_values.clear();
+        self.var_ctypes.clear();
         self.break_labels.clear();
         self.continue_labels.clear();
         self.user_labels.clear();
-        // Save global enum constants before function body. Enum constants declared
-        // inside function bodies should not leak to other functions.
-        let saved_enum_constants = self.enum_constants.clone();
+        self.scope_stack.clear();
+        // Push a function-level scope to track enum constants declared inside
+        // function bodies (they shouldn't leak to subsequent functions).
+        self.push_scope();
         self.current_function_name = func.name.clone();
 
         let return_type = self.type_spec_to_ir(&func.return_type);
@@ -842,7 +1196,7 @@ impl Lowerer {
                         func.params.get(orig_idx).map_or(vec![], |p| self.compute_ptr_array_strides(&p.type_spec))
                     } else { vec![] };
 
-                    self.locals.insert(param.name.clone(), LocalInfo {
+                    self.insert_local_scoped(param.name.clone(), LocalInfo {
                         var: VarInfo {
                             ty,
                             elem_size,
@@ -909,7 +1263,7 @@ impl Lowerer {
             });
 
             // Register the struct/complex alloca as the local variable
-            self.locals.insert(sp.param_name, LocalInfo {
+            self.insert_local_scoped(sp.param_name, LocalInfo {
                 var: VarInfo {
                     ty: IrType::Ptr,
                     elem_size: 0,
@@ -1007,9 +1361,9 @@ impl Lowerer {
         };
         self.module.functions.push(ir_func);
 
-        // Restore enum constants to global-only state so function-body enum constants
-        // don't leak to subsequent functions.
-        self.enum_constants = saved_enum_constants;
+        // Pop function-level scope to remove function-body enum constants
+        // and any other scoped additions.
+        self.pop_scope();
     }
 
     /// For pointer-to-array function parameters with VLA (runtime) dimensions,
@@ -1359,6 +1713,36 @@ impl Lowerer {
             // where the field type becomes Array(Array(Enum(...))).
             TypeSpecifier::Array(inner, _) | TypeSpecifier::Pointer(inner) => {
                 self.collect_enum_constants(inner);
+            }
+            _ => {}
+        }
+    }
+
+    /// Collect enum constants from a type specifier, using scoped insertion
+    /// so that constants are tracked in the current scope frame for undo on scope exit.
+    pub(super) fn collect_enum_constants_scoped(&mut self, ts: &TypeSpecifier) {
+        match ts {
+            TypeSpecifier::Enum(_, Some(variants)) => {
+                let mut next_val: i64 = 0;
+                for variant in variants {
+                    if let Some(ref expr) = variant.value {
+                        if let Some(val) = self.eval_const_expr(expr) {
+                            if let Some(v) = self.const_to_i64(&val) {
+                                next_val = v;
+                            }
+                        }
+                    }
+                    self.insert_enum_scoped(variant.name.clone(), next_val);
+                    next_val += 1;
+                }
+            }
+            TypeSpecifier::Struct(_, Some(fields), _, _) | TypeSpecifier::Union(_, Some(fields), _, _) => {
+                for field in fields {
+                    self.collect_enum_constants_scoped(&field.type_spec);
+                }
+            }
+            TypeSpecifier::Array(inner, _) | TypeSpecifier::Pointer(inner) => {
+                self.collect_enum_constants_scoped(inner);
             }
             _ => {}
         }

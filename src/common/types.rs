@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 /// Represents C types in the compiler.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CType {
@@ -25,8 +27,8 @@ pub enum CType {
     Pointer(Box<CType>),
     Array(Box<CType>, Option<usize>),
     Function(Box<FunctionType>),
-    Struct(StructType),
-    Union(StructType),
+    Struct(Arc<StructType>),
+    Union(Arc<StructType>),
     Enum(EnumType),
 }
 

@@ -498,12 +498,12 @@ impl SemanticAnalyzer {
                 } else {
                     *pragma_pack_align
                 };
-                CType::Struct(crate::common::types::StructType {
+                CType::Struct(std::sync::Arc::new(crate::common::types::StructType {
                     name: name.clone(),
                     fields: struct_fields,
                     is_packed: *is_packed,
                     max_field_align: effective_align,
-                })
+                }))
             }
             TypeSpecifier::Union(name, fields, is_packed, pragma_pack_align) => {
                 let union_fields = fields.as_ref().map(|f| self.convert_struct_fields(f)).unwrap_or_default();
@@ -512,12 +512,12 @@ impl SemanticAnalyzer {
                 } else {
                     *pragma_pack_align
                 };
-                CType::Union(crate::common::types::StructType {
+                CType::Union(std::sync::Arc::new(crate::common::types::StructType {
                     name: name.clone(),
                     fields: union_fields,
                     is_packed: *is_packed,
                     max_field_align: effective_align,
-                })
+                }))
             }
             TypeSpecifier::Enum(name, variants) => {
                 if let Some(variants) = variants {

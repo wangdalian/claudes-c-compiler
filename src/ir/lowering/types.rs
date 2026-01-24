@@ -2125,7 +2125,8 @@ impl Lowerer {
         pragma_pack: Option<usize>,
     ) -> CType {
         let make = |st: crate::common::types::StructType| -> CType {
-            if is_union { CType::Union(st) } else { CType::Struct(st) }
+            let arc_st = std::sync::Arc::new(st);
+            if is_union { CType::Union(arc_st) } else { CType::Struct(arc_st) }
         };
         let prefix = if is_union { "union" } else { "struct" };
         // __attribute__((packed)) forces alignment 1; #pragma pack(N) caps to N.
