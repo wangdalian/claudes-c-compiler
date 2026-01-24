@@ -1477,9 +1477,10 @@ impl Lowerer {
             let bit_width = f.bit_width.as_ref().and_then(|bw| {
                 self.eval_const_expr(bw).and_then(|c| c.to_u32())
             });
+            let ty = self.struct_field_ctype(f);
             StructField {
                 name: f.name.clone().unwrap_or_default(),
-                ty: self.type_spec_to_ctype(&f.type_spec),
+                ty,
                 bit_width,
             }
         }).collect();
@@ -1529,14 +1530,27 @@ impl Lowerer {
             TypeSpecifier::Array(elem, _) => self.alignof_type(elem),
             TypeSpecifier::Struct(_, Some(fields), is_packed) => {
                 let natural = fields.iter()
-                    .map(|f| self.alignof_type(&f.type_spec))
+                    .map(|f| {
+                        if f.derived.is_empty() {
+                            self.alignof_type(&f.type_spec)
+                        } else {
+                            // Function pointer fields are pointer-sized
+                            8
+                        }
+                    })
                     .max()
                     .unwrap_or(1);
                 if *is_packed { natural.min(1) } else { natural }
             }
             TypeSpecifier::Union(_, Some(fields), _) => {
                 fields.iter()
-                    .map(|f| self.alignof_type(&f.type_spec))
+                    .map(|f| {
+                        if f.derived.is_empty() {
+                            self.alignof_type(&f.type_spec)
+                        } else {
+                            8
+                        }
+                    })
                     .max()
                     .unwrap_or(1)
             }
@@ -2151,9 +2165,10 @@ impl Lowerer {
                 let bit_width = f.bit_width.as_ref().and_then(|bw| {
                     self.eval_const_expr(bw).and_then(|c| c.to_u32())
                 });
+                let ty = self.struct_field_ctype(f);
                 StructField {
                     name: f.name.clone().unwrap_or_default(),
-                    ty: self.type_spec_to_ctype(&f.type_spec),
+                    ty,
                     bit_width,
                 }
             }).collect();
@@ -2197,80 +2212,176 @@ impl Lowerer {
         }
     }
 
+    /// Get the CType for a struct field declaration, accounting for derived declarators.
+    /// For simple fields (derived is empty), just converts type_spec.
+    /// For complex fields (function pointers, etc.), uses build_full_ctype.
+    pub(super) fn struct_field_ctype(&self, f: &StructFieldDecl) -> CType {
+        if f.derived.is_empty() {
+            self.type_spec_to_ctype(&f.type_spec)
+        } else {
+            self.build_full_ctype(&f.type_spec, &f.derived)
+        }
+    }
+
     /// Build a full CType from a TypeSpecifier and DerivedDeclarator chain.
-    /// For `int **p`, type_spec=Int, derived=[Pointer, Pointer] -> Pointer(Pointer(Int)).
-    /// For `int *arr[3]`, type_spec=Int, derived=[Pointer, Array(3)] -> Array(Pointer(Int), 3).
+    ///
+    /// The derived list is produced by parse_declarator's combine_declarator_parts,
+    /// which stores declarators outer-to-inner. For building the CType, we need to
+    /// process inner-to-outer (inside-out rule).
+    ///
+    /// Examples (derived list -> CType):
+    /// - `int **p`: [Pointer, Pointer] -> Pointer(Pointer(Int))
+    /// - `int *arr[3]`: [Pointer, Array(3)] -> Array(Pointer(Int), 3)
+    /// - `int (*fp)(int)`: [Pointer, FunctionPointer([int])] -> Pointer(Function(Int->Int))
+    /// - `int (*fp[3])(int)`: [Array(3), Pointer, FunctionPointer([int])] -> Array(Pointer(Function(Int->Int)), 3)
     pub(super) fn build_full_ctype(&self, type_spec: &TypeSpecifier, derived: &[DerivedDeclarator]) -> CType {
         let resolved = self.resolve_type_spec(type_spec);
         let base = self.type_spec_to_ctype(resolved);
-        let mut result = base;
-        // Process derived declarators in groups:
-        // - Pointers are applied immediately (forward order)
-        // - Consecutive Array dimensions are collected and applied in reverse
-        //   (so `int m[3][4]` with derived [Array(3), Array(4)] becomes Array(Array(Int,4),3))
-        // - For function pointers: [Pointer, FunctionPointer] means the Pointer wraps the
-        //   function type, not the base/return type. So we defer Pointer when followed by
-        //   FunctionPointer.
-        let mut i = 0;
-        while i < derived.len() {
-            match &derived[i] {
-                DerivedDeclarator::Pointer => {
-                    // Check if this Pointer is followed by FunctionPointer - if so,
-                    // the Pointer wraps the function type (pointer-to-function), not
-                    // the return type.
-                    if i + 1 < derived.len() && matches!(&derived[i + 1], DerivedDeclarator::FunctionPointer(_, _)) {
-                        // Skip Pointer for now; FunctionPointer will use 'result' as
-                        // return type, then we wrap in Pointer after.
+
+        // Process derived declarators. The list is ordered outer-to-inner:
+        // outermost wrapping (e.g. Array) first, innermost (closest to base type, e.g.
+        // FunctionPointer) last. We need to build inside-out: first build the
+        // inner type from the base, then wrap with outer layers.
+        //
+        // Strategy: find the innermost function pointer group first (Pointer+FunctionPointer),
+        // build the function pointer type from the base, then apply remaining outer
+        // wrappers (Array, Pointer).
+
+        // Separate into prefix (outer wrappers) and suffix (Pointer+FunctionPointer core)
+        // Look for the pattern: [outer...] [Pointer] [FunctionPointer]
+        // where the Pointer+FunctionPointer pair is the function pointer core.
+        let fptr_idx = self.find_function_pointer_core(derived);
+
+        if let Some(fp_start) = fptr_idx {
+            // Build the function pointer type from base
+            let mut result = base;
+
+            // Process from fp_start to end (the function pointer core and any
+            // additional inner wrappers after it)
+            let mut i = fp_start;
+            while i < derived.len() {
+                match &derived[i] {
+                    DerivedDeclarator::Pointer => {
+                        if i + 1 < derived.len() && matches!(&derived[i + 1], DerivedDeclarator::FunctionPointer(params, _) | DerivedDeclarator::Function(params, _)) {
+                            let (params, variadic) = match &derived[i + 1] {
+                                DerivedDeclarator::FunctionPointer(p, v) | DerivedDeclarator::Function(p, v) => (p, *v),
+                                _ => unreachable!(),
+                            };
+                            let param_types = self.convert_param_decls_to_ctypes(params);
+                            let func_type = CType::Function(Box::new(crate::common::types::FunctionType {
+                                return_type: result,
+                                params: param_types,
+                                variadic,
+                            }));
+                            result = CType::Pointer(Box::new(func_type));
+                            i += 2;
+                        } else {
+                            result = CType::Pointer(Box::new(result));
+                            i += 1;
+                        }
+                    }
+                    DerivedDeclarator::FunctionPointer(params, variadic) => {
+                        let param_types = self.convert_param_decls_to_ctypes(params);
                         let func_type = CType::Function(Box::new(crate::common::types::FunctionType {
                             return_type: result,
-                            params: Vec::new(),
-                            variadic: false,
+                            params: param_types,
+                            variadic: *variadic,
                         }));
                         result = CType::Pointer(Box::new(func_type));
-                        i += 2; // skip both Pointer and FunctionPointer
-                    } else {
+                        i += 1;
+                    }
+                    DerivedDeclarator::Function(params, variadic) => {
+                        let param_types = self.convert_param_decls_to_ctypes(params);
+                        let func_type = CType::Function(Box::new(crate::common::types::FunctionType {
+                            return_type: result,
+                            params: param_types,
+                            variadic: *variadic,
+                        }));
+                        result = func_type;
+                        i += 1;
+                    }
+                    _ => { i += 1; }
+                }
+            }
+
+            // Now apply outer wrappers (prefix before fp_start): Array, Pointer
+            // These are outermost, so apply them in reverse order
+            let prefix = &derived[..fp_start];
+            for d in prefix.iter().rev() {
+                match d {
+                    DerivedDeclarator::Array(size_expr) => {
+                        let size = size_expr.as_ref().and_then(|e| {
+                            self.expr_as_array_size(e).map(|n| n as usize)
+                        });
+                        result = CType::Array(Box::new(result), size);
+                    }
+                    DerivedDeclarator::Pointer => {
+                        result = CType::Pointer(Box::new(result));
+                    }
+                    _ => {}
+                }
+            }
+
+            result
+        } else {
+            // No function pointer - simple case
+            let mut result = base;
+            let mut i = 0;
+            while i < derived.len() {
+                match &derived[i] {
+                    DerivedDeclarator::Pointer => {
                         result = CType::Pointer(Box::new(result));
                         i += 1;
                     }
-                }
-                DerivedDeclarator::Array(_) => {
-                    // Collect all consecutive Array declarators
-                    let start = i;
-                    while i < derived.len() && matches!(&derived[i], DerivedDeclarator::Array(_)) {
-                        i += 1;
-                    }
-                    // Apply array dimensions in reverse order (innermost first)
-                    for j in (start..i).rev() {
-                        if let DerivedDeclarator::Array(size_expr) = &derived[j] {
-                            let size = size_expr.as_ref().and_then(|e| {
-                                self.expr_as_array_size(e).map(|n| n as usize)
-                            });
-                            result = CType::Array(Box::new(result), size);
+                    DerivedDeclarator::Array(_) => {
+                        let start = i;
+                        while i < derived.len() && matches!(&derived[i], DerivedDeclarator::Array(_)) {
+                            i += 1;
+                        }
+                        for j in (start..i).rev() {
+                            if let DerivedDeclarator::Array(size_expr) = &derived[j] {
+                                let size = size_expr.as_ref().and_then(|e| {
+                                    self.expr_as_array_size(e).map(|n| n as usize)
+                                });
+                                result = CType::Array(Box::new(result), size);
+                            }
                         }
                     }
-                }
-                DerivedDeclarator::Function(_, _) => {
-                    let func_type = CType::Function(Box::new(crate::common::types::FunctionType {
-                        return_type: result,
-                        params: Vec::new(),
-                        variadic: false,
-                    }));
-                    result = func_type;
-                    i += 1;
-                }
-                DerivedDeclarator::FunctionPointer(_, _) => {
-                    // Standalone FunctionPointer without preceding Pointer
-                    let func_type = CType::Function(Box::new(crate::common::types::FunctionType {
-                        return_type: result,
-                        params: Vec::new(),
-                        variadic: false,
-                    }));
-                    result = func_type;
-                    i += 1;
+                    _ => { i += 1; }
                 }
             }
+            result
         }
-        result
+    }
+
+    /// Find the start index of the function pointer core in a derived declarator list.
+    /// The function pointer core is [Pointer, FunctionPointer] or standalone FunctionPointer.
+    fn find_function_pointer_core(&self, derived: &[DerivedDeclarator]) -> Option<usize> {
+        // Look for Pointer followed by FunctionPointer
+        for i in 0..derived.len() {
+            if matches!(&derived[i], DerivedDeclarator::Pointer) {
+                if i + 1 < derived.len() && matches!(&derived[i + 1], DerivedDeclarator::FunctionPointer(_, _)) {
+                    return Some(i);
+                }
+            }
+            // Standalone FunctionPointer
+            if matches!(&derived[i], DerivedDeclarator::FunctionPointer(_, _)) {
+                return Some(i);
+            }
+            // Standalone Function (for function declarations)
+            if matches!(&derived[i], DerivedDeclarator::Function(_, _)) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Convert ParamDecl list to CType list for function types.
+    fn convert_param_decls_to_ctypes(&self, params: &[ParamDecl]) -> Vec<(CType, Option<String>)> {
+        params.iter().map(|p| {
+            let ty = self.type_spec_to_ctype(&self.resolve_type_spec(&p.type_spec));
+            (ty, p.name.clone())
+        }).collect()
     }
 
     /// Get the full CType of an expression by recursion.

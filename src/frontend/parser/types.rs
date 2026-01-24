@@ -417,10 +417,14 @@ impl Parser {
         self.expect(&TokenKind::LBrace);
         while !matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
             self.skip_gcc_extensions();
+            if matches!(self.peek(), TokenKind::Semicolon) {
+                self.advance();
+                continue;
+            }
             if let Some(type_spec) = self.parse_type_specifier() {
                 if matches!(self.peek(), TokenKind::Semicolon) {
                     // Anonymous field (e.g., anonymous struct/union)
-                    fields.push(StructFieldDecl { type_spec, name: None, bit_width: None });
+                    fields.push(StructFieldDecl { type_spec, name: None, bit_width: None, derived: Vec::new() });
                 } else {
                     self.parse_struct_field_declarators(&type_spec, &mut fields);
                 }
@@ -434,117 +438,104 @@ impl Parser {
         fields
     }
 
-    /// Parse one or more declarators for a struct field.
+    /// Parse one or more declarators for a struct field using the general
+    /// declarator parser. This correctly handles complex declarators like
+    /// function pointers returning function pointers (e.g.,
+    /// `void (*(*xDlSym)(sqlite3_vfs*, void*, const char *))(void)`).
     fn parse_struct_field_declarators(
         &mut self,
         type_spec: &TypeSpecifier,
         fields: &mut Vec<StructFieldDecl>,
     ) {
         loop {
-            // Check for function pointer field or parenthesized name
-            if matches!(self.peek(), TokenKind::LParen) {
-                let save = self.pos;
-                self.advance(); // consume '('
-                if matches!(self.peek(), TokenKind::Star) {
-                    self.advance(); // consume '*'
-                    self.skip_cv_qualifiers();
-                    let name = if let TokenKind::Identifier(n) = self.peek().clone() {
-                        self.advance();
-                        Some(n)
-                    } else {
-                        None
-                    };
-                    self.skip_array_dimensions();
-                    self.expect(&TokenKind::RParen);
-                    self.skip_balanced_parens();
-                    // Function pointer is treated as a pointer type
-                    let field_type = TypeSpecifier::Pointer(Box::new(type_spec.clone()));
-                    fields.push(StructFieldDecl { type_spec: field_type, name, bit_width: None });
-                    if !self.consume_if(&TokenKind::Comma) { break; }
-                    continue;
-                } else if let TokenKind::Identifier(_) = self.peek() {
-                    // Parenthesized field name
-                    let name = if let TokenKind::Identifier(n) = self.peek().clone() {
-                        self.advance();
-                        Some(n)
-                    } else {
-                        None
-                    };
-                    self.expect(&TokenKind::RParen);
-                    let ft = self.parse_array_dimensions_wrapping(type_spec.clone());
-                    let bit_width = if self.consume_if(&TokenKind::Colon) {
-                        Some(Box::new(self.parse_expr()))
-                    } else {
-                        None
-                    };
-                    fields.push(StructFieldDecl { type_spec: ft, name, bit_width });
-                    if !self.consume_if(&TokenKind::Comma) { break; }
-                    continue;
-                } else if matches!(self.peek(), TokenKind::LParen) {
-                    // Nested parenthesized name: ((name))
-                    let name = self.extract_paren_name();
-                    self.expect(&TokenKind::RParen);
-                    let field_type = type_spec.clone();
-                    let bit_width = if self.consume_if(&TokenKind::Colon) {
-                        Some(Box::new(self.parse_expr()))
-                    } else {
-                        None
-                    };
-                    fields.push(StructFieldDecl { type_spec: field_type, name, bit_width });
-                    if !self.consume_if(&TokenKind::Comma) { break; }
-                    continue;
-                } else {
-                    self.pos = save; // restore, not a recognized pattern
-                }
-            }
-            // Parse pointer declarators: each * may be followed by
-            // cv-qualifiers (const/volatile/restrict), e.g. const char *const *p
-            let mut field_type = type_spec.clone();
-            while self.consume_if(&TokenKind::Star) {
-                field_type = TypeSpecifier::Pointer(Box::new(field_type));
-                self.skip_cv_qualifiers();
-            }
-            // After consuming pointer stars, check for function pointer declarator
-            // with pointer return type, e.g. void *(*func)(void) or int *(*f)(int).
-            // At this point field_type = Pointer(base_type), next token is '(' from '(*name)(...)'
-            if matches!(self.peek(), TokenKind::LParen) {
-                let save2 = self.pos;
-                self.advance(); // consume '('
-                if matches!(self.peek(), TokenKind::Star) {
-                    self.advance(); // consume '*'
-                    self.skip_cv_qualifiers();
-                    let name = if let TokenKind::Identifier(n) = self.peek().clone() {
-                        self.advance();
-                        Some(n)
-                    } else {
-                        None
-                    };
-                    self.skip_array_dimensions();
-                    self.expect(&TokenKind::RParen);
-                    self.skip_balanced_parens();
-                    // Function pointer with pointer return type
-                    fields.push(StructFieldDecl { type_spec: field_type, name, bit_width: None });
-                    if !self.consume_if(&TokenKind::Comma) { break; }
-                    continue;
-                } else {
-                    self.pos = save2; // restore
-                }
-            }
-            let name = if let TokenKind::Identifier(n) = self.peek().clone() {
+            // Handle unnamed bitfield: `: expr`
+            if matches!(self.peek(), TokenKind::Colon) {
                 self.advance();
-                Some(n)
-            } else {
-                None
-            };
-            field_type = self.parse_array_dimensions_wrapping(field_type);
+                let bit_width = Some(Box::new(self.parse_expr()));
+                fields.push(StructFieldDecl {
+                    type_spec: type_spec.clone(),
+                    name: None,
+                    bit_width,
+                    derived: Vec::new(),
+                });
+                if !self.consume_if(&TokenKind::Comma) { break; }
+                continue;
+            }
+
+            // Use the general-purpose declarator parser. This handles all cases:
+            // simple pointers, arrays, function pointers, and nested function
+            // pointer declarators of arbitrary depth.
+            let (name, derived) = self.parse_declarator();
+
+            // Parse optional bitfield width
             let bit_width = if self.consume_if(&TokenKind::Colon) {
                 Some(Box::new(self.parse_expr()))
             } else {
                 None
             };
-            fields.push(StructFieldDecl { type_spec: field_type, name, bit_width });
+
+            // Skip any trailing GCC __attribute__
+            self.skip_gcc_extensions();
+
+            // For backward compatibility with downstream code that reads type_spec
+            // directly, fold simple derived declarators (pointers, arrays) into
+            // type_spec. Only use the derived field for complex cases with function
+            // pointers that require build_full_ctype().
+            let (field_type, field_derived) = Self::fold_simple_derived(type_spec, &derived);
+
+            fields.push(StructFieldDecl {
+                type_spec: field_type,
+                name,
+                bit_width,
+                derived: field_derived,
+            });
+
             if !self.consume_if(&TokenKind::Comma) { break; }
         }
+    }
+
+    /// For simple derived declarators (just pointers and/or arrays), fold them
+    /// into the TypeSpecifier directly to maintain backward compatibility with
+    /// downstream code. For complex cases (function pointers), return the
+    /// derived list for downstream to process with build_full_ctype().
+    fn fold_simple_derived(base: &TypeSpecifier, derived: &[DerivedDeclarator]) -> (TypeSpecifier, Vec<DerivedDeclarator>) {
+        // If derived contains any function-related declarators, pass it through
+        let has_function = derived.iter().any(|d| matches!(d,
+            DerivedDeclarator::Function(_, _) | DerivedDeclarator::FunctionPointer(_, _)));
+
+        if has_function {
+            return (base.clone(), derived.to_vec());
+        }
+
+        if derived.is_empty() {
+            return (base.clone(), Vec::new());
+        }
+
+        // Simple case: only Pointer and Array declarators. Fold into type_spec.
+        let mut result = base.clone();
+        let mut i = 0;
+        while i < derived.len() {
+            match &derived[i] {
+                DerivedDeclarator::Pointer => {
+                    result = TypeSpecifier::Pointer(Box::new(result));
+                    i += 1;
+                }
+                DerivedDeclarator::Array(_) => {
+                    // Collect consecutive array dims, apply in reverse (innermost first)
+                    let start = i;
+                    while i < derived.len() && matches!(&derived[i], DerivedDeclarator::Array(_)) {
+                        i += 1;
+                    }
+                    for j in (start..i).rev() {
+                        if let DerivedDeclarator::Array(size_expr) = &derived[j] {
+                            result = TypeSpecifier::Array(Box::new(result), size_expr.clone());
+                        }
+                    }
+                }
+                _ => { i += 1; }
+            }
+        }
+        (result, Vec::new())
     }
 
     /// Parse array dimensions and wrap a type with them in reverse order.

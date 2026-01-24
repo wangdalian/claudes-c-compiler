@@ -148,6 +148,11 @@ pub struct StructFieldDecl {
     pub type_spec: TypeSpecifier,
     pub name: Option<String>,
     pub bit_width: Option<Box<Expr>>,
+    /// Derived declarator parts (pointers, arrays, function pointers) from the declarator.
+    /// For simple fields like `int x` or `int *p`, this is empty (the pointer is in type_spec).
+    /// For complex declarators like `void (*(*fp)(int))(void)`, this carries the full
+    /// derived declarator chain that must be applied to type_spec to get the final type.
+    pub derived: Vec<DerivedDeclarator>,
 }
 
 /// An enum variant.

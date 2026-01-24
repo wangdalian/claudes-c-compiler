@@ -539,7 +539,13 @@ impl SemanticAnalyzer {
 
     fn convert_struct_fields(&mut self, fields: &[StructFieldDecl]) -> Vec<crate::common::types::StructField> {
         fields.iter().filter_map(|f| {
-            let ty = self.type_spec_to_ctype(&f.type_spec);
+            let ty = if f.derived.is_empty() {
+                self.type_spec_to_ctype(&f.type_spec)
+            } else {
+                // Complex declarator (function pointer, etc.): apply derived
+                let base = self.type_spec_to_ctype(&f.type_spec);
+                self.apply_derived_declarators(&base, &f.derived)
+            };
             let name = f.name.clone().unwrap_or_default();
             let bit_width = f.bit_width.as_ref().and_then(|bw| {
                 self.eval_const_expr(bw).map(|v| v as u32)
