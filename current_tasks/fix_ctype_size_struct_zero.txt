@@ -1,0 +1,11 @@
+Fix CType::size() returning 0 for struct/union in initializer lowering
+
+Many places in global_init_bytes.rs, global_init_compound.rs, stmt.rs, and
+const_eval.rs call ctype.size() which returns 0 for Struct/Union types.
+These need to use size_ctx(&self.types) or resolve_ctype_size() instead.
+
+This causes zero-size struct array element strides, zero-size memcpys,
+and incorrect designator offset calculations when initializing globals
+or locals containing struct/union arrays.
+
+Status: LOCKED
