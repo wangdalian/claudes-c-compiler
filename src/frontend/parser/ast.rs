@@ -208,6 +208,8 @@ pub enum Stmt {
     Continue(Span),
     Switch(Expr, Box<Stmt>, Span),
     Case(Expr, Box<Stmt>, Span),
+    /// GNU case range: `case low ... high:` (GCC extension)
+    CaseRange(Expr, Expr, Box<Stmt>, Span),
     Default(Box<Stmt>, Span),
     Goto(String, Span),
     /// Computed goto: goto *expr (GCC extension, labels-as-values)

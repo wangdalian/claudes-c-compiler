@@ -914,6 +914,7 @@ impl Lowerer {
                 // Push switch context
                 self.func_mut().switch_stack.push(SwitchFrame {
                     cases: Vec::new(),
+                    case_ranges: Vec::new(),
                     default_label: None,
                     expr_type: switch_expr_ty,
                 });
@@ -933,22 +934,23 @@ impl Lowerer {
                 let switch_frame = self.func_mut().switch_stack.pop();
                 self.func_mut().break_labels.pop();
                 let cases = switch_frame.as_ref().map(|f| f.cases.clone()).unwrap_or_default();
+                let case_ranges = switch_frame.as_ref().map(|f| f.case_ranges.clone()).unwrap_or_default();
                 let default_label = switch_frame.as_ref().and_then(|f| f.default_label.clone());
 
                 // Now emit the dispatch chain: a series of comparison blocks
                 // that check each case value and branch accordingly.
                 let fallback = default_label.unwrap_or_else(|| end_label.clone());
+                let total_checks = cases.len() + case_ranges.len();
 
                 self.start_block(dispatch_label);
 
-                if cases.is_empty() {
+                if total_checks == 0 {
                     // No cases, just go to default or end
                     self.terminate(Terminator::Branch(fallback));
                 } else {
-                    // Emit comparison chain: each check block loads the switch
-                    // value, compares against a case constant, and branches.
-                    for (i, (case_val, case_label)) in cases.iter().enumerate() {
-                        // Load the switch value in this block
+                    let mut check_idx = 0usize;
+                    // Emit equality checks for individual cases
+                    for (case_val, case_label) in cases.iter() {
                         let loaded = self.fresh_value();
                         self.emit(Instruction::Load {
                             dest: loaded,
@@ -958,7 +960,8 @@ impl Lowerer {
 
                         let cmp_result = self.emit_cmp_val(IrCmpOp::Eq, Operand::Value(loaded), Operand::Const(IrConst::I64(*case_val)), IrType::I64);
 
-                        let next_check = if i + 1 < cases.len() {
+                        check_idx += 1;
+                        let next_check = if check_idx < total_checks {
                             self.fresh_label("switch_check")
                         } else {
                             fallback.clone()
@@ -970,8 +973,47 @@ impl Lowerer {
                             false_label: next_check.clone(),
                         });
 
-                        // Start next check block (unless this was the last case)
-                        if i + 1 < cases.len() {
+                        if check_idx < total_checks {
+                            self.start_block(next_check);
+                        }
+                    }
+                    // Emit range checks: val >= low && val <= high
+                    for (low, high, range_label) in case_ranges.iter() {
+                        let loaded = self.fresh_value();
+                        self.emit(Instruction::Load {
+                            dest: loaded,
+                            ptr: switch_alloca,
+                            ty: IrType::I64,
+                        });
+
+                        // Check val >= low
+                        let ge_result = self.emit_cmp_val(IrCmpOp::Sge, Operand::Value(loaded), Operand::Const(IrConst::I64(*low)), IrType::I64);
+                        // Check val <= high
+                        let le_result = self.emit_cmp_val(IrCmpOp::Sle, Operand::Value(loaded), Operand::Const(IrConst::I64(*high)), IrType::I64);
+                        // AND the two conditions
+                        let and_result = self.fresh_value();
+                        self.emit(Instruction::BinOp {
+                            dest: and_result,
+                            op: crate::ir::ir::IrBinOp::And,
+                            lhs: Operand::Value(ge_result),
+                            rhs: Operand::Value(le_result),
+                            ty: IrType::I32,
+                        });
+
+                        check_idx += 1;
+                        let next_check = if check_idx < total_checks {
+                            self.fresh_label("switch_check")
+                        } else {
+                            fallback.clone()
+                        };
+
+                        self.terminate(Terminator::CondBranch {
+                            cond: Operand::Value(and_result),
+                            true_label: range_label.clone(),
+                            false_label: next_check.clone(),
+                        });
+
+                        if check_idx < total_checks {
                             self.start_block(next_check);
                         }
                     }
@@ -1010,6 +1052,50 @@ impl Lowerer {
 
                 // Terminate current block and start the case block.
                 // The previous case falls through to this one (C semantics).
+                self.terminate(Terminator::Branch(label.clone()));
+                self.start_block(label);
+                self.lower_stmt(stmt);
+            }
+            Stmt::CaseRange(low_expr, high_expr, stmt, _span) => {
+                // Evaluate both range bounds as constants
+                let mut low_val = self.eval_const_expr(low_expr)
+                    .and_then(|c| self.const_to_i64(&c))
+                    .unwrap_or(0);
+                let mut high_val = self.eval_const_expr(high_expr)
+                    .and_then(|c| self.const_to_i64(&c))
+                    .unwrap_or(0);
+
+                // Truncate to switch controlling expression type
+                if let Some(switch_ty) = self.func_mut().switch_stack.last().map(|f| &f.expr_type) {
+                    low_val = match switch_ty {
+                        IrType::I8 => low_val as i8 as i64,
+                        IrType::U8 => low_val as u8 as i64,
+                        IrType::I16 => low_val as i16 as i64,
+                        IrType::U16 => low_val as u16 as i64,
+                        IrType::I32 => low_val as i32 as i64,
+                        IrType::U32 => low_val as u32 as i64,
+                        _ => low_val,
+                    };
+                    high_val = match switch_ty {
+                        IrType::I8 => high_val as i8 as i64,
+                        IrType::U8 => high_val as u8 as i64,
+                        IrType::I16 => high_val as i16 as i64,
+                        IrType::U16 => high_val as u16 as i64,
+                        IrType::I32 => high_val as i32 as i64,
+                        IrType::U32 => high_val as u32 as i64,
+                        _ => high_val,
+                    };
+                }
+
+                // Create a label for this case range
+                let label = self.fresh_label("case_range");
+
+                // Register with the enclosing switch
+                if let Some(frame) = self.func_mut().switch_stack.last_mut() {
+                    frame.case_ranges.push((low_val, high_val, label.clone()));
+                }
+
+                // Fallthrough from previous case
                 self.terminate(Terminator::Branch(label.clone()));
                 self.start_block(label);
                 self.lower_stmt(stmt);

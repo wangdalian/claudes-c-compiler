@@ -125,9 +125,17 @@ impl Parser {
                 let span = self.peek_span();
                 self.advance();
                 let expr = self.parse_expr();
-                self.expect(&TokenKind::Colon);
-                let stmt = self.parse_stmt();
-                Stmt::Case(expr, Box::new(stmt), span)
+                if self.consume_if(&TokenKind::Ellipsis) {
+                    // GNU case range extension: case low ... high:
+                    let high = self.parse_expr();
+                    self.expect(&TokenKind::Colon);
+                    let stmt = self.parse_stmt();
+                    Stmt::CaseRange(expr, high, Box::new(stmt), span)
+                } else {
+                    self.expect(&TokenKind::Colon);
+                    let stmt = self.parse_stmt();
+                    Stmt::Case(expr, Box::new(stmt), span)
+                }
             }
             TokenKind::Default => {
                 let span = self.peek_span();

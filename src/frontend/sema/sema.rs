@@ -384,6 +384,11 @@ impl SemanticAnalyzer {
                 self.analyze_expr(expr);
                 self.analyze_stmt(body);
             }
+            Stmt::CaseRange(low, high, body, _) => {
+                self.analyze_expr(low);
+                self.analyze_expr(high);
+                self.analyze_stmt(body);
+            }
             Stmt::Default(body, _) => {
                 self.analyze_stmt(body);
             }

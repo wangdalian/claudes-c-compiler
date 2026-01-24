@@ -186,6 +186,8 @@ pub(super) enum LValue {
 #[derive(Debug)]
 pub(super) struct SwitchFrame {
     pub cases: Vec<(i64, String)>,
+    /// GNU case ranges: (low, high, label)
+    pub case_ranges: Vec<(i64, i64, String)>,
     pub default_label: Option<String>,
     pub expr_type: IrType,
 }
