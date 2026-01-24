@@ -644,58 +644,26 @@ impl Lowerer {
     /// contains address fields by drilling through the designator chain to find the
     /// actual target type.
     fn nested_designator_has_addr_fields(&self, item: &InitializerItem, outer_ty: &CType) -> bool {
-        // Strip the first designator and drill into the nested type
-        let mut current_ty = outer_ty.clone();
-        let mut desig_idx = 1; // Start from second designator (first already resolved)
+        // Drill through designators starting from the second one (first already resolved)
+        let drill = match self.drill_designators(&item.designators[1..], outer_ty) {
+            Some(d) => d,
+            None => return false,
+        };
+        let current_ty = drill.target_ty;
 
-        while desig_idx < item.designators.len() {
-            match &item.designators[desig_idx] {
-                Designator::Field(name) => {
-                    // Resolve the field name in the current struct/union type
-                    if let Some(sub_layout) = self.get_struct_layout_for_ctype(&current_ty) {
-                        if let Some(fi) = sub_layout.resolve_init_field_idx(Some(name.as_str()), 0) {
-                            current_ty = sub_layout.fields[fi].ty.clone();
-                            desig_idx += 1;
-                        } else {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                Designator::Index(_) => {
-                    // Array index designator - get element type
-                    if let CType::Array(elem_ty, _) = &current_ty {
-                        current_ty = elem_ty.as_ref().clone();
-                        desig_idx += 1;
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Now current_ty is the actual target type being initialized.
-        // Check if the init value contains address expressions that need relocations.
-        // The target type might be a struct with pointer members, a pointer itself, etc.
-        match &current_ty {
-            CType::Pointer(_) | CType::Function(_) => {
-                // Direct pointer field - check if init has addr expressions
-                return self.init_has_addr_exprs(&item.init);
-            }
-            _ => {}
+        // Check if the target type itself is a pointer
+        if matches!(&current_ty, CType::Pointer(_) | CType::Function(_)) {
+            return self.init_has_addr_exprs(&item.init);
         }
 
         // If target is a struct/union, check its fields for pointers
         if let Some(target_layout) = self.get_struct_layout_for_ctype(&current_ty) {
-            // Check if any field in the target struct is a pointer type
             let has_ptr_fields = target_layout.fields.iter().any(|f| {
                 Self::type_has_pointer_elements(&f.ty)
             });
             if has_ptr_fields && self.init_has_addr_exprs(&item.init) {
                 return true;
             }
-            // Also recurse into the init list if it's a List
             if let Initializer::List(nested_items) = &item.init {
                 if self.struct_init_has_addr_fields(nested_items, &target_layout) {
                     return true;

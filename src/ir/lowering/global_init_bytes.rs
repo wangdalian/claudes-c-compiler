@@ -25,6 +25,14 @@ pub(super) struct ArrayFillResult {
     skip_update: bool,
 }
 
+/// Result of drilling through designator chains to find the target type and offset.
+pub(super) struct DesignatorDrillResult {
+    /// The final target type after following all designators
+    pub target_ty: CType,
+    /// The byte offset from the outer field's start to the target
+    pub byte_offset: usize,
+}
+
 impl Lowerer {
     /// Recursively fill byte buffer for struct global initialization.
     /// Returns the number of initializer items consumed.
@@ -166,6 +174,42 @@ impl Lowerer {
             }
         }
         item_idx
+    }
+
+    /// Drill through a slice of designators to find the target type and byte offset.
+    /// This resolves chains like [Field("b"), Index(2), Field("x")] by walking through
+    /// struct layouts and array element types to compute the final target type and offset.
+    pub(super) fn drill_designators(
+        &self,
+        designators: &[Designator],
+        start_ty: &CType,
+    ) -> Option<DesignatorDrillResult> {
+        let mut current_ty = start_ty.clone();
+        let mut byte_offset = 0usize;
+
+        for desig in designators {
+            match desig {
+                Designator::Field(name) => {
+                    let sub_layout = self.get_struct_layout_for_ctype(&current_ty)?;
+                    let fi = sub_layout.resolve_init_field_idx(Some(name.as_str()), 0)?;
+                    byte_offset += sub_layout.fields[fi].offset;
+                    current_ty = sub_layout.fields[fi].ty.clone();
+                }
+                Designator::Index(idx_expr) => {
+                    if let CType::Array(elem_ty, _) = &current_ty {
+                        let idx = self.eval_const_expr(idx_expr)
+                            .and_then(|c| c.to_usize())
+                            .unwrap_or(0);
+                        byte_offset += idx * elem_ty.size();
+                        current_ty = elem_ty.as_ref().clone();
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        }
+
+        Some(DesignatorDrillResult { target_ty: current_ty, byte_offset })
     }
 
     // --- fill_struct_global_bytes helpers ---

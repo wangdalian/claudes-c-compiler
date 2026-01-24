@@ -189,49 +189,6 @@ impl Lowerer {
                 current_offset = field_offset;
             }
 
-            // Check if this is a bitfield - if so, collect all bitfields sharing the
-            // same storage unit and pack them into a single value.
-            if layout.fields[fi].bit_offset.is_some() {
-                let storage_offset = field_offset;
-                let storage_size = field_size;
-                let mut packed_val: u64 = 0;
-
-                // Pack all bitfields at this same storage unit offset
-                while fi < layout.fields.len()
-                    && layout.fields[fi].bit_offset.is_some()
-                    && layout.fields[fi].offset == storage_offset
-                {
-                    let bit_offset = layout.fields[fi].bit_offset.unwrap();
-                    let bit_width = layout.fields[fi].bit_width.unwrap_or(0);
-                    if bit_width > 0 {
-                        let inits = &field_inits[fi];
-                        let val = if !inits.is_empty() {
-                            self.eval_init_scalar(&inits[0].init).to_u64().unwrap_or(0)
-                        } else {
-                            0
-                        };
-                        let mask = if bit_width >= 64 { u64::MAX } else { (1u64 << bit_width) - 1 };
-                        packed_val |= (val & mask) << bit_offset;
-                    }
-                    fi += 1;
-                }
-
-                // When the storage unit overlaps with already-written data
-                // (due to align_down placement), skip the overlapping bytes.
-                let skip = if current_offset > storage_offset {
-                    current_offset - storage_offset
-                } else {
-                    0
-                };
-                // Emit only the non-overlapping portion of the storage unit
-                let le = packed_val.to_le_bytes();
-                for i in skip..storage_size {
-                    elements.push(GlobalInit::Scalar(IrConst::I8(le[i] as i8)));
-                }
-                current_offset = storage_offset + storage_size;
-                continue;
-            }
-
             let inits = &field_inits[fi];
             if inits.is_empty() {
                 // No initializer for this field - zero fill
@@ -491,45 +448,17 @@ impl Lowerer {
         outer_ty: &CType,
         outer_size: usize,
     ) {
-        // Drill through designators starting from the second one (first already resolved
-        // to this outer field). Track the byte offset within the outer field.
-        let mut current_ty = outer_ty.clone();
-        let mut sub_offset = 0usize;
-
-        for desig in &item.designators[1..] {
-            match desig {
-                Designator::Field(name) => {
-                    if let Some(sub_layout) = self.get_struct_layout_for_ctype(&current_ty) {
-                        if let Some(fi) = sub_layout.resolve_init_field_idx(Some(name.as_str()), 0) {
-                            sub_offset += sub_layout.fields[fi].offset;
-                            current_ty = sub_layout.fields[fi].ty.clone();
-                        } else {
-                            // Field not found - zero fill the whole field
-                            push_zero_bytes(elements, outer_size);
-                            return;
-                        }
-                    } else {
-                        push_zero_bytes(elements, outer_size);
-                        return;
-                    }
-                }
-                Designator::Index(idx_expr) => {
-                    if let CType::Array(elem_ty, _) = &current_ty {
-                        let idx = self.eval_const_expr(idx_expr)
-                            .and_then(|c| c.to_usize())
-                            .unwrap_or(0);
-                        sub_offset += idx * elem_ty.size();
-                        current_ty = elem_ty.as_ref().clone();
-                    } else {
-                        push_zero_bytes(elements, outer_size);
-                        return;
-                    }
-                }
+        // Drill through designators starting from the second one (first already resolved)
+        let drill = match self.drill_designators(&item.designators[1..], outer_ty) {
+            Some(d) => d,
+            None => {
+                push_zero_bytes(elements, outer_size);
+                return;
             }
-        }
+        };
 
-        // Now current_ty is the target sub-field type at sub_offset within the outer field.
-        // Emit: [zero padding before sub_offset] [sub-field data] [zero padding after]
+        let sub_offset = drill.byte_offset;
+        let current_ty = drill.target_ty;
         let sub_size = current_ty.size();
         let sub_is_pointer = matches!(current_ty, CType::Pointer(_) | CType::Function(_));
 
@@ -559,19 +488,15 @@ impl Lowerer {
                 GlobalInit::Compound(sub_elems) => {
                     let emitted = sub_elems.len();
                     elements.extend(sub_elems);
-                    // Pad if the compound didn't fill the full sub_size
-                    // (compound should already handle this, but be safe)
                     if emitted < sub_size {
                         push_zero_bytes(elements, sub_size - emitted);
                     }
                 }
                 _ => {
-                    // Shouldn't happen, but handle gracefully
                     self.emit_compound_field_init(elements, &item.init, &current_ty, sub_size, sub_is_pointer);
                 }
             }
         } else {
-            // Non-struct target or Expr init - use standard compound field emit
             self.emit_compound_field_init(elements, &item.init, &current_ty, sub_size, sub_is_pointer);
         }
 
@@ -1236,39 +1161,14 @@ impl Lowerer {
         ptr_ranges: &mut Vec<(usize, GlobalInit)>,
     ) {
         // Drill through designators starting from the second one
-        let mut current_ty = outer_ty.clone();
-        let mut sub_offset = outer_offset;
+        let drill = match self.drill_designators(&item.designators[1..], outer_ty) {
+            Some(d) => d,
+            None => return,
+        };
 
-        for desig in &item.designators[1..] {
-            match desig {
-                Designator::Field(name) => {
-                    if let Some(sub_layout) = self.get_struct_layout_for_ctype(&current_ty) {
-                        if let Some(fi) = sub_layout.resolve_init_field_idx(Some(name.as_str()), 0) {
-                            sub_offset += sub_layout.fields[fi].offset;
-                            current_ty = sub_layout.fields[fi].ty.clone();
-                        } else {
-                            return;
-                        }
-                    } else {
-                        return;
-                    }
-                }
-                Designator::Index(idx_expr) => {
-                    if let CType::Array(elem_ty, _) = &current_ty {
-                        let idx = self.eval_const_expr(idx_expr)
-                            .and_then(|c| c.to_usize())
-                            .unwrap_or(0);
-                        sub_offset += idx * elem_ty.size();
-                        current_ty = elem_ty.as_ref().clone();
-                    } else {
-                        return;
-                    }
-                }
-            }
-        }
+        let sub_offset = outer_offset + drill.byte_offset;
+        let current_ty = drill.target_ty;
 
-        // Now current_ty is the target type and sub_offset is the byte offset.
-        // Handle the init value based on target type.
         match &item.init {
             Initializer::Expr(expr) => {
                 let is_ptr = matches!(current_ty, CType::Pointer(_) | CType::Function(_));
@@ -1285,7 +1185,6 @@ impl Lowerer {
                 }
             }
             Initializer::List(inner_items) => {
-                // The target is likely a struct - process each field
                 if let Some(target_layout) = self.get_struct_layout_for_ctype(&current_ty) {
                     let has_ptr = target_layout.fields.iter().any(|f| {
                         matches!(f.ty, CType::Pointer(_) | CType::Function(_))
@@ -1299,12 +1198,6 @@ impl Lowerer {
                     } else {
                         self.fill_struct_global_bytes(inner_items, &target_layout, bytes, sub_offset);
                     }
-                } else {
-                    // Fallback: try byte-level fill
-                    self.fill_struct_global_bytes(&[InitializerItem {
-                        designators: item.designators[1..].to_vec(),
-                        init: item.init.clone(),
-                    }], &StructLayout::for_union(&[]), bytes, sub_offset);
                 }
             }
         }
@@ -1325,52 +1218,34 @@ impl Lowerer {
         let mut current_field_idx = 0usize;
         for inner_item in inner_items {
             // Handle multi-level designators within the nested struct (e.g., .config.i = &val)
-            if inner_item.designators.len() > 1 {
-                if let Some(Designator::Field(ref first_name)) = inner_item.designators.first() {
-                    if let Some(fi) = sub_layout.resolve_init_field_idx(Some(first_name.as_str()), current_field_idx) {
-                        let field = &sub_layout.fields[fi];
-                        let field_abs_offset = base_offset + field.offset;
-                        // Drill through remaining designators
-                        let mut current_ty = field.ty.clone();
-                        let mut sub_offset = field_abs_offset;
-                        for desig in &inner_item.designators[1..] {
-                            match desig {
-                                Designator::Field(name) => {
-                                    if let Some(dl) = self.get_struct_layout_for_ctype(&current_ty) {
-                                        if let Some(dfi) = dl.resolve_init_field_idx(Some(name.as_str()), 0) {
-                                            sub_offset += dl.fields[dfi].offset;
-                                            current_ty = dl.fields[dfi].ty.clone();
-                                        }
-                                    }
-                                }
-                                Designator::Index(idx_expr) => {
-                                    if let CType::Array(elem_ty, _) = &current_ty {
-                                        let idx = self.eval_const_expr(idx_expr)
-                                            .and_then(|c| c.to_usize())
-                                            .unwrap_or(0);
-                                        sub_offset += idx * elem_ty.size();
-                                        current_ty = elem_ty.as_ref().clone();
-                                    }
-                                }
-                            }
-                        }
-                        let is_ptr = matches!(current_ty, CType::Pointer(_) | CType::Function(_));
+            if inner_item.designators.len() > 1
+                && matches!(inner_item.designators.first(), Some(Designator::Field(_)))
+            {
+                // First designator resolves field within this struct, remaining designators drill deeper
+                let first_fi = self.resolve_struct_init_field_idx(inner_item, sub_layout, current_field_idx);
+                if first_fi < sub_layout.fields.len() {
+                    let field = &sub_layout.fields[first_fi];
+                    let field_abs_offset = base_offset + field.offset;
+
+                    if let Some(drill) = self.drill_designators(&inner_item.designators[1..], &field.ty) {
+                        let sub_offset = field_abs_offset + drill.byte_offset;
+                        let is_ptr = matches!(drill.target_ty, CType::Pointer(_) | CType::Function(_));
                         if let Initializer::Expr(ref expr) = inner_item.init {
                             if is_ptr {
                                 if let Some(addr_init) = self.resolve_ptr_field_init(expr) {
                                     ptr_ranges.push((sub_offset, addr_init));
                                 } else if let Some(val) = self.eval_const_expr(expr) {
-                                    let ir_ty = IrType::from_ctype(&current_ty);
+                                    let ir_ty = IrType::from_ctype(&drill.target_ty);
                                     self.write_const_to_bytes(bytes, sub_offset, &val, ir_ty);
                                 }
                             } else if let Some(val) = self.eval_const_expr(expr) {
-                                let ir_ty = IrType::from_ctype(&current_ty);
+                                let ir_ty = IrType::from_ctype(&drill.target_ty);
                                 self.write_const_to_bytes(bytes, sub_offset, &val, ir_ty);
                             }
                         }
-                        current_field_idx = fi + 1;
-                        continue;
                     }
+                    current_field_idx = first_fi + 1;
+                    continue;
                 }
             }
 

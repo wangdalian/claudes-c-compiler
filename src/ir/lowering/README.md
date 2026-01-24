@@ -21,9 +21,9 @@ handles every C language construct. The `mem2reg` pass later promotes allocas to
 | `types.rs` | `TypeSpecifier` to `IrType`/`CType`, sizeof/alignof |
 | `structs.rs` | Struct/union layout cache, field offset resolution |
 | `complex.rs` | `_Complex` arithmetic, assignment, and conversions |
-| `global_init.rs` | Global initializer dispatch (struct, array, scalar, compound literal) |
-| `global_init_bytes.rs` | Byte-level global init (struct/array to byte arrays) |
-| `global_init_compound.rs` | Compound global init (multi-dimensional, designated) |
+| `global_init.rs` | Global initializer dispatch: routes to byte or compound path based on pointer content |
+| `global_init_bytes.rs` | Byte-level global init serialization; shared `drill_designators` for nested designator resolution |
+| `global_init_compound.rs` | Relocation-aware global init for structs/arrays containing pointer fields |
 | `const_eval.rs` | Compile-time constant expression evaluation |
 | `pointer_analysis.rs` | Tracks expressions producing struct addresses vs packed data |
 | `ref_collection.rs` | Pre-pass to collect referenced static/extern symbols |
@@ -52,6 +52,35 @@ The `Lowerer` processes a `TranslationUnit` in multiple passes:
 - `register_block_func_meta(name, ...)` - Register function metadata for block-scope declarations
 - `lower_return_expr(e)` - Handles all return conventions (sret, two-reg, complex, scalar)
 - `lower_local_init_expr(...)` / `lower_local_init_list(...)` - Dispatch init by type
+
+### Global Initialization Subsystem
+
+The global init code handles C's complex initialization rules for global/static variables.
+The key architectural decision is the **two-path split** based on whether a struct contains
+pointer fields:
+
+```
+global_init.rs: lower_struct_global_init()
+    ├── struct_init_has_addr_fields() → true  → global_init_compound.rs (relocation-aware)
+    └── struct_init_has_addr_fields() → false → global_init_bytes.rs (flat byte array)
+```
+
+**Why two paths?** Pointer fields need `GlobalAddr` entries that become linker relocations
+(e.g., `const char *s = "hello"` needs a `.quad .L.str` directive). Non-pointer structs can
+be fully serialized to a `Vec<u8>` byte buffer, which is simpler and more efficient.
+
+**Shared helpers** (in `global_init_bytes.rs`):
+- `drill_designators(designators, start_ty)` — Walks a chain of field/index designators
+  to resolve the target type and byte offset. Used by both paths for nested designators
+  like `.u.keyword` or `[3].field.subfield`. This is the single implementation point for
+  designator chain resolution, avoiding duplication across the byte and compound paths.
+- `resolve_struct_init_field_idx()` — Maps a positional or designated initializer to its
+  target struct field index.
+- `write_const_to_bytes()`, `write_bitfield_to_bytes()` — Low-level byte buffer operations.
+
+The **compound path** (`global_init_compound.rs`) also handles struct arrays with pointer
+fields via a hybrid approach: serializes scalar fields to bytes, collects pointer relocations
+separately, then merges them into a single `GlobalInit::Compound` vector.
 
 ## Design Decisions
 
