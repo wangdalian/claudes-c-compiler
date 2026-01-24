@@ -1,0 +1,20 @@
+Task: Fix complex function pointer variables misclassified as block-scope function declarations
+
+Problem:
+Variables with types like `int (*(*p)(int))(int)` (function-ptr-returning-function-ptr)
+are being incorrectly treated as block-scope function declarations by try_lower_block_func_decl
+in stmt_init.rs. This causes:
+- The variable name to be added to known_functions 
+- The local variable allocation to be skipped
+- Calls through the variable (e.g., p(5)) to generate direct `call p` instead of indirect calls
+
+Root cause: The derived declarator loop in try_lower_block_func_decl finds a `Function` variant
+after `Pointer` variants and misidentifies it as a function declaration. A true block-scope
+function declaration (like `int f(int);`) has `Function` as the first derived element with
+no `Pointer` before it.
+
+Fix: If there are any `Pointer` derived declarators before the `Function`, this is a function
+pointer variable, not a function declaration. Also, if there's an initializer, it can't be
+a function declaration.
+
+Status: IN PROGRESS
