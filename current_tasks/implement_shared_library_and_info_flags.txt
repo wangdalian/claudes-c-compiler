@@ -1,0 +1,15 @@
+Implement -shared library linking and informational flags (-dumpmachine, --version)
+
+Problem: Redis build fails because xxhash's shared library (.so) build uses
+`-shared` flag which our compiler doesn't support. The compiler also doesn't
+handle `--version` or `-dumpmachine`, causing spurious "no input files" errors.
+
+Changes needed:
+1. Add `shared` field to Driver struct
+2. Parse `-shared` flag to set it
+3. In link_with_args, pass `-shared` to gcc and skip `-no-pie` when building .so
+4. Implement `--version` and `-dumpmachine` to print appropriate info and exit 0
+5. These are needed for redis xxhash dependency to build correctly
+
+Impact: Unblocks redis build (xxhash shared library), and improves
+compatibility with build systems that check compiler identity.
