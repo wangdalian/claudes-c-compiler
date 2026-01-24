@@ -1,0 +1,22 @@
+Task: Fix non-variadic FP arg overflow going to GP registers instead of stack
+
+Problem:
+In classify_call_args() (codegen_shared.rs), when a float/double argument exceeds
+the 8 available XMM registers on x86-64, the code falls through to the integer
+register branch (IntReg) instead of going directly to Stack. This means the caller
+puts the overflow float arg in a GP register (e.g. %rdi), but the callee expects
+it on the stack - resulting in the argument being read as 0.
+
+This affects ALL non-variadic function calls with >8 floating-point arguments.
+The callee side (emit_store_params) correctly checks float_reg_idx >= 8 to read
+from stack, but classify_call_args on the caller side incorrectly falls through
+to GP registers.
+
+Fix:
+Add an explicit check in classify_call_args so that when is_float is true and
+float_idx >= max_float_regs, the argument goes directly to CallArgClass::Stack
+(skipping the GP register fallback). This must NOT break architectures where
+variadic floats intentionally go in GP regs (RISC-V), so the fix must only
+apply when force_gp is false.
+
+Status: IN PROGRESS
