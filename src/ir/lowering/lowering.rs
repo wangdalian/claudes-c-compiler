@@ -2160,9 +2160,11 @@ impl Lowerer {
             });
         let is_struct = struct_layout.is_some() && !is_pointer && !is_array;
 
-        // Actual allocation size: use struct layout size for non-array structs
+        // Actual allocation size: use struct layout size only for non-array, non-pointer structs.
+        // For pointers (e.g., `struct Foo *ptr;`), alloc_size is already sizeof(pointer) = 8,
+        // and we must NOT override it with the struct's layout size.
         let actual_alloc_size = if let Some(ref layout) = struct_layout {
-            if is_array { alloc_size } else { layout.size }
+            if is_array || is_pointer { alloc_size } else { layout.size }
         } else {
             alloc_size
         };

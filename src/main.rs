@@ -73,9 +73,20 @@ fn main() {
                 driver.linker_libs.push(arg[2..].to_string());
             }
 
+            // Linker pass-through: -Wl,flag1,flag2,...
+            // NOTE: must come before the generic -W catch-all to avoid being swallowed.
+            // Since we use gcc as the linker driver, re-wrap each flag with -Wl,
+            // so gcc forwards them to the linker correctly.
+            arg if arg.starts_with("-Wl,") => {
+                for flag in arg[4..].split(',') {
+                    if !flag.is_empty() {
+                        driver.linker_extra_args.push(format!("-Wl,{}", flag));
+                    }
+                }
+            }
+
             // Warning flags (ignored for now)
-            // Note: -Wl, is handled below (linker pass-through), so exclude it here
-            arg if arg.starts_with("-W") && !arg.starts_with("-Wl,") => {}
+            arg if arg.starts_with("-W") => {}
 
             // Preprocessor defines: -DFOO or -DFOO=bar or -D FOO
             "-D" => {
@@ -163,17 +174,6 @@ fn main() {
                 // Silently accepted for GCC compatibility
             }
 
-            // Linker pass-through: -Wl,flag1,flag2,...
-            // Since we use gcc as the linker driver, re-wrap each flag with -Wl,
-            // so gcc forwards them to the linker correctly.
-            arg if arg.starts_with("-Wl,") => {
-                for flag in arg[4..].split(',') {
-                    if !flag.is_empty() {
-                        driver.linker_extra_args.push(format!("-Wl,{}", flag));
-                    }
-                }
-            }
-
             // Language selection
             "-x" => {
                 i += 1;
@@ -189,7 +189,7 @@ fn main() {
                 i += 1;
             }
 
-            // -rdynamic: export all symbols to dynamic symbol table
+            // -rdynamic: export all symbols to dynamic symbol table (needed for dlopen'd modules)
             "-rdynamic" => {
                 driver.linker_extra_args.push("-rdynamic".to_string());
             }
