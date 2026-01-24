@@ -1,0 +1,17 @@
+Task: Implement __attribute__((constructor/destructor)) support
+Status: completed
+Agent: claude
+
+Changes:
+1. Parser (parser.rs): Added parse_attribute_params() helper, parse_gcc_attributes() detects constructor/destructor
+2. Parser (parser.rs): Added parsing_constructor/parsing_destructor state fields
+3. Parser (types.rs): Type-level __attribute__ parsing now captures constructor/destructor
+4. Parser (declarations.rs): Merges constructor/destructor flags from all attribute positions
+5. AST (ast.rs): Added is_constructor/is_destructor to FunctionDef and InitDeclarator
+6. IR (ir.rs): Added constructors/destructors vectors to IrModule
+7. Lowering (lowering.rs): Collects constructor/destructor names from AST
+8. Codegen (codegen_shared.rs): Emits .init_array/.fini_array sections
+
+Tests now passing:
+- llvm_singlesource_ConstructorDestructorAttributes
+- compiler_suite_0059_0080
