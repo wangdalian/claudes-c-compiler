@@ -193,7 +193,7 @@ impl Lowerer {
             Expr::FunctionCall(func_expr, _, _) => {
                 // Function returning a struct: call the function, then store
                 // the return value to a temporary alloca so we have an address.
-                let struct_size = self.get_struct_size_for_expr(expr);
+                let struct_size = self.struct_value_size(expr).unwrap_or(8);
 
                 // Check if this is an sret call (struct > 8 bytes with hidden pointer)
                 let is_sret = if let Expr::Identifier(name, _) = func_expr.as_ref() {
@@ -229,7 +229,7 @@ impl Lowerer {
                 // For expressions that might produce packed struct data (e.g. ternary
                 // with struct-returning function calls), detect and spill to an alloca.
                 if self.expr_produces_packed_struct_data(expr) {
-                    let struct_size = self.get_struct_size_for_expr(expr);
+                    let struct_size = self.struct_value_size(expr).unwrap_or(8);
                     let val = self.lower_expr(expr);
                     let alloca = self.fresh_value();
                     let alloc_size = if struct_size > 0 { struct_size } else { 8 };

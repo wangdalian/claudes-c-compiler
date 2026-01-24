@@ -554,7 +554,7 @@ impl Lowerer {
             return self.lower_complex_assign(lhs, rhs, &lhs_ct);
         }
 
-        if self.expr_is_struct_value(lhs) {
+        if self.struct_value_size(lhs).is_some() {
             return self.lower_struct_assign(lhs, rhs);
         }
 
@@ -705,7 +705,7 @@ impl Lowerer {
 
     /// Lower struct/union assignment using memcpy.
     fn lower_struct_assign(&mut self, lhs: &Expr, rhs: &Expr) -> Operand {
-        let struct_size = self.get_struct_size_for_expr(lhs);
+        let struct_size = self.struct_value_size(lhs).unwrap_or(8);
 
         // For expressions producing packed struct data (small struct function
         // call returns, ternaries over them, etc.), the value IS the struct
@@ -1717,7 +1717,7 @@ impl Lowerer {
                     if !is_sret {
                         // Non-sret: return value is packed struct data, not a pointer.
                         // Store it to a temporary alloca so we can pass the address.
-                        let struct_size = self.get_struct_size_for_expr(a);
+                        let struct_size = self.struct_value_size(a).unwrap_or(8);
                         let alloc_size = if struct_size > 0 { struct_size } else { 8 };
                         let alloca = self.fresh_value();
                         self.emit(Instruction::Alloca { dest: alloca, size: alloc_size, ty: IrType::I64 });
@@ -2344,7 +2344,7 @@ impl Lowerer {
             return Operand::Value(addr);
         }
         // Struct/union elements: return address (don't load), like member access
-        if self.expr_is_struct_value(expr) {
+        if self.struct_value_size(expr).is_some() {
             let addr = self.compute_array_element_addr(base, index);
             return Operand::Value(addr);
         }

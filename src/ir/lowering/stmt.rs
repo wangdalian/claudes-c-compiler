@@ -931,8 +931,7 @@ impl Lowerer {
                     // For struct returns with sret (> 8 bytes), copy struct data to the
                     // hidden sret pointer and return that pointer.
                     if let Some(sret_alloca) = self.current_sret_ptr {
-                        if self.expr_is_struct_value(e) {
-                            let struct_size = self.get_struct_size_for_expr(e);
+                        if let Some(struct_size) = self.struct_value_size(e) {
                             if struct_size > 8 {
                                 let src_addr = self.get_struct_base_addr(e);
                                 // Load the sret pointer from its alloca
@@ -988,8 +987,7 @@ impl Lowerer {
                     }
                     // For small struct returns (<= 8 bytes), load the struct data
                     // from its address so it goes into rax as data (not as a pointer).
-                    if self.expr_is_struct_value(e) {
-                        let struct_size = self.get_struct_size_for_expr(e);
+                    if let Some(struct_size) = self.struct_value_size(e) {
                         if struct_size <= 8 {
                             let addr = self.get_struct_base_addr(e);
                             let dest = self.fresh_value();
@@ -1762,7 +1760,7 @@ impl Lowerer {
                             item_idx += 1;
                         }
                         Initializer::Expr(expr) => {
-                            if self.expr_is_struct_value(expr) {
+                            if self.struct_value_size(expr).is_some() {
                                 // Struct copy in init list: { 2, b } where b is a struct variable
                                 // Emit memcpy from source struct to the target field offset
                                 let src_addr = self.get_struct_base_addr(expr);
@@ -1798,7 +1796,7 @@ impl Lowerer {
                             item_idx += 1;
                         }
                         Initializer::Expr(expr) => {
-                            if self.expr_is_struct_value(expr) {
+                            if self.struct_value_size(expr).is_some() {
                                 // Union copy in init list
                                 let src_addr = self.get_struct_base_addr(expr);
                                 let dest_addr = self.fresh_value();
@@ -1852,7 +1850,7 @@ impl Lowerer {
                                             ai += 1;
                                         }
                                         Initializer::Expr(e) => {
-                                            if self.expr_is_struct_value(e) {
+                                            if self.struct_value_size(e).is_some() {
                                                 let src_addr = self.get_struct_base_addr(e);
                                                 let dest_addr = self.fresh_value();
                                                 self.emit(Instruction::GetElementPtr {

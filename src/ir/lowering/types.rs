@@ -759,118 +759,44 @@ impl Lowerer {
     }
 
     /// Check if an expression refers to a struct/union value (not pointer-to-struct).
-    pub(super) fn expr_is_struct_value(&self, expr: &Expr) -> bool {
+    /// Returns the struct/union size if the expression produces a struct/union value,
+    /// or None if it's not a struct/union. Unifies the old expr_is_struct_value (check)
+    /// and get_struct_size_for_expr (size) into a single dispatch.
+    pub(super) fn struct_value_size(&self, expr: &Expr) -> Option<usize> {
         match expr {
             Expr::Identifier(name, _) => {
                 if let Some(info) = self.locals.get(name) {
-                    return info.is_struct;
-                }
-                if let Some(ginfo) = self.globals.get(name) {
-                    return ginfo.is_struct;
-                }
-                false
-            }
-            Expr::MemberAccess(base_expr, field_name, _) => {
-                if let Some(ctype) = self.resolve_member_field_ctype(base_expr, field_name) {
-                    return matches!(ctype, CType::Struct(_) | CType::Union(_));
-                }
-                false
-            }
-            Expr::PointerMemberAccess(base_expr, field_name, _) => {
-                if let Some(ctype) = self.resolve_pointer_member_field_ctype(base_expr, field_name) {
-                    return matches!(ctype, CType::Struct(_) | CType::Union(_));
-                }
-                false
-            }
-            Expr::ArraySubscript(_, _, _) => {
-                // e.g. p->t[3] where t is an array of structs
-                if let Some(ctype) = self.get_expr_ctype(expr) {
-                    return matches!(ctype, CType::Struct(_) | CType::Union(_));
-                }
-                false
-            }
-            Expr::Deref(_, _) => {
-                // *ptr where ptr points to struct - could be struct value
-                if let Some(ctype) = self.get_expr_ctype(expr) {
-                    return matches!(ctype, CType::Struct(_) | CType::Union(_));
-                }
-                false
-            }
-            Expr::CompoundLiteral(type_spec, _, _) => {
-                // (struct foo){...} is a struct value
-                let resolved = self.resolve_type_spec(type_spec);
-                matches!(resolved, TypeSpecifier::Struct(..) | TypeSpecifier::Union(..))
-            }
-            Expr::FunctionCall(_, _, _) => {
-                // Function returning struct
-                if let Some(ctype) = self.get_expr_ctype(expr) {
-                    return matches!(ctype, CType::Struct(_) | CType::Union(_));
-                }
-                false
-            }
-            Expr::Conditional(_, _, _, _) => {
-                // Ternary returning struct
-                if let Some(ctype) = self.get_expr_ctype(expr) {
-                    return matches!(ctype, CType::Struct(_) | CType::Union(_));
-                }
-                false
-            }
-            _ => false,
-        }
-    }
-
-    /// Get the struct size for a struct-valued expression.
-    pub(super) fn get_struct_size_for_expr(&self, expr: &Expr) -> usize {
-        match expr {
-            Expr::Identifier(name, _) => {
-                if let Some(info) = self.locals.get(name) {
-                    if info.is_struct {
-                        return info.alloc_size;
-                    }
+                    if info.is_struct { return Some(info.alloc_size); }
                 }
                 if let Some(ginfo) = self.globals.get(name) {
                     if ginfo.is_struct {
-                        if let Some(ref layout) = ginfo.struct_layout {
-                            return layout.size;
-                        }
+                        return Some(ginfo.struct_layout.as_ref().map_or(8, |l| l.size));
                     }
                 }
-                8 // fallback
+                None
             }
             Expr::MemberAccess(base_expr, field_name, _) => {
-                if let Some(ctype) = self.resolve_member_field_ctype(base_expr, field_name) {
-                    return ctype.size();
-                }
-                8
+                let ctype = self.resolve_member_field_ctype(base_expr, field_name)?;
+                if matches!(ctype, CType::Struct(_) | CType::Union(_)) { Some(ctype.size()) } else { None }
             }
             Expr::PointerMemberAccess(base_expr, field_name, _) => {
-                if let Some(ctype) = self.resolve_pointer_member_field_ctype(base_expr, field_name) {
-                    return ctype.size();
-                }
-                8
+                let ctype = self.resolve_pointer_member_field_ctype(base_expr, field_name)?;
+                if matches!(ctype, CType::Struct(_) | CType::Union(_)) { Some(ctype.size()) } else { None }
             }
-            Expr::ArraySubscript(_, _, _) => {
-                if let Some(ctype) = self.get_expr_ctype(expr) {
-                    return ctype.size();
-                }
-                8
-            }
-            Expr::Deref(_, _) => {
-                if let Some(ctype) = self.get_expr_ctype(expr) {
-                    return ctype.size();
-                }
-                8
+            Expr::ArraySubscript(_, _, _) | Expr::Deref(_, _)
+            | Expr::FunctionCall(_, _, _) | Expr::Conditional(_, _, _, _) => {
+                let ctype = self.get_expr_ctype(expr)?;
+                if matches!(ctype, CType::Struct(_) | CType::Union(_)) { Some(ctype.size()) } else { None }
             }
             Expr::CompoundLiteral(type_spec, _, _) => {
-                self.sizeof_type(type_spec)
-            }
-            Expr::FunctionCall(_, _, _) | Expr::Conditional(_, _, _, _) => {
-                if let Some(ctype) = self.get_expr_ctype(expr) {
-                    return ctype.size();
+                let resolved = self.resolve_type_spec(type_spec);
+                if matches!(resolved, TypeSpecifier::Struct(..) | TypeSpecifier::Union(..)) {
+                    Some(self.sizeof_type(type_spec))
+                } else {
+                    None
                 }
-                8
             }
-            _ => 8,
+            _ => None,
         }
     }
 
@@ -1571,6 +1497,24 @@ impl Lowerer {
         self.struct_layouts.get(&key)
     }
 
+    /// Get the struct/union layout for a resolved TypeSpecifier.
+    /// Handles both inline field definitions and tag-only forward references.
+    fn struct_union_layout(&self, ts: &TypeSpecifier) -> Option<StructLayout> {
+        match ts {
+            TypeSpecifier::Struct(_, Some(fields), is_packed, pragma_pack)
+            | TypeSpecifier::Union(_, Some(fields), is_packed, pragma_pack) => {
+                let is_union = matches!(ts, TypeSpecifier::Union(..));
+                let max_field_align = if *is_packed { Some(1) } else { *pragma_pack };
+                Some(self.compute_struct_union_layout_packed(fields, is_union, max_field_align))
+            }
+            TypeSpecifier::Struct(Some(tag), None, _, _) =>
+                self.get_struct_union_layout_by_tag("struct", tag).cloned(),
+            TypeSpecifier::Union(Some(tag), None, _, _) =>
+                self.get_struct_union_layout_by_tag("union", tag).cloned(),
+            _ => None,
+        }
+    }
+
     /// Compute a StructLayout from inline field definitions.
     pub(super) fn compute_struct_union_layout(&self, fields: &[StructFieldDecl], is_union: bool) -> StructLayout {
         self.compute_struct_union_layout_packed(fields, is_union, None)
@@ -1597,56 +1541,52 @@ impl Lowerer {
 
     pub(super) fn sizeof_type(&self, ts: &TypeSpecifier) -> usize {
         let ts = self.resolve_type_spec(ts);
-        // Fast path: scalar types have fixed size
         if let Some((size, _)) = Self::scalar_type_size_align(ts) {
             return size;
         }
-        match ts {
-            TypeSpecifier::Array(elem, Some(size_expr)) => {
-                let elem_size = self.sizeof_type(elem);
-                self.expr_as_array_size(size_expr)
-                    .map(|n| elem_size * n as usize)
-                    .unwrap_or(elem_size)
-            }
-            TypeSpecifier::Struct(_, Some(fields), is_packed, pragma_pack) => {
-                let max_field_align = if *is_packed { Some(1) } else { *pragma_pack };
-                self.compute_struct_union_layout_packed(fields, false, max_field_align).size
-            }
-            TypeSpecifier::Union(_, Some(fields), is_packed, pragma_pack) => {
-                let max_field_align = if *is_packed { Some(1) } else { *pragma_pack };
-                self.compute_struct_union_layout_packed(fields, true, max_field_align).size
-            }
-            TypeSpecifier::Struct(Some(tag), None, _, _) =>
-                self.get_struct_union_layout_by_tag("struct", tag).map(|l| l.size).unwrap_or(8),
-            TypeSpecifier::Union(Some(tag), None, _, _) =>
-                self.get_struct_union_layout_by_tag("union", tag).map(|l| l.size).unwrap_or(8),
-            _ => 8,
+        if let TypeSpecifier::Array(elem, Some(size_expr)) = ts {
+            let elem_size = self.sizeof_type(elem);
+            return self.expr_as_array_size(size_expr)
+                .map(|n| elem_size * n as usize)
+                .unwrap_or(elem_size);
         }
+        self.struct_union_layout(ts).map(|l| l.size).unwrap_or(8)
     }
 
     /// Compute the alignment of a type in bytes (_Alignof).
     pub(super) fn alignof_type(&self, ts: &TypeSpecifier) -> usize {
         let ts = self.resolve_type_spec(ts);
-        // Fast path: scalar types have fixed alignment
         if let Some((_, align)) = Self::scalar_type_size_align(ts) {
             return align;
         }
-        match ts {
-            TypeSpecifier::Array(elem, _) => self.alignof_type(elem),
-            TypeSpecifier::Struct(_, Some(fields), is_packed, pragma_pack) => {
-                let max_field_align = if *is_packed { Some(1) } else { *pragma_pack };
-                self.compute_struct_union_layout_packed(fields, false, max_field_align).align
-            }
-            TypeSpecifier::Union(_, Some(fields), is_packed, pragma_pack) => {
-                let max_field_align = if *is_packed { Some(1) } else { *pragma_pack };
-                self.compute_struct_union_layout_packed(fields, true, max_field_align).align
-            }
-            TypeSpecifier::Struct(Some(tag), None, _, _) =>
-                self.get_struct_union_layout_by_tag("struct", tag).map(|l| l.align).unwrap_or(8),
-            TypeSpecifier::Union(Some(tag), None, _, _) =>
-                self.get_struct_union_layout_by_tag("union", tag).map(|l| l.align).unwrap_or(8),
-            _ => 8,
+        if let TypeSpecifier::Array(elem, _) = ts {
+            return self.alignof_type(elem);
         }
+        self.struct_union_layout(ts).map(|l| l.align).unwrap_or(8)
+    }
+
+    /// Collect array dimensions from derived declarators.
+    /// Returns None for unsized dimensions (e.g., `int arr[]`).
+    fn collect_derived_array_dims(&self, derived: &[DerivedDeclarator]) -> Vec<Option<usize>> {
+        derived.iter().filter_map(|d| {
+            if let DerivedDeclarator::Array(size_expr) = d {
+                Some(size_expr.as_ref().and_then(|e| self.expr_as_array_size(e).map(|n| n as usize)))
+            } else {
+                None
+            }
+        }).collect()
+    }
+
+    /// Compute strides from an array of dimension sizes and a base element size.
+    /// stride[i] = product(dims[i+1..]) * base_elem_size.
+    /// E.g., dims=[3,4], base=4 -> strides=[16, 4].
+    fn compute_strides_from_dims(dims: &[usize], base_elem_size: usize) -> Vec<usize> {
+        let mut strides = Vec::with_capacity(dims.len());
+        for i in 0..dims.len() {
+            let stride: usize = dims[i+1..].iter().product::<usize>().max(1) * base_elem_size;
+            strides.push(stride);
+        }
+        strides
     }
 
     /// For a pointer-to-array parameter type (e.g., Pointer(Array(Array(Int, 4), 3))),
@@ -1675,19 +1615,11 @@ impl Lowerer {
             }
             // Compute base element size (the innermost non-array type)
             let base_elem_size = self.sizeof_type(current);
-            // Compute strides: stride[i] = product of dims[i..] * base_elem_size
-            let mut strides = Vec::with_capacity(dims.len() + 1);
-            // stride 0 = full row size = product(all dims) * base_elem_size
-            // This is sizeof(pointee), already used as elem_size
+            // Strides: [full_size, stride_for_dim_1, ..., base_elem_size]
+            // full_size = product(all_dims) * base, then per-dim strides
             let full_size: usize = dims.iter().product::<usize>() * base_elem_size;
-            strides.push(full_size);
-            // stride 1 = product(dims[1..]) * base_elem_size
-            for i in 1..dims.len() {
-                let stride: usize = dims[i..].iter().product::<usize>() * base_elem_size;
-                strides.push(stride);
-            }
-            // Final stride = base_elem_size (for the innermost subscript)
-            strides.push(base_elem_size);
+            let mut strides = vec![full_size];
+            strides.extend(Self::compute_strides_from_dims(&dims, base_elem_size));
             strides
         } else {
             vec![]
@@ -2012,29 +1944,11 @@ impl Lowerer {
             if has_func_ptr || pointer_from_type_spec || matches!((ptr_pos, arr_pos), (Some(pp), Some(ap)) if pp < ap) {
                 // Array of pointers: int *arr[3] or typedef'd_ptr arr[3]
                 // Each element is a pointer (8 bytes)
-                let array_dims: Vec<Option<usize>> = derived.iter().filter_map(|d| {
-                    if let DerivedDeclarator::Array(size_expr) = d {
-                        let dim = size_expr.as_ref().and_then(|e| {
-                            self.expr_as_array_size(e).map(|n| n as usize)
-                        });
-                        Some(dim)
-                    } else {
-                        None
-                    }
-                }).collect();
-                let total_elems: usize = array_dims.iter().map(|d| d.unwrap_or(256)).product();
-                let total_size = total_elems * 8; // each element is a pointer
-                // Compute strides for multi-dimensional pointer arrays.
-                // For char *c[2][1][1][1][3], strides are computed from right to left:
-                // strides[last] = 8 (pointer size), strides[i] = dims[i+1..].product() * 8
+                let array_dims = self.collect_derived_array_dims(derived);
                 let resolved_dims: Vec<usize> = array_dims.iter().map(|d| d.unwrap_or(256)).collect();
+                let total_size: usize = resolved_dims.iter().product::<usize>() * 8;
                 let strides = if resolved_dims.len() > 1 {
-                    let mut s = Vec::with_capacity(resolved_dims.len());
-                    for i in 0..resolved_dims.len() {
-                        let stride: usize = resolved_dims[i+1..].iter().product::<usize>() * 8;
-                        s.push(stride);
-                    }
-                    s
+                    Self::compute_strides_from_dims(&resolved_dims, 8)
                 } else {
                     vec![8]  // 1D pointer array: stride is just pointer size
                 };
@@ -2042,24 +1956,13 @@ impl Lowerer {
             }
             // Pointer to array (e.g., int (*p)[5]) - treat as pointer
             // Compute strides from the Array dims in the derived list
-            let array_dims: Vec<usize> = derived.iter().filter_map(|d| {
-                if let DerivedDeclarator::Array(size_expr) = d {
-                    let dim = size_expr.as_ref().and_then(|e| {
-                        self.expr_as_array_size(e).map(|n| n as usize)
-                    });
-                    Some(dim.unwrap_or(1))
-                } else {
-                    None
-                }
-            }).collect();
+            let array_dims: Vec<usize> = self.collect_derived_array_dims(derived)
+                .iter().map(|d| d.unwrap_or(1)).collect();
             let base_elem_size = self.sizeof_type(ts);
             let full_array_size: usize = array_dims.iter().product::<usize>() * base_elem_size;
-            // strides[0] = full pointed-to array size, strides[i] = product of dims[i..] * base
+            // strides[0] = full pointed-to array size, then per-dim strides
             let mut strides = vec![full_array_size];
-            for i in 0..array_dims.len() {
-                let stride: usize = array_dims[i+1..].iter().product::<usize>().max(1) * base_elem_size;
-                strides.push(stride);
-            }
+            strides.extend(Self::compute_strides_from_dims(&array_dims, base_elem_size));
             let elem_size = full_array_size;
             return (8, elem_size, false, true, strides);
         }
@@ -2078,16 +1981,7 @@ impl Lowerer {
         }
 
         // Check for array declarators - collect all dimensions
-        let array_dims: Vec<Option<usize>> = derived.iter().filter_map(|d| {
-            if let DerivedDeclarator::Array(size_expr) = d {
-                let dim = size_expr.as_ref().and_then(|e| {
-                    self.expr_as_array_size(e).map(|n| n as usize)
-                });
-                Some(dim)
-            } else {
-                None
-            }
-        }).collect();
+        let array_dims = self.collect_derived_array_dims(derived);
 
         if !array_dims.is_empty() {
             // If derived declarators include Function/FunctionPointer,
@@ -2123,11 +2017,7 @@ impl Lowerer {
             let total: usize = all_dims.iter().product::<usize>() * base_elem_size;
 
             // Compute strides: stride[i] = product of dims[i+1..] * base_elem_size
-            let mut strides = Vec::with_capacity(all_dims.len());
-            for i in 0..all_dims.len() {
-                let stride: usize = all_dims[i+1..].iter().product::<usize>() * base_elem_size;
-                strides.push(stride);
-            }
+            let strides = Self::compute_strides_from_dims(&all_dims, base_elem_size);
 
             // elem_size is the stride of the outermost dimension (for 1D compat, it's base_elem_size)
             let elem_size = if strides.len() > 1 { strides[0] } else { base_elem_size };
