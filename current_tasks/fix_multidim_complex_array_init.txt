@@ -1,0 +1,12 @@
+Fix multi-dimensional complex array initialization
+
+Bug: _Complex float/double arrays with 2+ dimensions (e.g., _Complex float a[2][2])
+were incorrectly initialized. The dispatch in lower_array_init_list_dispatch routed
+multi-dimensional complex arrays to the scalar multi-dim path, which stored pointers
+to temporaries instead of copying the actual complex values via memcpy.
+
+Fix: Reorder dispatch to check for complex element types before the multi-dim scalar
+path, and extend lower_array_of_complex_init to handle multi-dimensional arrays
+recursively with proper stride calculations.
+
+This affects all three backends (x86, ARM, RISC-V) since it's an IR lowering bug.
