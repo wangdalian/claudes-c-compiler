@@ -1,0 +1,17 @@
+Fix _Complex float ABI for ARM and RISC-V backends.
+
+The IR lowering for _Complex float is hardcoded to x86-64 SysV ABI conventions,
+where _Complex float is packed into a single 64-bit FP register (xmm0).
+
+On ARM (AAPCS64) and RISC-V (LP64D), _Complex float should be passed as two
+separate single-precision FP registers (s0+s1 on ARM, fa0+fa1 on RISC-V).
+
+This causes incorrect behavior when calling external C library functions like
+csqrtf, cabsf, etc. on ARM and RISC-V.
+
+Fix involves:
+1. Making the Lowerer target-aware (add arch field)
+2. Adding new IR instructions for F32 second return register
+3. Decomposing _Complex float into two F32 params on ARM/RISC-V
+4. Fixing return value handling for _Complex float on ARM/RISC-V
+5. Adding backend emit methods for F32 second return register
