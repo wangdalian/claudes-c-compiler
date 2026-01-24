@@ -1,0 +1,18 @@
+Task: Implement __attribute__((common)) and __builtin_prefetch
+Status: In Progress
+Lock: LOCKED
+
+Changes:
+1. Added __attribute__((common)) / __attribute__((__common__)) support:
+   - Parser detects 'common'/'__common__' in gcc attribute parsing
+   - Threads is_common through Declaration -> IrGlobal pipeline
+   - Backend emits .comm directive for common globals (zero-initialized)
+   - Fixes redis "multiple definition" linker errors for redismodule.h globals
+
+2. Added __builtin_prefetch as no-op:
+   - Evaluates args for side effects but generates no code
+   - Fixes redis undefined reference to __builtin_prefetch
+
+Tests added:
+- tests/attribute-common-multi-tu/
+- tests/builtin-prefetch-noop/
