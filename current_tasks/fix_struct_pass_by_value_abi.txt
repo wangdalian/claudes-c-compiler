@@ -1,0 +1,18 @@
+Fix struct/union pass-by-value calling convention (ABI bug)
+
+CCC passes all structs by pointer (address in a single register), but the
+x86-64 SysV ABI requires structs <= 16 bytes (with all INTEGER-class fields)
+to be passed by value in registers. This causes ABI incompatibility with
+GCC-compiled code and is the root cause of the PostgreSQL initdb crash.
+
+The bug manifests as:
+- Struct fields get garbage values when crossing CCC/GCC compilation boundaries
+- Arguments after the struct get shifted to wrong registers
+- PostgreSQL's RelFileLocator (12 bytes, 3 x Oid) gets corrupted
+
+Fix needed in:
+- Backend codegen: emit_call must pack small structs into registers at call sites
+- Backend codegen: function prologues must unpack register-passed structs
+- Both caller and callee sides need fixing for all three backends (x86, ARM, RISC-V)
+
+Status: LOCKED
