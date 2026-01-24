@@ -329,6 +329,16 @@ impl Lowerer {
                             elements.push(GlobalInit::Scalar(IrConst::I8(0)));
                         }
                     }
+                } else if let Expr::AddressOf(inner, _) = expr {
+                    if let Expr::CompoundLiteral(ref cl_type_spec, ref cl_init, _) = inner.as_ref() {
+                        // &(compound_literal) at file scope: create anonymous global
+                        let addr_init = self.create_compound_literal_global(cl_type_spec, cl_init);
+                        elements.push(addr_init);
+                    } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
+                        elements.push(addr_init);
+                    } else {
+                        push_zero_bytes(elements, field_size);
+                    }
                 } else if let Some(val) = self.eval_const_expr(expr) {
                     // Scalar constant - coerce to field type and emit as bytes
                     let field_ir_ty = IrType::from_ctype(field_ty);

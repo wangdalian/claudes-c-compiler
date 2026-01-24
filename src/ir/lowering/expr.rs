@@ -630,6 +630,32 @@ impl Lowerer {
             return real;
         }
 
+        // GCC extension: cast to union type, e.g. (union convert)x
+        // Creates a temporary union, stores the value into the first matching member at offset 0.
+        if let CType::Union(ref st) = target_ctype {
+            let union_size = st.size();
+            let src = self.lower_expr(inner);
+            let from_ty = self.get_expr_type(inner);
+
+            // Allocate stack space for the union and zero-initialize it
+            let alloca = self.fresh_value();
+            self.emit(Instruction::Alloca { dest: alloca, size: union_size, ty: IrType::Ptr });
+            self.zero_init_alloca(alloca, union_size);
+
+            // Store source value at offset 0 (all union members share offset 0)
+            let store_ty = from_ty;
+            self.emit(Instruction::Store { val: src, ptr: alloca, ty: store_ty });
+
+            return Operand::Value(alloca);
+        }
+
+        // GCC extension: cast to struct type (rare, but handle similarly)
+        if let CType::Struct(_) = target_ctype {
+            // Struct casts are not standard C, but if the source is already a struct pointer, pass through
+            let src = self.lower_expr(inner);
+            return src;
+        }
+
         let src = self.lower_expr(inner);
         let mut from_ty = self.get_expr_type(inner);
         let to_ty = self.type_spec_to_ir(target_type);

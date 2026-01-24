@@ -837,16 +837,25 @@ impl Lowerer {
         let mut current_idx = 0usize;
         let mut item_idx = 0usize;
 
-        while item_idx < items.len() && current_idx < num_elems {
+        while item_idx < items.len() {
             let item = &items[item_idx];
 
-            // Check for index designator
-            if let Some(Designator::Index(ref idx_expr)) = item.designators.first() {
+            // Check for index designator (may jump backwards for out-of-order designated inits)
+            let has_index_designator = if let Some(Designator::Index(ref idx_expr)) = item.designators.first() {
                 if let Some(idx) = self.eval_const_expr(idx_expr).and_then(|c| c.to_usize()) {
                     current_idx = idx;
                 }
+                true
+            } else {
+                false
+            };
+            if current_idx >= num_elems {
+                // Only skip items without a designator that would reset the index;
+                // designated items explicitly set current_idx above
+                if !has_index_designator { break; }
+                item_idx += 1;
+                continue;
             }
-            if current_idx >= num_elems { break; }
 
             // Check for field designator: [idx].field = val
             let field_designator_name = item.designators.iter().find_map(|d| {

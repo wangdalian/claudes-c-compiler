@@ -379,7 +379,7 @@ impl Lowerer {
 
     /// Create an anonymous global for a compound literal at file scope.
     /// Used for: struct S *s = &(struct S){1, 2};
-    fn create_compound_literal_global(
+    pub(super) fn create_compound_literal_global(
         &mut self,
         type_spec: &TypeSpecifier,
         init: &Initializer,
@@ -469,8 +469,16 @@ impl Lowerer {
     fn init_has_addr_exprs(&self, init: &Initializer) -> bool {
         match init {
             Initializer::Expr(expr) => {
-                matches!(expr, Expr::StringLiteral(_, _))
-                    || (self.eval_const_expr(expr).is_none() && self.eval_global_addr_expr(expr).is_some())
+                if matches!(expr, Expr::StringLiteral(_, _)) {
+                    return true;
+                }
+                // &(compound_literal) at file scope
+                if let Expr::AddressOf(inner, _) = expr {
+                    if matches!(inner.as_ref(), Expr::CompoundLiteral(..)) {
+                        return true;
+                    }
+                }
+                self.eval_const_expr(expr).is_none() && self.eval_global_addr_expr(expr).is_some()
             }
             Initializer::List(items) => {
                 items.iter().any(|item| self.init_has_addr_exprs(&item.init))
@@ -597,6 +605,12 @@ impl Lowerer {
                     }
                     if self.eval_const_expr(expr).is_none() && self.eval_global_addr_expr(expr).is_some() {
                         return true;
+                    }
+                    // &(compound_literal) at file scope: address of anonymous global
+                    if let Expr::AddressOf(inner, _) = expr {
+                        if matches!(inner.as_ref(), Expr::CompoundLiteral(..)) {
+                            return true;
+                        }
                     }
                     // For flat array-of-pointer init, consume remaining items for this field
                     if let CType::Array(elem_ty, Some(arr_size)) = field_ty {
