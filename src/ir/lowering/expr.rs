@@ -124,6 +124,24 @@ impl Lowerer {
         Operand::Value(dest)
     }
 
+    /// Emit a GlobalAddr instruction and either return the address (for arrays,
+    /// structs, complex types) or load the scalar value from it.
+    fn load_global_var(&mut self, global_name: String, ginfo: &super::lowering::GlobalInfo) -> Operand {
+        let addr = self.fresh_value();
+        self.emit(Instruction::GlobalAddr { dest: addr, name: global_name });
+        if ginfo.is_array || ginfo.is_struct {
+            return Operand::Value(addr);
+        }
+        if let Some(ref ct) = ginfo.c_type {
+            if ct.is_complex() {
+                return Operand::Value(addr);
+            }
+        }
+        let dest = self.fresh_value();
+        self.emit(Instruction::Load { dest, ptr: addr, ty: ginfo.ty });
+        Operand::Value(dest)
+    }
+
     fn lower_identifier(&mut self, name: &str) -> Operand {
         // Predefined identifiers: __func__, __FUNCTION__, __PRETTY_FUNCTION__
         // These are implicitly defined as static const char[] containing the function name.
@@ -177,39 +195,13 @@ impl Lowerer {
         // mangled global name. Checked after locals so inner-scope locals can shadow.
         if let Some(mangled) = self.static_local_names.get(name).cloned() {
             if let Some(ginfo) = self.globals.get(&mangled).cloned() {
-                let addr = self.fresh_value();
-                self.emit(Instruction::GlobalAddr { dest: addr, name: mangled });
-                if ginfo.is_array || ginfo.is_struct {
-                    return Operand::Value(addr);
-                }
-                if let Some(ref ct) = ginfo.c_type {
-                    if ct.is_complex() {
-                        return Operand::Value(addr);
-                    }
-                }
-                let dest = self.fresh_value();
-                self.emit(Instruction::Load { dest, ptr: addr, ty: ginfo.ty });
-                return Operand::Value(dest);
+                return self.load_global_var(mangled, &ginfo);
             }
         }
 
         // Global variables
         if let Some(ginfo) = self.globals.get(name).cloned() {
-            let addr = self.fresh_value();
-            self.emit(Instruction::GlobalAddr { dest: addr, name: name.to_string() });
-            if ginfo.is_array || ginfo.is_struct {
-                // Arrays and structs decay to their address
-                return Operand::Value(addr);
-            }
-            // Complex types return their address pointer (like structs)
-            if let Some(ref ct) = ginfo.c_type {
-                if ct.is_complex() {
-                    return Operand::Value(addr);
-                }
-            }
-            let dest = self.fresh_value();
-            self.emit(Instruction::Load { dest, ptr: addr, ty: ginfo.ty });
-            return Operand::Value(dest);
+            return self.load_global_var(name.to_string(), &ginfo);
         }
 
         // Assume function reference (or unknown global)
@@ -2118,27 +2110,9 @@ impl Lowerer {
             }
             _ => self.sizeof_type(type_spec),
         };
-        let alloca = self.fresh_value();
-        self.emit(Instruction::Alloca { dest: alloca, size, ty });
+        let alloca = self.alloc_and_init_compound_literal(type_spec, init, ty, size);
 
         let struct_layout = self.get_struct_layout_for_type(type_spec);
-
-        match init {
-            Initializer::Expr(expr) => {
-                let val = self.lower_expr(expr);
-                self.emit(Instruction::Store { val, ptr: alloca, ty });
-            }
-            Initializer::List(items) => {
-                if let Some(ref layout) = struct_layout {
-                    // Zero-init the struct first, then fill designated/sequential fields
-                    self.zero_init_alloca(alloca, layout.size);
-                    self.emit_struct_init(items, alloca, layout, 0);
-                } else {
-                    self.init_array_compound_literal(alloca, items, type_spec, ty, size);
-                }
-            }
-        }
-
         // For scalar compound literals (not struct/array), return the loaded value.
         // Struct and array compound literals return the alloca address (they are lvalues).
         let is_scalar = struct_layout.is_none() && !matches!(type_spec, TypeSpecifier::Array(..));
@@ -2300,30 +2274,36 @@ impl Lowerer {
     // Address-of, dereference, subscript
     // -----------------------------------------------------------------------
 
+    /// Allocate stack space and initialize a compound literal. Returns the alloca address.
+    fn alloc_and_init_compound_literal(
+        &mut self, type_spec: &TypeSpecifier, init: &Initializer, ty: IrType, size: usize,
+    ) -> Value {
+        let alloca = self.fresh_value();
+        self.emit(Instruction::Alloca { dest: alloca, size, ty });
+        let struct_layout = self.get_struct_layout_for_type(type_spec);
+        match init {
+            Initializer::Expr(expr) => {
+                let val = self.lower_expr(expr);
+                self.emit(Instruction::Store { val, ptr: alloca, ty });
+            }
+            Initializer::List(items) => {
+                if let Some(ref layout) = struct_layout {
+                    self.zero_init_alloca(alloca, layout.size);
+                    self.emit_struct_init(items, alloca, layout, 0);
+                } else {
+                    self.init_array_compound_literal(alloca, items, type_spec, ty, size);
+                }
+            }
+        }
+        alloca
+    }
+
     fn lower_address_of(&mut self, inner: &Expr) -> Operand {
         // &(compound_literal) - need to get the alloca address directly
         if let Expr::CompoundLiteral(type_spec, init, _) = inner {
-            // For scalar compound literals, lower_expr would return the loaded value,
-            // so we need to allocate and init directly here to get the address.
             let ty = self.type_spec_to_ir(type_spec);
             let size = self.sizeof_type(type_spec);
-            let alloca = self.fresh_value();
-            self.emit(Instruction::Alloca { dest: alloca, size, ty });
-            let struct_layout = self.get_struct_layout_for_type(type_spec);
-            match init.as_ref() {
-                Initializer::Expr(expr) => {
-                    let val = self.lower_expr(expr);
-                    self.emit(Instruction::Store { val, ptr: alloca, ty });
-                }
-                Initializer::List(items) => {
-                    if let Some(ref layout) = struct_layout {
-                        self.zero_init_alloca(alloca, layout.size);
-                        self.emit_struct_init(items, alloca, layout, 0);
-                    } else {
-                        self.init_array_compound_literal(alloca, items, type_spec, ty, size);
-                    }
-                }
-            }
+            let alloca = self.alloc_and_init_compound_literal(type_spec, init, ty, size);
             return Operand::Value(alloca);
         }
 
