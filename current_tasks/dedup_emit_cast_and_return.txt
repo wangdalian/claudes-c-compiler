@@ -1,0 +1,11 @@
+Deduplicate emit_cast and emit_return across all three backends.
+
+Currently, emit_cast (i128 widening/narrowing/copy) and emit_return (i128/f128/f32/f64
+dispatch) are copy-pasted across x86, ARM, and RISC-V codegen files with identical logic
+but different register names. This refactoring extracts both as default trait implementations
+in codegen_shared.rs using existing ArchCodegen primitives, eliminating ~200 lines of
+duplicated code.
+
+Also adds shared CallArgClass enum and classify_call_args() helper to reduce the
+argument classification duplication in emit_call (same classification logic repeated
+3 times with different char conventions).
