@@ -86,17 +86,18 @@ impl Lowerer {
                 Box::new(Self::ctype_to_type_spec(elem)),
                 size.map(|s| Box::new(Expr::IntLiteral(s as i64, crate::common::source::Span::dummy()))),
             ),
-            CType::Struct(st) => {
-                // Return as struct tag reference if possible
-                if let Some(name) = &st.name {
-                    TypeSpecifier::Struct(Some(name.clone()), None, false, None, None)
+            CType::Struct(key) => {
+                // Extract tag name from key (e.g., "struct.Foo" -> "Foo")
+                if let Some(tag) = key.strip_prefix("struct.") {
+                    TypeSpecifier::Struct(Some(tag.to_string()), None, false, None, None)
                 } else {
                     TypeSpecifier::Int // anonymous struct fallback
                 }
             }
-            CType::Union(st) => {
-                if let Some(name) = &st.name {
-                    TypeSpecifier::Union(Some(name.clone()), None, false, None, None)
+            CType::Union(key) => {
+                // Extract tag name from key (e.g., "union.Bar" -> "Bar")
+                if let Some(tag) = key.strip_prefix("union.") {
+                    TypeSpecifier::Union(Some(tag.to_string()), None, false, None, None)
                 } else {
                     TypeSpecifier::Int // anonymous union fallback
                 }
@@ -459,9 +460,9 @@ impl Lowerer {
             }
         }).collect();
         if is_union {
-            StructLayout::for_union(&struct_fields)
+            StructLayout::for_union(&struct_fields, &self.types)
         } else {
-            StructLayout::for_struct_with_packing(&struct_fields, max_field_align)
+            StructLayout::for_struct_with_packing(&struct_fields, max_field_align, &self.types)
         }
     }
 
@@ -948,11 +949,10 @@ impl Lowerer {
         is_packed: bool,
         pragma_pack: Option<usize>,
     ) -> CType {
-        let make = |st: crate::common::types::StructType| -> CType {
-            let arc_st = std::sync::Arc::new(st);
-            if is_union { CType::Union(arc_st) } else { CType::Struct(arc_st) }
-        };
         let prefix = if is_union { "union" } else { "struct" };
+        let wrap = |key: String| -> CType {
+            if is_union { CType::Union(key) } else { CType::Struct(key) }
+        };
         // __attribute__((packed)) forces alignment 1; #pragma pack(N) caps to N.
         let max_field_align = if is_packed { Some(1) } else { pragma_pack };
 
@@ -983,46 +983,53 @@ impl Lowerer {
                     alignment: f.alignment,
                 }
             }).collect();
-            let st = if is_union {
-                crate::common::types::StructType::new_union(name.clone(), struct_fields, is_packed, max_field_align)
+            let layout = if is_union {
+                StructLayout::for_union(&struct_fields, &self.types)
             } else {
-                crate::common::types::StructType::new_struct(name.clone(), struct_fields, is_packed, max_field_align)
+                StructLayout::for_struct_with_packing(&struct_fields, max_field_align, &self.types)
             };
-            let result = make(st);
-            if let Some(tag) = name {
-                let cache_key = format!("{}.{}", prefix, tag);
-                self.types.ctype_cache.borrow_mut().insert(cache_key, result.clone());
-            }
+            let key = if let Some(tag) = name {
+                format!("{}.{}", prefix, tag)
+            } else {
+                let id = self.types.next_anon_struct_id();
+                format!("__anon_struct_{}", id)
+            };
+            self.types.insert_struct_layout_from_ref(&key, layout);
+            self.types.invalidate_ctype_cache_from_ref(&key);
+            let result = wrap(key.clone());
+            self.types.ctype_cache.borrow_mut().insert(key, result.clone());
             result
         } else if let Some(tag) = name {
-            let cache_key = format!("{}.{}", prefix, tag);
+            let key = format!("{}.{}", prefix, tag);
             // Check cache first
-            if let Some(cached) = self.types.ctype_cache.borrow().get(&cache_key) {
+            if let Some(cached) = self.types.ctype_cache.borrow().get(&key) {
                 return cached.clone();
             }
-            let key = format!("{}.{}", prefix, tag);
-            if let Some(layout) = self.types.struct_layouts.get(&key) {
-                let struct_fields: Vec<StructField> = layout.fields.iter().map(|f| {
-                    StructField {
-                        name: f.name.clone(),
-                        ty: f.ty.clone(),
-                        bit_width: f.bit_width,
-                        alignment: None,
-                    }
-                }).collect();
-                let st = if is_union {
-                    crate::common::types::StructType::new_union(Some(tag.clone()), struct_fields, is_packed, max_field_align)
-                } else {
-                    crate::common::types::StructType::new_struct(Some(tag.clone()), struct_fields, is_packed, max_field_align)
+            // Forward declaration: insert an empty layout if not already present
+            if self.types.struct_layouts.get(&key).is_none() {
+                let empty_layout = StructLayout {
+                    fields: Vec::new(),
+                    size: 0,
+                    align: 1,
+                    is_union,
                 };
-                let result = make(st);
-                self.types.ctype_cache.borrow_mut().insert(cache_key, result.clone());
-                result
-            } else {
-                make(crate::common::types::StructType::new_empty(Some(tag.clone()), is_packed, max_field_align))
+                self.types.insert_struct_layout_from_ref(&key, empty_layout);
             }
+            let result = wrap(key.clone());
+            self.types.ctype_cache.borrow_mut().insert(key, result.clone());
+            result
         } else {
-            make(crate::common::types::StructType::new_empty(None, is_packed, max_field_align))
+            // Anonymous forward declaration (no name, no fields)
+            let id = self.types.next_anon_struct_id();
+            let key = format!("__anon_struct_{}", id);
+            let empty_layout = StructLayout {
+                fields: Vec::new(),
+                size: 0,
+                align: 1,
+                is_union,
+            };
+            self.types.insert_struct_layout_from_ref(&key, empty_layout);
+            wrap(key)
         }
     }
 

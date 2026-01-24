@@ -1,7 +1,22 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+
+/// Trait for looking up struct/union layout information.
+/// TypeContext implements this trait, allowing CType methods in common/
+/// to resolve struct/union sizes and alignments without depending on
+/// the lowering module directly.
+pub trait StructLayoutProvider {
+    fn get_struct_layout(&self, key: &str) -> Option<&StructLayout>;
+}
+
+/// A HashMap-based provider for struct layouts (used by TypeContext and sema).
+impl StructLayoutProvider for HashMap<String, StructLayout> {
+    fn get_struct_layout(&self, key: &str) -> Option<&StructLayout> {
+        self.get(key)
+    }
+}
 
 /// Represents C types in the compiler.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CType {
     Void,
     Bool,
@@ -29,168 +44,26 @@ pub enum CType {
     Pointer(Box<CType>),
     Array(Box<CType>, Option<usize>),
     Function(Box<FunctionType>),
-    Struct(Arc<StructType>),
-    Union(Arc<StructType>),
+    /// Struct type, identified by key (e.g., "struct.Foo" or "__anon_struct_7").
+    /// The actual layout is stored in TypeContext's struct_layouts map.
+    Struct(String),
+    /// Union type, identified by key (e.g., "union.Bar" or "__anon_struct_7").
+    /// The actual layout is stored in TypeContext's struct_layouts map.
+    Union(String),
     Enum(EnumType),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FunctionType {
     pub return_type: CType,
     pub params: Vec<(CType, Option<String>)>,
     pub variadic: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct StructType {
-    pub name: Option<String>,
-    pub fields: Vec<StructField>,
-    /// If true, the struct is __attribute__((packed)) — alignment 1 for all fields.
-    pub is_packed: bool,
-    /// Maximum field alignment imposed by #pragma pack(N) or __attribute__((packed)).
-    /// None means use natural alignment. Some(1) for packed, Some(N) for #pragma pack(N).
-    pub max_field_align: Option<usize>,
-    /// Cached size in bytes (computed once at construction).
-    cached_size: usize,
-    /// Cached alignment in bytes (computed once at construction).
-    cached_align: usize,
-}
+/// StructField describes a single field in a struct or union declaration.
+/// Used during construction of StructLayout.
 
-impl PartialEq for StructType {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-            && self.fields == other.fields
-            && self.is_packed == other.is_packed
-            && self.max_field_align == other.max_field_align
-    }
-}
-
-impl Eq for StructType {}
-
-impl StructType {
-    /// Create a new StructType for a struct, eagerly computing and caching size/align.
-    pub fn new_struct(name: Option<String>, fields: Vec<StructField>, is_packed: bool, max_field_align: Option<usize>) -> Self {
-        let layout = StructLayout::for_struct_with_packing(&fields, max_field_align);
-        StructType {
-            name,
-            fields,
-            is_packed,
-            max_field_align,
-            cached_size: layout.size,
-            cached_align: layout.align,
-        }
-    }
-
-    /// Create a new StructType for a union, eagerly computing and caching size/align.
-    pub fn new_union(name: Option<String>, fields: Vec<StructField>, is_packed: bool, max_field_align: Option<usize>) -> Self {
-        let layout = StructLayout::for_union(&fields);
-        StructType {
-            name,
-            fields,
-            is_packed,
-            max_field_align,
-            cached_size: layout.size,
-            cached_align: layout.align,
-        }
-    }
-
-    /// Create a forward-declared or empty struct/union type (no fields yet).
-    pub fn new_empty(name: Option<String>, is_packed: bool, max_field_align: Option<usize>) -> Self {
-        StructType {
-            name,
-            fields: Vec::new(),
-            is_packed,
-            max_field_align,
-            cached_size: 0,
-            cached_align: 1,
-        }
-    }
-
-    /// Apply a struct-level `__attribute__((aligned(N)))` minimum alignment.
-    /// This can only increase alignment (never decrease it), and re-pads size accordingly.
-    pub fn apply_min_alignment(&mut self, min_align: usize) {
-        if min_align > self.cached_align {
-            self.cached_align = min_align;
-            self.cached_size = align_up(self.cached_size, self.cached_align);
-        }
-    }
-
-    /// Get the cached size in bytes.
-    pub fn size(&self) -> usize {
-        self.cached_size
-    }
-
-    /// Get the cached alignment in bytes.
-    pub fn align(&self) -> usize {
-        self.cached_align
-    }
-
-    /// Look up a field by name, returning its byte offset and type reference.
-    /// For unions, all fields have offset 0.
-    /// For structs, computes offset by iterating fields (uses cached size/align).
-    /// Also searches anonymous struct/union members recursively.
-    pub fn find_field(&self, name: &str, is_union: bool) -> Option<(usize, &CType)> {
-        if is_union {
-            // Union: all fields at offset 0
-            for field in &self.fields {
-                if field.name == name {
-                    return Some((0, &field.ty));
-                }
-                // Search anonymous members
-                if field.name.is_empty() {
-                    if let Some((inner_offset, ty)) = Self::find_field_in_anon(&field.ty, name) {
-                        return Some((inner_offset, ty));
-                    }
-                }
-            }
-            None
-        } else {
-            // Struct: compute offset by iterating
-            let mut offset = 0usize;
-            let max_field_align = self.max_field_align;
-            for field in &self.fields {
-                if field.bit_width.is_some() {
-                    // Skip bitfield offset computation for now - fall through to full layout
-                    // if the target field is in a bitfield region
-                    continue;
-                }
-                let natural_align = field.ty.align();
-                // Per-field alignment override from _Alignas or __attribute__((aligned))
-                let field_align = if let Some(explicit) = field.alignment {
-                    // Explicit alignment overrides packing
-                    natural_align.max(explicit)
-                } else if let Some(max_a) = max_field_align {
-                    natural_align.min(max_a)
-                } else {
-                    natural_align
-                };
-                offset = align_up(offset, field_align);
-                if field.name == name {
-                    return Some((offset, &field.ty));
-                }
-                // Search anonymous members
-                if field.name.is_empty() {
-                    if let Some((inner_offset, ty)) = Self::find_field_in_anon(&field.ty, name) {
-                        return Some((offset + inner_offset, ty));
-                    }
-                }
-                offset += field.ty.size();
-            }
-            None
-        }
-    }
-
-    /// Search for a field in an anonymous struct/union member.
-    fn find_field_in_anon<'a>(ty: &'a CType, name: &str) -> Option<(usize, &'a CType)> {
-        match ty {
-            CType::Struct(st) => st.find_field(name, false),
-            CType::Union(st) => st.find_field(name, true),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StructField {
     pub name: String,
     pub ty: CType,
@@ -200,7 +73,7 @@ pub struct StructField {
     pub alignment: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EnumType {
     pub name: Option<String>,
     pub variants: Vec<(String, i64)>,
@@ -269,7 +142,8 @@ impl StructLayout {
     ///   For __attribute__((packed)), pass Some(1).
     ///   For #pragma pack(N), pass Some(N).
     ///   For normal structs, pass None.
-    pub fn for_struct_with_packing(fields: &[StructField], max_field_align: Option<usize>) -> Self {
+    /// `ctx`: provides struct/union layout lookup for nested struct/union field types.
+    pub fn for_struct_with_packing(fields: &[StructField], max_field_align: Option<usize>, ctx: &dyn StructLayoutProvider) -> Self {
         let mut offset = 0usize;
         let mut max_align = 1usize;
         let mut field_layouts = Vec::with_capacity(fields.len());
@@ -283,7 +157,7 @@ impl StructLayout {
         let is_packed_1 = max_field_align == Some(1);
 
         for field in fields {
-            let natural_align = field.ty.align();
+            let natural_align = field.ty.align_ctx(ctx);
             // Per-field alignment override: _Alignas(N) or __attribute__((aligned(N)))
             // sets a minimum alignment (can only increase, per C11 6.7.5).
             let overridden_align = if let Some(explicit) = field.alignment {
@@ -302,7 +176,7 @@ impl StructLayout {
             } else {
                 natural_align
             };
-            let field_size = field.ty.size();
+            let field_size = field.ty.size_ctx(ctx);
             max_align = max_align.max(field_align);
 
             if let Some(bw) = field.bit_width {
@@ -453,25 +327,25 @@ impl StructLayout {
     }
 
     /// Convenience wrapper: compute layout with default (no packing).
-    pub fn for_struct(fields: &[StructField]) -> Self {
-        Self::for_struct_with_packing(fields, None)
+    pub fn for_struct(fields: &[StructField], ctx: &dyn StructLayoutProvider) -> Self {
+        Self::for_struct_with_packing(fields, None, ctx)
     }
 
     /// Compute the layout for a union (all fields at offset 0, size = max field size).
-    pub fn for_union(fields: &[StructField]) -> Self {
+    pub fn for_union(fields: &[StructField], ctx: &dyn StructLayoutProvider) -> Self {
         let mut max_size = 0usize;
         let mut max_align = 1usize;
         let mut field_layouts = Vec::with_capacity(fields.len());
 
         for field in fields {
-            let natural_align = field.ty.align();
+            let natural_align = field.ty.align_ctx(ctx);
             // Per-field alignment override from _Alignas(N) or __attribute__((aligned(N)))
             let field_align = if let Some(explicit) = field.alignment {
                 natural_align.max(explicit)
             } else {
                 natural_align
             };
-            let field_size = field.ty.size();
+            let field_size = field.ty.size_ctx(ctx);
             max_align = max_align.max(field_align);
             max_size = max_size.max(field_size);
 
@@ -508,17 +382,21 @@ impl StructLayout {
 
     /// Check if any field in this layout is or contains a pointer/function type.
     /// Recursively checks array element types and nested struct/union fields.
-    pub fn has_pointer_fields(&self) -> bool {
-        self.fields.iter().any(|f| Self::field_type_has_pointers(&f.ty))
+    pub fn has_pointer_fields(&self, ctx: &dyn StructLayoutProvider) -> bool {
+        self.fields.iter().any(|f| Self::field_type_has_pointers(&f.ty, ctx))
     }
 
     /// Check if a type is or contains pointer/function types (recursive).
-    fn field_type_has_pointers(ty: &CType) -> bool {
+    fn field_type_has_pointers(ty: &CType, ctx: &dyn StructLayoutProvider) -> bool {
         match ty {
             CType::Pointer(_) | CType::Function(_) => true,
-            CType::Array(inner, _) => Self::field_type_has_pointers(inner),
-            CType::Struct(st) | CType::Union(st) => {
-                st.fields.iter().any(|f| Self::field_type_has_pointers(&f.ty))
+            CType::Array(inner, _) => Self::field_type_has_pointers(inner, ctx),
+            CType::Struct(key) | CType::Union(key) => {
+                if let Some(layout) = ctx.get_struct_layout(key) {
+                    layout.fields.iter().any(|f| Self::field_type_has_pointers(&f.ty, ctx))
+                } else {
+                    false
+                }
             }
             _ => false,
         }
@@ -535,8 +413,8 @@ impl StructLayout {
     /// participate. Unnamed bitfields (empty name, has bit_width) do NOT.
     ///
     /// Returns the resolved field index, or `None` if no valid field found.
-    pub fn resolve_init_field_idx(&self, designator_name: Option<&str>, current_idx: usize) -> Option<usize> {
-        match self.resolve_init_field(designator_name, current_idx) {
+    pub fn resolve_init_field_idx(&self, designator_name: Option<&str>, current_idx: usize, ctx: &dyn StructLayoutProvider) -> Option<usize> {
+        match self.resolve_init_field(designator_name, current_idx, ctx) {
             Some(InitFieldResolution::Direct(idx)) => Some(idx),
             Some(InitFieldResolution::AnonymousMember { anon_field_idx, .. }) => Some(anon_field_idx),
             None => None,
@@ -548,7 +426,7 @@ impl StructLayout {
     /// When a designator name is found inside an anonymous struct/union member,
     /// returns `AnonymousMember` with the anonymous field's index and the inner name,
     /// allowing callers to drill into the anonymous member for proper initialization.
-    pub fn resolve_init_field(&self, designator_name: Option<&str>, current_idx: usize) -> Option<InitFieldResolution> {
+    pub fn resolve_init_field(&self, designator_name: Option<&str>, current_idx: usize, ctx: &dyn StructLayoutProvider) -> Option<InitFieldResolution> {
         if let Some(name) = designator_name {
             // First try direct field lookup
             if let Some(idx) = self.fields.iter().position(|f| f.name == name) {
@@ -561,8 +439,8 @@ impl StructLayout {
                     continue;
                 }
                 match &f.ty {
-                    CType::Struct(st) | CType::Union(st) => {
-                        if Self::anon_member_contains_field(&st.fields, name) {
+                    CType::Struct(key) | CType::Union(key) => {
+                        if Self::anon_member_contains_field_ctx(key, name, ctx) {
                             return Some(InitFieldResolution::AnonymousMember {
                                 anon_field_idx: idx,
                                 inner_name: name.to_string(),
@@ -590,93 +468,65 @@ impl StructLayout {
         }
     }
 
-    /// Check if an anonymous struct/union's fields contain a field with the given name,
-    /// including recursively through nested anonymous members.
-    fn anon_member_contains_field(fields: &[StructField], name: &str) -> bool {
-        for f in fields {
-            if f.name == name {
-                return true;
-            }
-            // Recurse into nested anonymous members
-            if f.name.is_empty() {
-                match &f.ty {
-                    CType::Struct(st) | CType::Union(st) => {
-                        if Self::anon_member_contains_field(&st.fields, name) {
-                            return true;
+    /// Check if an anonymous struct/union member (identified by layout key) contains
+    /// a field with the given name, including recursively through nested anonymous members.
+    fn anon_member_contains_field_ctx(key: &str, name: &str, ctx: &dyn StructLayoutProvider) -> bool {
+        if let Some(layout) = ctx.get_struct_layout(key) {
+            for f in &layout.fields {
+                if f.name == name {
+                    return true;
+                }
+                // Recurse into nested anonymous members
+                if f.name.is_empty() {
+                    match &f.ty {
+                        CType::Struct(inner_key) | CType::Union(inner_key) => {
+                            if Self::anon_member_contains_field_ctx(inner_key, name, ctx) {
+                                return true;
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
         }
         false
     }
 
-    /// Look up a field by name, returning its offset and type.
+    /// Look up a field by name, returning its offset and a clone of its type.
     /// Recursively searches anonymous struct/union members.
-    pub fn field_offset(&self, name: &str) -> Option<(usize, &CType)> {
+    pub fn field_offset(&self, name: &str, ctx: &dyn StructLayoutProvider) -> Option<(usize, CType)> {
         // First, try direct field lookup
         if let Some(f) = self.fields.iter().find(|f| f.name == name) {
-            return Some((f.offset, &f.ty));
+            return Some((f.offset, f.ty.clone()));
         }
         // Then, search anonymous (unnamed) struct/union members recursively
         for f in &self.fields {
             if !f.name.is_empty() {
                 continue;
             }
-            let anon_fields = match &f.ty {
-                CType::Struct(st) | CType::Union(st) => &st.fields,
+            let anon_key = match &f.ty {
+                CType::Struct(key) | CType::Union(key) => key.clone(),
                 _ => continue,
             };
+            let anon_layout = match ctx.get_struct_layout(&anon_key) {
+                Some(layout) => layout.clone(),
+                None => continue,
+            };
             // Check if the target field is directly in this anonymous member
-            if let Some(inner_field) = anon_fields.iter().find(|sf| sf.name == name) {
+            if let Some(inner_field) = anon_layout.fields.iter().find(|sf| sf.name == name) {
                 // Compute offset within the anonymous struct/union
                 let inner_offset = match &f.ty {
                     CType::Struct(_) => {
-                        let layout = StructLayout::for_struct(anon_fields);
-                        layout.field_offset(name).map(|(o, _)| o).unwrap_or(0)
+                        anon_layout.field_offset(name, ctx).map(|(o, _)| o).unwrap_or(0)
                     }
                     CType::Union(_) => 0, // all union fields at offset 0
                     _ => 0,
                 };
-                return Some((f.offset + inner_offset, &inner_field.ty));
+                return Some((f.offset + inner_offset, inner_field.ty.clone()));
             }
             // Recurse into nested anonymous members
-            let inner_layout = match &f.ty {
-                CType::Struct(_) => StructLayout::for_struct(anon_fields),
-                CType::Union(_) => StructLayout::for_union(anon_fields),
-                _ => continue,
-            };
-            if let Some((inner_offset, _)) = inner_layout.field_offset(name) {
-                // Found in a deeper nested anonymous - but we can't return
-                // the &CType from the temporary layout. Search the anon fields
-                // for a nested anonymous that contains the field.
-                for sf in anon_fields {
-                    if sf.name.is_empty() {
-                        if let Some(deep_ty) = Self::find_field_type_in_anon(&sf.ty, name) {
-                            return Some((f.offset + inner_offset, deep_ty));
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    /// Helper: find a field's type reference within an anonymous struct/union type.
-    fn find_field_type_in_anon<'a>(ty: &'a CType, name: &str) -> Option<&'a CType> {
-        let fields = match ty {
-            CType::Struct(st) | CType::Union(st) => &st.fields,
-            _ => return None,
-        };
-        for f in fields {
-            if f.name == name {
-                return Some(&f.ty);
-            }
-            if f.name.is_empty() {
-                if let Some(deep) = Self::find_field_type_in_anon(&f.ty, name) {
-                    return Some(deep);
-                }
+            if let Some((inner_offset, ty)) = anon_layout.field_offset(name, ctx) {
+                return Some((f.offset + inner_offset, ty));
             }
         }
         None
@@ -699,8 +549,8 @@ pub fn align_up(offset: usize, align: usize) -> usize {
 }
 
 impl CType {
-    /// Size in bytes on a 64-bit target.
-    pub fn size(&self) -> usize {
+    /// Size in bytes on a 64-bit target, with struct/union layout lookup via context.
+    pub fn size_ctx(&self, ctx: &dyn StructLayoutProvider) -> usize {
         match self {
             CType::Void => 0,
             CType::Bool | CType::Char | CType::UChar => 1,
@@ -716,17 +566,18 @@ impl CType {
             CType::ComplexDouble => 16,   // 2 * sizeof(double)
             CType::ComplexLongDouble => 32, // 2 * sizeof(long double) = 2 * 16
             CType::Pointer(_) => 8,
-            CType::Array(elem, Some(n)) => elem.size() * n,
+            CType::Array(elem, Some(n)) => elem.size_ctx(ctx) * n,
             CType::Array(_, None) => 8, // incomplete array treated as pointer
             CType::Function(_) => 8, // function pointer size
-            CType::Struct(s) => s.size(),
-            CType::Union(s) => s.size(),
+            CType::Struct(key) | CType::Union(key) => {
+                ctx.get_struct_layout(key).map(|l| l.size).unwrap_or(0)
+            }
             CType::Enum(_) => 4,
         }
     }
 
-    /// Alignment in bytes on a 64-bit target.
-    pub fn align(&self) -> usize {
+    /// Alignment in bytes on a 64-bit target, with struct/union layout lookup via context.
+    pub fn align_ctx(&self, ctx: &dyn StructLayoutProvider) -> usize {
         match self {
             CType::Void => 1,
             CType::Bool | CType::Char | CType::UChar => 1,
@@ -742,11 +593,55 @@ impl CType {
             CType::ComplexDouble => 8,      // align of double component
             CType::ComplexLongDouble => 16, // align of long double (F128) component
             CType::Pointer(_) => 8,
-            CType::Array(elem, _) => elem.align(),
+            CType::Array(elem, _) => elem.align_ctx(ctx),
             CType::Function(_) => 8,
-            CType::Struct(s) => s.align(),
-            CType::Union(s) => s.align(),
+            CType::Struct(key) | CType::Union(key) => {
+                ctx.get_struct_layout(key).map(|l| l.align).unwrap_or(1)
+            }
             CType::Enum(_) => 4,
+        }
+    }
+
+    /// Size in bytes for non-struct/union types. For struct/union, returns 0.
+    /// Use size_ctx() when you need accurate struct/union sizes.
+    pub fn size(&self) -> usize {
+        match self {
+            CType::Struct(_) | CType::Union(_) => 0,
+            _ => {
+                // For non-struct/union types, we can use an empty provider
+                let empty: HashMap<String, StructLayout> = HashMap::new();
+                self.size_ctx(&empty)
+            }
+        }
+    }
+
+    /// Alignment in bytes for non-struct/union types. For struct/union, returns 1.
+    /// Use align_ctx() when you need accurate struct/union alignment.
+    pub fn align(&self) -> usize {
+        match self {
+            CType::Struct(_) | CType::Union(_) => 1,
+            _ => {
+                let empty: HashMap<String, StructLayout> = HashMap::new();
+                self.align_ctx(&empty)
+            }
+        }
+    }
+
+    /// Get the struct/union layout key if this is a CType::Struct or CType::Union.
+    pub fn struct_key(&self) -> Option<&str> {
+        match self {
+            CType::Struct(key) | CType::Union(key) => Some(key),
+            _ => None,
+        }
+    }
+
+    /// Extract the tag name from a struct/union key (e.g., "struct.Foo" -> "Foo").
+    pub fn struct_tag_name(&self) -> Option<&str> {
+        match self {
+            CType::Struct(key) | CType::Union(key) => {
+                key.split('.').nth(1)
+            }
+            _ => None,
         }
     }
 

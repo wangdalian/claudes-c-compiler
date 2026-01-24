@@ -47,7 +47,7 @@ impl Lowerer {
                 Some(Designator::Field(ref name)) => Some(name.as_str()),
                 _ => None,
             };
-            let resolution = layout.resolve_init_field(designator_name, current_field_idx);
+            let resolution = layout.resolve_init_field(designator_name, current_field_idx, &self.types);
 
             let field_idx = match &resolution {
                 Some(InitFieldResolution::Direct(idx)) => *idx,
@@ -152,8 +152,10 @@ impl Lowerer {
                             init: item.init.clone(),
                         };
                         let sub_layout = match &layout.fields[fi].ty {
-                            CType::Struct(st) => StructLayout::for_struct(&st.fields),
-                            CType::Union(st) => StructLayout::for_union(&st.fields),
+                            CType::Struct(key) | CType::Union(key) => {
+                                self.types.struct_layouts.get(key).cloned()
+                                    .unwrap_or(StructLayout { fields: Vec::new(), size: 0, align: 1, is_union: false })
+                            }
                             _ => unreachable!(),
                         };
                         let sub_items = vec![sub_item];
@@ -207,8 +209,10 @@ impl Lowerer {
                             }
                         }).collect();
                         let sub_layout = match &layout.fields[fi].ty {
-                            CType::Struct(st) => StructLayout::for_struct(&st.fields),
-                            CType::Union(st) => StructLayout::for_union(&st.fields),
+                            CType::Struct(key) | CType::Union(key) => {
+                                self.types.struct_layouts.get(key).cloned()
+                                    .unwrap_or(StructLayout { fields: Vec::new(), size: 0, align: 1, is_union: false })
+                            }
                             _ => unreachable!(),
                         };
                         if self.struct_init_has_addr_fields(&sub_items, &sub_layout) {
@@ -340,8 +344,10 @@ impl Lowerer {
                 // Recursively lower the anonymous struct/union with the synthetic items.
                 let anon_field_ty = &layout.fields[fi].ty;
                 let sub_layout = match anon_field_ty {
-                    CType::Struct(st) => StructLayout::for_struct(&st.fields),
-                    CType::Union(st) => StructLayout::for_union(&st.fields),
+                    CType::Struct(key) | CType::Union(key) => {
+                        self.types.struct_layouts.get(key).cloned()
+                            .unwrap_or(StructLayout { fields: Vec::new(), size: 0, align: 1, is_union: false })
+                    }
                     _ => { push_zero_bytes(&mut elements, field_size); current_offset += field_size; fi += 1; continue; }
                 };
                 let sub_init = self.lower_struct_global_init_compound(&anon_items_for_fi, &sub_layout);
@@ -382,8 +388,10 @@ impl Lowerer {
                         init: item.init.clone(),
                     };
                     let sub_layout = match &layout.fields[fi].ty {
-                        CType::Struct(st) => StructLayout::for_struct(&st.fields),
-                        CType::Union(st) => StructLayout::for_union(&st.fields),
+                        CType::Struct(key) | CType::Union(key) => {
+                            self.types.struct_layouts.get(key).cloned()
+                                .unwrap_or(StructLayout { fields: Vec::new(), size: 0, align: 1, is_union: false })
+                        }
                         _ => unreachable!(),
                     };
                     let sub_items = vec![sub_item];
@@ -428,7 +436,7 @@ impl Lowerer {
                     let has_array_idx_designator = item.designators.iter().any(|d| matches!(d, Designator::Index(_)));
                     if has_array_idx_designator {
                         if let CType::Array(elem_ty, Some(arr_size)) = &layout.fields[fi].ty {
-                            if Self::type_has_pointer_elements(elem_ty) {
+                            if Self::type_has_pointer_elements_ctx(elem_ty, &self.types) {
                                 // Designated init for pointer array element
                                 self.emit_compound_ptr_array_designated_init(
                                     &mut elements, &[item], elem_ty, *arr_size);
@@ -458,8 +466,10 @@ impl Lowerer {
                         }
                     }).collect();
                     let sub_layout = match &layout.fields[fi].ty {
-                        CType::Struct(st) => StructLayout::for_struct(&st.fields),
-                        CType::Union(st) => StructLayout::for_union(&st.fields),
+                        CType::Struct(key) | CType::Union(key) => {
+                            self.types.struct_layouts.get(key).cloned()
+                                .unwrap_or(StructLayout { fields: Vec::new(), size: 0, align: 1, is_union: false })
+                        }
                         _ => unreachable!(),
                     };
                     if self.struct_init_has_addr_fields(&sub_items, &sub_layout) {
@@ -580,7 +590,7 @@ impl Lowerer {
             Initializer::List(nested_items) => {
                 // Check if this is an array whose elements contain pointers
                 if let CType::Array(elem_ty, Some(arr_size)) = field_ty {
-                    if Self::type_has_pointer_elements(elem_ty) {
+                    if Self::type_has_pointer_elements_ctx(elem_ty, &self.types) {
                         // Distinguish: direct pointer array vs struct-with-pointer-fields array
                         if matches!(elem_ty.as_ref(), CType::Pointer(_) | CType::Function(_)) {
                             // Array of direct pointers: emit each element as a GlobalAddr or zero
@@ -917,7 +927,7 @@ impl Lowerer {
             }
         };
 
-        let elem_is_pointer = Self::type_has_pointer_elements(elem_ty);
+        let elem_is_pointer = Self::type_has_pointer_elements_ctx(elem_ty, &self.types);
         let elem_size = elem_ty.size();
         let ptr_size = 8; // 64-bit
 
@@ -1086,7 +1096,7 @@ impl Lowerer {
                         nested_items, &sub_layout, si_offset, ptr_ranges);
                 }
                 // Handle arrays of pointers within nested struct
-                if Self::type_has_pointer_elements(&si_field.ty) && matches!(si_field.ty, CType::Array(..)) {
+                if Self::type_has_pointer_elements_ctx(&si_field.ty, &self.types) && matches!(si_field.ty, CType::Array(..)) {
                     let arr_size = match &si_field.ty {
                         CType::Array(_, Some(s)) => *s,
                         _ => nested_items.len(),
@@ -1117,7 +1127,7 @@ impl Lowerer {
             Some(Designator::Field(ref name)) => Some(name.as_str()),
             _ => None,
         };
-        layout.resolve_init_field_idx(designator_name, current_field_idx)
+        layout.resolve_init_field_idx(designator_name, current_field_idx, &self.types)
             .unwrap_or(current_field_idx)
     }
 
@@ -1132,7 +1142,7 @@ impl Lowerer {
             Some(Designator::Field(ref name)) => Some(name.as_str()),
             _ => None,
         };
-        layout.resolve_init_field(designator_name, current_field_idx)
+        layout.resolve_init_field(designator_name, current_field_idx, &self.types)
     }
 
     /// Resolve a pointer field's initializer expression to a GlobalInit.
@@ -1163,25 +1173,8 @@ impl Lowerer {
     /// Get a StructLayout for a CType if it's a struct or union.
     pub(super) fn get_struct_layout_for_ctype(&self, ty: &CType) -> Option<StructLayout> {
         match ty {
-            CType::Struct(st) => {
-                // First try to look up by name in registered struct_layouts
-                if let Some(ref name) = st.name {
-                    let key = format!("struct.{}", name);
-                    if let Some(layout) = self.types.struct_layouts.get(&key) {
-                        return Some(layout.clone());
-                    }
-                }
-                // Compute from fields
-                Some(StructLayout::for_struct(&st.fields))
-            }
-            CType::Union(st) => {
-                if let Some(ref name) = st.name {
-                    let key = format!("union.{}", name);
-                    if let Some(layout) = self.types.struct_layouts.get(&key) {
-                        return Some(layout.clone());
-                    }
-                }
-                Some(StructLayout::for_union(&st.fields))
+            CType::Struct(key) | CType::Union(key) => {
+                self.types.struct_layouts.get(key).cloned()
             }
             _ => None,
         }
@@ -1282,7 +1275,7 @@ impl Lowerer {
                 if elem_idx >= num_elems { current_elem_idx = elem_idx + 1; continue; }
 
                 let elem_base = base_offset + elem_idx * struct_size;
-                let field_idx = match layout.resolve_init_field_idx(field_desig, current_field_idx) {
+                let field_idx = match layout.resolve_init_field_idx(field_desig, current_field_idx, &self.types) {
                     Some(idx) => idx,
                     None => { current_elem_idx = elem_idx; continue; }
                 };
@@ -1418,7 +1411,7 @@ impl Lowerer {
                 }
 
                 let base_offset = elem_idx * struct_size;
-                let field_idx = match layout.resolve_init_field_idx(field_desig, current_field_idx) {
+                let field_idx = match layout.resolve_init_field_idx(field_desig, current_field_idx, &self.types) {
                     Some(idx) => idx,
                     None => { current_elem_idx = elem_idx; continue; }
                 };
@@ -1570,7 +1563,7 @@ impl Lowerer {
                                 Some(Designator::Field(ref name)) => Some(name.as_str()),
                                 _ => None,
                             };
-                            let field_idx = match layout.resolve_init_field_idx(desig_name, current_field_idx) {
+                            let field_idx = match layout.resolve_init_field_idx(desig_name, current_field_idx, &self.types) {
                                 Some(idx) => idx,
                                 None => break,
                             };
@@ -1668,7 +1661,7 @@ impl Lowerer {
                 Some(Designator::Field(ref name)) => Some(name.as_str()),
                 _ => None,
             };
-            let resolution = sub_layout.resolve_init_field(desig_name, current_field_idx);
+            let resolution = sub_layout.resolve_init_field(desig_name, current_field_idx, &self.types);
             let field_idx = match &resolution {
                 Some(InitFieldResolution::Direct(idx)) => *idx,
                 Some(InitFieldResolution::AnonymousMember { anon_field_idx, inner_name }) => {
@@ -1773,7 +1766,7 @@ impl Lowerer {
         ptr_ranges: &mut Vec<(usize, GlobalInit)>,
     ) {
         if let Some(sub_layout) = self.get_struct_layout_for_ctype(field_ty) {
-            if sub_layout.has_pointer_fields() {
+            if sub_layout.has_pointer_fields(&self.types) {
                 self.fill_nested_struct_with_ptrs(items, &sub_layout, offset, bytes, ptr_ranges);
             } else {
                 self.fill_struct_global_bytes(items, &sub_layout, bytes, offset);
@@ -1781,7 +1774,7 @@ impl Lowerer {
         } else if let CType::Array(elem_ty, _) = field_ty {
             // Array field: check if elements are structs/unions with pointer fields
             if let Some(elem_layout) = self.get_struct_layout_for_ctype(elem_ty) {
-                if elem_layout.has_pointer_fields() {
+                if elem_layout.has_pointer_fields(&self.types) {
                     // Array of structs with pointer fields: handle each element
                     let struct_size = elem_layout.size;
                     for (ai, item) in items.iter().enumerate() {
@@ -1823,7 +1816,7 @@ impl Lowerer {
                 for (ai, item) in items.iter().enumerate() {
                     let elem_offset = offset + ai * elem_size;
                     if let Initializer::Expr(ref expr) = item.init {
-                        if Self::type_has_pointer_elements(elem_ty) {
+                        if Self::type_has_pointer_elements_ctx(elem_ty, &self.types) {
                             self.write_expr_to_bytes_or_ptrs(
                                 expr, elem_ty, elem_offset, None, None, bytes, ptr_ranges,
                             );

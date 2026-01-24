@@ -632,8 +632,8 @@ impl Lowerer {
 
         // GCC extension: cast to union type, e.g. (union convert)x
         // Creates a temporary union, stores the value into the first matching member at offset 0.
-        if let CType::Union(ref st) = target_ctype {
-            let union_size = st.size();
+        if let CType::Union(ref key) = target_ctype {
+            let union_size = self.types.struct_layouts.get(key).map(|l| l.size).unwrap_or(0);
             let src = self.lower_expr(inner);
             let from_ty = self.get_expr_type(inner);
 

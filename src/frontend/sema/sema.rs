@@ -11,7 +11,7 @@
 //! information for the lowerer. Full type checking is TODO.
 
 use crate::common::symbol_table::{Symbol, SymbolTable, StorageClass};
-use crate::common::types::{CType, FunctionType};
+use crate::common::types::{CType, FunctionType, StructLayout};
 use crate::common::source::Span;
 use crate::frontend::parser::ast::*;
 use crate::frontend::sema::builtins;
@@ -37,6 +37,8 @@ pub struct SemaResult {
     pub typedefs: HashMap<String, CType>,
     /// Enum constant values (name -> integer value).
     pub enum_constants: HashMap<String, i64>,
+    /// Struct/union layouts keyed by layout key (e.g., "struct.Foo", "union.Bar").
+    pub struct_layouts: HashMap<String, StructLayout>,
     /// Warnings collected during analysis (non-fatal).
     pub warnings: Vec<String>,
 }
@@ -49,6 +51,8 @@ pub struct SemanticAnalyzer {
     result: SemaResult,
     /// Current enum counter for auto-incrementing enum values.
     enum_counter: i64,
+    /// Counter for generating unique anonymous struct/union keys.
+    anon_struct_counter: usize,
 }
 
 impl SemanticAnalyzer {
@@ -57,6 +61,7 @@ impl SemanticAnalyzer {
             symbol_table: SymbolTable::new(),
             result: SemaResult::default(),
             enum_counter: 0,
+            anon_struct_counter: 0,
         };
         // Pre-populate with common implicit declarations
         analyzer.declare_implicit_functions();
@@ -509,45 +514,82 @@ impl SemanticAnalyzer {
             }
             TypeSpecifier::Struct(name, fields, is_packed, pragma_pack_align, struct_aligned) => {
                 let struct_fields = fields.as_ref().map(|f| self.convert_struct_fields(f)).unwrap_or_default();
-                let effective_align = if *is_packed {
+                let max_field_align = if *is_packed {
                     Some(1)
                 } else {
                     *pragma_pack_align
                 };
-                if struct_fields.is_empty() {
-                    let mut st = crate::common::types::StructType::new_empty(name.clone(), *is_packed, effective_align);
-                    if let Some(a) = struct_aligned {
-                        st.apply_min_alignment(*a);
-                    }
-                    CType::Struct(std::sync::Arc::new(st))
+                let key = if let Some(tag) = name {
+                    format!("struct.{}", tag)
                 } else {
-                    let mut st = crate::common::types::StructType::new_struct(name.clone(), struct_fields, *is_packed, effective_align);
-                    if let Some(a) = struct_aligned {
-                        st.apply_min_alignment(*a);
+                    let id = self.anon_struct_counter;
+                    self.anon_struct_counter += 1;
+                    format!("__anon_struct_{}", id)
+                };
+                let mut layout = if struct_fields.is_empty() {
+                    // Forward declaration or empty struct
+                    StructLayout {
+                        fields: Vec::new(),
+                        size: 0,
+                        align: 1,
+                        is_union: false,
                     }
-                    CType::Struct(std::sync::Arc::new(st))
+                } else {
+                    StructLayout::for_struct_with_packing(&struct_fields, max_field_align, &self.result.struct_layouts)
+                };
+                // Apply __attribute__((aligned(N))) min alignment
+                if let Some(a) = struct_aligned {
+                    if *a > layout.align {
+                        layout.align = *a;
+                        // Re-pad size to new alignment
+                        let mask = layout.align - 1;
+                        layout.size = (layout.size + mask) & !mask;
+                    }
                 }
+                self.result.struct_layouts.insert(key.clone(), layout);
+                CType::Struct(key)
             }
             TypeSpecifier::Union(name, fields, is_packed, pragma_pack_align, struct_aligned) => {
                 let union_fields = fields.as_ref().map(|f| self.convert_struct_fields(f)).unwrap_or_default();
-                let effective_align = if *is_packed {
-                    Some(1)
+                let key = if let Some(tag) = name {
+                    format!("union.{}", tag)
                 } else {
-                    *pragma_pack_align
+                    let id = self.anon_struct_counter;
+                    self.anon_struct_counter += 1;
+                    format!("__anon_struct_{}", id)
                 };
-                if union_fields.is_empty() {
-                    let mut st = crate::common::types::StructType::new_empty(name.clone(), *is_packed, effective_align);
-                    if let Some(a) = struct_aligned {
-                        st.apply_min_alignment(*a);
+                let mut layout = if union_fields.is_empty() {
+                    // Forward declaration or empty union
+                    StructLayout {
+                        fields: Vec::new(),
+                        size: 0,
+                        align: 1,
+                        is_union: true,
                     }
-                    CType::Union(std::sync::Arc::new(st))
                 } else {
-                    let mut st = crate::common::types::StructType::new_union(name.clone(), union_fields, *is_packed, effective_align);
-                    if let Some(a) = struct_aligned {
-                        st.apply_min_alignment(*a);
+                    StructLayout::for_union(&union_fields, &self.result.struct_layouts)
+                };
+                // For packed unions, cap alignment
+                if *is_packed {
+                    layout.align = 1;
+                    layout.size = layout.fields.iter().map(|f| f.ty.size_ctx(&self.result.struct_layouts)).max().unwrap_or(0);
+                } else if let Some(pack) = pragma_pack_align {
+                    if *pack < layout.align {
+                        layout.align = *pack;
+                        let mask = layout.align - 1;
+                        layout.size = (layout.size + mask) & !mask;
                     }
-                    CType::Union(std::sync::Arc::new(st))
                 }
+                // Apply __attribute__((aligned(N))) min alignment
+                if let Some(a) = struct_aligned {
+                    if *a > layout.align {
+                        layout.align = *a;
+                        let mask = layout.align - 1;
+                        layout.size = (layout.size + mask) & !mask;
+                    }
+                }
+                self.result.struct_layouts.insert(key.clone(), layout);
+                CType::Union(key)
             }
             TypeSpecifier::Enum(name, variants) => {
                 if let Some(variants) = variants {

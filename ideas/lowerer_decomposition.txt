@@ -26,12 +26,20 @@ COMPLETED:
    structs.rs insert_struct_layout_scoped/invalidate_ctype_cache_scoped
    now delegate to TypeContext methods.)
 
-REMAINING (in order):
+- Commit 5: CType::Struct(Arc<StructType>) -> CType::Struct(String)
+  (CType::Struct and CType::Union now hold a String key instead of
+   Arc<StructType>. TypeContext is the sole owner of struct/union
+   layouts via struct_layouts HashMap. StructType removed entirely.
+   Added StructLayoutProvider trait in common/types.rs for
+   decoupled layout lookup. CType gains size_ctx/align_ctx methods
+   taking &dyn StructLayoutProvider. StructLayout::for_struct_with_packing
+   and for_union now take &dyn StructLayoutProvider for nested type
+   resolution. SemaResult gains struct_layouts field. ~100 pattern
+   match sites updated across 14 files. resolve_forward_declared_ctype
+   and resolve_ctype_size simplified to key-based lookups.
+   Eliminates the entire class of forward-declaration staleness bugs.)
 
-4. CType::Struct(Arc<StructType>) -> CType::Struct(String)
-   - TypeContext becomes sole owner of struct definitions
-   - Eliminates forward-declaration staleness bugs
-   - Risk: Medium-high (large blast radius but conceptually simple)
+REMAINING (in order):
 
 5. Typedefs become HashMap<String, CType>
    - Delete TypeSpecifier conversion layer

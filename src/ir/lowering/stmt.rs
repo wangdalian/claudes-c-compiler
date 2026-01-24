@@ -327,7 +327,7 @@ impl Lowerer {
                 Some(Designator::Field(ref name)) => Some(name.as_str()),
                 _ => None,
             };
-            let resolution = match layout.resolve_init_field(desig_name, current_field_idx) {
+            let resolution = match layout.resolve_init_field(desig_name, current_field_idx, &self.types) {
                 Some(r) => r,
                 None => break,
             };
@@ -339,8 +339,12 @@ impl Lowerer {
                     let anon_field = &layout.fields[*anon_field_idx].clone();
                     let anon_offset = anon_field.offset;
                     let sub_layout = match &anon_field.ty {
-                        CType::Struct(st) => StructLayout::for_struct(&st.fields),
-                        CType::Union(st) => StructLayout::for_union(&st.fields),
+                        CType::Struct(key) | CType::Union(key) => {
+                            match self.types.struct_layouts.get(key) {
+                                Some(l) => l.clone(),
+                                None => { current_field_idx = *anon_field_idx + 1; item_idx += 1; continue; }
+                            }
+                        }
                         _ => { current_field_idx = *anon_field_idx + 1; item_idx += 1; continue; }
                     };
                     // Create a synthetic item with the inner designator
@@ -475,13 +479,10 @@ impl Lowerer {
         field_ctype: &CType,
     ) {
         match field_ctype {
-            CType::Struct(st) => {
-                let sub_layout = StructLayout::for_struct(&st.fields);
-                self.lower_local_struct_init(items, base, &sub_layout);
-            }
-            CType::Union(st) => {
-                let sub_layout = StructLayout::for_union(&st.fields);
-                self.lower_local_struct_init(items, base, &sub_layout);
+            CType::Struct(key) | CType::Union(key) => {
+                if let Some(sub_layout) = self.types.struct_layouts.get(key).cloned() {
+                    self.lower_local_struct_init(items, base, &sub_layout);
+                }
             }
             CType::Array(ref elem_ty, arr_size_opt) => {
                 // Check for char array initialized by a brace-wrapped string literal:
@@ -1153,7 +1154,7 @@ impl Lowerer {
                     _ => None,
                 }
             };
-            let resolution = layout.resolve_init_field(desig_name, current_field_idx);
+            let resolution = layout.resolve_init_field(desig_name, current_field_idx, &self.types);
             let field_idx = match &resolution {
                 Some(crate::common::types::InitFieldResolution::Direct(idx)) => *idx,
                 Some(crate::common::types::InitFieldResolution::AnonymousMember { anon_field_idx, inner_name }) => {
@@ -1162,8 +1163,12 @@ impl Lowerer {
                     let anon_field = &layout.fields[*anon_field_idx].clone();
                     let anon_offset = base_offset + anon_field.offset;
                     let sub_layout = match &anon_field.ty {
-                        CType::Struct(st) => StructLayout::for_struct(&st.fields),
-                        CType::Union(st) => StructLayout::for_union(&st.fields),
+                        CType::Struct(key) | CType::Union(key) => {
+                            match self.types.struct_layouts.get(key) {
+                                Some(l) => l.clone(),
+                                None => { item_idx += 1; current_field_idx = *anon_field_idx + 1; continue; }
+                            }
+                        }
                         _ => { item_idx += 1; current_field_idx = *anon_field_idx + 1; continue; }
                     };
                     let sub_item = InitializerItem {
@@ -1191,36 +1196,21 @@ impl Lowerer {
                 && matches!(item.designators.first(), Some(Designator::Field(_)));
 
             match &field.ty {
-                CType::Struct(st) if has_nested_designator || is_anon_member_designator => {
-                    // Nested designator like .a.j = 2, or designator targeting anonymous
-                    // member field like .x where x is inside an anonymous struct.
-                    let sub_layout = StructLayout::for_struct(&st.fields);
-                    let sub_designators = if is_anon_member_designator && !has_nested_designator {
-                        // Designator targets a field inside the anonymous struct:
-                        // pass all designators through to the sub-struct init
-                        item.designators.clone()
-                    } else {
-                        item.designators[1..].to_vec()
-                    };
-                    let sub_item = InitializerItem {
-                        designators: sub_designators,
-                        init: item.init.clone(),
-                    };
-                    self.emit_struct_init(&[sub_item], base_alloca, &sub_layout, field_offset);
-                    item_idx += 1;
-                }
-                CType::Union(st) if has_nested_designator || is_anon_member_designator => {
-                    let sub_layout = StructLayout::for_union(&st.fields);
-                    let sub_designators = if is_anon_member_designator && !has_nested_designator {
-                        item.designators.clone()
-                    } else {
-                        item.designators[1..].to_vec()
-                    };
-                    let sub_item = InitializerItem {
-                        designators: sub_designators,
-                        init: item.init.clone(),
-                    };
-                    self.emit_struct_init(&[sub_item], base_alloca, &sub_layout, field_offset);
+                CType::Struct(key) | CType::Union(key) if has_nested_designator || is_anon_member_designator => {
+                    if let Some(sub_layout) = self.types.struct_layouts.get(key).cloned() {
+                        let sub_designators = if is_anon_member_designator && !has_nested_designator {
+                            // Designator targets a field inside the anonymous struct/union:
+                            // pass all designators through to the sub-struct init
+                            item.designators.clone()
+                        } else {
+                            item.designators[1..].to_vec()
+                        };
+                        let sub_item = InitializerItem {
+                            designators: sub_designators,
+                            init: item.init.clone(),
+                        };
+                        self.emit_struct_init(&[sub_item], base_alloca, &sub_layout, field_offset);
+                    }
                     item_idx += 1;
                 }
                 CType::Array(elem_ty, Some(arr_size)) if has_nested_designator => {
@@ -1257,15 +1247,16 @@ impl Lowerer {
 
                         if !remaining_field_desigs.is_empty() {
                             // .a[idx].b = val - drill into struct element
-                            if let CType::Struct(ref st) = elem_ty.as_ref() {
-                                let sub_layout = StructLayout::for_struct(&st.fields);
-                                // Include any remaining index designators for nested arrays
-                                let sub_desigs: Vec<_> = after_first_idx.iter().cloned().collect();
-                                let sub_item = InitializerItem {
-                                    designators: sub_desigs,
-                                    init: item.init.clone(),
-                                };
-                                self.emit_struct_init(&[sub_item], base_alloca, &sub_layout, elem_offset);
+                            if let CType::Struct(ref key) | CType::Union(ref key) = elem_ty.as_ref() {
+                                if let Some(sub_layout) = self.types.struct_layouts.get(key).cloned() {
+                                    // Include any remaining index designators for nested arrays
+                                    let sub_desigs: Vec<_> = after_first_idx.iter().cloned().collect();
+                                    let sub_item = InitializerItem {
+                                        designators: sub_desigs,
+                                        init: item.init.clone(),
+                                    };
+                                    self.emit_struct_init(&[sub_item], base_alloca, &sub_layout, elem_offset);
+                                }
                             }
                         } else if !remaining_index_desigs.is_empty() {
                             // Multi-dimensional array: .a[1][2] = val
@@ -1321,9 +1312,10 @@ impl Lowerer {
                                         si += 1;
                                     }
                                 }
-                                CType::Struct(ref st) => {
-                                    let sub_layout = StructLayout::for_struct(&st.fields);
-                                    self.emit_struct_init(sub_items, base_alloca, &sub_layout, elem_offset);
+                                CType::Struct(ref key) | CType::Union(ref key) => {
+                                    if let Some(sub_layout) = self.types.struct_layouts.get(key).cloned() {
+                                        self.emit_struct_init(sub_items, base_alloca, &sub_layout, elem_offset);
+                                    }
                                 }
                                 _ => {}
                             }
@@ -1355,58 +1347,32 @@ impl Lowerer {
                     // current_field_idx is updated at line end; we want it to
                     // point past this array field if we exhausted the continuation.
                 }
-                CType::Struct(st) => {
-                    // Nested struct field
-                    let sub_layout = StructLayout::for_struct(&st.fields);
-                    match &item.init {
-                        Initializer::List(sub_items) => {
-                            // Nested braces: { {10, 20}, 30 } - the sub_items init the inner struct
-                            // Always zero-init the sub-struct region before writing explicit values.
-                            // C11 6.7.9p21: unspecified members are implicitly zero-initialized.
-                            // This handles partial array field init within nested structs.
-                            self.zero_init_region(base_alloca, field_offset, sub_layout.size);
-                            self.emit_struct_init(sub_items, base_alloca, &sub_layout, field_offset);
-                            item_idx += 1;
-                        }
-                        Initializer::Expr(expr) => {
-                            if self.struct_value_size(expr).is_some() {
-                                // Struct copy in init list: { 2, b } where b is a struct variable
-                                // Emit memcpy from source struct to the target field offset
-                                let src_addr = self.get_struct_base_addr(expr);
-                                self.emit_memcpy_at_offset(base_alloca, field_offset, src_addr, sub_layout.size);
-                                item_idx += 1;
-                            } else {
-                                // Flat init: { 10, 20, 30 } - consume items for inner struct fields
-                                let consumed = self.emit_struct_init(&items[item_idx..], base_alloca, &sub_layout, field_offset);
-                                if consumed == 0 { item_idx += 1; } else { item_idx += consumed; }
-                            }
-                        }
-                    }
-                }
-                CType::Union(st) => {
-                    // Union: init first field only
-                    let sub_layout = StructLayout::for_union(&st.fields);
-                    match &item.init {
-                        Initializer::List(sub_items) => {
-                            // Zero the entire union region first, then write explicit values.
-                            // C11 6.7.9p21: unspecified bytes are zero-initialized.
-                            self.zero_init_region(base_alloca, field_offset, sub_layout.size);
-                            if !sub_items.is_empty() {
+                CType::Struct(key) | CType::Union(key) => {
+                    if let Some(sub_layout) = self.types.struct_layouts.get(key).cloned() {
+                        match &item.init {
+                            Initializer::List(sub_items) => {
+                                // Always zero-init the sub-struct/union region before writing explicit values.
+                                // C11 6.7.9p21: unspecified members are implicitly zero-initialized.
+                                // This handles partial array field init within nested structs.
+                                self.zero_init_region(base_alloca, field_offset, sub_layout.size);
                                 self.emit_struct_init(sub_items, base_alloca, &sub_layout, field_offset);
-                            }
-                            item_idx += 1;
-                        }
-                        Initializer::Expr(expr) => {
-                            if self.struct_value_size(expr).is_some() {
-                                // Union copy in init list
-                                let src_addr = self.get_struct_base_addr(expr);
-                                self.emit_memcpy_at_offset(base_alloca, field_offset, src_addr, sub_layout.size);
                                 item_idx += 1;
-                            } else {
-                                let consumed = self.emit_struct_init(&items[item_idx..], base_alloca, &sub_layout, field_offset);
-                                if consumed == 0 { item_idx += 1; } else { item_idx += consumed; }
+                            }
+                            Initializer::Expr(expr) => {
+                                if self.struct_value_size(expr).is_some() {
+                                    // Struct/union copy in init list
+                                    let src_addr = self.get_struct_base_addr(expr);
+                                    self.emit_memcpy_at_offset(base_alloca, field_offset, src_addr, sub_layout.size);
+                                    item_idx += 1;
+                                } else {
+                                    // Flat init: consume items for inner struct/union fields
+                                    let consumed = self.emit_struct_init(&items[item_idx..], base_alloca, &sub_layout, field_offset);
+                                    if consumed == 0 { item_idx += 1; } else { item_idx += consumed; }
+                                }
                             }
                         }
+                    } else {
+                        item_idx += 1;
                     }
                 }
                 CType::Array(elem_ty, Some(arr_size)) => {
@@ -1426,9 +1392,9 @@ impl Lowerer {
                                 }
                             }
                             // Braced array init
-                            if let CType::Struct(ref st) = elem_ty.as_ref() {
+                            if let CType::Struct(ref key) | CType::Union(ref key) = elem_ty.as_ref() {
+                                if let Some(sub_layout) = self.types.struct_layouts.get(key).cloned() {
                                 // Array of structs: each sub_item inits one struct element
-                                let sub_layout = StructLayout::for_struct(&st.fields);
                                 let mut ai = 0;
                                 let mut si = 0;
                                 while si < sub_items.len() && ai < *arr_size {
@@ -1453,6 +1419,7 @@ impl Lowerer {
                                             }
                                         }
                                     }
+                                }
                                 }
                             } else {
                                 // Supports [idx]=val designators within the sub-list
@@ -1498,19 +1465,22 @@ impl Lowerer {
                                     continue;
                                 }
                             }
-                            if let CType::Struct(ref st) = elem_ty.as_ref() {
-                                // Flat init for array of structs: consume items for each
-                                // struct element's fields across the array
-                                let sub_layout = StructLayout::for_struct(&st.fields);
-                                let start_ai = array_start_idx.unwrap_or(0);
-                                let mut total_consumed = 0usize;
-                                for ai in start_ai..*arr_size {
-                                    if item_idx + total_consumed >= items.len() { break; }
-                                    let elem_offset = field_offset + ai * elem_size;
-                                    let consumed = self.emit_struct_init(&items[item_idx + total_consumed..], base_alloca, &sub_layout, elem_offset);
-                                    total_consumed += consumed;
+                            if let CType::Struct(ref key) | CType::Union(ref key) = elem_ty.as_ref() {
+                                if let Some(sub_layout) = self.types.struct_layouts.get(key).cloned() {
+                                    // Flat init for array of structs: consume items for each
+                                    // struct element's fields across the array
+                                    let start_ai = array_start_idx.unwrap_or(0);
+                                    let mut total_consumed = 0usize;
+                                    for ai in start_ai..*arr_size {
+                                        if item_idx + total_consumed >= items.len() { break; }
+                                        let elem_offset = field_offset + ai * elem_size;
+                                        let consumed = self.emit_struct_init(&items[item_idx + total_consumed..], base_alloca, &sub_layout, elem_offset);
+                                        total_consumed += consumed;
+                                    }
+                                    item_idx += total_consumed.max(1);
+                                } else {
+                                    item_idx += 1;
                                 }
-                                item_idx += total_consumed.max(1);
                             } else {
                                 // Flat init: consume up to arr_size items from the init list
                                 // to fill the array elements (e.g., struct { int a[3]; int b; } x = {1,2,3,4};)

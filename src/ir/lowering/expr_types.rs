@@ -1049,18 +1049,22 @@ impl Lowerer {
     /// If the struct has no fields but has a name, the cache may have the full definition.
     fn resolve_forward_declared_ctype(&self, ctype: CType) -> CType {
         match &ctype {
-            CType::Struct(st) | CType::Union(st) if st.fields.is_empty() => {
-                if let Some(ref tag) = st.name {
-                    let is_union = matches!(&ctype, CType::Union(_));
-                    let prefix = if is_union { "union" } else { "struct" };
-                    let cache_key = format!("{}.{}", prefix, tag);
-                    if let Some(cached) = self.types.ctype_cache.borrow().get(&cache_key) {
-                        // Only use cached version if it actually has fields (is complete)
+            CType::Struct(key) | CType::Union(key) => {
+                // Check if the layout for this key is a forward-declaration stub (size 0, no fields)
+                let is_incomplete = self.types.struct_layouts.get(key)
+                    .map(|l| l.fields.is_empty())
+                    .unwrap_or(true);
+                if is_incomplete {
+                    // Try the ctype_cache for a complete version
+                    if let Some(cached) = self.types.ctype_cache.borrow().get(key) {
                         match cached {
-                            CType::Struct(cached_st) | CType::Union(cached_st)
-                                if !cached_st.fields.is_empty() =>
-                            {
-                                return cached.clone();
+                            CType::Struct(cached_key) | CType::Union(cached_key) => {
+                                let cached_complete = self.types.struct_layouts.get(cached_key)
+                                    .map(|l| !l.fields.is_empty())
+                                    .unwrap_or(false);
+                                if cached_complete {
+                                    return cached.clone();
+                                }
                             }
                             _ => {}
                         }
@@ -1088,26 +1092,12 @@ impl Lowerer {
         let base_ctype = self.resolve_forward_declared_ctype(base_ctype);
         // Look up field in the struct/union type
         match &base_ctype {
-            CType::Struct(st) | CType::Union(st) => {
-                // If the struct/union has fields, search directly
-                if !st.fields.is_empty() {
-                    for field in &st.fields {
+            CType::Struct(key) | CType::Union(key) => {
+                // Look up the struct/union layout by key
+                if let Some(layout) = self.types.struct_layouts.get(key) {
+                    for field in &layout.fields {
                         if field.name == field_name {
                             return Some(field.ty.clone());
-                        }
-                    }
-                }
-                // If fields are empty or field not found, try looking up from struct_layouts
-                // (handles forward-declared types whose full definition was registered later)
-                if let Some(tag) = &st.name {
-                    let is_union = matches!(&base_ctype, CType::Union(_));
-                    let prefix = if is_union { "union" } else { "struct" };
-                    let key = format!("{}.{}", prefix, tag);
-                    if let Some(layout) = self.types.struct_layouts.get(&key) {
-                        for field in &layout.fields {
-                            if field.name == field_name {
-                                return Some(field.ty.clone());
-                            }
                         }
                     }
                 }

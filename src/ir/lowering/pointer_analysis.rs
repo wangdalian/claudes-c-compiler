@@ -203,20 +203,9 @@ impl Lowerer {
         // full definition was processed (e.g., forward-declared union embedded in
         // another type's CType that was built before the union was fully defined).
         match ctype {
-            CType::Struct(st) => {
-                if let Some(tag) = &st.name {
-                    let key = format!("struct.{}", tag);
-                    if let Some(layout) = self.types.struct_layouts.get(&key) {
-                        return layout.size;
-                    }
-                }
-            }
-            CType::Union(st) => {
-                if let Some(tag) = &st.name {
-                    let key = format!("union.{}", tag);
-                    if let Some(layout) = self.types.struct_layouts.get(&key) {
-                        return layout.size;
-                    }
+            CType::Struct(key) | CType::Union(key) => {
+                if let Some(layout) = self.types.struct_layouts.get(key) {
+                    return layout.size;
                 }
             }
             _ => {}

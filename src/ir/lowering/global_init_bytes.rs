@@ -57,7 +57,7 @@ impl Lowerer {
                 _ => None,
             };
             let array_start_idx = self.extract_index_designator(item, designator_name.is_some());
-            let resolution = layout.resolve_init_field(designator_name, current_field_idx);
+            let resolution = layout.resolve_init_field(designator_name, current_field_idx, &self.types);
             let field_idx = match &resolution {
                 Some(crate::common::types::InitFieldResolution::Direct(idx)) => *idx,
                 Some(crate::common::types::InitFieldResolution::AnonymousMember { anon_field_idx, inner_name }) => {
@@ -66,8 +66,12 @@ impl Lowerer {
                     let anon_field = &layout.fields[*anon_field_idx];
                     let anon_offset = base_offset + anon_field.offset;
                     let sub_layout = match &anon_field.ty {
-                        CType::Struct(st) => StructLayout::for_struct(&st.fields),
-                        CType::Union(st) => StructLayout::for_union(&st.fields),
+                        CType::Struct(key) | CType::Union(key) => {
+                            match self.types.struct_layouts.get(key) {
+                                Some(l) => l.clone(),
+                                None => { item_idx += 1; current_field_idx = *anon_field_idx + 1; continue; }
+                            }
+                        }
                         _ => { item_idx += 1; current_field_idx = *anon_field_idx + 1; continue; }
                     };
                     let sub_item = InitializerItem {
@@ -97,31 +101,19 @@ impl Lowerer {
 
             match &field_layout.ty {
                 // Nested designator or anonymous member designator into struct/union
-                CType::Struct(st) if has_nested_designator || is_anon_member_designator => {
-                    let sub_layout = StructLayout::for_struct(&st.fields);
-                    let sub_item = if is_anon_member_designator && !has_nested_designator {
-                        // Pass all designators through for anonymous member field lookup
-                        item.clone()
-                    } else {
-                        InitializerItem {
-                            designators: item.designators[1..].to_vec(),
-                            init: item.init.clone(),
-                        }
-                    };
-                    self.fill_struct_global_bytes(&[sub_item], &sub_layout, bytes, field_offset);
-                    item_idx += 1;
-                }
-                CType::Union(st) if has_nested_designator || is_anon_member_designator => {
-                    let sub_layout = StructLayout::for_union(&st.fields);
-                    let sub_item = if is_anon_member_designator && !has_nested_designator {
-                        item.clone()
-                    } else {
-                        InitializerItem {
-                            designators: item.designators[1..].to_vec(),
-                            init: item.init.clone(),
-                        }
-                    };
-                    self.fill_struct_global_bytes(&[sub_item], &sub_layout, bytes, field_offset);
+                CType::Struct(key) | CType::Union(key) if has_nested_designator || is_anon_member_designator => {
+                    if let Some(sub_layout) = self.types.struct_layouts.get(key).cloned() {
+                        let sub_item = if is_anon_member_designator && !has_nested_designator {
+                            // Pass all designators through for anonymous member field lookup
+                            item.clone()
+                        } else {
+                            InitializerItem {
+                                designators: item.designators[1..].to_vec(),
+                                init: item.init.clone(),
+                            }
+                        };
+                        self.fill_struct_global_bytes(&[sub_item], &sub_layout, bytes, field_offset);
+                    }
                     item_idx += 1;
                 }
                 // Nested designator into array: .field[idx] = val
@@ -153,17 +145,14 @@ impl Lowerer {
                     }
                 }
                 // Struct or union field (non-nested designator)
-                CType::Struct(st) => {
-                    let sub_layout = StructLayout::for_struct(&st.fields);
-                    item_idx += self.fill_composite_field(
-                        &items[item_idx..], &sub_layout, bytes, field_offset,
-                    );
-                }
-                CType::Union(st) => {
-                    let sub_layout = StructLayout::for_union(&st.fields);
-                    item_idx += self.fill_composite_field(
-                        &items[item_idx..], &sub_layout, bytes, field_offset,
-                    );
+                CType::Struct(key) | CType::Union(key) => {
+                    if let Some(sub_layout) = self.types.struct_layouts.get(key).cloned() {
+                        item_idx += self.fill_composite_field(
+                            &items[item_idx..], &sub_layout, bytes, field_offset,
+                        );
+                    } else {
+                        item_idx += 1;
+                    }
                 }
                 // Fixed-size array field
                 CType::Array(elem_ty, Some(arr_size)) => {
@@ -231,7 +220,7 @@ impl Lowerer {
             match desig {
                 Designator::Field(name) => {
                     let sub_layout = self.get_struct_layout_for_ctype(&current_ty)?;
-                    let resolution = sub_layout.resolve_init_field(Some(name.as_str()), 0)?;
+                    let resolution = sub_layout.resolve_init_field(Some(name.as_str()), 0, &self.types)?;
                     match resolution {
                         crate::common::types::InitFieldResolution::Direct(fi) => {
                             byte_offset += sub_layout.fields[fi].offset;
@@ -242,7 +231,7 @@ impl Lowerer {
                             let anon_field = &sub_layout.fields[anon_field_idx];
                             byte_offset += anon_field.offset;
                             let anon_layout = self.get_struct_layout_for_ctype(&anon_field.ty)?;
-                            let inner_fi = anon_layout.resolve_init_field_idx(Some(inner_name.as_str()), 0)?;
+                            let inner_fi = anon_layout.resolve_init_field_idx(Some(inner_name.as_str()), 0, &self.types)?;
                             byte_offset += anon_layout.fields[inner_fi].offset;
                             current_ty = anon_layout.fields[inner_fi].ty.clone();
                         }
@@ -496,9 +485,10 @@ impl Lowerer {
                         }
                     }
                 }
-                CType::Struct(ref st) => {
-                    let sub_layout = StructLayout::for_struct(&st.fields);
-                    self.fill_struct_global_bytes(sub_items, &sub_layout, bytes, elem_offset);
+                CType::Struct(ref key) | CType::Union(ref key) => {
+                    if let Some(sub_layout) = self.types.struct_layouts.get(key).cloned() {
+                        self.fill_struct_global_bytes(sub_items, &sub_layout, bytes, elem_offset);
+                    }
                 }
                 _ => {}
             }
@@ -1090,8 +1080,10 @@ impl Lowerer {
     /// Get the StructLayout for a composite (struct or union) CType.
     pub(super) fn get_composite_layout(&self, ty: &CType) -> StructLayout {
         match ty {
-            CType::Struct(st) => StructLayout::for_struct(&st.fields),
-            CType::Union(st) => StructLayout::for_union(&st.fields),
+            CType::Struct(key) | CType::Union(key) => {
+                self.types.struct_layouts.get(key).cloned()
+                    .unwrap_or(StructLayout { fields: Vec::new(), size: 0, align: 1, is_union: matches!(ty, CType::Union(_)) })
+            }
             _ => unreachable!("get_composite_layout called on non-composite type"),
         }
     }

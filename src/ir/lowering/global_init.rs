@@ -211,7 +211,7 @@ impl Lowerer {
                     // But skip byte-serialization if any struct field is or contains
                     // a pointer type (pointers need .quad directives for address relocations).
                     let has_ptr_fields = struct_layout.as_ref()
-                        .map_or(false, |layout| layout.has_pointer_fields());
+                        .map_or(false, |layout| layout.has_pointer_fields(&self.types));
                     if let Some(ref layout) = struct_layout {
                         if has_ptr_fields {
                             // Use Compound approach for struct arrays with pointer fields
@@ -456,12 +456,16 @@ impl Lowerer {
     /// Emits each field's value at its appropriate position, with padding bytes as zeros.
     /// Supports designated initializers like {.b = 2, .a = 1}.
     /// Check if a type contains pointer elements (either directly or as array elements)
-    pub(super) fn type_has_pointer_elements(ty: &CType) -> bool {
+    pub(super) fn type_has_pointer_elements_ctx(ty: &CType, ctx: &dyn crate::common::types::StructLayoutProvider) -> bool {
         match ty {
             CType::Pointer(_) | CType::Function(_) => true,
-            CType::Array(inner, _) => Self::type_has_pointer_elements(inner),
-            CType::Struct(st) | CType::Union(st) => {
-                st.fields.iter().any(|f| Self::type_has_pointer_elements(&f.ty))
+            CType::Array(inner, _) => Self::type_has_pointer_elements_ctx(inner, ctx),
+            CType::Struct(key) | CType::Union(key) => {
+                if let Some(layout) = ctx.get_struct_layout(key) {
+                    layout.fields.iter().any(|f| Self::type_has_pointer_elements_ctx(&f.ty, ctx))
+                } else {
+                    false
+                }
             }
             _ => false,
         }
@@ -592,7 +596,7 @@ impl Lowerer {
                     // Direct string literal or address expression
                     if matches!(expr, Expr::StringLiteral(_, _)) {
                         // Check if field is a pointer or array of pointers
-                        if Self::type_has_pointer_elements(field_ty) {
+                        if Self::type_has_pointer_elements_ctx(field_ty, &self.types) {
                             return true;
                         }
                     }
@@ -607,7 +611,7 @@ impl Lowerer {
                     }
                     // For flat array-of-pointer init, consume remaining items for this field
                     if let CType::Array(elem_ty, Some(arr_size)) = field_ty {
-                        if Self::type_has_pointer_elements(elem_ty) {
+                        if Self::type_has_pointer_elements_ctx(elem_ty, &self.types) {
                             // Check if any of the remaining items for this array have addr exprs
                             for i in 1..*arr_size {
                                 let next = item_idx + i;
@@ -623,7 +627,7 @@ impl Lowerer {
                 Initializer::List(nested_items) => {
                     // Check if the nested list contains addr expressions and the field
                     // is or contains pointer types
-                    if Self::type_has_pointer_elements(field_ty) {
+                    if Self::type_has_pointer_elements_ctx(field_ty, &self.types) {
                         if self.init_has_addr_exprs(&item.init) {
                             return true;
                         }
@@ -661,7 +665,7 @@ impl Lowerer {
 
         // If target is a struct/union, check its fields for pointers
         if let Some(target_layout) = self.get_struct_layout_for_ctype(&current_ty) {
-            if target_layout.has_pointer_fields() && self.init_has_addr_exprs(&item.init) {
+            if target_layout.has_pointer_fields(&self.types) && self.init_has_addr_exprs(&item.init) {
                 return true;
             }
             if let Initializer::List(nested_items) = &item.init {
@@ -673,7 +677,7 @@ impl Lowerer {
 
         // For arrays, check element type
         if let CType::Array(elem_ty, _) = &current_ty {
-            if Self::type_has_pointer_elements(elem_ty) {
+            if Self::type_has_pointer_elements_ctx(elem_ty, &self.types) {
                 return self.init_has_addr_exprs(&item.init);
             }
         }

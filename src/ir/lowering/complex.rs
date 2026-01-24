@@ -552,10 +552,12 @@ impl Lowerer {
     /// Resolve struct field type.
     fn resolve_field_type(&self, struct_type: &CType, field: &str) -> CType {
         match struct_type {
-            CType::Struct(st) | CType::Union(st) => {
-                for f in &st.fields {
-                    if f.name == field {
-                        return f.ty.clone();
+            CType::Struct(key) | CType::Union(key) => {
+                if let Some(layout) = self.types.struct_layouts.get(key) {
+                    for f in &layout.fields {
+                        if f.name == field {
+                            return f.ty.clone();
+                        }
                     }
                 }
                 CType::Int
@@ -694,20 +696,21 @@ impl Lowerer {
             Expr::MemberAccess(base, field, _) => {
                 // Get base struct address and add field offset
                 let base_ct = self.expr_ctype(base);
-                if let CType::Struct(ref st) = base_ct {
-                    let layout = crate::common::types::StructLayout::for_struct(&st.fields);
-                    if let Some((offset, _)) = layout.field_offset(field) {
-                        let base_ptr = self.lower_complex_lvalue(base);
-                        if offset == 0 {
-                            return base_ptr;
+                if let CType::Struct(ref key) | CType::Union(ref key) = base_ct {
+                    if let Some(layout) = self.types.struct_layouts.get(key) {
+                        if let Some((offset, _)) = layout.field_offset(field, &self.types) {
+                            let base_ptr = self.lower_complex_lvalue(base);
+                            if offset == 0 {
+                                return base_ptr;
+                            }
+                            let dest = self.fresh_value();
+                            self.emit(Instruction::GetElementPtr {
+                                dest, base: base_ptr,
+                                offset: Operand::Const(IrConst::I64(offset as i64)),
+                                ty: IrType::I8,
+                            });
+                            return dest;
                         }
-                        let dest = self.fresh_value();
-                        self.emit(Instruction::GetElementPtr {
-                            dest, base: base_ptr,
-                            offset: Operand::Const(IrConst::I64(offset as i64)),
-                            ty: IrType::I8,
-                        });
-                        return dest;
                     }
                 }
                 // Fallback
@@ -719,19 +722,20 @@ impl Lowerer {
                 let base_ptr = self.operand_to_value(base_val);
                 let base_ct = self.expr_ctype(base);
                 if let CType::Pointer(ref inner) = base_ct {
-                    if let CType::Struct(ref st) = **inner {
-                        let layout = crate::common::types::StructLayout::for_struct(&st.fields);
-                        if let Some((offset, _)) = layout.field_offset(field) {
-                            if offset == 0 {
-                                return base_ptr;
+                    if let CType::Struct(ref key) | CType::Union(ref key) = **inner {
+                        if let Some(layout) = self.types.struct_layouts.get(key) {
+                            if let Some((offset, _)) = layout.field_offset(field, &self.types) {
+                                if offset == 0 {
+                                    return base_ptr;
+                                }
+                                let dest = self.fresh_value();
+                                self.emit(Instruction::GetElementPtr {
+                                    dest, base: base_ptr,
+                                    offset: Operand::Const(IrConst::I64(offset as i64)),
+                                    ty: IrType::I8,
+                                });
+                                return dest;
                             }
-                            let dest = self.fresh_value();
-                            self.emit(Instruction::GetElementPtr {
-                                dest, base: base_ptr,
-                                offset: Operand::Const(IrConst::I64(offset as i64)),
-                                ty: IrType::I8,
-                            });
-                            return dest;
                         }
                     }
                 }

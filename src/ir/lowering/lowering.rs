@@ -511,6 +511,15 @@ pub(super) struct TypeContext {
     pub ctype_cache: std::cell::RefCell<HashMap<String, CType>>,
     /// Scope stack for type-system undo tracking (enum_constants, struct_layouts, ctype_cache)
     pub scope_stack: Vec<TypeScopeFrame>,
+    /// Counter for anonymous struct/union CType keys generated from &self contexts.
+    /// Uses Cell for interior mutability since type_spec_to_ctype takes &self.
+    anon_ctype_counter: std::cell::Cell<u32>,
+}
+
+impl crate::common::types::StructLayoutProvider for TypeContext {
+    fn get_struct_layout(&self, key: &str) -> Option<&StructLayout> {
+        self.struct_layouts.get(key)
+    }
 }
 
 impl TypeContext {
@@ -525,7 +534,33 @@ impl TypeContext {
             func_return_ctypes: HashMap::new(),
             ctype_cache: std::cell::RefCell::new(HashMap::new()),
             scope_stack: Vec::new(),
+            anon_ctype_counter: std::cell::Cell::new(0),
         }
+    }
+
+    /// Get the next anonymous struct/union ID for CType key generation.
+    /// Safe to call from &self contexts (uses Cell for interior mutability).
+    pub fn next_anon_struct_id(&self) -> u32 {
+        let id = self.anon_ctype_counter.get();
+        self.anon_ctype_counter.set(id + 1);
+        id
+    }
+
+    /// Insert a struct layout from a &self context (interior mutability).
+    /// This is safe because we are single-threaded and do not hold references
+    /// into struct_layouts across this call.
+    pub fn insert_struct_layout_from_ref(&self, key: &str, layout: StructLayout) {
+        // SAFETY: We are single-threaded and no references into struct_layouts
+        // are held across this call. The &self reference to TypeContext does not
+        // create a mutable alias because we use a raw pointer for the mutation.
+        let ptr = &self.struct_layouts as *const HashMap<String, StructLayout>
+            as *mut HashMap<String, StructLayout>;
+        unsafe { (*ptr).insert(key.to_string(), layout); }
+    }
+
+    /// Invalidate a ctype_cache entry from a &self context.
+    pub fn invalidate_ctype_cache_from_ref(&self, key: &str) {
+        self.ctype_cache.borrow_mut().remove(key);
     }
 
     /// Push a new type-system scope frame.

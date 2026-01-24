@@ -181,7 +181,7 @@ impl Lowerer {
                 // base should be (type*)0 - a cast of 0 to a pointer type
                 let (type_spec, base_offset) = self.extract_null_pointer_cast_with_offset(base)?;
                 let layout = self.get_struct_layout_for_type(&type_spec)?;
-                let (field_offset, _field_ty) = layout.field_offset(field_name)?;
+                let (field_offset, _field_ty) = layout.field_offset(field_name, &self.types)?;
                 Some(IrConst::I64((base_offset + field_offset) as i64))
             }
             Expr::MemberAccess(base, field_name, _) => {
@@ -189,7 +189,7 @@ impl Lowerer {
                 if let Expr::Deref(inner, _) = base.as_ref() {
                     let (type_spec, base_offset) = self.extract_null_pointer_cast_with_offset(inner)?;
                     let layout = self.get_struct_layout_for_type(&type_spec)?;
-                    let (field_offset, _field_ty) = layout.field_offset(field_name)?;
+                    let (field_offset, _field_ty) = layout.field_offset(field_name, &self.types)?;
                     Some(IrConst::I64((base_offset + field_offset) as i64))
                 } else {
                     None
@@ -548,31 +548,11 @@ impl Lowerer {
                                 total_offset += f.offset as i64;
                                 // Try to get the layout of this field for further chaining
                                 current_layout = match &f.ty {
-                                    CType::Struct(st) => {
-                                        if let Some(ref tag) = st.name {
-                                            let key = format!("struct.{}", tag);
-                                            if let Some(layout) = self.types.struct_layouts.get(&key) {
-                                                layout.clone()
-                                            } else {
-                                                StructLayout::for_struct(&st.fields)
-                                            }
-                                        } else {
-                                            StructLayout::for_struct(&st.fields)
-                                        }
+                                    CType::Struct(key) | CType::Union(key) => {
+                                        self.types.struct_layouts.get(key).cloned()
+                                            .unwrap_or(StructLayout { fields: Vec::new(), size: 0, align: 1, is_union: false })
                                     }
-                                    CType::Union(st) => {
-                                        if let Some(ref tag) = st.name {
-                                            let key = format!("union.{}", tag);
-                                            if let Some(layout) = self.types.struct_layouts.get(&key) {
-                                                layout.clone()
-                                            } else {
-                                                StructLayout::for_union(&st.fields)
-                                            }
-                                        } else {
-                                            StructLayout::for_union(&st.fields)
-                                        }
-                                    }
-                                    _ => StructLayout::for_struct(&[]),
+                                    _ => StructLayout { fields: Vec::new(), size: 0, align: 1, is_union: false },
                                 };
                                 found = true;
                                 break;

@@ -62,12 +62,12 @@ impl Lowerer {
     /// Walk a TypeSpecifier and register any struct/union definitions found within it.
     fn register_nested_in_type_spec(&mut self, ts: &TypeSpecifier) {
         match ts {
-            TypeSpecifier::Struct(tag, Some(_fields), _, _, _) if tag.is_some() => {
-                // This is a named struct definition inside a field - register it
+            TypeSpecifier::Struct(_tag, Some(_fields), _, _, _) => {
+                // This is a struct definition inside a field (named or anonymous) - register it
                 self.register_struct_type(ts);
             }
-            TypeSpecifier::Union(tag, Some(_fields), _, _, _) if tag.is_some() => {
-                // This is a named union definition inside a field - register it
+            TypeSpecifier::Union(_tag, Some(_fields), _, _, _) => {
+                // This is a union definition inside a field (named or anonymous) - register it
                 self.register_struct_type(ts);
             }
             TypeSpecifier::Pointer(inner) => {
@@ -337,8 +337,8 @@ impl Lowerer {
     pub(super) fn resolve_member_access(&self, base_expr: &Expr, field_name: &str) -> (usize, IrType) {
         // Try to find the struct layout from the base expression
         if let Some(layout) = self.get_layout_for_expr(base_expr) {
-            if let Some((offset, ctype)) = layout.field_offset(field_name) {
-                return (offset, IrType::from_ctype(ctype));
+            if let Some((offset, ctype)) = layout.field_offset(field_name, &self.types) {
+                return (offset, IrType::from_ctype(&ctype));
             }
         }
         // Fallback: assume 4-byte aligned int fields
@@ -359,8 +359,8 @@ impl Lowerer {
             }
             // Fallback: search anonymous struct/union members recursively
             // (field_layout only does flat lookup; field_offset searches anonymous members)
-            if let Some((offset, ctype)) = layout.field_offset(field_name) {
-                return (offset, IrType::from_ctype(ctype), None);
+            if let Some((offset, ctype)) = layout.field_offset(field_name, &self.types) {
+                return (offset, IrType::from_ctype(&ctype), None);
             }
         }
         (0, IrType::I32, None)
@@ -371,8 +371,8 @@ impl Lowerer {
     pub(super) fn resolve_pointer_member_access(&self, base_expr: &Expr, field_name: &str) -> (usize, IrType) {
         // Try to determine what struct layout p points to
         if let Some(layout) = self.get_pointed_struct_layout(base_expr) {
-            if let Some((offset, ctype)) = layout.field_offset(field_name) {
-                return (offset, IrType::from_ctype(ctype));
+            if let Some((offset, ctype)) = layout.field_offset(field_name, &self.types) {
+                return (offset, IrType::from_ctype(&ctype));
             }
         }
         // Fallback: assume first field at offset 0
@@ -391,8 +391,8 @@ impl Lowerer {
                 return (fl.offset, ir_ty, bf);
             }
             // Fallback: search anonymous struct/union members recursively
-            if let Some((offset, ctype)) = layout.field_offset(field_name) {
-                return (offset, IrType::from_ctype(ctype), None);
+            if let Some((offset, ctype)) = layout.field_offset(field_name, &self.types) {
+                return (offset, IrType::from_ctype(&ctype), None);
             }
         }
         (0, IrType::I32, None)
@@ -436,13 +436,13 @@ impl Lowerer {
                 // expr is something like s.p where p is a pointer to struct.
                 // Get the type of the field `p` from the struct layout of `s`.
                 if let Some(outer_layout) = self.get_layout_for_expr(inner_base) {
-                    if let Some((_offset, ctype)) = outer_layout.field_offset(inner_field) {
+                    if let Some((_offset, ctype)) = outer_layout.field_offset(inner_field, &self.types) {
                         // If the field is a pointer to struct, resolve directly
-                        if let Some(layout) = self.resolve_struct_from_pointer_ctype(ctype) {
+                        if let Some(layout) = self.resolve_struct_from_pointer_ctype(&ctype) {
                             return Some(layout);
                         }
                         // If the field is an array of structs/unions, handle array decay
-                        if let CType::Array(elem, _) = ctype {
+                        if let CType::Array(ref elem, _) = ctype {
                             return self.struct_layout_from_ctype(elem);
                         }
                     }
@@ -452,14 +452,14 @@ impl Lowerer {
             Expr::PointerMemberAccess(inner_base, inner_field, _) => {
                 // expr is something like p->q where q is also a pointer to struct
                 if let Some(inner_layout) = self.get_pointed_struct_layout(inner_base) {
-                    if let Some((_offset, ctype)) = inner_layout.field_offset(inner_field) {
+                    if let Some((_offset, ctype)) = inner_layout.field_offset(inner_field, &self.types) {
                         // If the field is a pointer to struct, resolve directly
-                        if let Some(layout) = self.resolve_struct_from_pointer_ctype(ctype) {
+                        if let Some(layout) = self.resolve_struct_from_pointer_ctype(&ctype) {
                             return Some(layout);
                         }
                         // If the field is an array of structs/unions, the array decays to a
                         // pointer to the first element, so resolve the element struct layout
-                        if let CType::Array(elem, _) = ctype {
+                        if let CType::Array(ref elem, _) = ctype {
                             return self.struct_layout_from_ctype(elem);
                         }
                     }
@@ -563,31 +563,8 @@ impl Lowerer {
     /// Prefers cached layout from struct_layouts when available.
     fn struct_layout_from_ctype(&self, ctype: &CType) -> Option<StructLayout> {
         match ctype {
-            CType::Struct(st) => {
-                // Try cache first (by tag name)
-                if let Some(ref tag) = st.name {
-                    let key = format!("struct.{}", tag);
-                    if let Some(layout) = self.types.struct_layouts.get(&key) {
-                        return Some(layout.clone());
-                    }
-                }
-                if st.fields.is_empty() {
-                    return None;
-                }
-                Some(StructLayout::for_struct(&st.fields))
-            }
-            CType::Union(st) => {
-                // Try cache first (by tag name)
-                if let Some(ref tag) = st.name {
-                    let key = format!("union.{}", tag);
-                    if let Some(layout) = self.types.struct_layouts.get(&key) {
-                        return Some(layout.clone());
-                    }
-                }
-                if st.fields.is_empty() {
-                    return None;
-                }
-                Some(StructLayout::for_union(&st.fields))
+            CType::Struct(key) | CType::Union(key) => {
+                self.types.struct_layouts.get(key).cloned()
             }
             _ => None,
         }
@@ -621,12 +598,12 @@ impl Lowerer {
             Expr::MemberAccess(inner_base, inner_field, _) => {
                 // For nested member access, find the layout of the inner field
                 if let Some(outer_layout) = self.get_layout_for_expr(inner_base) {
-                    if let Some((_offset, ctype)) = outer_layout.field_offset(inner_field) {
-                        if let Some(layout) = self.struct_layout_from_ctype(ctype) {
+                    if let Some((_offset, ctype)) = outer_layout.field_offset(inner_field, &self.types) {
+                        if let Some(layout) = self.struct_layout_from_ctype(&ctype) {
                             return Some(layout);
                         }
                         // If the field is an array of structs, return the element struct layout
-                        if let CType::Array(elem, _) = ctype {
+                        if let CType::Array(ref elem, _) = ctype {
                             if let Some(layout) = self.struct_layout_from_ctype(elem) {
                                 return Some(layout);
                             }
@@ -638,12 +615,12 @@ impl Lowerer {
             Expr::PointerMemberAccess(inner_base, inner_field, _) => {
                 // For p->field where field is an embedded struct, get its layout
                 if let Some(pointed_layout) = self.get_pointed_struct_layout(inner_base) {
-                    if let Some((_offset, ctype)) = pointed_layout.field_offset(inner_field) {
-                        if let Some(layout) = self.struct_layout_from_ctype(ctype) {
+                    if let Some((_offset, ctype)) = pointed_layout.field_offset(inner_field, &self.types) {
+                        if let Some(layout) = self.struct_layout_from_ctype(&ctype) {
                             return Some(layout);
                         }
                         // If the field is an array of structs, return the element struct layout
-                        if let CType::Array(elem, _) = ctype {
+                        if let CType::Array(ref elem, _) = ctype {
                             if let Some(layout) = self.struct_layout_from_ctype(elem) {
                                 return Some(layout);
                             }
@@ -727,7 +704,7 @@ impl Lowerer {
     /// This is needed to check if a field is an array type (for array decay behavior).
     pub(super) fn resolve_member_field_ctype(&self, base_expr: &Expr, field_name: &str) -> Option<CType> {
         if let Some(layout) = self.get_layout_for_expr(base_expr) {
-            if let Some((_offset, ctype)) = layout.field_offset(field_name) {
+            if let Some((_offset, ctype)) = layout.field_offset(field_name, &self.types) {
                 return Some(ctype.clone());
             }
         }
@@ -737,7 +714,7 @@ impl Lowerer {
     /// Resolve pointer member access to get the CType of the field.
     pub(super) fn resolve_pointer_member_field_ctype(&self, base_expr: &Expr, field_name: &str) -> Option<CType> {
         if let Some(layout) = self.get_pointed_struct_layout(base_expr) {
-            if let Some((_offset, ctype)) = layout.field_offset(field_name) {
+            if let Some((_offset, ctype)) = layout.field_offset(field_name, &self.types) {
                 return Some(ctype.clone());
             }
         }
@@ -756,8 +733,8 @@ impl Lowerer {
                 };
                 return (fl.offset, ir_ty, bf, Some(fl.ty.clone()));
             }
-            if let Some((offset, ctype)) = layout.field_offset(field_name) {
-                return (offset, IrType::from_ctype(ctype), None, Some(ctype.clone()));
+            if let Some((offset, ctype)) = layout.field_offset(field_name, &self.types) {
+                return (offset, IrType::from_ctype(&ctype), None, Some(ctype.clone()));
             }
         }
         (0, IrType::I32, None, None)
@@ -775,8 +752,8 @@ impl Lowerer {
                 };
                 return (fl.offset, ir_ty, bf, Some(fl.ty.clone()));
             }
-            if let Some((offset, ctype)) = layout.field_offset(field_name) {
-                return (offset, IrType::from_ctype(ctype), None, Some(ctype.clone()));
+            if let Some((offset, ctype)) = layout.field_offset(field_name, &self.types) {
+                return (offset, IrType::from_ctype(&ctype), None, Some(ctype.clone()));
             }
         }
         (0, IrType::I32, None, None)
