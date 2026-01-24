@@ -1,0 +1,20 @@
+Fix function pointer call member access always returning offset 0
+
+Bug: When accessing struct members through a function pointer call result
+(e.g., fn_ptr()->member), the compiler always uses offset 0 regardless of
+which member is being accessed. This causes fn()->a, fn()->b, fn()->c to
+all return the value at offset 0.
+
+Root cause: get_pointed_struct_layout() and get_layout_for_expr() in
+src/ir/lowering/structs.rs only handle direct function calls (Expr::Identifier
+in func_meta.sigs) but not indirect function pointer calls. When the struct
+layout can't be resolved, resolve_pointer_member_access_with_ctype() falls
+back to (0, IrType::I32).
+
+Fix: Add function pointer variable resolution to get_pointed_struct_layout()
+and get_layout_for_expr() FunctionCall arms, mirroring what get_expr_ctype()
+already does correctly.
+
+Impact: Fixes Redis segfault and likely other struct-through-fnptr bugs.
+
+Status: IN PROGRESS
