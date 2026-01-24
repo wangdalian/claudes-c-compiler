@@ -1,0 +1,12 @@
+Deduplicate backend codegen methods (emit_store, emit_load, emit_gep, emit_dyn_alloca, emit_memcpy, emit_unaryop)
+
+Extract shared control-flow skeletons from the three backend codegen files
+(x86, ARM, RISC-V) into default trait method implementations in codegen_shared.rs.
+
+Key changes:
+- Add new primitive trait methods (operand_to_acc_pair, store_acc_pair, slot_addr_to_reg, etc.)
+- Convert emit_store, emit_load, emit_gep, emit_dyn_alloca to default implementations
+- Extract emit_memcpy address-loading and emit_unaryop dispatch skeleton
+- Each backend implements only the small arch-specific primitives
+
+Estimated savings: ~250 lines of duplicated code across the three backends.
