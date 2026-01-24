@@ -548,12 +548,19 @@ impl Lowerer {
                 self.get_pointed_struct_layout(base)
             }
             Expr::FunctionCall(func, _, _) => {
-                // Function returning a struct pointer
+                // Function returning a struct pointer: try direct function name first
                 if let Expr::Identifier(name, _) = func.as_ref() {
                     if let Some(ctype) = self.func_meta.sigs.get(name.as_str()).and_then(|s| s.return_ctype.as_ref()) {
                         if let CType::Pointer(pointee) = ctype {
                             return self.struct_layout_from_ctype(pointee);
                         }
+                    }
+                }
+                // For indirect calls through function pointers, resolve the
+                // return type from the function pointer's CType.
+                if let Some(ctype) = self.get_expr_ctype(expr) {
+                    if let CType::Pointer(pointee) = &ctype {
+                        return self.struct_layout_from_ctype(pointee);
                     }
                 }
                 None
@@ -694,13 +701,18 @@ impl Lowerer {
                     .or_else(|| self.get_layout_for_expr(inner))
             }
             Expr::FunctionCall(func, _, _) => {
-                // Function returning a struct: look up the return CType
+                // Function returning a struct: try direct function name first
                 if let Expr::Identifier(name, _) = func.as_ref() {
                     if let Some(ctype) = self.func_meta.sigs.get(name.as_str()).and_then(|s| s.return_ctype.as_ref()) {
                         if let Some(layout) = self.struct_layout_from_ctype(ctype) {
                             return Some(layout);
                         }
                     }
+                }
+                // For indirect calls through function pointers, resolve the
+                // return type from the function pointer's CType.
+                if let Some(ctype) = self.get_expr_ctype(expr) {
+                    return self.struct_layout_from_ctype(&ctype);
                 }
                 None
             }
