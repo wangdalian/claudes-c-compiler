@@ -315,7 +315,10 @@ impl Lowerer {
         let elem_struct_layout = self.locals.get(declarator_name)
             .and_then(|l| l.struct_layout.clone());
 
-        if da.array_dim_strides.len() > 1 && elem_struct_layout.is_none() {
+        if let Some(ref cplx_ctype) = complex_elem_ctype {
+            // Array of complex elements (handles both 1D and multi-dimensional)
+            self.lower_array_of_complex_init(items, alloca, da, cplx_ctype);
+        } else if da.array_dim_strides.len() > 1 && elem_struct_layout.is_none() {
             // Multi-dimensional array of scalars
             self.zero_init_alloca(alloca, da.alloc_size);
             let md_elem_ty = if da.is_array_of_pointers || da.is_array_of_func_ptrs { IrType::I64 } else { da.elem_ir_ty };
@@ -323,9 +326,6 @@ impl Lowerer {
         } else if let Some(ref s_layout) = elem_struct_layout {
             // Array of structs
             self.lower_array_of_structs_init(items, alloca, da, s_layout);
-        } else if let Some(ref cplx_ctype) = complex_elem_ctype {
-            // Array of complex elements
-            self.lower_array_of_complex_init(items, alloca, da, cplx_ctype);
         } else {
             // 1D array of scalars
             self.lower_1d_array_init(items, alloca, da, decl);
@@ -419,6 +419,7 @@ impl Lowerer {
     }
 
     /// Array of complex elements initialization.
+    /// Handles both 1D and multi-dimensional arrays of complex types.
     fn lower_array_of_complex_init(
         &mut self,
         items: &[InitializerItem],
@@ -427,24 +428,69 @@ impl Lowerer {
         cplx_ctype: &CType,
     ) {
         self.zero_init_alloca(alloca, da.alloc_size);
-        let mut current_idx = 0usize;
+        let mut flat_idx = 0usize;
+        self.lower_complex_init_recursive(items, alloca, da, cplx_ctype, &da.array_dim_strides.clone(), &mut flat_idx);
+    }
+
+    /// Recursive helper for multi-dimensional complex array initialization.
+    /// Flattens nested brace initializers into flat element indices.
+    fn lower_complex_init_recursive(
+        &mut self,
+        items: &[InitializerItem],
+        alloca: Value,
+        da: &DeclAnalysis,
+        cplx_ctype: &CType,
+        dim_strides: &[usize],
+        flat_idx: &mut usize,
+    ) {
+        // The leaf complex element size is always the last stride
+        let leaf_size = *da.array_dim_strides.last().unwrap_or(&da.elem_size);
+        // How many leaf elements per sub-array at this level
+        let sub_elem_count = if dim_strides.len() > 1 && leaf_size > 0 {
+            dim_strides[0] / leaf_size
+        } else {
+            1
+        };
+
         for item in items.iter() {
+            let start_index = *flat_idx;
+
             if let Some(Designator::Index(ref idx_expr)) = item.designators.first() {
                 if let Some(idx_val) = self.eval_const_expr_for_designator(idx_expr) {
-                    current_idx = idx_val;
+                    if dim_strides.len() > 1 {
+                        // Designator at outer dimension: set flat index to start of that row
+                        *flat_idx = idx_val * sub_elem_count;
+                    } else {
+                        *flat_idx = idx_val;
+                    }
                 }
             }
-            let init_expr = match &item.init {
-                Initializer::Expr(e) => Some(e),
+
+            match &item.init {
                 Initializer::List(sub_items) => {
-                    Self::unwrap_nested_init_expr(sub_items)
+                    if dim_strides.len() > 1 {
+                        // Recurse into nested brace list for inner dimensions
+                        self.lower_complex_init_recursive(sub_items, alloca, da, cplx_ctype, &dim_strides[1..], flat_idx);
+                        // Advance to next sub-array boundary
+                        let boundary = start_index + sub_elem_count;
+                        if *flat_idx < boundary {
+                            *flat_idx = boundary;
+                        }
+                    } else {
+                        // At leaf dimension, unwrap single-element brace list
+                        if let Some(e) = Self::unwrap_nested_init_expr(sub_items) {
+                            let src = self.lower_expr_to_complex(e, cplx_ctype);
+                            self.emit_memcpy_at_offset(alloca, *flat_idx * leaf_size, src, leaf_size);
+                        }
+                        *flat_idx += 1;
+                    }
                 }
-            };
-            if let Some(e) = init_expr {
-                let src = self.lower_expr_to_complex(e, cplx_ctype);
-                self.emit_memcpy_at_offset(alloca, current_idx * da.elem_size, src, da.elem_size);
+                Initializer::Expr(e) => {
+                    let src = self.lower_expr_to_complex(e, cplx_ctype);
+                    self.emit_memcpy_at_offset(alloca, *flat_idx * leaf_size, src, leaf_size);
+                    *flat_idx += 1;
+                }
             }
-            current_idx += 1;
         }
     }
 
