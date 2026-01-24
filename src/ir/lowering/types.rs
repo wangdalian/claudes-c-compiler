@@ -615,10 +615,10 @@ impl Lowerer {
             && items[0].designators.is_empty()
         {
             if let Initializer::Expr(Expr::StringLiteral(s, _)) = &items[0].init {
-                return s.as_bytes().len() + 1; // +1 for null terminator
+                return s.chars().count() + 1; // +1 for null terminator
             }
             if let Initializer::Expr(Expr::WideStringLiteral(s, _)) = &items[0].init {
-                return s.as_bytes().len() + 1; // wide string to char array
+                return s.chars().count() + 1; // wide string to char array
             }
         }
         // Special case: wchar_t w[] = {L"hello"} - single brace-wrapped wide string literal
@@ -1682,7 +1682,7 @@ impl Lowerer {
             // Char literal: type int in C (4 bytes)
             Expr::CharLiteral(_, _) => 4,
             // String literal: array of char, size = length + 1 (null terminator)
-            Expr::StringLiteral(s, _) => s.len() + 1,
+            Expr::StringLiteral(s, _) => s.chars().count() + 1,
             // Wide string literal: array of wchar_t (4 bytes each), size = (chars + 1) * 4
             Expr::WideStringLiteral(s, _) => (s.chars().count() + 1) * 4,
 

@@ -272,24 +272,9 @@ impl Lowerer {
                             // The expression might be:
                             // 1. Already complex (returns ptr to {real, imag} pair) -> memcpy
                             // 2. A real/integer scalar -> convert to complex first
-                            let expr_ctype = self.expr_ctype(expr);
-                            let val = self.lower_expr(expr);
                             let resolved_ts = self.resolve_type_spec(&decl.type_spec);
                             let complex_ctype = self.type_spec_to_ctype(&resolved_ts);
-                            let src = if expr_ctype.is_complex() {
-                                // Already complex - might need conversion between complex types
-                                if expr_ctype != complex_ctype {
-                                    let val_v = self.operand_to_value(val);
-                                    let converted = self.complex_to_complex(val_v, &expr_ctype, &complex_ctype);
-                                    self.operand_to_value(converted)
-                                } else {
-                                    self.operand_to_value(val)
-                                }
-                            } else {
-                                // Real/integer scalar: convert to complex {val, 0}
-                                let converted = self.real_to_complex(val, &expr_ctype, &complex_ctype);
-                                self.operand_to_value(converted)
-                            };
+                            let src = self.lower_expr_to_complex(expr, &complex_ctype);
                             self.emit(Instruction::Memcpy {
                                 dest: alloca,
                                 src,
@@ -491,23 +476,7 @@ impl Lowerer {
                                         }
                                     };
                                     if let Some(e) = init_expr {
-                                        let expr_ctype = self.expr_ctype(e);
-                                        let val = self.lower_expr(e);
-                                        // Convert to the target complex type if needed
-                                        let src = if expr_ctype.is_complex() {
-                                            if expr_ctype != *cplx_ctype {
-                                                let val_v = self.operand_to_value(val);
-                                                let converted = self.complex_to_complex(val_v, &expr_ctype, cplx_ctype);
-                                                self.operand_to_value(converted)
-                                            } else {
-                                                self.operand_to_value(val)
-                                            }
-                                        } else {
-                                            // Real scalar -> complex {val, 0}
-                                            let converted = self.real_to_complex(val, &expr_ctype, cplx_ctype);
-                                            self.operand_to_value(converted)
-                                        };
-                                        // Memcpy to target element slot
+                                        let src = self.lower_expr_to_complex(e, cplx_ctype);
                                         self.emit_memcpy_at_offset(alloca, current_idx * da.elem_size, src, da.elem_size);
                                     }
                                     current_idx += 1;
@@ -648,6 +617,25 @@ impl Lowerer {
         self.next_static_local += 1;
     }
 
+    /// Lower an expression to a complex value, converting if needed.
+    /// Returns a Value (pointer to the complex {real, imag} pair).
+    fn lower_expr_to_complex(&mut self, expr: &Expr, target_ctype: &CType) -> Value {
+        let expr_ctype = self.expr_ctype(expr);
+        let val = self.lower_expr(expr);
+        if expr_ctype.is_complex() {
+            if expr_ctype != *target_ctype {
+                let val_v = self.operand_to_value(val);
+                let converted = self.complex_to_complex(val_v, &expr_ctype, target_ctype);
+                self.operand_to_value(converted)
+            } else {
+                self.operand_to_value(val)
+            }
+        } else {
+            let converted = self.real_to_complex(val, &expr_ctype, target_ctype);
+            self.operand_to_value(converted)
+        }
+    }
+
     /// Initialize a local struct from an initializer list.
     /// `base` is the base address of the struct in memory.
     fn lower_local_struct_init(
@@ -677,20 +665,7 @@ impl Lowerer {
                 let dest_addr = self.emit_gep_offset(base, field_offset, IrType::Ptr);
                 match &item.init {
                     Initializer::Expr(e) => {
-                        let expr_ctype = self.expr_ctype(e);
-                        let val = self.lower_expr(e);
-                        let src = if expr_ctype.is_complex() {
-                            if expr_ctype != complex_ctype {
-                                let val_v = self.operand_to_value(val);
-                                let converted = self.complex_to_complex(val_v, &expr_ctype, &complex_ctype);
-                                self.operand_to_value(converted)
-                            } else {
-                                self.operand_to_value(val)
-                            }
-                        } else {
-                            let converted = self.real_to_complex(val, &expr_ctype, &complex_ctype);
-                            self.operand_to_value(converted)
-                        };
+                        let src = self.lower_expr_to_complex(e, &complex_ctype);
                         self.emit(Instruction::Memcpy {
                             dest: dest_addr,
                             src,
@@ -1872,22 +1847,7 @@ impl Lowerer {
                     let dest_addr = self.emit_gep_offset(base_alloca, field_offset, IrType::Ptr);
                     match &item.init {
                         Initializer::Expr(e) => {
-                            let expr_ctype = self.expr_ctype(e);
-                            let val = self.lower_expr(e);
-                            let src = if expr_ctype.is_complex() {
-                                // Already complex: might need conversion
-                                if expr_ctype != complex_ctype {
-                                    let val_v = self.operand_to_value(val);
-                                    let converted = self.complex_to_complex(val_v, &expr_ctype, &complex_ctype);
-                                    self.operand_to_value(converted)
-                                } else {
-                                    self.operand_to_value(val)
-                                }
-                            } else {
-                                // Real/integer scalar: convert to complex {val, 0}
-                                let converted = self.real_to_complex(val, &expr_ctype, &complex_ctype);
-                                self.operand_to_value(converted)
-                            };
+                            let src = self.lower_expr_to_complex(e, &complex_ctype);
                             self.emit(Instruction::Memcpy {
                                 dest: dest_addr,
                                 src,

@@ -215,7 +215,7 @@ impl Lowerer {
 
     /// Write a string literal into a byte buffer at the given offset, with null terminator.
     pub(super) fn write_string_to_bytes(bytes: &mut [u8], offset: usize, s: &str, max_len: usize) {
-        let str_bytes = s.as_bytes();
+        let str_bytes: Vec<u8> = s.chars().map(|c| c as u8).collect();
         for (i, &b) in str_bytes.iter().enumerate() {
             if i >= max_len { break; }
             if offset + i < bytes.len() {
@@ -374,7 +374,7 @@ impl Lowerer {
                         self.write_const_to_bytes(bytes, elem_offset, &val, elem_ir_ty);
                     }
                 } else if matches!(elem_ty, CType::Char | CType::UChar) {
-                    let val = s.as_bytes().first().map(|&b| IrConst::I8(b as i8)).unwrap_or(IrConst::I8(0));
+                    let val = s.chars().next().map(|c| IrConst::I8(c as u8 as i8)).unwrap_or(IrConst::I8(0));
                     self.write_const_to_bytes(bytes, elem_offset, &val, elem_ir_ty);
                 } else {
                     let val = self.eval_expr_or_zero(expr);
@@ -993,7 +993,7 @@ impl Lowerer {
                     if let Expr::StringLiteral(s, _) = expr {
                         // String literal initializing a char array field
                         if let CType::Array(_, Some(arr_size)) = &field_layout.ty {
-                            let s_bytes = s.as_bytes();
+                            let s_bytes: Vec<u8> = s.chars().map(|c| c as u8).collect();
                             for (i, &b) in s_bytes.iter().enumerate() {
                                 if i >= *arr_size { break; }
                                 if field_offset + i < bytes.len() {

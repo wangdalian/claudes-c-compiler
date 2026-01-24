@@ -607,7 +607,6 @@ impl Lexer {
             b'n' => '\n',
             b't' => '\t',
             b'r' => '\r',
-            b'0' => '\0',
             b'\\' => '\\',
             b'\'' => '\'',
             b'"' => '"',
@@ -617,16 +616,19 @@ impl Lexer {
             b'f' => '\x0c',
             b'v' => '\x0b',
             b'x' => {
-                // Hex escape
+                // Hex escape: \xNN - consumes all hex digits, value truncated to byte
                 let mut val = 0u32;
                 while self.pos < self.input.len() && self.input[self.pos].is_ascii_hexdigit() {
                     val = val * 16 + hex_digit_val(self.input[self.pos]) as u32;
                     self.pos += 1;
                 }
-                char::from_u32(val).unwrap_or('\0')
+                // Truncate to byte value and use direct char mapping to avoid
+                // multi-byte UTF-8 encoding issues with values > 127
+                (val as u8) as char
             }
             b'0'..=b'7' => {
-                // Octal escape
+                // Octal escape: \0 through \377 (1-3 octal digits)
+                // Note: \0 alone produces null; \040 produces space (32), etc.
                 let mut val = (ch - b'0') as u32;
                 for _ in 0..2 {
                     if self.pos < self.input.len() && self.input[self.pos] >= b'0' && self.input[self.pos] <= b'7' {
@@ -636,7 +638,8 @@ impl Lexer {
                         break;
                     }
                 }
-                char::from_u32(val).unwrap_or('\0')
+                // Truncate to byte value to match C semantics
+                (val as u8) as char
             }
             _ => ch as char,
         }

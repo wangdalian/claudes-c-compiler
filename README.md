@@ -132,7 +132,7 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
 | mbedtls | PARTIAL | Library + test programs build; selftest crashes in AES-GCM-256, rsa/ecp segfault |
 | libpng | PARTIAL | Builds successfully; pngtest fails at runtime (IHDR parsing issue) |
 | jq | PARTIAL | Builds successfully; --version passes, runtime segfaults on queries |
-| sqlite | FAIL | Not yet tested |
+| sqlite | PARTIAL | Builds; 573/622 (92%) sqllogictest pass |
 | libjpeg-turbo | FAIL | Not yet tested |
 | redis | FAIL | Not yet tested |
 

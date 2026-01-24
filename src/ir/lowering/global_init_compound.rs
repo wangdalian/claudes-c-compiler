@@ -260,7 +260,7 @@ impl Lowerer {
                         elements.push(GlobalInit::GlobalAddr(label));
                     } else {
                         // String literal initializing a char array field
-                        let s_bytes = s.as_bytes();
+                        let s_bytes: Vec<u8> = s.chars().map(|c| c as u8).collect();
                         for (i, &b) in s_bytes.iter().enumerate() {
                             if i >= field_size { break; }
                             elements.push(GlobalInit::Scalar(IrConst::I8(b as i8)));

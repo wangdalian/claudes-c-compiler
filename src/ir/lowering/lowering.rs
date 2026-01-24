@@ -1679,7 +1679,7 @@ impl Lowerer {
     /// followed by a null terminator. Used for `char s[] = "hello"` and
     /// string elements in array initializer lists.
     pub(super) fn emit_string_to_alloca(&mut self, alloca: Value, s: &str, base_offset: usize) {
-        let bytes = s.as_bytes();
+        let bytes: Vec<u8> = s.chars().map(|c| c as u8).collect();
         for (j, &byte) in bytes.iter().enumerate() {
             let val = Operand::Const(IrConst::I8(byte as i8));
             let offset = Operand::Const(IrConst::I64((base_offset + j) as i64));
@@ -1908,12 +1908,12 @@ impl Lowerer {
                     // Fix alloc size for unsized char arrays initialized with string literals
                     if da.base_ty == IrType::I8 || da.base_ty == IrType::U8 {
                         if let Expr::StringLiteral(s, _) = expr {
-                            da.alloc_size = s.as_bytes().len() + 1;
+                            da.alloc_size = s.chars().count() + 1;
                             da.actual_alloc_size = da.alloc_size;
                         }
                         // Wide string assigned to char array: use byte length
                         if let Expr::WideStringLiteral(s, _) = expr {
-                            da.alloc_size = s.as_bytes().len() + 1;
+                            da.alloc_size = s.chars().count() + 1;
                             da.actual_alloc_size = da.alloc_size;
                         }
                     }

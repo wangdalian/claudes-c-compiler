@@ -722,8 +722,8 @@ impl Lowerer {
         &self, s: &str, sub_elem_count: usize, base_ty: IrType, values: &mut Vec<IrConst>,
     ) {
         let start_len = values.len();
-        for &byte in s.as_bytes() {
-            values.push(IrConst::I64(byte as i64));
+        for c in s.chars() {
+            values.push(IrConst::I64(c as u8 as i64));
         }
         // Add null terminator if room
         if values.len() < start_len + sub_elem_count {
@@ -866,8 +866,8 @@ impl Lowerer {
             Initializer::Expr(expr) => {
                 if let Expr::StringLiteral(s, _) = expr {
                     // String literal initializing a char array element: inline bytes
-                    for &byte in s.as_bytes() {
-                        values.push(IrConst::I64(byte as i64));
+                    for c in s.chars() {
+                        values.push(IrConst::I64(c as u8 as i64));
                     }
                     // Add null terminator
                     values.push(IrConst::I64(0));
