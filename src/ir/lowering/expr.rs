@@ -1031,8 +1031,8 @@ impl Lowerer {
                     BuiltinIntrinsic::Popcount => self.lower_unary_intrinsic(name, args, IrUnaryOp::Popcount),
                     BuiltinIntrinsic::Parity => self.lower_parity_intrinsic(name, args),
                     BuiltinIntrinsic::ComplexReal => {
-                        // creal/crealf/creall: extract real part of complex argument
-                        // When the argument is not complex, convert it to the appropriate float type
+                        // creal/crealf/creall: extract real part of complex argument.
+                        // When the argument is not complex, convert it to the appropriate float type.
                         if !args.is_empty() {
                             let arg_ctype = self.expr_ctype(&args[0]);
                             if arg_ctype.is_complex() {
@@ -1049,8 +1049,8 @@ impl Lowerer {
                         }
                     }
                     BuiltinIntrinsic::ComplexImag => {
-                        // cimag/cimagf/cimagl: extract imaginary part of complex argument
-                        // When the argument is not complex, return 0 in the appropriate float type
+                        // cimag/cimagf/cimagl: extract imaginary part of complex argument.
+                        // When the argument is not complex, return 0 in the appropriate float type.
                         if !args.is_empty() {
                             let arg_ctype = self.expr_ctype(&args[0]);
                             if arg_ctype.is_complex() {
@@ -2651,6 +2651,14 @@ impl Lowerer {
                     return self.lower_expr(inner);
                 }
                 if pointee.is_complex() {
+                    return self.lower_expr(inner);
+                }
+            }
+            // Dereferencing an array that decays to pointer: if element is complex,
+            // struct, or union, return the address (no load needed).
+            if let CType::Array(ref elem, _) = inner_ct {
+                if elem.is_complex() || matches!(elem.as_ref(), CType::Struct(_) | CType::Union(_)) {
+                    // Array decays to pointer; *arr == arr[0], which is the first element address
                     return self.lower_expr(inner);
                 }
             }

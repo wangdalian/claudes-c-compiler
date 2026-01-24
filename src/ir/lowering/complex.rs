@@ -330,6 +330,14 @@ impl Lowerer {
 
     /// Create a complex value from a real scalar (real part = scalar, imag = 0).
     pub(super) fn real_to_complex(&mut self, real_val: Operand, real_type: &CType, complex_type: &CType) -> Operand {
+        let real_ir = IrType::from_ctype(real_type);
+        self.scalar_to_complex(real_val, real_ir, complex_type)
+    }
+
+    /// Create a complex value from a scalar given its IR type (real part = scalar, imag = 0).
+    /// This is preferred over real_to_complex when the CType may be inaccurate (e.g., for
+    /// function calls where expr_ctype may not correctly resolve the return type).
+    pub(super) fn scalar_to_complex(&mut self, real_val: Operand, src_ir_ty: IrType, complex_type: &CType) -> Operand {
         let comp_ty = Self::complex_component_ir_type(complex_type);
         let zero = match comp_ty {
             IrType::F32 => Operand::Const(IrConst::F32(0.0)),
@@ -338,13 +346,12 @@ impl Lowerer {
         };
 
         // Convert the real value to the component type if needed
-        let real_ir = IrType::from_ctype(real_type);
-        let converted_real = if real_ir != comp_ty {
+        let converted_real = if src_ir_ty != comp_ty {
             let dest = self.fresh_value();
             self.emit(Instruction::Cast {
                 dest,
                 src: real_val,
-                from_ty: real_ir,
+                from_ty: src_ir_ty,
                 to_ty: comp_ty,
             });
             Operand::Value(dest)

@@ -890,13 +890,17 @@ impl Lowerer {
                             return Operand::Value(sret_ptr);
                         }
                         // Non-complex expression returned from sret complex function:
-                        // Convert scalar to complex and copy to sret buffer
+                        // convert scalar to complex and copy to sret pointer.
+                        // Use scalar_to_complex (IR-type based) for accurate type handling
+                        // when expr_ctype may not match the actual IR type (e.g., function calls).
                         if let Some(ref rct) = ret_ct {
                             if rct.is_complex() {
                                 let val = self.lower_expr(e);
-                                let complex_val = self.real_to_complex(val, &expr_ct, rct);
+                                let src_ir_ty = self.get_expr_type(e);
+                                let rct_clone = rct.clone();
+                                let complex_val = self.scalar_to_complex(val, src_ir_ty, &rct_clone);
                                 let src_addr = self.operand_to_value(complex_val);
-                                let complex_size = rct.size();
+                                let complex_size = rct_clone.size();
                                 let sret_ptr = self.fresh_value();
                                 self.emit(Instruction::Load { dest: sret_ptr, ptr: sret_alloca, ty: IrType::Ptr });
                                 self.emit(Instruction::Memcpy { dest: sret_ptr, src: src_addr, size: complex_size });
@@ -957,24 +961,27 @@ impl Lowerer {
                         }
                     }
                     // Non-complex expression returned from a complex-returning function:
-                    // convert scalar to complex (real=scalar, imag=0)
+                    // convert scalar to complex (real=scalar, imag=0).
+                    // Use scalar_to_complex for accurate IR-type-based conversion.
                     {
                         let ret_ct = self.func_return_ctypes.get(&self.current_function_name.clone()).cloned();
                         if let Some(ref rct) = ret_ct {
                             if rct.is_complex() && !expr_ct.is_complex() {
                                 let val = self.lower_expr(e);
-                                let complex_val = self.real_to_complex(val, &expr_ct, rct);
+                                let src_ir_ty = self.get_expr_type(e);
+                                let rct_clone = rct.clone();
+                                let complex_val = self.scalar_to_complex(val, src_ir_ty, &rct_clone);
                                 // For sret returns, copy to the hidden pointer
                                 if let Some(sret_alloca) = self.current_sret_ptr {
                                     let src_addr = self.operand_to_value(complex_val);
-                                    let complex_size = rct.size();
+                                    let complex_size = rct_clone.size();
                                     let sret_ptr = self.fresh_value();
                                     self.emit(Instruction::Load { dest: sret_ptr, ptr: sret_alloca, ty: IrType::Ptr });
                                     self.emit(Instruction::Memcpy { dest: sret_ptr, src: src_addr, size: complex_size });
                                     return Operand::Value(sret_ptr);
                                 }
                                 // For non-sret complex float, pack into I64 for register return
-                                if *rct == CType::ComplexFloat && !self.func_meta.sret_functions.contains_key(&self.current_function_name) {
+                                if rct_clone == CType::ComplexFloat && !self.func_meta.sret_functions.contains_key(&self.current_function_name) {
                                     let ptr = self.operand_to_value(complex_val);
                                     let packed = self.fresh_value();
                                     self.emit(Instruction::Load { dest: packed, ptr, ty: IrType::I64 });
