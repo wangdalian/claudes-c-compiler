@@ -1,0 +1,11 @@
+Fix sqlite sort order corruption: CASE WHEN with subquery comparison corrupts sort direction.
+
+49 of 622 sqlite sqllogictest cases fail because a CASE expression containing
+a subquery comparison (e.g., c>(SELECT avg(c) FROM t1)) in an ORDER BY context
+corrupts an internal sort direction flag, causing subsequent ORDER BY expressions
+to sort in reversed (DESC) order.
+
+The bug is in the compiler (not sqlite) - GCC-compiled sqlite produces correct
+results. The likely cause is a miscompilation of comparison return values,
+struct field access (KeyInfo.aSortFlags), or register clobbering during
+CASE/subquery evaluation that corrupts the sorter's direction state.
