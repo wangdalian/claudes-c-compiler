@@ -1,0 +1,11 @@
+Fix RISC-V variadic function register save area layout.
+
+Problem: The register save area (a0-a7) is placed at the bottom of the stack frame,
+which is NOT contiguous with the caller's stack-passed arguments. When va_arg exhausts
+the register save area, it reads into local variable space instead of the caller's
+stack-passed arguments, causing segfaults.
+
+Fix: Save variadic register arguments at positive offsets from s0, just below the
+caller's stack arguments. Set s0 = old_sp - 64 for variadic functions so that
+a0 is at s0+0, a1 at s0+8, ..., a7 at s0+56, and caller's stack args at s0+64+.
+This makes va_arg's pointer advancement contiguous from registers to stack args.
