@@ -40,7 +40,7 @@ pub struct Parser {
     pub(super) pragma_pack_stack: Vec<Option<usize>>,
     /// Current #pragma pack alignment. None means default (natural) alignment.
     pub(super) pragma_pack_align: Option<usize>,
-    /// Number of parse errors encountered.
+    /// Count of parse errors encountered (invalid tokens at top level, etc.)
     pub error_count: usize,
 }
 
@@ -113,6 +113,12 @@ impl Parser {
             if let Some(decl) = self.parse_external_decl() {
                 decls.push(decl);
             } else {
+                // Report error for unrecognized token at top level
+                let tok = self.peek().clone();
+                if !matches!(tok, TokenKind::Semicolon | TokenKind::Eof) {
+                    self.error_count += 1;
+                    eprintln!("error: expected declaration, got {:?}", tok);
+                }
                 self.advance();
             }
         }
@@ -169,7 +175,7 @@ impl Parser {
                     other => format!("{:?}", other),
                 }
             }).collect();
-            eprintln!("error: expected {:?}, got {:?} at pos {} context: [{}]", expected, self.peek(), self.pos, context.join(", "));
+            eprintln!("error: expected {:?}, got {:?}", expected, self.peek());
             self.error_count += 1;
             span
         }

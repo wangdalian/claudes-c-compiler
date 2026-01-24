@@ -205,6 +205,10 @@ impl Lowerer {
         }
 
         // Assume function reference (or unknown global)
+        // Emit implicit declaration warning for undeclared identifiers (C99+)
+        if !self.known_functions.contains(name) {
+            eprintln!("warning: implicit declaration of '{}'", name);
+        }
         let dest = self.fresh_value();
         self.emit(Instruction::GlobalAddr { dest, name: name.to_string() });
         Operand::Value(dest)

@@ -48,6 +48,10 @@ pub struct Driver {
     pub linker_extra_args: Vec<String>,
     /// Whether to link statically (-static)
     pub static_link: bool,
+    /// Whether to produce a shared library (-shared)
+    pub shared_lib: bool,
+    /// Whether to omit standard library linking (-nostdlib)
+    pub nostdlib: bool,
 }
 
 impl Driver {
@@ -67,6 +71,8 @@ impl Driver {
             linker_paths: Vec::new(),
             linker_extra_args: Vec::new(),
             static_link: false,
+            shared_lib: false,
+            nostdlib: false,
         }
     }
 
@@ -236,11 +242,17 @@ impl Driver {
         path.ends_with(".o") || path.ends_with(".a") || path.ends_with(".so")
     }
 
-    /// Build linker args from collected -l, -L, and -static flags.
+    /// Build linker args from collected -l, -L, -static, -shared, and -nostdlib flags.
     fn build_linker_args(&self) -> Vec<String> {
         let mut args = Vec::new();
+        if self.shared_lib {
+            args.push("-shared".to_string());
+        }
         if self.static_link {
             args.push("-static".to_string());
+        }
+        if self.nostdlib {
+            args.push("-nostdlib".to_string());
         }
         for path in &self.linker_paths {
             args.push(format!("-L{}", path));
@@ -276,6 +288,10 @@ impl Driver {
         // Parse
         let mut parser = Parser::new(tokens);
         let ast = parser.parse();
+
+        if parser.error_count > 0 {
+            return Err(format!("{}: {} parse error(s)", input_file, parser.error_count));
+        }
 
         if self.verbose {
             eprintln!("Parsed {} declarations", ast.decls.len());

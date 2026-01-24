@@ -69,6 +69,11 @@ impl Parser {
                     self.advance();
                     self.parsing_typedef = true;
                 }
+                // Thread-local storage class (__thread / _Thread_local)
+                TokenKind::ThreadLocal => {
+                    self.advance();
+                    // Treat as regular storage for now (TLS not yet implemented)
+                }
                 // _Complex modifier
                 TokenKind::Complex => {
                     self.advance();
@@ -251,7 +256,7 @@ impl Parser {
                     TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict => { self.advance(); }
                     TokenKind::Static => { self.advance(); self.parsing_static = true; }
                     TokenKind::Extern => { self.advance(); self.parsing_extern = true; }
-                    TokenKind::Register | TokenKind::Noreturn => { self.advance(); }
+                    TokenKind::Register | TokenKind::Noreturn | TokenKind::ThreadLocal => { self.advance(); }
                     TokenKind::Inline => { self.advance(); self.parsing_inline = true; }
                     TokenKind::Attribute => {
                         let (_, _, mode_ti, _) = self.parse_gcc_attributes();
@@ -428,7 +433,7 @@ impl Parser {
                     self.advance();
                     self.parsing_extern = true;
                 }
-                TokenKind::Register | TokenKind::Noreturn => {
+                TokenKind::Register | TokenKind::Noreturn | TokenKind::ThreadLocal => {
                     self.advance();
                 }
                 TokenKind::Inline => {

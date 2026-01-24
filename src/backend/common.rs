@@ -77,27 +77,38 @@ pub fn link(config: &LinkerConfig, object_files: &[&str], output_path: &str) -> 
     link_with_args(config, object_files, output_path, &[])
 }
 
-/// Link object files into an executable, with additional user-provided linker args.
+/// Link object files into an executable (or shared library), with additional user-provided linker args.
 pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path: &str, user_args: &[String]) -> Result<(), String> {
+    let is_shared = user_args.iter().any(|a| a == "-shared");
+    let is_nostdlib = user_args.iter().any(|a| a == "-nostdlib");
+
     let mut cmd = Command::new(config.command);
-    cmd.args(config.extra_args);
+    // Skip -no-pie when building shared libraries (they conflict)
+    for arg in config.extra_args {
+        if is_shared && (*arg == "-no-pie" || *arg == "-pie") {
+            continue;
+        }
+        cmd.arg(arg);
+    }
     cmd.arg("-o").arg(output_path);
 
     for obj in object_files {
         cmd.arg(obj);
     }
 
-    // Add user-provided linker args (-l, -L, -static, etc.)
+    // Add user-provided linker args (-l, -L, -static, -shared, etc.)
     for arg in user_args {
         cmd.arg(arg);
     }
 
-    // Default libs (only add if not already in user_args)
-    if !user_args.iter().any(|a| a == "-lc") {
-        cmd.arg("-lc");
-    }
-    if !user_args.iter().any(|a| a == "-lm") {
-        cmd.arg("-lm");
+    // Default libs (skip for -nostdlib and -shared; only add if not already specified)
+    if !is_nostdlib && !is_shared {
+        if !user_args.iter().any(|a| a == "-lc") {
+            cmd.arg("-lc");
+        }
+        if !user_args.iter().any(|a| a == "-lm") {
+            cmd.arg("-lm");
+        }
     }
 
     let result = cmd.output()

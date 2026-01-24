@@ -49,8 +49,8 @@ fn main() {
             }
 
             // Optimization levels
+            "-O" | "-O1" => driver.opt_level = 1,
             "-O0" => driver.opt_level = 0,
-            "-O1" => driver.opt_level = 1,
             "-O2" => driver.opt_level = 2,
             "-O3" => driver.opt_level = 3,
             "-Os" => driver.opt_level = 2, // treat size opt as O2 for now
@@ -144,13 +144,16 @@ fn main() {
                 driver.static_link = true;
             }
             "-shared" => {
-                // TODO: shared library output
+                driver.shared_lib = true;
             }
             "-no-pie" | "-pie" => {
                 // Ignored
             }
-            "-nostdlib" | "-nostdinc" | "-nodefaultlibs" => {
-                // TODO: handle no-stdlib modes
+            "-nostdlib" => {
+                driver.nostdlib = true;
+            }
+            "-nostdinc" | "-nodefaultlibs" => {
+                // Silently accepted for GCC compatibility
             }
 
             // Linker pass-through: -Wl,flag1,flag2,...
@@ -178,7 +181,7 @@ fn main() {
             }
 
             // Miscellaneous ignored flags
-            "-pipe" | "-pthread" | "-rdynamic" => {}
+            "-pipe" | "-pthread" | "-rdynamic" | "-Xa" | "-Xc" | "-Xt" => {}
 
             // Unknown flags - warn in verbose mode
             arg if arg.starts_with('-') => {
