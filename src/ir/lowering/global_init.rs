@@ -219,111 +219,11 @@ impl Lowerer {
                             return self.lower_struct_array_with_ptrs(items, layout, num_elems);
                         }
                         let struct_size = layout.size;
-                        // For multi-dimensional arrays, elem_size > struct_size (row stride).
-                        let is_multidim = elem_size > struct_size;
-                        let outer_stride = if is_multidim { elem_size } else { struct_size };
-                        // row_count: number of struct elements per outer dimension
-                        let row_count = if is_multidim && struct_size > 0 { elem_size / struct_size } else { 1 };
                         let mut bytes = vec![0u8; total_size];
-                        let mut current_idx = 0usize;
-                        let mut item_idx = 0usize;
-                        while item_idx < items.len() {
-                            let item = &items[item_idx];
-                            // Check for index designator
-                            if let Some(Designator::Index(ref idx_expr)) = item.designators.first() {
-                                if let Some(idx) = self.eval_const_expr(idx_expr).and_then(|c| c.to_usize()) {
-                                    current_idx = idx;
-                                }
-                            }
-                            if current_idx >= num_elems {
-                                break;
-                            }
-                            let base_offset = current_idx * outer_stride;
-                            // Check for field designator after index designator: [idx].field = val
-                            let field_designator_name = item.designators.iter().find_map(|d| {
-                                if let Designator::Field(ref name) = d {
-                                    Some(name.clone())
-                                } else {
-                                    None
-                                }
-                            });
-                            match &item.init {
-                                Initializer::List(sub_items) => {
-                                    if is_multidim {
-                                        // Multi-dim braced sub-list: fills one row of structs.
-                                        // Sub-items can be Lists (braced struct inits) or
-                                        // flat Exprs filling struct fields across the row.
-                                        let mut sub_idx = 0usize;
-                                        let mut row_elem = 0usize;
-                                        while sub_idx < sub_items.len() && row_elem < row_count {
-                                            let row_offset = base_offset + row_elem * struct_size;
-                                            if row_offset + struct_size > bytes.len() { break; }
-                                            match &sub_items[sub_idx].init {
-                                                Initializer::List(inner) => {
-                                                    self.write_struct_init_to_bytes(&mut bytes, row_offset, inner, layout);
-                                                    sub_idx += 1;
-                                                    row_elem += 1;
-                                                }
-                                                Initializer::Expr(_) => {
-                                                    // Flat scalars filling struct fields
-                                                    let consumed = self.fill_struct_global_bytes(&sub_items[sub_idx..], layout, &mut bytes, row_offset);
-                                                    sub_idx += consumed.max(1);
-                                                    row_elem += 1;
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        // 1D: Single struct initializer
-                                        self.write_struct_init_to_bytes(&mut bytes, base_offset, sub_items, layout);
-                                    }
-                                    item_idx += 1;
-                                }
-                                Initializer::Expr(expr) => {
-                                    if let Some(ref fname) = field_designator_name {
-                                        // [idx].field = val: write to specific field
-                                        if let Some(val) = self.eval_const_expr(expr) {
-                                            if let Some(field) = layout.fields.iter().find(|f| &f.name == fname) {
-                                                let field_ir_ty = IrType::from_ctype(&field.ty);
-                                                self.write_const_to_bytes(&mut bytes, base_offset + field.offset, &val, field_ir_ty);
-                                            }
-                                        }
-                                        item_idx += 1;
-                                    } else {
-                                        // Flat init: consume items for all fields of this struct.
-                                        // For multi-dim arrays, fill structs sequentially across
-                                        // rows using struct_size stride, not outer_stride.
-                                        let flat_offset = if is_multidim {
-                                            // current_idx counts outer rows; compute flat struct offset
-                                            // We need to track flat struct position. Use item consumption
-                                            // to fill structs at sequential byte offsets.
-                                            // Recompute: for each outer row, fill row_count structs.
-                                            // But in flat init, we just fill structs sequentially.
-                                            // Compute the flat byte offset from how many structs we've placed.
-                                            // Since we're entering flat mode, switch to struct-by-struct filling.
-                                            let flat_struct_idx = current_idx * row_count;
-                                            let mut fi = flat_struct_idx;
-                                            let max_structs = if struct_size > 0 { total_size / struct_size } else { 0 };
-                                            while item_idx < items.len() && fi < max_structs {
-                                                let byte_off = fi * struct_size;
-                                                let consumed = self.fill_struct_global_bytes(&items[item_idx..], layout, &mut bytes, byte_off);
-                                                item_idx += consumed.max(1);
-                                                fi += 1;
-                                            }
-                                            // Skip the normal current_idx increment
-                                            continue;
-                                        } else {
-                                            base_offset
-                                        };
-                                        let consumed = self.fill_struct_global_bytes(&items[item_idx..], layout, &mut bytes, flat_offset);
-                                        item_idx += consumed;
-                                    }
-                                }
-                            }
-                            // Only advance current_idx if no field designator (sequential init)
-                            if field_designator_name.is_none() {
-                                current_idx += 1;
-                            }
-                        }
+                        self.fill_multidim_struct_array_bytes(
+                            items, layout, struct_size, array_dim_strides,
+                            &mut bytes, 0, total_size,
+                        );
                         let values: Vec<IrConst> = bytes.iter().map(|&b| IrConst::I8(b as i8)).collect();
                         return GlobalInit::Array(values);
                     }

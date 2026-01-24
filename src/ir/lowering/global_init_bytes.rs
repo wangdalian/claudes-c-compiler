@@ -424,7 +424,7 @@ impl Lowerer {
     }
 
     /// Fill a fixed-size array field. Handles string literals, arrays of composites,
-    /// arrays of scalars with designators, and flat initialization.
+    /// multi-dimensional arrays, arrays of scalars with designators, and flat initialization.
     pub(super) fn fill_array_field(
         &self,
         items: &[InitializerItem],
@@ -447,6 +447,13 @@ impl Lowerer {
                 }
                 if matches!(elem_ty, CType::Struct(_) | CType::Union(_)) {
                     self.fill_array_of_composites(sub_items, elem_ty, arr_size, elem_size, bytes, field_offset);
+                } else if let CType::Array(inner_elem, Some(inner_size)) = elem_ty {
+                    // Multi-dimensional array field (e.g., int a[2][3] or struct S a[2][2][2]).
+                    // Each sub-item is a brace group for one element of the outer dimension.
+                    self.fill_multidim_array_field(
+                        sub_items, inner_elem, *inner_size, arr_size, elem_size,
+                        bytes, field_offset,
+                    );
                 } else {
                     self.fill_array_of_scalars(sub_items, arr_size, elem_size, elem_ir_ty, bytes, field_offset);
                 }
@@ -460,11 +467,32 @@ impl Lowerer {
                         return ArrayFillResult { new_item_idx: item_idx + 1, skip_update: true };
                     }
                 }
-                // Flat init from consecutive items
+                // Flat init from consecutive items.
+                // For multi-dimensional arrays (elem_ty is Array), use leaf element
+                // info so that flat scalars fill the entire array correctly.
                 let start_ai = array_start_idx.unwrap_or(0);
+                let leaf_composite = Self::leaf_composite_type(elem_ty);
                 let new_idx = if matches!(elem_ty, CType::Struct(_) | CType::Union(_)) {
                     self.fill_flat_array_of_composites(
                         items, item_idx, elem_ty, arr_size, elem_size, elem_ir_ty,
+                        bytes, field_offset, start_ai,
+                    )
+                } else if let Some(composite_ty) = leaf_composite {
+                    // Multi-dimensional array of structs/unions: flat init fills composites
+                    let composite_size = composite_ty.size();
+                    let composite_ir_ty = IrType::from_ctype(composite_ty);
+                    let total_composites = if composite_size > 0 { (arr_size * elem_size) / composite_size } else { 0 };
+                    self.fill_flat_array_of_composites(
+                        items, item_idx, composite_ty, total_composites, composite_size, composite_ir_ty,
+                        bytes, field_offset, start_ai,
+                    )
+                } else if matches!(elem_ty, CType::Array(_, _)) {
+                    // Multi-dimensional array of scalars: use leaf element size
+                    let leaf_size = Self::leaf_elem_size(elem_ty);
+                    let leaf_ir_ty = Self::leaf_ir_type(elem_ty);
+                    let total_scalars = if leaf_size > 0 { (arr_size * elem_size) / leaf_size } else { 0 };
+                    self.fill_flat_array_of_scalars(
+                        items, item_idx, total_scalars, leaf_size, leaf_ir_ty,
                         bytes, field_offset, start_ai,
                     )
                 } else {
@@ -475,6 +503,126 @@ impl Lowerer {
                 };
                 ArrayFillResult { new_item_idx: new_idx, skip_update: true }
             }
+        }
+    }
+
+    /// Fill a multi-dimensional array field from a braced initializer list.
+    /// Handles arrays like `int a[2][3]`, `struct S a[2][2][2]`, `union U a[3][4]`, etc.
+    /// Each sub-item at this level represents one element of the outermost dimension.
+    fn fill_multidim_array_field(
+        &self,
+        sub_items: &[InitializerItem],
+        inner_elem_ty: &CType,
+        inner_arr_size: usize,
+        outer_arr_size: usize,
+        outer_elem_size: usize,
+        bytes: &mut [u8],
+        field_offset: usize,
+    ) {
+        let inner_elem_size = inner_elem_ty.size();
+        let mut sub_idx = 0usize;
+        let mut ai = 0usize;
+        while ai < outer_arr_size && sub_idx < sub_items.len() {
+            let elem_offset = field_offset + ai * outer_elem_size;
+            match &sub_items[sub_idx].init {
+                Initializer::List(inner_items) => {
+                    // Brace group for this outer element: recurse into inner array
+                    self.fill_array_field_recursive(
+                        inner_items, inner_elem_ty, inner_arr_size,
+                        bytes, elem_offset,
+                    );
+                    sub_idx += 1;
+                }
+                Initializer::Expr(_) => {
+                    // Flat init: fill inner array elements from consecutive Expr items.
+                    // Determine the leaf type to figure out how to consume items.
+                    let leaf_composite = Self::leaf_composite_type(inner_elem_ty);
+                    if let Some(composite_ty) = leaf_composite {
+                        // The leaf elements are structs/unions: fill them field by field
+                        let composite_layout = self.get_composite_layout(composite_ty);
+                        let composite_size = composite_ty.size();
+                        let composites_per_outer = if composite_size > 0 { outer_elem_size / composite_size } else { 0 };
+                        let mut ci = 0usize;
+                        while sub_idx < sub_items.len() && ci < composites_per_outer {
+                            let comp_offset = elem_offset + ci * composite_size;
+                            let consumed = self.fill_struct_global_bytes(
+                                &sub_items[sub_idx..], &composite_layout, bytes, comp_offset,
+                            );
+                            sub_idx += consumed.max(1);
+                            ci += 1;
+                        }
+                    } else {
+                        // Leaf elements are scalars
+                        let leaf_size = Self::leaf_elem_size(inner_elem_ty);
+                        let scalars_per_outer = if leaf_size > 0 { outer_elem_size / leaf_size } else { 1 };
+                        let leaf_ir_ty = Self::leaf_ir_type(inner_elem_ty);
+                        let mut filled = 0usize;
+                        while sub_idx < sub_items.len() && filled < scalars_per_outer {
+                            if let Initializer::Expr(e) = &sub_items[sub_idx].init {
+                                let val = self.eval_const_expr(e).unwrap_or(IrConst::I64(0));
+                                self.write_const_to_bytes(bytes, elem_offset + filled * leaf_size, &val, leaf_ir_ty);
+                                sub_idx += 1;
+                                filled += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            ai += 1;
+        }
+    }
+
+    /// Recursively fill a (possibly multi-dimensional) array from a braced initializer list.
+    /// Called by fill_multidim_array_field to handle inner dimensions.
+    fn fill_array_field_recursive(
+        &self,
+        items: &[InitializerItem],
+        elem_ty: &CType,
+        arr_size: usize,
+        bytes: &mut [u8],
+        field_offset: usize,
+    ) {
+        let elem_size = elem_ty.size();
+
+        if let CType::Array(inner_elem, Some(inner_size)) = elem_ty {
+            // Still multi-dimensional: recurse
+            self.fill_multidim_array_field(
+                items, inner_elem, *inner_size, arr_size, elem_size,
+                bytes, field_offset,
+            );
+        } else if matches!(elem_ty, CType::Struct(_) | CType::Union(_)) {
+            self.fill_array_of_composites(items, elem_ty, arr_size, elem_size, bytes, field_offset);
+        } else {
+            let elem_ir_ty = IrType::from_ctype(elem_ty);
+            self.fill_array_of_scalars(items, arr_size, elem_size, elem_ir_ty, bytes, field_offset);
+        }
+    }
+
+    /// Get the leaf (innermost non-array) element size for a possibly nested array type.
+    fn leaf_elem_size(ty: &CType) -> usize {
+        match ty {
+            CType::Array(inner, _) => Self::leaf_elem_size(inner),
+            _ => ty.size(),
+        }
+    }
+
+    /// Get the leaf (innermost non-array) IR type for a possibly nested array type.
+    fn leaf_ir_type(ty: &CType) -> IrType {
+        match ty {
+            CType::Array(inner, _) => Self::leaf_ir_type(inner),
+            _ => IrType::from_ctype(ty),
+        }
+    }
+
+    /// Get the leaf (innermost non-array) composite type, if the leaf is a struct/union.
+    /// Returns None if the leaf is a scalar type.
+    fn leaf_composite_type(ty: &CType) -> Option<&CType> {
+        match ty {
+            CType::Array(inner, _) => Self::leaf_composite_type(inner),
+            CType::Struct(_) | CType::Union(_) => Some(ty),
+            _ => None,
         }
     }
 
@@ -643,6 +791,114 @@ impl Lowerer {
             }
         }
         item_idx + consumed.max(1)
+    }
+
+    /// Fill a multi-dimensional array of structs/unions into a byte buffer.
+    ///
+    /// Recursively processes brace-enclosed initializer lists to handle arrays with
+    /// 3+ dimensions correctly. Each brace nesting level corresponds to one array
+    /// dimension, and `array_dim_strides` tells us how many bytes each level spans.
+    ///
+    /// For `struct S arr[2][2][2]` with struct_size=8, strides=[32, 16, 8]:
+    /// - Top-level items fill stride[0]=32 bytes each (a [2][2] sub-array = 4 structs)
+    /// - Second-level brace groups fill stride[1]=16 bytes each (a [2] sub-array = 2 structs)
+    /// - Innermost brace groups fill stride[2]=8 bytes each (1 struct)
+    pub(super) fn fill_multidim_struct_array_bytes(
+        &self,
+        items: &[InitializerItem],
+        layout: &StructLayout,
+        struct_size: usize,
+        array_dim_strides: &[usize],
+        bytes: &mut [u8],
+        base_offset: usize,
+        region_size: usize,
+    ) {
+        if struct_size == 0 { return; }
+
+        // Determine the stride for elements at this brace level.
+        // If we have strides info, use it; otherwise treat each item as one struct.
+        let (this_stride, remaining_strides) = if array_dim_strides.len() > 1 {
+            (array_dim_strides[0], &array_dim_strides[1..])
+        } else if array_dim_strides.len() == 1 {
+            (array_dim_strides[0], &array_dim_strides[0..0])
+        } else {
+            (struct_size, &array_dim_strides[0..0])
+        };
+
+        let num_elems = if this_stride > 0 { region_size / this_stride } else { 0 };
+        let mut current_idx = 0usize;
+        let mut item_idx = 0usize;
+
+        while item_idx < items.len() && current_idx < num_elems {
+            let item = &items[item_idx];
+
+            // Check for index designator
+            if let Some(Designator::Index(ref idx_expr)) = item.designators.first() {
+                if let Some(idx) = self.eval_const_expr(idx_expr).and_then(|c| c.to_usize()) {
+                    current_idx = idx;
+                }
+            }
+            if current_idx >= num_elems { break; }
+
+            // Check for field designator: [idx].field = val
+            let field_designator_name = item.designators.iter().find_map(|d| {
+                if let Designator::Field(ref name) = d {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            });
+
+            let elem_offset = base_offset + current_idx * this_stride;
+
+            match &item.init {
+                Initializer::List(sub_items) => {
+                    if this_stride > struct_size && !remaining_strides.is_empty() {
+                        // This brace group represents a sub-array (not a single struct).
+                        // Recurse with the next dimension's strides.
+                        self.fill_multidim_struct_array_bytes(
+                            sub_items, layout, struct_size, remaining_strides,
+                            bytes, elem_offset, this_stride,
+                        );
+                    } else {
+                        // This brace group represents a single struct initializer.
+                        self.write_struct_init_to_bytes(bytes, elem_offset, sub_items, layout);
+                    }
+                    item_idx += 1;
+                }
+                Initializer::Expr(expr) => {
+                    if let Some(ref fname) = field_designator_name {
+                        // [idx].field = val: write to specific field
+                        if let Some(val) = self.eval_const_expr(expr) {
+                            if let Some(field) = layout.fields.iter().find(|f| &f.name == fname) {
+                                let field_ir_ty = IrType::from_ctype(&field.ty);
+                                self.write_const_to_bytes(bytes, elem_offset + field.offset, &val, field_ir_ty);
+                            }
+                        }
+                        item_idx += 1;
+                    } else {
+                        // Flat init: consume items for struct fields sequentially.
+                        // Fill structs one by one across the entire region.
+                        let max_structs = if struct_size > 0 { region_size / struct_size } else { 0 };
+                        let flat_struct_base = (elem_offset - base_offset) / struct_size;
+                        let mut fi = flat_struct_base;
+                        while item_idx < items.len() && fi < max_structs {
+                            let byte_off = base_offset + fi * struct_size;
+                            if byte_off + struct_size > bytes.len() { break; }
+                            let consumed = self.fill_struct_global_bytes(&items[item_idx..], layout, bytes, byte_off);
+                            item_idx += consumed.max(1);
+                            fi += 1;
+                        }
+                        // Skip the normal current_idx increment since we consumed everything
+                        continue;
+                    }
+                }
+            }
+            // Only advance current_idx if no field designator (sequential init)
+            if field_designator_name.is_none() {
+                current_idx += 1;
+            }
+        }
     }
 
     /// Get the StructLayout for a composite (struct or union) CType.
