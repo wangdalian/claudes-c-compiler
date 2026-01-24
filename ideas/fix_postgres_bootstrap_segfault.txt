@@ -1,29 +1,15 @@
-Fix PostgreSQL bootstrap - NAMEDATALEN not resolved in BKI processing
+RESOLVED: PostgreSQL bootstrap / initdb issues
 
-After fixing the typedef pointer array sizeof bug (which resolved the segfault
-caused by attrtypes[40] being only 8 bytes), PostgreSQL initdb now fails with:
+Multiple issues were identified and fixed:
 
-  running bootstrap script ... FATAL: invalid input syntax for type smallint: "NAMEDATALEN"
-  PANIC: cannot abort transaction 1, it was already committed
+1. typedef pointer array sizeof bug (commit 870d8de) - attrtypes[40] was
+   allocated only 8 bytes instead of 320 bytes because sizeof for arrays of
+   typedef'd pointer types was computed incorrectly.
 
-The BKI file (postgres.bki) contains literal "NAMEDATALEN" tokens in insert
-statements (e.g., for pg_type's typlen column). GCC-compiled postgres handles
-this fine, but CCC-compiled postgres fails when passing "NAMEDATALEN" to int2in().
+2. -Wl, linker flags silently discarded (commit e1844e0) - The -W warning flag
+   catch-all matched -Wl,--export-dynamic before the -Wl, handler, causing
+   the postgres binary to be linked without --export-dynamic. This meant
+   dynamically loaded extensions (.so files) couldn't resolve symbols like
+   CurrentMemoryContext, causing initdb to fail when loading dict_snowball.so.
 
-The issue is likely that:
-1. The bootstrap code has special handling for these macro constants somewhere
-   that CCC miscompiles, OR
-2. A struct field access or type mismatch causes the wrong atttypid to be used
-   for a column, causing the value to be sent to the wrong input function, OR
-3. The TypInfo[] static array (which has NAMEDATALEN as an int16 len field for
-   the "name" type) is compiled incorrectly, causing the bootstrap to use wrong
-   type info for name-typed columns.
-
-Also observed: "could not write block 0 in file base/1/2@<garbled>" suggesting
-a string/path is corrupted, possibly from the same root cause.
-
-Debugging approach:
-1. Compare the CCC-compiled TypInfo[] array vs GCC version
-2. Check if attrtypes[i]->atttypid is correct for the columns being processed
-3. Try mixed compilation: compile bootstrap.o with GCC, rest with CCC
-4. Check if there's a sizeof(struct typinfo) mismatch between CCC and GCC
+With both fixes applied, PostgreSQL initdb completes successfully.
