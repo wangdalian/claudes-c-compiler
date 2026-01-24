@@ -599,13 +599,9 @@ impl Lowerer {
                 // Each element is a pointer (8 bytes).
                 // Only collect array dims that are AFTER the last pointer
                 // (these are the variable's own array dimensions, not the pointee's).
-                let last_ptr_pos = derived.iter().rposition(|d| matches!(d, DerivedDeclarator::Pointer))
-                    .or_else(|| {
-                        // Pointer might come from type spec rather than derived
-                        if pointer_from_type_spec || has_func_ptr { Some(0) } else { None }
-                    });
+                let last_ptr_pos = derived.iter().rposition(|d| matches!(d, DerivedDeclarator::Pointer));
                 let array_dims: Vec<Option<usize>> = if let Some(lpp) = last_ptr_pos {
-                    // Collect only Array dims after the last pointer
+                    // Collect only Array dims after the last pointer in derived
                     derived[lpp + 1..].iter().filter_map(|d| {
                         if let DerivedDeclarator::Array(size_expr) = d {
                             Some(size_expr.as_ref().and_then(|e| self.expr_as_array_size(e).map(|n| n as usize)))
@@ -614,6 +610,9 @@ impl Lowerer {
                         }
                     }).collect()
                 } else {
+                    // Pointer comes from type spec (typedef'd pointer/func ptr),
+                    // not from derived list. All array dims in derived belong to
+                    // the variable's own dimensions.
                     self.collect_derived_array_dims(derived)
                 };
                 let resolved_dims: Vec<usize> = array_dims.iter().map(|d| d.unwrap_or(256)).collect();
