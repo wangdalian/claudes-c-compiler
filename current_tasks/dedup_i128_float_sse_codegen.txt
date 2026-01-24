@@ -1,0 +1,17 @@
+Task: Deduplicate i128 binop/cmp, float binop, and SSE op codegen across backends
+
+The three backend codegen files (x86: 2499 lines, arm: 2716 lines, riscv: 2674 lines) contain
+massive duplication in several methods that share identical algorithmic structure but differ only
+in register names and instruction mnemonics.
+
+Plan:
+1. Extract emit_i128_binop into a shared trait default that dispatches to per-op arch primitives
+   (~418 lines of duplicated code across 3 backends)
+2. Extract emit_i128_cmp into a shared trait default with arch-specific compare/set primitives
+   (~150 lines duplicated)
+3. Extract emit_float_binop into a shared trait default with FP register move primitives
+   (~76 lines duplicated)
+4. Extract emit_x86_sse_op dispatch structure into shared trait default
+   (~592 lines duplicated)
+
+Expected savings: ~600-800 lines of code removed while improving maintainability.
