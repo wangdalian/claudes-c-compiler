@@ -4,7 +4,7 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
 
 ## Status
 
-**Basic compilation pipeline functional with SSA.** ~93.9% of tests passing across all architectures (full suite, 29906 tests).
+**Basic compilation pipeline functional with SSA.** ~97-98% of tests passing across all architectures.
 
 ### Working Features
 - Preprocessor with `#include` file resolution (system headers, -I paths, include guards, #pragma once)
@@ -15,10 +15,10 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
 - Optimization passes (constant folding, DCE, GVN, algebraic simplification) operating on SSA form
 - Three backend targets with correct ABI handling
 
-### Test Results (full suite)
-- x86-64: 93.9% passing (28089/29906)
-- AArch64: 94.4% passing (2709/2869, ratio 10 sample)
-- RISC-V 64: 94.0% passing (2688/2861, ratio 10 sample)
+### Test Results (ratio 10 sample)
+- x86-64: 97.6% passing (2920/2991)
+- AArch64: 97.3% passing (2792/2869)
+- RISC-V 64: 98.1% passing (2808/2861)
 
 ### What Works
 - `int main() { return N; }` for any integer N
@@ -26,7 +26,7 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
 - Basic arithmetic (`+`, `-`, `*`, `/`, `%`)
 - Local variable declarations and assignments
 - `if`/`else`, `while`, `for`, `do-while` control flow
-- Function calls with up to 6/8 arguments
+- Function calls with arbitrary arguments (including stack-overflow float/double args)
 - Comparison operators
 - **Type-aware code generation**: correct-sized load/store instructions for all types
   - `char` uses byte operations (movb/strb/sb)
@@ -65,6 +65,12 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
   `register_function_meta` to promote char/short in caller-side signatures, and
   extended `handle_kr_float_promotion` to also narrow int back to char/short.
   Fixes 100+ x86 tests.
+- **Fix floating-point stack overflow argument passing (all 3 backends)**: When
+  a function has more than 8 float/double parameters, the overflow parameters
+  (9th+) must go on the stack. The callee-side `classify_params` function was
+  falling through to GP register assignment instead of stack assignment when FP
+  registers were exhausted. Also added `force_gp` handling for RISC-V variadic
+  float args. Fixes ~13 many-parameters test failures.
 - **Fix sret hidden pointer not stored to stack (all 3 backends)**: The hidden
   struct-return pointer parameter (for returns > 16 bytes) was never stored from
   its argument register (%rdi/x0/a0) to the stack alloca because `emit_store_params`

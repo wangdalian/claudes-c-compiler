@@ -167,9 +167,17 @@ pub fn classify_params(func: &IrFunction, config: &CallAbiConfig) -> Vec<ParamCl
         }
 
         // Float/double parameters.
-        if is_float && float_reg_idx < config.max_float_regs {
+        // On RISC-V variadic functions, float args go in GP registers instead of FP.
+        let force_gp = config.variadic_floats_in_gp && is_float && !is_long_double;
+        if is_float && !force_gp && float_reg_idx < config.max_float_regs {
             result.push(ParamClass::FloatReg { reg_idx: float_reg_idx });
             float_reg_idx += 1;
+            continue;
+        }
+        // Float that overflowed FP registers goes to stack, not GP registers.
+        if is_float && !force_gp {
+            result.push(ParamClass::StackScalar { offset: stack_offset });
+            stack_offset += 8;
             continue;
         }
 
