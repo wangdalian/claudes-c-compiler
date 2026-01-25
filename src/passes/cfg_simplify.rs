@@ -68,21 +68,63 @@ fn simplify_redundant_cond_branches(func: &mut IrFunction) -> usize {
 /// This arises in switch(sizeof(T)) patterns where the dispatch comparisons
 /// fold to constants. Converting these to unconditional branches enables dead
 /// block removal to eliminate the unreachable switch cases.
+///
+/// When folding, we must clean up phi nodes in the not-taken target block:
+/// the phi entries referencing the current block must be removed since the edge
+/// no longer exists. Without this cleanup, stale phi entries can cause
+/// miscompilation when the not-taken block is still reachable from other paths.
 fn fold_constant_cond_branches(func: &mut IrFunction) -> usize {
-    let mut count = 0;
-    for block in &mut func.blocks {
+    // First pass: collect the folding decisions.
+    // Each entry: (block_index, taken_target, not_taken_target, block_label)
+    let mut folds: Vec<(usize, BlockId, BlockId, BlockId)> = Vec::new();
+
+    for (idx, block) in func.blocks.iter().enumerate() {
         if let Terminator::CondBranch { cond, true_label, false_label } = &block.terminator {
             let const_val = match cond {
                 Operand::Const(c) => Some(is_const_nonzero(c)),
                 _ => None,
             };
             if let Some(is_true) = const_val {
-                let target = if is_true { *true_label } else { *false_label };
-                block.terminator = Terminator::Branch(target);
-                count += 1;
+                let taken = if is_true { *true_label } else { *false_label };
+                let not_taken = if is_true { *false_label } else { *true_label };
+                folds.push((idx, taken, not_taken, block.label));
             }
         }
     }
+
+    if folds.is_empty() {
+        return 0;
+    }
+
+    let count = folds.len();
+
+    // Apply the folds: change terminators to unconditional branches
+    for &(idx, taken, _, _) in &folds {
+        func.blocks[idx].terminator = Terminator::Branch(taken);
+    }
+
+    // Clean up phi nodes in not-taken target blocks.
+    // Remove phi entries that reference the folding block, since that edge
+    // no longer exists. Only remove when the not-taken target differs from
+    // the taken target (if they're the same, the edge still exists).
+    for &(_, taken, not_taken, block_label) in &folds {
+        if taken == not_taken {
+            // Both branches go to the same block - edge is preserved, no cleanup needed
+            continue;
+        }
+        // Find the not-taken block and remove phi entries from block_label
+        for block in &mut func.blocks {
+            if block.label == not_taken {
+                for inst in &mut block.instructions {
+                    if let Instruction::Phi { incoming, .. } = inst {
+                        incoming.retain(|(_, label)| *label != block_label);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
     count
 }
 

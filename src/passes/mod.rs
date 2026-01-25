@@ -85,10 +85,10 @@ pub fn run_passes(module: &mut IrModule, opt_level: u32) {
         // Phase 8: Copy propagation again (clean up copies created by GVN/simplify)
         changes += copy_prop::run(module);
 
-        // Phase 8: Dead code elimination (clean up dead instructions including dead copies)
+        // Phase 9: Dead code elimination (clean up dead instructions including dead copies)
         changes += dce::run(module);
 
-        // Phase 9: CFG simplification again (DCE + constant folding may have
+        // Phase 10: CFG simplification again (DCE + constant folding may have
         // simplified conditions, creating dead blocks or redundant branches)
         changes += cfg_simplify::run(module);
 
