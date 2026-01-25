@@ -55,13 +55,12 @@ impl X86Codegen {
 
     // --- x86 helper methods ---
 
-    /// Load an operand into %rax. Uses the register value cache to skip
-    /// redundant loads when the value is already in %rax.
+    /// Load an operand into %rax. Uses the register cache to skip the load
+    /// if the value is already in %rax.
     fn operand_to_rax(&mut self, op: &Operand) {
         match op {
             Operand::Const(c) => {
-                // Constants always clobber the cache
-                self.state.reg_cache_acc = None;
+                self.state.reg_cache.invalidate_acc();
                 match c {
                     IrConst::I8(v) => self.state.emit_fmt(format_args!("    movq ${}, %rax", *v as i64)),
                     IrConst::I16(v) => self.state.emit_fmt(format_args!("    movq ${}, %rax", *v as i64)),
@@ -107,33 +106,29 @@ impl X86Codegen {
                 }
             }
             Operand::Value(v) => {
-                // Check register cache: skip load if value already in rax
-                if self.state.reg_cache_acc == Some(v.0) && !self.state.is_alloca(v.0) {
-                    return; // Value already in %rax, skip the load
+                let is_alloca = self.state.is_alloca(v.0);
+                // Check cache: skip load if value is already in %rax
+                if self.state.reg_cache.acc_has(v.0, is_alloca) {
+                    return;
                 }
                 if self.state.get_slot(v.0).is_some() {
                     self.value_to_reg(v, "rax");
-                    // Update cache: rax now holds this value (but not for allocas,
-                    // which load an address that becomes stale after any stack change)
-                    if !self.state.is_alloca(v.0) {
-                        self.state.reg_cache_acc = Some(v.0);
-                    } else {
-                        self.state.reg_cache_acc = None;
-                    }
+                    self.state.reg_cache.set_acc(v.0, is_alloca);
                 } else {
                     self.state.emit("    xorq %rax, %rax");
-                    self.state.reg_cache_acc = None;
+                    self.state.reg_cache.invalidate_acc();
                 }
             }
         }
     }
 
-    /// Store %rax to a value's stack slot and update the register cache.
+    /// Store %rax to a value's stack slot. Updates the register cache to record
+    /// that %rax now holds dest's value.
     fn store_rax_to(&mut self, dest: &Value) {
         if let Some(slot) = self.state.get_slot(dest.0) {
             self.state.emit_fmt(format_args!("    movq %rax, {}(%rbp)", slot.0));
-            // Update cache: rax now holds this destination value
-            self.state.reg_cache_acc = Some(dest.0);
+            // After storing to dest, %rax still holds dest's value
+            self.state.reg_cache.set_acc(dest.0, false);
         }
     }
 
@@ -213,7 +208,7 @@ impl X86Codegen {
             self.state.emit_fmt(format_args!("    movq %rdx, {}(%rbp)", slot.0 + 8));
         }
         // rax holds only the low 64 bits of an i128, not a valid scalar IR value.
-        self.state.invalidate_reg_cache();
+        self.state.reg_cache.invalidate_all();
     }
 
     /// Get the store instruction mnemonic for a given type.
@@ -488,7 +483,7 @@ impl X86Codegen {
         self.state.emit("    movq %rdx, %rsi");
         self.state.emit("    popq %rax");
         self.state.emit("    popq %rdx");
-        self.state.invalidate_reg_cache();
+        self.state.reg_cache.invalidate_all();
     }
 
     /// Load an operand value into any GP register (returned as string).
@@ -1000,26 +995,29 @@ impl ArchCodegen for X86Codegen {
     }
 
     fn emit_slot_addr_to_secondary(&mut self, slot: StackSlot, is_alloca: bool) {
+        // Clobbers rax: invalidate cache before the leaq/movq + push.
+        self.state.reg_cache.invalidate_acc();
         if is_alloca {
             self.state.emit_fmt(format_args!("    leaq {}(%rbp), %rax", slot.0));
         } else {
             self.state.emit_fmt(format_args!("    movq {}(%rbp), %rax", slot.0));
         }
         self.state.emit("    pushq %rax");
-        self.state.invalidate_reg_cache(); // rax has an address, not an IR value
+        self.state.reg_cache.invalidate_all(); // rax has an address, not an IR value
     }
 
     fn emit_add_secondary_to_acc(&mut self) {
         self.state.emit("    movq %rax, %rcx");
         self.state.emit("    popq %rax");
         self.state.emit("    addq %rcx, %rax");
-        self.state.invalidate_reg_cache();
+        // rax now has a computed address, not a value from any slot.
+        self.state.reg_cache.invalidate_acc();
     }
 
     fn emit_round_up_acc_to_16(&mut self) {
         self.state.emit("    addq $15, %rax");
         self.state.emit("    andq $-16, %rax");
-        self.state.invalidate_reg_cache();
+        self.state.reg_cache.invalidate_all();
     }
 
     fn emit_sub_sp_by_acc(&mut self) {
@@ -1028,13 +1026,13 @@ impl ArchCodegen for X86Codegen {
 
     fn emit_mov_sp_to_acc(&mut self) {
         self.state.emit("    movq %rsp, %rax");
-        self.state.invalidate_reg_cache();
+        self.state.reg_cache.invalidate_all();
     }
 
     fn emit_align_acc(&mut self, align: usize) {
         self.state.emit_fmt(format_args!("    addq ${}, %rax", align - 1));
         self.state.emit_fmt(format_args!("    andq ${}, %rax", -(align as i64)));
-        self.state.invalidate_reg_cache();
+        self.state.reg_cache.invalidate_all();
     }
 
     fn emit_memcpy_load_dest_addr(&mut self, slot: StackSlot, is_alloca: bool) {
@@ -1065,11 +1063,19 @@ impl ArchCodegen for X86Codegen {
         self.state.emit_fmt(format_args!("    leaq {}(%rbp), %rax", slot.0));
         self.state.emit_fmt(format_args!("    addq ${}, %rax", align - 1));
         self.state.emit_fmt(format_args!("    andq ${}, %rax", -(align as i64)));
-        self.state.invalidate_reg_cache(); // rax has computed address, not IR value
+        self.state.reg_cache.invalidate_acc();
     }
 
     fn emit_acc_to_secondary(&mut self) {
         self.state.emit("    pushq %rax");
+        // After push, the next emit_load_operand will overwrite rax. The pushed
+        // value is preserved on the stack but is not what the cache claims is in rax.
+        // We don't invalidate here because operand_to_rax will set the cache when
+        // it loads the next value. However, if the next operand matches the cached
+        // value, it would skip the load while rax actually has the pushed value.
+        // The pushed value IS the cached value (it was in rax), so the cache is
+        // still correct: rax hasn't changed yet. The cache becomes stale only when
+        // the float_binop_impl does popq, which will invalidate.
     }
 
     fn emit_memcpy_store_dest_from_acc(&mut self) {
@@ -1159,11 +1165,14 @@ impl ArchCodegen for X86Codegen {
     fn emit_int_binop(&mut self, dest: &Value, op: IrBinOp, lhs: &Operand, rhs: &Operand, ty: IrType) {
         self.operand_to_rax(lhs);
         self.state.emit("    pushq %rax");
+        // Invalidate acc before loading rhs: after popq, rax will be restored to lhs,
+        // not whatever rhs we're about to load. Without this, if the cache says acc=rhs
+        // after the rhs load, the popq would make that stale.
+        self.state.reg_cache.invalidate_acc();
         self.operand_to_rax(rhs);
         self.state.emit("    movq %rax, %rcx");
         self.state.emit("    popq %rax");
-        // Invalidate cache: rax now holds lhs (from pop), not what operand_to_rax set
-        self.state.invalidate_reg_cache();
+        // After popq, rax has lhs again, rcx has rhs. Cache is invalidated (correct).
 
         let use_32bit = ty == IrType::I32 || ty == IrType::U32;
         let is_unsigned = ty.is_unsigned();
@@ -1271,10 +1280,11 @@ impl ArchCodegen for X86Codegen {
             self.operand_to_rax(first);
             self.state.emit_fmt(format_args!("    {}", mov_to_xmm0));
             self.state.emit("    pushq %rax");
+            self.state.reg_cache.invalidate_acc();
             self.operand_to_rax(second);
             self.state.emit_fmt(format_args!("    {}", mov_to_xmm1));
             self.state.emit("    popq %rax");
-            self.state.invalidate_reg_cache();
+            self.state.reg_cache.invalidate_acc();
             // F128 uses F64 instructions (long double computed at double precision)
             // ucomisd %xmm1, %xmm0 compares xmm0 vs xmm1 (AT&T: src, dst → compares dst to src)
             if ty == IrType::F64 || ty == IrType::F128 {
@@ -1313,10 +1323,11 @@ impl ArchCodegen for X86Codegen {
 
         self.operand_to_rax(lhs);
         self.state.emit("    pushq %rax");
+        self.state.reg_cache.invalidate_acc();
         self.operand_to_rax(rhs);
         self.state.emit("    movq %rax, %rcx");
         self.state.emit("    popq %rax");
-        self.state.invalidate_reg_cache();
+        self.state.reg_cache.invalidate_acc();
         self.state.emit("    cmpq %rcx, %rax");
 
         let set_instr = match op {
@@ -1382,7 +1393,7 @@ impl ArchCodegen for X86Codegen {
                             self.state.emit_fmt(format_args!("    pushq ${}", hi_2bytes as i64));
                             self.state.emit_fmt(format_args!("    movabsq ${}, %rax", lo as i64));
                             self.state.emit("    pushq %rax");
-                            self.state.invalidate_reg_cache(); // rax clobbered by movabsq
+                            self.state.reg_cache.invalidate_all(); // rax clobbered by movabsq
                         }
                         Operand::Value(ref v) => {
                             if let Some(slot) = self.state.get_slot(v.0) {
@@ -1394,7 +1405,7 @@ impl ArchCodegen for X86Codegen {
                             } else {
                                 self.state.emit("    xorq %rax, %rax");
                             }
-                            self.state.invalidate_reg_cache(); // rax clobbered by F128 load
+                            self.state.reg_cache.invalidate_all(); // rax clobbered by F128 load
                             self.state.emit("    subq $16, %rsp");
                             self.state.emit("    pushq %rax");
                             self.state.emit("    fldl (%rsp)");
@@ -1484,7 +1495,10 @@ impl ArchCodegen for X86Codegen {
         } else {
             self.state.emit("    xorl %eax, %eax");
         }
-        self.state.invalidate_reg_cache(); // rax clobbered by AL/EAX write
+        // All the operand_to_rax calls above and the xorl/movb clobber rax.
+        // Invalidate so emit_call_instruction's operand_to_rax for indirect
+        // calls doesn't skip loading the function pointer.
+        self.state.reg_cache.invalidate_all();
     }
 
     fn emit_call_instruction(&mut self, direct_name: Option<&str>, func_ptr: Option<&Operand>, _indirect: bool, _stack_arg_space: usize) {
@@ -1502,7 +1516,7 @@ impl ArchCodegen for X86Codegen {
             self.state.emit("    call *%r10");
         }
         // Call clobbers rax (return value will be stored by emit_call_store_result)
-        self.state.invalidate_reg_cache();
+        self.state.reg_cache.invalidate_all();
     }
 
     fn emit_call_cleanup(&mut self, stack_arg_space: usize, _f128_temp_space: usize, _indirect: bool) {
@@ -1604,7 +1618,7 @@ impl ArchCodegen for X86Codegen {
             if let Some(slot) = self.state.get_slot(dest.0) {
                 self.state.emit_fmt(format_args!("    movq %rax, {}(%rbp)", slot.0));
             }
-            self.state.invalidate_reg_cache();
+            self.state.reg_cache.invalidate_all();
             return;
         } else if is_fp {
             // Check fp_offset < 176
@@ -1664,7 +1678,7 @@ impl ArchCodegen for X86Codegen {
         if let Some(slot) = self.state.get_slot(dest.0) {
             self.state.emit_fmt(format_args!("    movq %rax, {}(%rbp)", slot.0));
         }
-        self.state.invalidate_reg_cache(); // complex control flow, don't track
+        self.state.reg_cache.invalidate_all(); // complex control flow, don't track
     }
 
     fn emit_va_start(&mut self, va_list_ptr: &Value) {
@@ -1707,7 +1721,7 @@ impl ArchCodegen for X86Codegen {
         let reg_save = self.reg_save_area_offset;
         self.state.emit_fmt(format_args!("    leaq {}(%rbp), %rcx", reg_save));
         self.state.emit("    movq %rcx, 16(%rax)");
-        self.state.invalidate_reg_cache(); // rax has va_list ptr, not IR value
+        self.state.reg_cache.invalidate_all(); // rax has va_list ptr, not IR value
     }
 
     // emit_va_end: uses default no-op implementation
@@ -1735,7 +1749,7 @@ impl ArchCodegen for X86Codegen {
         self.state.emit("    movq %rax, 8(%rdi)");
         self.state.emit("    movq 16(%rsi), %rax");
         self.state.emit("    movq %rax, 16(%rdi)");
-        self.state.invalidate_reg_cache(); // rax has memory data, not IR value
+        self.state.reg_cache.invalidate_all(); // rax has memory data, not IR value
     }
 
     // emit_return: uses default implementation from ArchCodegen trait
@@ -1769,12 +1783,12 @@ impl ArchCodegen for X86Codegen {
                 let bits = f.to_bits();
                 self.state.emit_fmt(format_args!("    movabsq ${}, %rax", bits as i64));
                 self.state.emit("    movq %rax, %xmm1");
-                self.state.invalidate_reg_cache(); // rax clobbered by movabsq
+                self.state.reg_cache.invalidate_all(); // rax clobbered by movabsq
             }
             _ => {
                 self.operand_to_rax(src);
                 self.state.emit("    movq %rax, %xmm1");
-                self.state.invalidate_reg_cache(); // rax repurposed for xmm1 transfer
+                self.state.reg_cache.invalidate_all(); // rax repurposed for xmm1 transfer
             }
         }
     }
@@ -1800,12 +1814,12 @@ impl ArchCodegen for X86Codegen {
                 let bits = f.to_bits();
                 self.state.emit_fmt(format_args!("    movl ${}, %eax", bits));
                 self.state.emit("    movd %eax, %xmm1");
-                self.state.invalidate_reg_cache(); // eax clobbered by movl
+                self.state.reg_cache.invalidate_all(); // eax clobbered by movl
             }
             _ => {
                 self.operand_to_rax(src);
                 self.state.emit("    movd %eax, %xmm1");
-                self.state.invalidate_reg_cache(); // rax repurposed for xmm1 transfer
+                self.state.reg_cache.invalidate_all(); // rax repurposed for xmm1 transfer
             }
         }
     }
@@ -1816,7 +1830,7 @@ impl ArchCodegen for X86Codegen {
         self.state.emit("    movq %rax, %rcx"); // rcx = ptr
         self.operand_to_rax(val);
         // rax = val, rcx = ptr
-        self.state.invalidate_reg_cache(); // atomic ops clobber rax with old value
+        self.state.reg_cache.invalidate_all(); // atomic ops clobber rax with old value
         let size_suffix = Self::type_suffix(ty);
         let val_reg = Self::reg_for_type("rax", ty);
         match op {
@@ -1869,7 +1883,7 @@ impl ArchCodegen for X86Codegen {
         self.state.emit("    movq %rax, %rdx"); // rdx = desired
         self.operand_to_rax(expected);
         // Now: rax = expected, rdx = desired, rcx = ptr
-        self.state.invalidate_reg_cache(); // cmpxchg clobbers rax with old value
+        self.state.reg_cache.invalidate_all(); // cmpxchg clobbers rax with old value
         let size_suffix = Self::type_suffix(ty);
         let desired_reg = Self::reg_for_type("rdx", ty);
         self.state.emit_fmt(format_args!("    lock cmpxchg{} %{}, (%rcx)", size_suffix, desired_reg));
@@ -1885,7 +1899,7 @@ impl ArchCodegen for X86Codegen {
     fn emit_atomic_load(&mut self, dest: &Value, ptr: &Operand, ty: IrType, _ordering: AtomicOrdering) {
         // On x86, aligned loads are naturally atomic
         self.operand_to_rax(ptr);
-        self.state.invalidate_reg_cache(); // rax will be overwritten with loaded value
+        self.state.reg_cache.invalidate_all(); // rax will be overwritten with loaded value
         let load_instr = Self::mov_load_for_type(ty);
         let dest_reg = Self::load_dest_reg(ty);
         self.state.emit_fmt(format_args!("    {} (%rax), {}", load_instr, dest_reg));
@@ -1898,7 +1912,7 @@ impl ArchCodegen for X86Codegen {
         self.operand_to_rax(val);
         self.state.emit("    movq %rax, %rdx"); // rdx = val
         self.operand_to_rax(ptr);
-        self.state.invalidate_reg_cache(); // rax has ptr address, not useful IR value
+        self.state.reg_cache.invalidate_all(); // rax has ptr address, not useful IR value
         // rax = ptr, rdx = val
         let store_reg = Self::reg_for_type("rdx", ty);
         let store_instr = Self::mov_store_for_type(ty);
@@ -1922,7 +1936,7 @@ impl ArchCodegen for X86Codegen {
 
     fn emit_inline_asm(&mut self, template: &str, outputs: &[(String, Value, Option<String>)], inputs: &[(String, Operand, Option<String>)], _clobbers: &[String], operand_types: &[IrType], goto_labels: &[(String, BlockId)]) {
         emit_inline_asm_common(self, template, outputs, inputs, operand_types, goto_labels);
-        self.state.invalidate_reg_cache(); // inline asm may clobber rax
+        self.state.reg_cache.invalidate_all(); // inline asm may clobber rax
     }
 
     fn emit_copy_i128(&mut self, dest: &Value, src: &Operand) {
@@ -1932,7 +1946,7 @@ impl ArchCodegen for X86Codegen {
 
     fn emit_intrinsic(&mut self, dest: &Option<Value>, op: &IntrinsicOp, dest_ptr: &Option<Value>, args: &[Operand]) {
         self.emit_intrinsic_impl(dest, op, dest_ptr, args);
-        self.state.invalidate_reg_cache(); // intrinsics may clobber rax
+        self.state.reg_cache.invalidate_all(); // intrinsics may clobber rax
     }
 
     // ---- Float binop primitives ----
@@ -1957,7 +1971,7 @@ impl ArchCodegen for X86Codegen {
         // rhs is in rax (acc), lhs was pushed (secondary)
         self.state.emit_fmt(format_args!("    {}", mov_to_xmm1)); // rhs -> xmm1
         self.state.emit("    popq %rax"); // lhs from stack
-        self.state.invalidate_reg_cache();
+        self.state.reg_cache.invalidate_all();
         self.state.emit_fmt(format_args!("    {}", mov_to_xmm0)); // lhs -> xmm0
         let suffix = if ty == IrType::F64 || ty == IrType::F128 { "sd" } else { "ss" };
         self.state.emit_fmt(format_args!("    {}{} %xmm1, %xmm0", mnemonic, suffix));

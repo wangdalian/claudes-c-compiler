@@ -1,9 +1,13 @@
-//! Shared codegen state and slot addressing types.
+//! Shared codegen state, slot addressing types, and register value cache.
 //!
 //! All three backends use the same `CodegenState` to track stack slot assignments,
-//! alloca metadata, and label generation during code generation. The `SlotAddr` enum
-//! captures the 3-way addressing pattern (over-aligned alloca / direct alloca / indirect)
-//! that repeats across store, load, GEP, and memcpy emission.
+//! alloca metadata, label generation, and the register value cache during code generation.
+//! The `SlotAddr` enum captures the 3-way addressing pattern (over-aligned alloca /
+//! direct alloca / indirect) that repeats across store, load, GEP, and memcpy emission.
+//!
+//! The `RegCache` tracks which IR values are currently known to be in registers,
+//! enabling backends to skip redundant stack loads. This is the foundation for
+//! eventually replacing the pure stack-slot model with a register allocator.
 
 use crate::common::fx_hash::{FxHashMap, FxHashSet};
 use crate::common::types::IrType;
@@ -15,6 +19,61 @@ use super::common::AsmOutput;
 /// - RISC-V: negative offset from s0
 #[derive(Debug, Clone, Copy)]
 pub struct StackSlot(pub i64);
+
+/// Register cache entry: tracks which IR value is known to be in a register.
+/// The `is_alloca` flag distinguishes whether the register holds the alloca's
+/// address (leaq/adr) or the value loaded from the stack slot (movq/ldr).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegCacheEntry {
+    pub value_id: u32,
+    pub is_alloca: bool,
+}
+
+/// Register value cache. Tracks which IR values are currently in the accumulator
+/// and secondary registers, avoiding redundant stack loads.
+///
+/// The cache is conservative: it is invalidated on any operation that might clobber
+/// a register (calls, inline asm, complex operations that use scratch registers).
+/// This is safe because a stale entry would just cause a redundant load (the same
+/// behavior as before the cache existed), while a missing invalidation could cause
+/// incorrect code by skipping a needed load.
+///
+/// Architecture mapping:
+/// - x86:    acc = %rax,  sec = %rcx
+/// - ARM64:  acc = x0,    sec = x1
+/// - RISC-V: acc = t0,    sec = t1
+#[derive(Debug, Default)]
+pub struct RegCache {
+    /// Which value is currently in the primary accumulator register.
+    pub acc: Option<RegCacheEntry>,
+}
+
+impl RegCache {
+    /// Record that the accumulator now holds the given value.
+    #[inline]
+    pub fn set_acc(&mut self, value_id: u32, is_alloca: bool) {
+        self.acc = Some(RegCacheEntry { value_id, is_alloca });
+    }
+
+    /// Check if the accumulator holds the given value (with matching alloca status).
+    #[inline]
+    pub fn acc_has(&self, value_id: u32, is_alloca: bool) -> bool {
+        self.acc == Some(RegCacheEntry { value_id, is_alloca })
+    }
+
+    /// Invalidate the accumulator cache.
+    #[inline]
+    pub fn invalidate_acc(&mut self) {
+        self.acc = None;
+    }
+
+    /// Invalidate all cached register values. Called on operations that may
+    /// clobber any register (calls, inline asm, etc.).
+    #[inline]
+    pub fn invalidate_all(&mut self) {
+        self.acc = None;
+    }
+}
 
 /// Shared codegen state, used by all backends.
 pub struct CodegenState {
@@ -40,12 +99,9 @@ pub struct CodegenState {
     /// When true, the epilogue must restore SP from the frame pointer instead of
     /// adding back the compile-time frame size.
     pub has_dyn_alloca: bool,
-    /// Register value cache: tracks which IR value is currently in the accumulator
-    /// register (rax on x86, x0 on ARM, t0 on RISC-V). When set, operand loads can
-    /// skip the memory read if the value is already in the register.
-    /// Set to None at any point that clobbers the accumulator (calls, inline asm,
-    /// block boundaries, push/pop sequences).
-    pub reg_cache_acc: Option<u32>,
+    /// Register value cache: tracks which IR values are in the accumulator and
+    /// secondary registers to skip redundant loads.
+    pub reg_cache: RegCache,
 }
 
 impl CodegenState {
@@ -62,7 +118,7 @@ impl CodegenState {
             pic_mode: false,
             local_symbols: FxHashSet::default(),
             has_dyn_alloca: false,
-            reg_cache_acc: None,
+            reg_cache: RegCache::default(),
         }
     }
 
@@ -96,14 +152,7 @@ impl CodegenState {
         self.alloca_alignments.clear();
         self.i128_values.clear();
         self.has_dyn_alloca = false;
-        self.reg_cache_acc = None;
-    }
-
-    /// Invalidate the register value cache. Call this whenever the accumulator
-    /// register is clobbered (calls, inline asm, block boundaries, etc.).
-    #[inline]
-    pub fn invalidate_reg_cache(&mut self) {
-        self.reg_cache_acc = None;
+        self.reg_cache.invalidate_all();
     }
 
     /// Get the over-alignment requirement for an alloca (> 16 bytes), or None.

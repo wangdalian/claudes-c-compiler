@@ -183,6 +183,7 @@ impl RiscvCodegen {
     fn operand_to_t0(&mut self, op: &Operand) {
         match op {
             Operand::Const(c) => {
+                self.state.reg_cache.invalidate_acc();
                 match c {
                     IrConst::I8(v) => self.state.emit_fmt(format_args!("    li t0, {}", v)),
                     IrConst::I16(v) => self.state.emit_fmt(format_args!("    li t0, {}", v)),
@@ -206,14 +207,20 @@ impl RiscvCodegen {
                 }
             }
             Operand::Value(v) => {
+                let is_alloca = self.state.is_alloca(v.0);
+                if self.state.reg_cache.acc_has(v.0, is_alloca) {
+                    return; // Cache hit — t0 already holds this value.
+                }
                 if let Some(slot) = self.state.get_slot(v.0) {
-                    if self.state.is_alloca(v.0) {
+                    if is_alloca {
                         self.emit_addi_s0("t0", slot.0);
                     } else {
                         self.emit_load_from_s0("t0", slot.0, "ld");
                     }
+                    self.state.reg_cache.set_acc(v.0, is_alloca);
                 } else {
                     self.state.emit("    li t0, 0");
+                    self.state.reg_cache.invalidate_acc();
                 }
             }
         }
@@ -223,6 +230,7 @@ impl RiscvCodegen {
     fn store_t0_to(&mut self, dest: &Value) {
         if let Some(slot) = self.state.get_slot(dest.0) {
             self.emit_store_to_s0("t0", slot.0, "sd");
+            self.state.reg_cache.set_acc(dest.0, false);
         }
     }
 

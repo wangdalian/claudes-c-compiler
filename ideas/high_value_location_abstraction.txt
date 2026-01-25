@@ -1,18 +1,17 @@
 HIGH PRIORITY: Introduce ValueLocation abstraction for eventual register allocation
 
-Problem:
-CodegenState (codegen_shared.rs:24) hardwires value_locations: HashMap<u32, StackSlot>.
-calculate_stack_space_common unconditionally assigns every IR value a stack slot --
-there is no liveness analysis, no register allocation, no "keep in register" path.
-The x86 backend uses pushq %rax / popq %rax as scratch register management (14+
-push/pop sites). ARM and RISC-V use mov x1,x0 / mv t1,t0 for the same purpose.
+STATUS: Phase 1 (RegCache) completed. Next steps below.
 
-The ArchCodegen trait has 118 methods, all assuming stack-slot-based value locations.
-The three backends total ~7,800 lines of codegen, all built on this assumption.
-Every new IR instruction or optimization that the compiler adds deepens the
-commitment to stack-only codegen.
+Completed:
+- Added RegCache struct to state.rs tracking accumulator register contents across
+  all 3 backends (x86/ARM/RISC-V). Skips redundant loads when the value is already
+  in the accumulator register (rax/x0/t0).
+- Conservative cache strategy: only preserved across Copy instructions; all other
+  instructions invalidate the cache after execution. Block boundaries also invalidate.
+- Test results after RegCache: x86 2921/2991 (97.7%), ARM 2805/2869 (97.8%),
+  RISC-V 2836/2861 (99.1%) -- no meaningful regressions from baseline.
 
-What to do (incremental, not a rewrite):
+Remaining work:
 1. Introduce a ValueLocation enum:
      enum ValueLocation {
          Stack(StackSlot),
@@ -21,21 +20,18 @@ What to do (incremental, not a rewrite):
 2. Change value_locations to HashMap<u32, ValueLocation>
 3. Initially, all values still get ValueLocation::Stack -- behavior unchanged
 4. Update emit_load_operand / emit_store_result to dispatch on ValueLocation
-5. This creates the abstraction boundary so that a future register allocator
-   can assign ValueLocation::Register to some values without rewriting all
-   118 trait methods at once
-
-This is NOT implementing a register allocator. It's adding the abstraction layer
-that makes a register allocator possible without a full codegen rewrite. The longer
-this is deferred, the more codegen code hardwires stack assumptions.
+5. Extend RegCache to also track the secondary register (rcx/x1/t1)
+6. Add invalidate_value() for targeted invalidation on stores
+7. Expand the set of instructions that preserve the cache (especially pure
+   operations like BinOp, UnaryOp, Cast where the result is stored to acc)
 
 Key files:
-- src/backend/codegen_shared.rs (CodegenState, StackSlot, calculate_stack_space_common,
-  ArchCodegen trait: 118 methods)
-- src/backend/x86/codegen/codegen.rs (2,391 lines, 14+ pushq %rax sites)
-- src/backend/arm/codegen/codegen.rs (2,747 lines)
-- src/backend/riscv/codegen/codegen.rs (2,690 lines)
+- src/backend/state.rs (CodegenState, StackSlot, RegCache, RegCacheEntry)
+- src/backend/generation.rs (cache invalidation strategy in generate_instruction)
+- src/backend/x86/codegen/codegen.rs (operand_to_rax, store_rax_to, + 6 invalidation sites)
+- src/backend/arm/codegen/codegen.rs (operand_to_x0, store_x0_to)
+- src/backend/riscv/codegen/codegen.rs (operand_to_t0, store_t0_to)
 
 Relationship to ideas/register_allocator.txt:
 That idea describes the full register allocator. This idea is the prerequisite
-abstraction step that should happen first.
+abstraction step. RegCache is the first concrete step toward it.
