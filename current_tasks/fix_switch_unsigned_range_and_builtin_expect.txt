@@ -1,0 +1,22 @@
+Fix switch unsigned case range comparisons and __builtin_expect side effects
+
+Problem 1: Switch case ranges with unsigned types use signed comparisons
+- The emit_switch_dispatch function uses IrCmpOp::Sge/Sle for case ranges
+- This fails for unsigned types (e.g., unsigned long long) when case values
+  exceed signed max (0x7FFFFFFFFFFFFFFF)
+- Test: gcc_torture_pr34154 - case 1000000000000000000ULL ... 9999999999999999999ULL
+- The high value 9999999999999999999ULL (0x8ac7...) becomes negative as i64,
+  causing the signed comparison to fail
+
+Problem 2: __builtin_expect drops the second argument entirely
+- Defined as preprocessor macro: (exp, c) -> (exp)
+- This drops side effects of the second argument (e.g., z++)
+- Test: gcc_torture_pr85156 - __builtin_expect(x ? y != 0 : 0, z++)
+- z++ never executes, causing wrong return value
+
+Fix plan:
+1. Pass switch expr_type through to emit_switch_dispatch
+2. Use unsigned comparisons (Uge/Ule) when switch type is unsigned
+3. Fix the constant folding path for unsigned ranges
+4. Remove __builtin_expect from preprocessor macros
+5. Handle __builtin_expect as a real builtin in the IR lowering
