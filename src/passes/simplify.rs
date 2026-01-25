@@ -251,10 +251,34 @@ fn fold_const_cast(c: &IrConst, from_ty: IrType, to_ty: IrType) -> Option<IrCons
             IrType::I16 | IrType::U16 => IrConst::I16(val as i16),
             IrType::I32 | IrType::U32 => IrConst::I32(val as i32),
             IrType::I64 | IrType::U64 | IrType::Ptr => IrConst::I64(val),
-            IrType::I128 | IrType::U128 => IrConst::I128(val as i128),
-            IrType::F32 => IrConst::F32(val as f32),
-            IrType::F64 => IrConst::F64(val as f64),
-            IrType::F128 => IrConst::LongDouble(val as f64),
+            IrType::I128 | IrType::U128 => {
+                if from_ty.is_unsigned() {
+                    IrConst::I128(val as u64 as u128 as i128)
+                } else {
+                    IrConst::I128(val as i128)
+                }
+            }
+            IrType::F32 => {
+                if from_ty.is_unsigned() {
+                    IrConst::F32(val as u64 as f32)
+                } else {
+                    IrConst::F32(val as f32)
+                }
+            }
+            IrType::F64 => {
+                if from_ty.is_unsigned() {
+                    IrConst::F64(val as u64 as f64)
+                } else {
+                    IrConst::F64(val as f64)
+                }
+            }
+            IrType::F128 => {
+                if from_ty.is_unsigned() {
+                    IrConst::LongDouble(val as u64 as f64)
+                } else {
+                    IrConst::LongDouble(val as f64)
+                }
+            }
             _ => return None,
         });
     }
