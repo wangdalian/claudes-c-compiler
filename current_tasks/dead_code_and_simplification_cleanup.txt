@@ -1,0 +1,12 @@
+Dead Code Removal and Code Simplification Cleanup
+
+Scope:
+1. Remove completely dead common/error.rs module (unused DiagnosticEngine)
+2. Remove dead methods: CType::struct_tag_name(), CType::is_arithmetic()
+3. Simplify IrConst::coerce_to_with_src() - collapse 33 hand-enumerated arms into generic numeric conversion
+4. Simplify IrConst::bool_normalize() to use existing is_zero()
+5. Collapse define_predefined_macros() from 276 sequential lines to table-driven
+6. Remove dead variables (_inner_elem_size, _total_elems) in global_init files
+7. Update READMEs to reflect removals
+
+This is a cleanup-only change. No behavior changes.
