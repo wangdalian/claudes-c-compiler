@@ -1946,6 +1946,71 @@ impl ArchCodegen for X86Codegen {
         self.store_rax_to(dest);
     }
 
+    /// Fused compare-and-branch: emit cmpq + jCC directly without materializing
+    /// the boolean result to a register or stack slot.
+    ///
+    /// Before fusion (7+ instructions):
+    ///   cmpq %rcx, %rax; setl %al; movzbq %al, %rax; movq %rax, -N(%rbp);
+    ///   movq -N(%rbp), %rax; testq %rax, %rax; jne .Ltrue; jmp .Lfalse
+    ///
+    /// After fusion (3 instructions):
+    ///   cmpq %rcx, %rax; jl .Ltrue; jmp .Lfalse
+    fn emit_fused_cmp_branch(
+        &mut self,
+        op: IrCmpOp,
+        lhs: &Operand,
+        rhs: &Operand,
+        _ty: IrType,
+        true_label: &str,
+        false_label: &str,
+    ) {
+        // Emit the comparison (same logic as emit_cmp but without setCC/store)
+        let lhs_phys = self.operand_reg(lhs);
+        let rhs_phys = self.operand_reg(rhs);
+        if let (Some(lhs_r), Some(rhs_r)) = (lhs_phys, rhs_phys) {
+            let lhs_name = callee_saved_name(lhs_r);
+            let rhs_name = callee_saved_name(rhs_r);
+            self.state.emit_fmt(format_args!("    cmpq %{}, %{}", rhs_name, lhs_name));
+        } else if let Some(imm) = Self::const_as_imm32(rhs) {
+            if let Some(lhs_r) = lhs_phys {
+                let lhs_name = callee_saved_name(lhs_r);
+                self.state.emit_fmt(format_args!("    cmpq ${}, %{}", imm, lhs_name));
+            } else {
+                self.operand_to_rax(lhs);
+                self.state.emit_fmt(format_args!("    cmpq ${}, %rax", imm));
+            }
+        } else if let Some(lhs_r) = lhs_phys {
+            let lhs_name = callee_saved_name(lhs_r);
+            self.operand_to_rcx(rhs);
+            self.state.emit_fmt(format_args!("    cmpq %rcx, %{}", lhs_name));
+        } else if let Some(rhs_r) = rhs_phys {
+            let rhs_name = callee_saved_name(rhs_r);
+            self.operand_to_rax(lhs);
+            self.state.emit_fmt(format_args!("    cmpq %{}, %rax", rhs_name));
+        } else {
+            self.operand_to_rax(lhs);
+            self.operand_to_rcx(rhs);
+            self.state.emit("    cmpq %rcx, %rax");
+        }
+
+        // Emit fused conditional jump directly (no setCC, no movzbq, no store/load/test)
+        let jcc = match op {
+            IrCmpOp::Eq  => "je",
+            IrCmpOp::Ne  => "jne",
+            IrCmpOp::Slt => "jl",
+            IrCmpOp::Sle => "jle",
+            IrCmpOp::Sgt => "jg",
+            IrCmpOp::Sge => "jge",
+            IrCmpOp::Ult => "jb",
+            IrCmpOp::Ule => "jbe",
+            IrCmpOp::Ugt => "ja",
+            IrCmpOp::Uge => "jae",
+        };
+        self.state.emit_fmt(format_args!("    {} {}", jcc, true_label));
+        self.state.emit_fmt(format_args!("    jmp {}", false_label));
+        self.state.reg_cache.invalidate_all();
+    }
+
     // emit_call: uses shared default from ArchCodegen trait (traits.rs)
 
     fn call_abi_config(&self) -> CallAbiConfig {

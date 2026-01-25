@@ -619,6 +619,39 @@ pub trait ArchCodegen {
         self.emit_branch(false_label);
     }
 
+    /// Emit a fused compare-and-branch: perform the comparison and immediately
+    /// branch based on the result, without materializing the boolean value.
+    ///
+    /// Replaces the sequence:
+    ///   cmp a, b → setCC → movzb → store → load → test → jne/je
+    /// with:
+    ///   cmp a, b → jCC true_label → jmp false_label
+    ///
+    /// Only called for integer (non-float, non-i128) comparisons whose result
+    /// has exactly one use (the CondBranch terminator).
+    ///
+    /// Default implementation falls back to separate cmp + cond_branch.
+    /// Backends should override this for efficient direct conditional jumps.
+    fn emit_fused_cmp_branch(
+        &mut self,
+        op: IrCmpOp,
+        lhs: &Operand,
+        rhs: &Operand,
+        ty: IrType,
+        true_label: &str,
+        false_label: &str,
+    ) {
+        // Default: emit separate cmp and branch (backends override for efficiency).
+        // Use a dummy dest that won't match any real stack slot.
+        let dummy_dest = Value(u32::MAX);
+        self.emit_cmp(&dummy_dest, op, lhs, rhs, ty);
+        // The accumulator holds the boolean result; branch on it.
+        self.emit_branch_nonzero(true_label);
+        self.emit_branch(false_label);
+        // Invalidate cache since dummy_dest may have polluted it.
+        self.state().reg_cache.invalidate_all();
+    }
+
     /// Emit an indirect branch (computed goto).
     fn emit_indirect_branch(&mut self, target: &Operand) {
         self.emit_load_operand(target);

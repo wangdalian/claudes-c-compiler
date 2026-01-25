@@ -14,6 +14,7 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
 - Phi elimination for backend codegen (parallel copy lowering)
 - Optimization passes (constant folding, DCE, GVN, LICM, algebraic simplification, copy propagation, CFG simplification) operating on SSA form
 - x86-64 peephole optimizer (eliminates redundant store/load, push/pop, and jump patterns)
+- **Compare-branch fusion**: single-use Cmp+CondBranch patterns emit direct conditional jumps (all backends)
 - **Linear scan register allocator** with loop-aware liveness analysis (x86-64 and RISC-V backends)
 - Three backend targets with correct ABI handling
 

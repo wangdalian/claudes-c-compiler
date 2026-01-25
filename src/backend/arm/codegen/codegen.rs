@@ -1335,6 +1335,47 @@ impl ArchCodegen for ArmCodegen {
         self.store_x0_to(dest);
     }
 
+    /// Fused compare-and-branch for ARM: emit cmp + b.CC directly.
+    fn emit_fused_cmp_branch(
+        &mut self,
+        op: IrCmpOp,
+        lhs: &Operand,
+        rhs: &Operand,
+        ty: IrType,
+        true_label: &str,
+        false_label: &str,
+    ) {
+        // Load operands: lhs -> x1, rhs -> x0
+        self.operand_to_x0(lhs);
+        self.state.emit("    mov x1, x0");
+        self.operand_to_x0(rhs);
+        let use_32bit = ty == IrType::I32 || ty == IrType::U32
+            || ty == IrType::I8 || ty == IrType::U8
+            || ty == IrType::I16 || ty == IrType::U16;
+        if use_32bit {
+            self.state.emit("    cmp w1, w0");
+        } else {
+            self.state.emit("    cmp x1, x0");
+        }
+
+        // Emit conditional branch directly
+        let cc = match op {
+            IrCmpOp::Eq  => "eq",
+            IrCmpOp::Ne  => "ne",
+            IrCmpOp::Slt => "lt",
+            IrCmpOp::Sle => "le",
+            IrCmpOp::Sgt => "gt",
+            IrCmpOp::Sge => "ge",
+            IrCmpOp::Ult => "lo",
+            IrCmpOp::Ule => "ls",
+            IrCmpOp::Ugt => "hi",
+            IrCmpOp::Uge => "hs",
+        };
+        self.state.emit_fmt(format_args!("    b.{} {}", cc, true_label));
+        self.state.emit_fmt(format_args!("    b {}", false_label));
+        self.state.reg_cache.invalidate_all();
+    }
+
     // emit_call: uses shared default from ArchCodegen trait (traits.rs)
 
     fn call_abi_config(&self) -> CallAbiConfig {

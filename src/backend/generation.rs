@@ -16,6 +16,141 @@ use super::common;
 use super::traits::ArchCodegen;
 use super::state::StackSlot;
 
+/// Returns the number of times each IR Value is used as an operand in
+/// instructions or terminators. Indexed by Value ID; used to identify
+/// single-use values eligible for compare-branch fusion.
+fn count_value_uses(func: &IrFunction) -> Vec<u32> {
+    // Find the max value ID to size the vector
+    let mut max_id: u32 = 0;
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            if let Some(dest) = inst.dest() {
+                max_id = max_id.max(dest.0);
+            }
+        }
+    }
+    let mut counts = vec![0u32; max_id as usize + 1];
+
+    let count_op = |op: &Operand, counts: &mut Vec<u32>| {
+        if let Operand::Value(v) = op {
+            if (v.0 as usize) < counts.len() {
+                counts[v.0 as usize] += 1;
+            }
+        }
+    };
+
+    let count_val = |v: &Value, counts: &mut Vec<u32>| {
+        if (v.0 as usize) < counts.len() {
+            counts[v.0 as usize] += 1;
+        }
+    };
+
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            match inst {
+                Instruction::BinOp { lhs, rhs, .. } | Instruction::Cmp { lhs, rhs, .. } => {
+                    count_op(lhs, &mut counts); count_op(rhs, &mut counts);
+                }
+                Instruction::UnaryOp { src, .. } | Instruction::Cast { src, .. }
+                | Instruction::Copy { src, .. } => count_op(src, &mut counts),
+                Instruction::Load { ptr, .. } => count_val(ptr, &mut counts),
+                Instruction::Store { val, ptr, .. } => {
+                    count_op(val, &mut counts); count_val(ptr, &mut counts);
+                }
+                Instruction::GetElementPtr { base, offset, .. } => {
+                    count_val(base, &mut counts); count_op(offset, &mut counts);
+                }
+                Instruction::Call { args, .. } => { for a in args { count_op(a, &mut counts); } }
+                Instruction::CallIndirect { func_ptr, args, .. } => {
+                    count_op(func_ptr, &mut counts);
+                    for a in args { count_op(a, &mut counts); }
+                }
+                Instruction::Memcpy { dest, src, .. } => {
+                    count_val(dest, &mut counts); count_val(src, &mut counts);
+                }
+                Instruction::Phi { incoming, .. } => {
+                    for (op, _) in incoming { count_op(op, &mut counts); }
+                }
+                Instruction::AtomicRmw { ptr, val, .. } => {
+                    count_op(ptr, &mut counts); count_op(val, &mut counts);
+                }
+                Instruction::AtomicCmpxchg { ptr, expected, desired, .. } => {
+                    count_op(ptr, &mut counts); count_op(expected, &mut counts);
+                    count_op(desired, &mut counts);
+                }
+                Instruction::AtomicLoad { ptr, .. } => count_op(ptr, &mut counts),
+                Instruction::AtomicStore { ptr, val, .. } => {
+                    count_op(ptr, &mut counts); count_op(val, &mut counts);
+                }
+                Instruction::DynAlloca { size, .. } => count_op(size, &mut counts),
+                Instruction::VaArg { va_list_ptr, .. } | Instruction::VaStart { va_list_ptr }
+                | Instruction::VaEnd { va_list_ptr } => count_val(va_list_ptr, &mut counts),
+                Instruction::VaCopy { dest_ptr, src_ptr } => {
+                    count_val(dest_ptr, &mut counts); count_val(src_ptr, &mut counts);
+                }
+                Instruction::SetReturnF64Second { src } | Instruction::SetReturnF32Second { src } =>
+                    count_op(src, &mut counts),
+                Instruction::InlineAsm { inputs, .. } => {
+                    for (_, op, _) in inputs { count_op(op, &mut counts); }
+                }
+                Instruction::Intrinsic { args, .. } => { for a in args { count_op(a, &mut counts); } }
+                _ => {} // Alloca, GlobalAddr, LabelAddr, GetReturn*, Fence have no Value operands
+            }
+        }
+        // Count uses in terminators
+        match &block.terminator {
+            Terminator::CondBranch { cond, .. } => count_op(cond, &mut counts),
+            Terminator::Return(Some(op)) => count_op(op, &mut counts),
+            Terminator::IndirectBranch { target, .. } => count_op(target, &mut counts),
+            _ => {}
+        }
+    }
+    counts
+}
+
+/// Detect if a block's last instruction is a Cmp whose result is only used
+/// by the block's CondBranch terminator. Returns the index of the Cmp if
+/// fusion is possible, None otherwise.
+fn detect_cmp_branch_fusion(block: &BasicBlock, use_counts: &[u32]) -> Option<usize> {
+    // Terminator must be a CondBranch
+    let (cond, _, _) = match &block.terminator {
+        Terminator::CondBranch { cond, true_label, false_label } => (cond, true_label, false_label),
+        _ => return None,
+    };
+
+    // The condition must be a Value (not a constant)
+    let cond_val = match cond {
+        Operand::Value(v) => v,
+        _ => return None,
+    };
+
+    // Find the last instruction that is a Cmp producing this value
+    let last_idx = block.instructions.len().checked_sub(1)?;
+    let last_inst = &block.instructions[last_idx];
+
+    let (dest, _op, _lhs, _rhs, ty) = match last_inst {
+        Instruction::Cmp { dest, op, lhs, rhs, ty } => (dest, op, lhs, rhs, ty),
+        _ => return None,
+    };
+
+    // The Cmp dest must be the same as the CondBranch cond
+    if dest.0 != cond_val.0 {
+        return None;
+    }
+
+    // Don't fuse i128 or float comparisons (they have special codegen paths)
+    if is_i128_type(*ty) || ty.is_float() {
+        return None;
+    }
+
+    // The Cmp result must be used exactly once (by the CondBranch terminator)
+    if (cond_val.0 as usize) < use_counts.len() && use_counts[cond_val.0 as usize] == 1 {
+        Some(last_idx)
+    } else {
+        None
+    }
+}
+
 /// Generate assembly for a module using the given architecture's codegen.
 pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule) -> String {
     // Pre-size the output buffer based on total IR instruction count to avoid
@@ -175,6 +310,11 @@ fn generate_function(cg: &mut dyn ArchCodegen, func: &IrFunction) {
 
     // Generate basic blocks
     let entry_label = func.blocks.first().map(|b| b.label);
+
+    // Pre-scan: count uses of each Value across the entire function to identify
+    // single-use Cmp results eligible for compare-branch fusion.
+    let value_use_counts = count_value_uses(func);
+
     for block in &func.blocks {
         if Some(block.label) != entry_label {
             // Invalidate register cache at block boundaries: a value in a register
@@ -183,10 +323,33 @@ fn generate_function(cg: &mut dyn ArchCodegen, func: &IrFunction) {
             cg.state().reg_cache.invalidate_all();
             cg.state().emit_fmt(format_args!("{}:", block.label));
         }
-        for inst in &block.instructions {
+
+        // Check for compare-branch fusion opportunity:
+        // If the last instruction is a Cmp whose result is only used by the
+        // CondBranch terminator, emit a fused compare-and-conditional-jump
+        // instead of materializing the boolean result to a register/stack slot.
+        let fuse_idx = detect_cmp_branch_fusion(block, &value_use_counts);
+
+        for (idx, inst) in block.instructions.iter().enumerate() {
+            if Some(idx) == fuse_idx {
+                // Skip this Cmp -- it will be emitted fused with the terminator
+                continue;
+            }
             generate_instruction(cg, inst);
         }
-        generate_terminator(cg, &block.terminator, frame_size);
+
+        if let Some(fi) = fuse_idx {
+            // Emit fused compare-and-branch: cmp + jCC directly
+            if let Instruction::Cmp { dest: _, op, lhs, rhs, ty } = &block.instructions[fi] {
+                if let Terminator::CondBranch { cond: _, true_label, false_label } = &block.terminator {
+                    let true_str = true_label.as_label();
+                    let false_str = false_label.as_label();
+                    cg.emit_fused_cmp_branch(*op, lhs, rhs, *ty, &true_str, &false_str);
+                }
+            }
+        } else {
+            generate_terminator(cg, &block.terminator, frame_size);
+        }
     }
 
     cg.state().emit_fmt(format_args!(".size {}, .-{}", func.name, func.name));

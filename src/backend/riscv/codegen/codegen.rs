@@ -1513,6 +1513,58 @@ impl ArchCodegen for RiscvCodegen {
         self.store_t0_to(dest);
     }
 
+    /// Fused compare-and-branch for RISC-V: emit branch instructions directly.
+    /// RISC-V has native compare-and-branch instructions: beq, bne, blt, bge, bltu, bgeu.
+    fn emit_fused_cmp_branch(
+        &mut self,
+        op: IrCmpOp,
+        lhs: &Operand,
+        rhs: &Operand,
+        ty: IrType,
+        true_label: &str,
+        false_label: &str,
+    ) {
+        // Load operands: lhs -> t1, rhs -> t2
+        self.operand_to_t0(lhs);
+        self.state.emit("    mv t1, t0");
+        self.operand_to_t0(rhs);
+        self.state.emit("    mv t2, t0");
+
+        // For sub-64-bit types, sign/zero-extend before comparison
+        let is_32bit = ty == IrType::I32 || ty == IrType::U32
+            || ty == IrType::I8 || ty == IrType::U8
+            || ty == IrType::I16 || ty == IrType::U16;
+        if is_32bit && ty.is_unsigned() {
+            self.state.emit("    slli t1, t1, 32");
+            self.state.emit("    srli t1, t1, 32");
+            self.state.emit("    slli t2, t2, 32");
+            self.state.emit("    srli t2, t2, 32");
+        } else if is_32bit {
+            self.state.emit("    sext.w t1, t1");
+            self.state.emit("    sext.w t2, t2");
+        }
+
+        // RISC-V has 6 compare-and-branch instructions:
+        //   beq, bne, blt, bge, bltu, bgeu
+        // For >, <=, we swap operands to use blt/bge.
+        let (branch_instr, r1, r2) = match op {
+            IrCmpOp::Eq  => ("beq",  "t1", "t2"),
+            IrCmpOp::Ne  => ("bne",  "t1", "t2"),
+            IrCmpOp::Slt => ("blt",  "t1", "t2"),
+            IrCmpOp::Sge => ("bge",  "t1", "t2"),
+            IrCmpOp::Ult => ("bltu", "t1", "t2"),
+            IrCmpOp::Uge => ("bgeu", "t1", "t2"),
+            // Swap operands for > and <=
+            IrCmpOp::Sgt => ("blt",  "t2", "t1"),  // a > b  ≡  b < a
+            IrCmpOp::Sle => ("bge",  "t2", "t1"),  // a <= b ≡  b >= a
+            IrCmpOp::Ugt => ("bltu", "t2", "t1"),  // a > b  ≡  b < a (unsigned)
+            IrCmpOp::Ule => ("bgeu", "t2", "t1"),  // a <= b ≡  b >= a (unsigned)
+        };
+        self.state.emit_fmt(format_args!("    {} {}, {}, {}", branch_instr, r1, r2, true_label));
+        self.state.emit_fmt(format_args!("    j {}", false_label));
+        self.state.reg_cache.invalidate_all();
+    }
+
     // emit_call: uses shared default from ArchCodegen trait (traits.rs)
 
     fn call_abi_config(&self) -> CallAbiConfig {
