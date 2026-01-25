@@ -1,0 +1,23 @@
+Task: Optimize x86 codegen to use immediate operands and avoid push/pop pattern
+
+Problem: emit_int_binop always loads both operands through the push/pop dance:
+  operand_to_rax(lhs)   # load lhs into rax
+  pushq %rax            # save lhs
+  operand_to_rax(rhs)   # load rhs into rax
+  movq %rax, %rcx       # move rhs to rcx
+  popq %rax             # restore lhs
+  <op> %rcx, %rax       # perform operation
+  movq %rax, <slot>     # store result
+
+This is 7+ instructions per binop. When RHS is a constant, we can use immediate
+operands directly (e.g., addq $4, %rax), saving 3-4 instructions per operation.
+When RHS is a value, we can load it directly into %rcx without push/pop.
+
+Same applies to emit_cmp: avoid materializing constants in registers.
+
+Expected impact: 30-50% fewer instructions for arithmetic-heavy code like zlib's
+longest_match function (currently 1069 instructions vs GCC's 146).
+
+Scope: x86 codegen (emit_int_binop, emit_cmp)
+
+Status: in progress
