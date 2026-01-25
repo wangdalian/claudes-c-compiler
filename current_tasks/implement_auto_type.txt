@@ -1,0 +1,10 @@
+Implementing __auto_type GCC extension support.
+
+This blocks liburing and libuv which use GCC's stdatomic.h macros that expand
+to __auto_type declarations inside statement expressions.
+
+Plan:
+- Add __auto_type as a type specifier in the parser
+- Add TypeSpec::AutoType variant to the AST
+- Handle type inference from the initializer during lowering
+- Test with liburing and libuv projects
