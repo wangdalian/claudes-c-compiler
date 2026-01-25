@@ -345,17 +345,16 @@ impl Preprocessor {
         // GCC extension macros
         self.define_simple_macro("__GNUC_VA_LIST", "1");
         self.define_simple_macro("__extension__", "");
-        self.define_simple_macro("__restrict", "restrict");
-        self.define_simple_macro("__restrict__", "restrict");
-        self.define_simple_macro("__inline__", "inline");
-        self.define_simple_macro("__inline", "inline");
-        self.define_simple_macro("__signed__", "signed");
-        self.define_simple_macro("__const", "const");
-        self.define_simple_macro("__const__", "const");
-        self.define_simple_macro("__volatile__", "volatile");
-        self.define_simple_macro("__asm__", "asm");
-        self.define_simple_macro("__asm", "asm");
-        self.define_simple_macro("__typeof__", "typeof");
+        // NOTE: GNU keyword aliases (__inline__, __volatile__, __asm__, __const__,
+        // __restrict__, __signed__, __typeof__) are handled as keyword tokens in the
+        // lexer (token.rs). They must NOT be defined as preprocessor macros because:
+        // (1) In GCC they are reserved keywords immune to #define redefinition.
+        // (2) Defining them as macros breaks when user code redefines the base keyword.
+        //     E.g., the Linux kernel does: #define inline inline __gnu_inline ...
+        //     If __inline__ is a macro expanding to "inline", then asm_inline -> asm __inline
+        //     -> asm inline -> asm inline __gnu_inline ... which is invalid.
+        // Only __alignof/__alignof__ need macro definitions since they map to _Alignof
+        // which is a different token name not covered by the lexer's keyword table.
         self.define_simple_macro("__alignof", "_Alignof");
         self.define_simple_macro("__alignof__", "_Alignof");
 
