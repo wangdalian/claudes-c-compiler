@@ -1,0 +1,18 @@
+Implement register __asm__("regname") variable support
+
+Bug: `register long r10 __asm__("r10") = val;` is silently ignored.
+The __asm__("r10") annotation is parsed but discarded. When such variables
+are used as inline asm inputs with "r" constraint, the compiler assigns
+an arbitrary scratch register instead of the specific register requested.
+
+This breaks musl's __syscall6 which uses register r10/r8/r9 asm variables,
+causing mmap to receive garbage arguments and malloc to return NULL.
+
+Fix plan:
+1. Parser: capture __asm__("regname") string from variable declarations
+2. AST: add asm_register field to InitDeclarator/Declaration
+3. IR Lowering: propagate register name to LocalInfo and inline asm constraints
+4. Backend: when an inline asm input has "r" constraint and the operand is a
+   register variable, use the specific register instead of scratch allocation
+
+Affected projects: musl (malloc fails), likely TCC and libffi too.
