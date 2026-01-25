@@ -1,0 +1,24 @@
+Fix _Generic type association parsing and abstract declarator improvements
+
+Problem 1: _Generic expression type associations only parse pointer modifiers (*)
+but not array modifiers ([N]) or the full abstract declarator syntax. This means
+types like `int[4]` in `_Generic(a, int[4]:2, default:5)` fail to parse.
+
+Fix: Replace the inline pointer-only parsing in parse_generic_selection() with
+a call to parse_abstract_declarator_suffix(), which already handles pointers,
+arrays, parenthesized declarators, and function pointers.
+
+Problem 2: sizeof with complex abstract declarators like `double(*([3][4]))[2]`
+fails because try_parse_paren_abstract_declarator() only understands pointer
+groups like (*), not array-of-pointer groups like ([3][4]).
+
+Fix: Extend the abstract declarator parsing to handle array dimensions inside
+parenthesized groups.
+
+Affected tests:
+- c_testsuite_00219 (_Generic with int[4])
+- wacc_chapter_17_valid_sizeof_sizeof_derived_types (sizeof with complex types)
+
+Affects all three architectures since this is a frontend/parser issue.
+
+Status: in progress

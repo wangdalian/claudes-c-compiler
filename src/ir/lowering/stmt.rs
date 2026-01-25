@@ -137,6 +137,14 @@ impl Lowerer {
             };
 
             if decl.is_static {
+                // For local static arrays-of-pointers, clear struct_layout so
+                // lower_global_init uses the pointer-array path (Compound with
+                // relocations) instead of the struct byte-serialization path.
+                // This matches the file-scope global handling in lower_top_level_declaration.
+                if da.is_array_of_pointers || da.is_array_of_func_ptrs {
+                    da.struct_layout = None;
+                    da.is_struct = false;
+                }
                 self.lower_local_static_decl(&decl, &declarator, &da);
                 continue;
             }
