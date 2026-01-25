@@ -1,0 +1,11 @@
+Fix x86 F128 (long double) load/store through GEP-folded paths
+
+Bug: When storing/loading F128 values through GEP-folded constant offsets
+(e.g., the imaginary part of _Complex long double at base+16), the x86
+backend incorrectly uses movq instead of x87 fstpt/fldt instructions.
+
+This causes complex long double arithmetic through pointers or struct
+members to produce -nan values.
+
+Fix: Override emit_load_with_const_offset and emit_store_with_const_offset
+in the x86 backend to handle F128 types with proper x87 instructions.
