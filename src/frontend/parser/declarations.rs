@@ -22,6 +22,9 @@ impl Parser {
         self.parsing_const = false;
         self.parsing_constructor = false;
         self.parsing_destructor = false;
+        self.parsing_weak = false;
+        self.parsing_alias_target = None;
+        self.parsing_visibility = None;
 
         self.skip_gcc_extensions();
 
@@ -35,12 +38,32 @@ impl Parser {
             return None;
         }
 
-        // Handle top-level asm("..."); directives
+        // Handle top-level asm("..."); directives - emit verbatim in assembly output
         if matches!(self.peek(), TokenKind::Asm) {
             self.advance();
             self.consume_if(&TokenKind::Volatile);
             if matches!(self.peek(), TokenKind::LParen) {
-                self.skip_balanced_parens();
+                self.advance(); // consume (
+                // Collect all string literal pieces (may be concatenated)
+                let mut asm_str = String::new();
+                loop {
+                    match self.peek() {
+                        TokenKind::StringLiteral(s) => {
+                            asm_str.push_str(&s);
+                            self.advance();
+                        }
+                        TokenKind::RParen | TokenKind::Eof => break,
+                        _ => { self.advance(); }
+                    }
+                }
+                if matches!(self.peek(), TokenKind::RParen) {
+                    self.advance();
+                }
+                self.consume_if(&TokenKind::Semicolon);
+                if !asm_str.is_empty() {
+                    return Some(ExternalDecl::TopLevelAsm(asm_str));
+                }
+                return Some(ExternalDecl::Declaration(Declaration::empty()));
             }
             self.consume_if(&TokenKind::Semicolon);
             return Some(ExternalDecl::Declaration(Declaration::empty()));
@@ -94,6 +117,10 @@ impl Parser {
         // Merge all sources of constructor/destructor: type-level attrs, declarator-level attrs, post-declarator attrs
         let is_constructor = type_level_ctor || self.parsing_constructor || post_ctor;
         let is_destructor = type_level_dtor || self.parsing_destructor || post_dtor;
+        // Capture alias/weak/visibility attributes
+        let is_weak = self.parsing_weak;
+        let alias_target = self.parsing_alias_target.take();
+        let visibility = self.parsing_visibility.take();
 
         // Apply __attribute__((mode(TI))): transform type to 128-bit
         let type_spec = if mode_ti {
@@ -110,7 +137,7 @@ impl Parser {
         if is_funcdef {
             self.parse_function_def(type_spec, name, derived, start, is_constructor, is_destructor)
         } else {
-            self.parse_declaration_rest(type_spec, name, derived, start, is_constructor, is_destructor, is_common, merged_alignment)
+            self.parse_declaration_rest(type_spec, name, derived, start, is_constructor, is_destructor, is_common, merged_alignment, is_weak, alias_target, visibility)
         }
     }
 
@@ -307,6 +334,9 @@ impl Parser {
         is_destructor: bool,
         mut is_common: bool,
         mut alignment: Option<usize>,
+        is_weak: bool,
+        alias_target: Option<String>,
+        visibility: Option<String>,
     ) -> Option<ExternalDecl> {
         let mut declarators = Vec::new();
         let init = if self.consume_if(&TokenKind::Assign) {
@@ -320,6 +350,9 @@ impl Parser {
             init,
             is_constructor,
             is_destructor,
+            is_weak,
+            alias_target,
+            visibility,
             span: start,
         });
 
@@ -330,6 +363,19 @@ impl Parser {
         if extra_dtor {
             declarators.last_mut().unwrap().is_destructor = true;
         }
+        // Merge weak/alias/visibility from post-declarator attributes
+        if self.parsing_weak {
+            declarators.last_mut().unwrap().is_weak = true;
+        }
+        if let Some(ref target) = self.parsing_alias_target {
+            declarators.last_mut().unwrap().alias_target = Some(target.clone());
+        }
+        if let Some(ref vis) = self.parsing_visibility {
+            declarators.last_mut().unwrap().visibility = Some(vis.clone());
+        }
+        self.parsing_weak = false;
+        self.parsing_alias_target = None;
+        self.parsing_visibility = None;
         is_common = is_common || extra_common;
         if let Some(a) = extra_aligned {
             alignment = Some(alignment.map_or(a, |prev| prev.max(a)));
@@ -340,6 +386,10 @@ impl Parser {
             let (dname, dderived) = self.parse_declarator();
             let (d_ctor, d_dtor, _, d_common, _) = self.parse_asm_and_attributes();
             is_common = is_common || d_common;
+            let d_weak = self.parsing_weak;
+            let d_alias = self.parsing_alias_target.take();
+            let d_vis = self.parsing_visibility.take();
+            self.parsing_weak = false;
             let dinit = if self.consume_if(&TokenKind::Assign) {
                 Some(self.parse_initializer())
             } else {
@@ -351,6 +401,9 @@ impl Parser {
                 init: dinit,
                 is_constructor: d_ctor,
                 is_destructor: d_dtor,
+                is_weak: d_weak,
+                alias_target: d_alias,
+                visibility: d_vis,
                 span: start,
             });
             let (_, skip_aligned) = self.skip_asm_and_attributes();
@@ -423,6 +476,9 @@ impl Parser {
                 init,
                 is_constructor: false,
                 is_destructor: false,
+                is_weak: false,
+                alias_target: None,
+                visibility: None,
                 span: start,
             });
             let (_, post_init_aligned) = self.skip_asm_and_attributes();

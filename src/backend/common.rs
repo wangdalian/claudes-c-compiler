@@ -92,6 +92,9 @@ pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path:
         cmd.arg(arg);
     }
     cmd.arg("-o").arg(output_path);
+    // Tell linker not to require .note.GNU-stack section (suppresses warnings from
+    // hand-written .S files like musl's __set_thread_area.S that lack this section)
+    cmd.arg("-Wl,-z,noexecstack");
 
     for obj in object_files {
         cmd.arg(obj);

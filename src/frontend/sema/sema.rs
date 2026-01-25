@@ -122,6 +122,9 @@ impl SemanticAnalyzer {
                 ExternalDecl::Declaration(decl) => {
                     self.analyze_declaration(decl, /* is_global */ true);
                 }
+                ExternalDecl::TopLevelAsm(_) => {
+                    // Top-level asm is passed through verbatim; no semantic analysis needed
+                }
             }
         }
         // For now, we don't produce fatal errors - we collect info for the lowerer.

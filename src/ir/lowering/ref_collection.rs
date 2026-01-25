@@ -31,7 +31,14 @@ impl Lowerer {
                         if let Some(ref init) = declarator.init {
                             self.collect_refs_from_initializer(init, &mut referenced);
                         }
+                        // Alias targets reference the aliased function
+                        if let Some(ref target) = declarator.alias_target {
+                            referenced.insert(target.clone());
+                        }
                     }
+                }
+                ExternalDecl::TopLevelAsm(_) => {
+                    // Top-level asm doesn't reference C functions
                 }
             }
         }

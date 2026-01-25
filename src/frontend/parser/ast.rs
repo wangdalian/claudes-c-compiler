@@ -11,6 +11,8 @@ pub struct TranslationUnit {
 pub enum ExternalDecl {
     FunctionDef(FunctionDef),
     Declaration(Declaration),
+    /// Top-level asm("...") directive - emitted verbatim in assembly output.
+    TopLevelAsm(String),
 }
 
 /// A function definition.
@@ -83,6 +85,12 @@ pub struct InitDeclarator {
     pub init: Option<Initializer>,
     pub is_constructor: bool,
     pub is_destructor: bool,
+    /// __attribute__((weak)) - emit as a weak symbol
+    pub is_weak: bool,
+    /// __attribute__((alias("target"))) - this symbol is an alias for target
+    pub alias_target: Option<String>,
+    /// __attribute__((visibility("hidden"))) etc.
+    pub visibility: Option<String>,
     pub span: Span,
 }
 

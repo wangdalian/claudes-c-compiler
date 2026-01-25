@@ -296,9 +296,11 @@ fn replace_line(line: &mut String, info: &mut LineInfo, new_text: String) {
 /// Run peephole optimization on x86-64 assembly text.
 /// Returns the optimized assembly string.
 pub fn peephole_optimize(asm: String) -> String {
-    let mut lines: Vec<String> = asm.lines().map(|s| s.to_string()).collect();
+    // Pre-count lines to avoid Vec reallocation during split
+    let line_count = count_newlines(asm.as_bytes()) + 1;
+    let mut lines: Vec<String> = Vec::with_capacity(line_count);
+    lines.extend(asm.lines().map(|s| s.to_string()));
     // Drop the original string early to free memory before we allocate the result.
-    // The lines Vec now owns all the line data.
     drop(asm);
 
     let mut infos: Vec<LineInfo> = lines.iter().map(|l| classify_line(l)).collect();
@@ -307,8 +309,8 @@ pub fn peephole_optimize(asm: String) -> String {
     let mut pass_count = 0;
     while changed && pass_count < 10 {
         changed = false;
-        changed |= eliminate_redundant_store_load(&mut lines, &mut infos);
-        changed |= eliminate_store_load_different_reg(&mut lines, &mut infos);
+        // Fused pass: adjacent store/load patterns (same reg + different reg)
+        changed |= eliminate_adjacent_store_load(&mut lines, &mut infos);
         changed |= eliminate_redundant_jumps(&mut lines, &mut infos);
         changed |= eliminate_push_pop_pairs(&mut lines, &mut infos);
         changed |= eliminate_binop_push_pop_pattern(&mut lines, &mut infos);
@@ -335,32 +337,20 @@ pub fn peephole_optimize(asm: String) -> String {
     result
 }
 
-// ── Pattern 1: Redundant store followed by load of same value ────────────────
-
-fn eliminate_redundant_store_load(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
-    let mut changed = false;
-    let len = lines.len();
-
-    for i in 0..len.saturating_sub(1) {
-        if infos[i].is_nop() || infos[i + 1].is_nop() {
-            continue;
-        }
-
-        if let LineKind::StoreRbp { reg: sr, offset: so, size: ss } = infos[i].kind {
-            if let LineKind::LoadRbp { reg: lr, offset: lo, size: ls } = infos[i + 1].kind {
-                if so == lo && sr == lr && ss == ls {
-                    mark_nop(&mut lines[i + 1], &mut infos[i + 1]);
-                    changed = true;
-                }
-            }
-        }
-    }
-    changed
+/// Count newlines in a byte slice for pre-sizing the lines Vec.
+#[inline]
+fn count_newlines(bytes: &[u8]) -> usize {
+    bytes.iter().filter(|&&b| b == b'\n').count()
 }
 
-// ── Pattern 2: Store then load to different register ─────────────────────────
+// ── Adjacent store/load optimization: when a store to stack (%rbp-relative)
+// is immediately followed by a load from the same offset, either eliminate
+// the load (if same register) or replace with a reg-to-reg move (if different
+// register). This handles two patterns in a single scan:
+//   movq %rax, -8(%rbp); movq -8(%rbp), %rax  →  movq %rax, -8(%rbp)   [eliminated]
+//   movq %rax, -8(%rbp); movq -8(%rbp), %rcx  →  movq %rax, -8(%rbp); movq %rax, %rcx
 
-fn eliminate_store_load_different_reg(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
+fn eliminate_adjacent_store_load(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
     let mut changed = false;
     let len = lines.len();
 
@@ -371,15 +361,21 @@ fn eliminate_store_load_different_reg(lines: &mut [String], infos: &mut [LineInf
 
         if let LineKind::StoreRbp { reg: sr, offset: so, size: ss } = infos[i].kind {
             if let LineKind::LoadRbp { reg: lr, offset: lo, size: ls } = infos[i + 1].kind {
-                if so == lo && sr != lr && ss == ls {
-                    // Need register name strings from the original line for the replacement
-                    let store_line = trim_asm(&lines[i]);
-                    let (store_reg, _, _) = parse_store_to_rbp_str(store_line).unwrap();
-                    let load_line = trim_asm(&lines[i + 1]);
-                    let (_, load_reg, _) = parse_load_from_rbp_str(load_line).unwrap();
-                    let new_text = format!("    {} {}, {}", ss.mnemonic(), store_reg, load_reg);
-                    replace_line(&mut lines[i + 1], &mut infos[i + 1], new_text);
-                    changed = true;
+                if so == lo && ss == ls {
+                    if sr == lr {
+                        // Same register: load is redundant
+                        mark_nop(&mut lines[i + 1], &mut infos[i + 1]);
+                        changed = true;
+                    } else {
+                        // Different register: replace with reg-to-reg move
+                        let store_line = trim_asm(&lines[i]);
+                        let (store_reg, _, _) = parse_store_to_rbp_str(store_line).unwrap();
+                        let load_line = trim_asm(&lines[i + 1]);
+                        let (_, load_reg, _) = parse_load_from_rbp_str(load_line).unwrap();
+                        let new_text = format!("    {} {}, {}", ss.mnemonic(), store_reg, load_reg);
+                        replace_line(&mut lines[i + 1], &mut infos[i + 1], new_text);
+                        changed = true;
+                    }
                 }
             }
         }
@@ -1234,15 +1230,35 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
         return false;
     }
 
-    // Phase 1: Collect all jump/branch targets so we know which labels are
-    // reachable only by fallthrough.
-    let mut jump_targets = std::collections::HashSet::new();
+    // Phase 1: Collect all jump/branch targets using a flat Vec<bool> indexed by
+    // label suffix number (e.g., ".L123" -> index 123). This avoids HashSet heap
+    // allocation for the common case of numeric labels.
+    // For non-numeric labels, we fall back to treating them as jump targets.
+    let mut max_label_num: u32 = 0;
+    for i in 0..len {
+        if infos[i].kind == LineKind::Label {
+            let trimmed = trim_asm(&lines[i]);
+            if let Some(n) = parse_label_number(trimmed) {
+                if n > max_label_num {
+                    max_label_num = n;
+                }
+            }
+        }
+    }
+    let mut is_jump_target = vec![false; (max_label_num + 1) as usize];
+    let mut has_non_numeric_jump_targets = false;
     for i in 0..len {
         match infos[i].kind {
             LineKind::Jmp | LineKind::CondJmp => {
                 let trimmed = trim_asm(&lines[i]);
                 if let Some(target) = extract_jump_target(trimmed) {
-                    jump_targets.insert(target.to_string());
+                    if let Some(n) = parse_dotl_number(target) {
+                        if (n as usize) < is_jump_target.len() {
+                            is_jump_target[n as usize] = true;
+                        }
+                    } else {
+                        has_non_numeric_jump_targets = true;
+                    }
                 }
             }
             _ => {}
@@ -1250,11 +1266,15 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
     }
 
     // Phase 2: Forward scan with slot→register mappings.
-    // Map: stack offset -> SlotMapping
-    let mut slot_map: std::collections::HashMap<i32, SlotMapping> = std::collections::HashMap::new();
+    // Uses a flat Vec of SlotEntry (linear scan) instead of HashMap for the
+    // small number of active slots per basic block. Each entry records a stack
+    // offset, the register that holds the value, and the line index of the store.
+    // Inactive entries are left in the Vec (marked active=false) to avoid
+    // expensive removal; reverse iteration finds the most recent active mapping.
+    let mut slot_entries: Vec<SlotEntry> = Vec::new();
     // Track which registers currently hold "valid" values (i.e., haven't been
-    // clobbered since the store). Map: reg_id -> set of offsets it's backing.
-    let mut reg_slots: [Vec<i32>; 16] = Default::default();
+    // clobbered since the store). reg_offsets[reg_id] = list of slot_entries indices
+    let mut reg_offsets: [SmallVec; 16] = Default::default();
     let mut changed = false;
 
     // Track if the previous non-nop instruction was a jump (meaning the current
@@ -1269,59 +1289,62 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
         match infos[i].kind {
             LineKind::Label => {
                 let label_name = trim_asm(&lines[i]);
-                let label_name = label_name.strip_suffix(':').unwrap_or(label_name);
+                // Check if this label is a jump target
+                let is_target = if let Some(n) = parse_label_number(label_name) {
+                    (n as usize) < is_jump_target.len() && is_jump_target[n as usize]
+                } else {
+                    // Non-numeric label: conservative - treat as jump target
+                    // if any non-numeric jump targets exist
+                    has_non_numeric_jump_targets
+                };
 
-                if jump_targets.contains(label_name) {
-                    // This label is a jump target. Multiple predecessors possible.
-                    // Must invalidate all mappings since we don't know what state
-                    // the jumping block leaves registers in.
-                    slot_map.clear();
-                    for rs in reg_slots.iter_mut() {
-                        rs.clear();
-                    }
-                } else if prev_was_unconditional_jump {
-                    // Label after unconditional jump with no other jumps to it:
-                    // unreachable code. Clear state.
-                    slot_map.clear();
-                    for rs in reg_slots.iter_mut() {
+                if is_target || prev_was_unconditional_jump {
+                    // This label has multiple predecessors (jump target) or follows
+                    // unreachable code (after unconditional jump). We can't know what
+                    // register state the jumping block leaves, so invalidate all mappings.
+                    slot_entries.clear();
+                    for rs in reg_offsets.iter_mut() {
                         rs.clear();
                     }
                 }
-                // Otherwise: fallthrough-only label. Keep mappings intact.
+                // Fallthrough-only labels keep mappings intact.
                 prev_was_unconditional_jump = false;
             }
 
             LineKind::StoreRbp { reg, offset, size } => {
                 // A store updates the mapping for this slot.
                 // First, remove old mapping for this offset if any.
-                if let Some(old) = slot_map.remove(&offset) {
-                    if let Some(slots) = reg_slots.get_mut(old.reg_id as usize) {
-                        slots.retain(|&o| o != offset);
-                    }
+                if let Some(entry) = slot_entries.iter_mut().find(|e| e.active && e.offset == offset) {
+                    let old_reg = entry.mapping.reg_id;
+                    entry.active = false;
+                    reg_offsets[old_reg as usize].remove_val(offset);
                 }
                 // Record the new mapping.
                 if reg != REG_NONE {
-                    slot_map.insert(offset, SlotMapping { reg_id: reg, size, store_idx: i });
-                    if let Some(slots) = reg_slots.get_mut(reg as usize) {
-                        slots.push(offset);
-                    }
+                    slot_entries.push(SlotEntry {
+                        offset,
+                        mapping: SlotMapping { reg_id: reg, size, store_idx: i },
+                        active: true,
+                    });
+                    reg_offsets[reg as usize].push(offset);
                 }
                 prev_was_unconditional_jump = false;
             }
 
             LineKind::LoadRbp { reg: load_reg, offset: load_offset, size: load_size } => {
-                // Check if we have a mapping for this slot.
-                if let Some(&mapping) = slot_map.get(&load_offset) {
+                // Check if we have a mapping for this slot. Iterate in reverse
+                // so we find the most recently added (and thus current) mapping.
+                let mapping = slot_entries.iter().rev()
+                    .find(|e| e.active && e.offset == load_offset)
+                    .map(|e| e.mapping);
+                if let Some(mapping) = mapping {
                     if mapping.size == load_size {
-                        // We can forward! Get the register name from the store.
                         let store_trimmed = trim_asm(&lines[mapping.store_idx]);
                         if let Some((store_reg_str, _, _)) = parse_store_to_rbp_str(store_trimmed) {
                             if load_reg == mapping.reg_id {
-                                // Same register: just remove the load.
                                 mark_nop(&mut lines[i], &mut infos[i]);
                                 changed = true;
                             } else {
-                                // Different register: replace load with reg-to-reg move.
                                 let load_trimmed = trim_asm(&lines[i]);
                                 if let Some((_, load_reg_str, _)) = parse_load_from_rbp_str(load_trimmed) {
                                     let new_text = format!("    {} {}, {}",
@@ -1334,10 +1357,8 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
                     }
                 }
 
-                // The load modifies its destination register, which may
-                // invalidate existing mappings backed by that register.
                 if load_reg != REG_NONE {
-                    invalidate_reg(&mut slot_map, &mut reg_slots, load_reg);
+                    invalidate_reg_flat(&mut slot_entries, &mut reg_offsets, load_reg);
                 }
                 prev_was_unconditional_jump = false;
             }
@@ -1346,51 +1367,44 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
                 // After an unconditional jump, execution continues at the target.
                 // We can't know the state at the target (it may have other
                 // predecessors), so clear everything.
-                slot_map.clear();
-                for rs in reg_slots.iter_mut() {
+                slot_entries.clear();
+                for rs in reg_offsets.iter_mut() {
                     rs.clear();
                 }
                 prev_was_unconditional_jump = true;
             }
 
             LineKind::CondJmp => {
-                // After a conditional jump, execution may fall through to the
-                // next instruction. The fallthrough path preserves register state,
-                // but we must invalidate all mappings because the condition flags
-                // may have been set by modifying a register.
-                // Actually, cond jumps don't modify registers; they just branch.
+                // Conditional jumps don't modify registers; they just branch.
                 // The register state on the fallthrough path is unchanged.
-                // Keep mappings for the fallthrough path.
                 prev_was_unconditional_jump = false;
             }
 
             LineKind::Call => {
-                // Function calls clobber caller-saved registers.
-                // Caller-saved: rax(0), rcx(1), rdx(2), rsi(6), rdi(7), r8(8), r9(9), r10(10), r11(11)
+                // Function calls clobber caller-saved registers:
+                // rax(0), rcx(1), rdx(2), rsi(6), rdi(7), r8(8), r9(9), r10(10), r11(11)
                 for &r in &[0u8, 1, 2, 6, 7, 8, 9, 10, 11] {
-                    invalidate_reg(&mut slot_map, &mut reg_slots, r);
+                    invalidate_reg_flat(&mut slot_entries, &mut reg_offsets, r);
                 }
                 prev_was_unconditional_jump = false;
             }
 
             LineKind::Ret => {
                 // End of function; clear everything.
-                slot_map.clear();
-                for rs in reg_slots.iter_mut() {
+                slot_entries.clear();
+                for rs in reg_offsets.iter_mut() {
                     rs.clear();
                 }
                 prev_was_unconditional_jump = true;
             }
 
             LineKind::Push | LineKind::Pop => {
-                // Push reads a register, pop writes to one.
-                // Be conservative: pop modifies its register.
                 if infos[i].kind == LineKind::Pop {
                     let trimmed = trim_asm(&lines[i]);
                     if let Some(reg_str) = trimmed.strip_prefix("popq ") {
                         let reg_str = reg_str.trim();
                         if let Some(fam) = register_family(reg_str) {
-                            invalidate_reg(&mut slot_map, &mut reg_slots, fam);
+                            invalidate_reg_flat(&mut slot_entries, &mut reg_offsets, fam);
                         }
                     }
                 }
@@ -1398,19 +1412,18 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
             }
 
             LineKind::Directive => {
-                // Assembly directives don't affect register state.
                 // Don't update prev_was_unconditional_jump.
             }
 
             LineKind::Other => {
                 // For any other instruction, check which registers it modifies.
-                let trimmed = trim_asm(&lines[i]);
                 // Conservative: invalidate registers that appear as destinations.
+                let trimmed = trim_asm(&lines[i]);
                 if let Some((_op, operands)) = trimmed.split_once(' ') {
                     if let Some((_src, dst)) = operands.rsplit_once(',') {
                         let dst = dst.trim();
                         if let Some(fam) = register_family(dst) {
-                            invalidate_reg(&mut slot_map, &mut reg_slots, fam);
+                            invalidate_reg_flat(&mut slot_entries, &mut reg_offsets, fam);
                         }
                     } else {
                         // Single-operand instructions: inc, dec, not, neg, etc.
@@ -1419,7 +1432,7 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
                             || trimmed.starts_with("not") || trimmed.starts_with("neg")
                         {
                             if let Some(fam) = register_family(operand) {
-                                invalidate_reg(&mut slot_map, &mut reg_slots, fam);
+                                invalidate_reg_flat(&mut slot_entries, &mut reg_offsets, fam);
                             }
                         }
                     }
@@ -1429,28 +1442,27 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
                     || trimmed.starts_with("div") || trimmed.starts_with("idiv")
                     || trimmed.starts_with("mul") || trimmed.starts_with("imul")
                 {
-                    invalidate_reg(&mut slot_map, &mut reg_slots, 0); // rax
+                    invalidate_reg_flat(&mut slot_entries, &mut reg_offsets, 0);
                     // div/idiv/mul also clobber rdx
                     if trimmed.starts_with("div") || trimmed.starts_with("idiv")
                         || trimmed.starts_with("mul")
                     {
-                        invalidate_reg(&mut slot_map, &mut reg_slots, 2); // rdx
+                        invalidate_reg_flat(&mut slot_entries, &mut reg_offsets, 2);
                     }
                 }
-                // movzbq, movzwq, movsbq, movswq, movslq with %rax as dest
                 if (trimmed.starts_with("movzbq ") || trimmed.starts_with("movzwq ")
                     || trimmed.starts_with("movsbq ") || trimmed.starts_with("movswq ")
                     || trimmed.starts_with("movslq "))
                     && trimmed.ends_with("%rax")
                 {
-                    invalidate_reg(&mut slot_map, &mut reg_slots, 0);
+                    invalidate_reg_flat(&mut slot_entries, &mut reg_offsets, 0);
                 }
                 prev_was_unconditional_jump = false;
             }
 
             LineKind::SetCC => {
                 // setCC writes to %al, which is part of rax (family 0).
-                invalidate_reg(&mut slot_map, &mut reg_slots, 0);
+                invalidate_reg_flat(&mut slot_entries, &mut reg_offsets, 0);
                 prev_was_unconditional_jump = false;
             }
 
@@ -1468,24 +1480,146 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
     changed
 }
 
-/// Remove all slot mappings backed by a given register.
-fn invalidate_reg(
-    slot_map: &mut std::collections::HashMap<i32, SlotMapping>,
-    reg_slots: &mut [Vec<i32>; 16],
-    reg_id: RegId,
-) {
-    if let Some(slots) = reg_slots.get_mut(reg_id as usize) {
-        for &offset in slots.iter() {
-            // Only remove if the mapping is still for this register
-            // (it may have been overwritten by a store from a different register)
-            if let Some(mapping) = slot_map.get(&offset) {
-                if mapping.reg_id == reg_id {
-                    slot_map.remove(&offset);
+/// A slot entry for flat-array store forwarding.
+#[derive(Clone, Copy)]
+struct SlotEntry {
+    offset: i32,
+    mapping: SlotMapping,
+    active: bool,
+}
+
+/// Small inline vector for register->offset tracking (avoids heap allocation
+/// for the common case of <=4 offsets per register).
+#[derive(Clone)]
+struct SmallVec {
+    inline: [i32; 4],
+    len: u8,
+    overflow: Option<Vec<i32>>,
+}
+
+impl Default for SmallVec {
+    fn default() -> Self {
+        SmallVec { inline: [0; 4], len: 0, overflow: None }
+    }
+}
+
+impl SmallVec {
+    #[inline]
+    fn push(&mut self, val: i32) {
+        if let Some(ref mut ov) = self.overflow {
+            ov.push(val);
+        } else if (self.len as usize) < 4 {
+            self.inline[self.len as usize] = val;
+            self.len += 1;
+        } else {
+            let mut v = Vec::with_capacity(8);
+            v.extend_from_slice(&self.inline[..4]);
+            v.push(val);
+            self.overflow = Some(v);
+        }
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        self.len = 0;
+        self.overflow = None;
+    }
+
+    #[inline]
+    fn remove_val(&mut self, val: i32) {
+        if let Some(ref mut ov) = self.overflow {
+            ov.retain(|&v| v != val);
+        } else {
+            let n = self.len as usize;
+            for j in 0..n {
+                if self.inline[j] == val {
+                    // Swap-remove
+                    self.inline[j] = self.inline[n - 1];
+                    self.len -= 1;
+                    return;
                 }
             }
         }
-        slots.clear();
     }
+
+    #[inline]
+    fn iter(&self) -> SmallVecIter<'_> {
+        SmallVecIter { sv: self, idx: 0 }
+    }
+}
+
+struct SmallVecIter<'a> {
+    sv: &'a SmallVec,
+    idx: usize,
+}
+
+impl<'a> Iterator for SmallVecIter<'a> {
+    type Item = i32;
+    #[inline]
+    fn next(&mut self) -> Option<i32> {
+        if let Some(ref ov) = self.sv.overflow {
+            if self.idx < ov.len() {
+                let v = ov[self.idx];
+                self.idx += 1;
+                Some(v)
+            } else {
+                None
+            }
+        } else {
+            if self.idx < self.sv.len as usize {
+                let v = self.sv.inline[self.idx];
+                self.idx += 1;
+                Some(v)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Parse ".L<number>:" label into its number, e.g. ".L123:" -> Some(123)
+#[inline]
+fn parse_label_number(label_with_colon: &str) -> Option<u32> {
+    let s = label_with_colon.strip_suffix(':')?;
+    parse_dotl_number(s)
+}
+
+/// Parse ".L<number>" into its number, e.g. ".L123" -> Some(123)
+#[inline]
+fn parse_dotl_number(s: &str) -> Option<u32> {
+    let rest = s.strip_prefix(".L")?;
+    let b = rest.as_bytes();
+    if b.is_empty() || b[0] < b'0' || b[0] > b'9' {
+        return None;
+    }
+    let mut v: u32 = 0;
+    for &c in b {
+        if c >= b'0' && c <= b'9' {
+            v = v.wrapping_mul(10).wrapping_add((c - b'0') as u32);
+        } else {
+            return None;
+        }
+    }
+    Some(v)
+}
+
+/// Remove all slot mappings backed by a given register (flat array version).
+fn invalidate_reg_flat(
+    slot_entries: &mut [SlotEntry],
+    reg_offsets: &mut [SmallVec; 16],
+    reg_id: RegId,
+) {
+    let offsets = &reg_offsets[reg_id as usize];
+    for offset in offsets.iter() {
+        // Find and deactivate the entry for this offset backed by this register
+        for entry in slot_entries.iter_mut().rev() {
+            if entry.active && entry.offset == offset && entry.mapping.reg_id == reg_id {
+                entry.active = false;
+                break;
+            }
+        }
+    }
+    reg_offsets[reg_id as usize].clear();
 }
 
 /// Extract the jump target label from a jump/branch instruction.

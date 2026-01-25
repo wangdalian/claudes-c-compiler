@@ -37,6 +37,12 @@ pub struct Parser {
     pub(super) parsing_destructor: bool,
     /// Set to true when __attribute__((transparent_union)) is encountered on a typedef.
     pub(super) parsing_transparent_union: bool,
+    /// Set to true when __attribute__((weak)) is encountered on a declaration.
+    pub(super) parsing_weak: bool,
+    /// Set when __attribute__((alias("target"))) is encountered; holds the target symbol name.
+    pub(super) parsing_alias_target: Option<String>,
+    /// Set when __attribute__((visibility("..."))) is encountered; holds the visibility string.
+    pub(super) parsing_visibility: Option<String>,
     /// Set when parse_type_specifier or consume_post_type_qualifiers encounters _Alignas(N).
     /// Consumed and reset by callers that need it (e.g., struct field parsing).
     pub(super) parsed_alignas: Option<usize>,
@@ -64,6 +70,9 @@ impl Parser {
             parsing_constructor: false,
             parsing_destructor: false,
             parsing_transparent_union: false,
+            parsing_weak: false,
+            parsing_alias_target: None,
+            parsing_visibility: None,
             parsed_alignas: None,
             pragma_pack_stack: Vec::new(),
             pragma_pack_align: None,
@@ -326,6 +335,39 @@ impl Parser {
                                     TokenKind::Identifier(name) if name == "transparent_union" || name == "__transparent_union__" => {
                                         self.parsing_transparent_union = true;
                                         self.advance();
+                                    }
+                                    TokenKind::Identifier(name) if name == "weak" || name == "__weak__" => {
+                                        self.parsing_weak = true;
+                                        self.advance();
+                                    }
+                                    TokenKind::Identifier(name) if name == "alias" || name == "__alias__" => {
+                                        self.advance();
+                                        // Parse alias("target_name")
+                                        if matches!(self.peek(), TokenKind::LParen) {
+                                            self.advance(); // consume (
+                                            if let TokenKind::StringLiteral(target) = self.peek() {
+                                                self.parsing_alias_target = Some(target.clone());
+                                                self.advance();
+                                            }
+                                            // consume )
+                                            if matches!(self.peek(), TokenKind::RParen) {
+                                                self.advance();
+                                            }
+                                        }
+                                    }
+                                    TokenKind::Identifier(name) if name == "visibility" || name == "__visibility__" => {
+                                        self.advance();
+                                        // Parse visibility("hidden"|"default"|"internal"|"protected")
+                                        if matches!(self.peek(), TokenKind::LParen) {
+                                            self.advance(); // consume (
+                                            if let TokenKind::StringLiteral(vis) = self.peek() {
+                                                self.parsing_visibility = Some(vis.clone());
+                                                self.advance();
+                                            }
+                                            if matches!(self.peek(), TokenKind::RParen) {
+                                                self.advance();
+                                            }
+                                        }
                                     }
                                     TokenKind::Identifier(name) if name == "mode" || name == "__mode__" => {
                                         self.advance();

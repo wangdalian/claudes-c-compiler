@@ -30,6 +30,14 @@ pub struct IrModule {
     pub wide_string_literals: Vec<(String, Vec<u32>)>,
     pub constructors: Vec<String>, // functions with __attribute__((constructor))
     pub destructors: Vec<String>,  // functions with __attribute__((destructor))
+    /// Symbol aliases: (alias_name, target_name, is_weak)
+    /// From __attribute__((alias("target"))) and __attribute__((weak))
+    pub aliases: Vec<(String, String, bool)>,
+    /// Top-level asm("...") directives - emitted verbatim in assembly output
+    pub toplevel_asm: Vec<String>,
+    /// Symbol attribute directives for extern declarations:
+    /// (name, is_weak, visibility) - emitted as .weak/.hidden/.protected directives
+    pub symbol_attrs: Vec<(String, bool, Option<String>)>,
 }
 
 /// A global variable.
@@ -101,6 +109,10 @@ pub struct IrFunction {
     pub is_declaration: bool, // true if no body (extern)
     pub is_static: bool,      // true if declared with `static` linkage
     pub stack_size: usize,
+    /// Cached upper bound on Value IDs: all Value IDs in this function are < next_value_id.
+    /// Set by lowering/mem2reg/phi_eliminate to avoid expensive full-IR scans.
+    /// A value of 0 means "not yet computed" (will fall back to scanning).
+    pub next_value_id: u32,
 }
 
 /// A function parameter.
@@ -896,6 +908,9 @@ impl IrModule {
             wide_string_literals: Vec::new(),
             constructors: Vec::new(),
             destructors: Vec::new(),
+            aliases: Vec::new(),
+            toplevel_asm: Vec::new(),
+            symbol_attrs: Vec::new(),
         }
     }
 
@@ -926,14 +941,20 @@ impl IrFunction {
             is_declaration: false,
             is_static: false,
             stack_size: 0,
+            next_value_id: 0,
         }
     }
 
     /// Return the highest Value ID defined (as a destination) in this function, or 0 if empty.
+    /// Uses the cached `next_value_id` if available, otherwise falls back to scanning.
     /// Useful for sizing flat lookup tables indexed by Value ID.
-    /// Note: only considers instruction destinations; callers should handle
-    /// out-of-bounds IDs for values that are used but not defined here (e.g., parameters).
+    #[inline]
     pub fn max_value_id(&self) -> u32 {
+        if self.next_value_id > 0 {
+            // next_value_id is the first *unused* ID, so max used is one less
+            return self.next_value_id - 1;
+        }
+        // Fallback: scan all instructions (expensive)
         let mut max_id: u32 = 0;
         for block in &self.blocks {
             for inst in &block.instructions {

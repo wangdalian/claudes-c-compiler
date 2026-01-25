@@ -31,16 +31,12 @@ pub fn eliminate_phis(module: &mut IrModule) {
 }
 
 fn eliminate_phis_in_function(func: &mut IrFunction) {
-    // First, find the max value ID so we can mint fresh temporaries
-    let mut max_value: u32 = 0;
-    for block in &func.blocks {
-        for inst in &block.instructions {
-            if let Some(v) = inst.dest() {
-                max_value = max_value.max(v.0);
-            }
-        }
-    }
-    let mut next_value = max_value + 1;
+    // Use cached next_value_id if available, otherwise scan
+    let mut next_value = if func.next_value_id > 0 {
+        func.next_value_id
+    } else {
+        func.max_value_id() + 1
+    };
 
     // Build label -> block index map
     let label_to_idx: FxHashMap<BlockId, usize> = func.blocks
@@ -152,5 +148,8 @@ fn eliminate_phis_in_function(func: &mut IrFunction) {
             block.instructions.extend(copies);
         }
     }
+
+    // Update cached next_value_id for downstream passes
+    func.next_value_id = next_value;
 }
 

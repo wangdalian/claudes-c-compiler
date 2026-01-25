@@ -298,7 +298,7 @@ impl Lowerer {
             }
         }
 
-        // Collect constructor/destructor attributes from function definitions and declarations
+        // Collect constructor/destructor/alias attributes from function definitions and declarations
         for decl in &tu.decls {
             match decl {
                 ExternalDecl::FunctionDef(func) => {
@@ -321,7 +321,31 @@ impl Lowerer {
                         {
                             self.module.destructors.push(declarator.name.clone());
                         }
+                        // Collect __attribute__((alias("target"))) declarations
+                        if let Some(ref target) = declarator.alias_target {
+                            if !declarator.name.is_empty() {
+                                self.module.aliases.push((
+                                    declarator.name.clone(),
+                                    target.clone(),
+                                    declarator.is_weak,
+                                ));
+                            }
+                        }
+                        // Collect weak/visibility attributes on extern declarations (not aliases)
+                        if declarator.alias_target.is_none()
+                            && !declarator.name.is_empty()
+                            && (declarator.is_weak || declarator.visibility.is_some())
+                        {
+                            self.module.symbol_attrs.push((
+                                declarator.name.clone(),
+                                declarator.is_weak,
+                                declarator.visibility.clone(),
+                            ));
+                        }
                     }
+                }
+                ExternalDecl::TopLevelAsm(_) => {
+                    // Handled in the third pass
                 }
             }
         }
@@ -354,6 +378,9 @@ impl Lowerer {
                 }
                 ExternalDecl::Declaration(decl) => {
                     self.lower_global_decl(decl);
+                }
+                ExternalDecl::TopLevelAsm(asm_str) => {
+                    self.module.toplevel_asm.push(asm_str.clone());
                 }
             }
         }
@@ -996,10 +1023,12 @@ impl Lowerer {
         }
 
         let is_static = func.is_static || self.static_functions.contains(&func.name);
+        let next_val = self.func_mut().next_value;
         let ir_func = IrFunction {
             name: func.name.clone(), return_type, params,
             blocks: std::mem::take(&mut self.func_mut().blocks),
             is_variadic: func.variadic, is_declaration: false, is_static, stack_size: 0,
+            next_value_id: next_val,
         };
         self.module.functions.push(ir_func);
         self.pop_scope();

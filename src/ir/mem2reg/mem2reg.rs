@@ -552,16 +552,12 @@ fn rename_variables(
         .map(|(i, info)| (info.alloca_value.0, i))
         .collect();
 
-    // Find the maximum Value ID currently in use so we can mint fresh ones
-    let mut max_value: u32 = 0;
-    for block in &func.blocks {
-        for inst in &block.instructions {
-            if let Some(dest) = inst.dest() {
-                max_value = max_value.max(dest.0);
-            }
-        }
-    }
-    let mut next_value = max_value + 1;
+    // Use cached next_value_id if available, otherwise scan
+    let mut next_value = if func.next_value_id > 0 {
+        func.next_value_id
+    } else {
+        func.max_value_id() + 1
+    };
 
     // First, insert phi instructions at the appropriate blocks.
     // We do this before renaming so the phi dests get fresh values during rename.
@@ -614,6 +610,9 @@ fn rename_variables(
 
     // Remove promoted allocas from the entry block, and remove dead loads/stores
     remove_promoted_instructions(func, &alloca_to_idx);
+
+    // Update cached next_value_id for downstream passes
+    func.next_value_id = next_value;
 }
 
 /// Recursive dominator-tree DFS for variable renaming.

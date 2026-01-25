@@ -44,34 +44,41 @@ pub fn run_passes(module: &mut IrModule, opt_level: u32) {
     };
 
     for _ in 0..iterations {
+        let mut changes = 0usize;
+
         // Phase 1: CFG simplification (remove dead blocks, thread jump chains,
         // simplify redundant conditional branches). Running early eliminates
         // dead code before other passes waste time analyzing it.
-        cfg_simplify::run(module);
+        changes += cfg_simplify::run(module);
 
         // Phase 2: Copy propagation (early - propagate copies from phi elimination
         // and lowering so subsequent passes see through them)
-        copy_prop::run(module);
+        changes += copy_prop::run(module);
 
         // Phase 3: Algebraic simplification (x+0 => x, x*1 => x, etc.)
-        simplify::run(module);
+        changes += simplify::run(module);
 
         // Phase 4: Constant folding (evaluate const exprs at compile time)
-        constant_fold::run(module);
+        changes += constant_fold::run(module);
 
         // Phase 5: GVN / Common Subexpression Elimination
         if opt_level >= 2 {
-            gvn::run(module);
+            changes += gvn::run(module);
         }
 
         // Phase 6: Copy propagation again (clean up copies created by GVN/simplify)
-        copy_prop::run(module);
+        changes += copy_prop::run(module);
 
         // Phase 7: Dead code elimination (clean up dead instructions including dead copies)
-        dce::run(module);
+        changes += dce::run(module);
 
         // Phase 8: CFG simplification again (DCE + constant folding may have
         // simplified conditions, creating dead blocks or redundant branches)
-        cfg_simplify::run(module);
+        changes += cfg_simplify::run(module);
+
+        // Early exit: if no passes changed anything, additional iterations are useless
+        if changes == 0 {
+            break;
+        }
     }
 }

@@ -11,6 +11,7 @@
 
 use crate::ir::ir::*;
 use crate::common::types::IrType;
+use crate::common::fx_hash::FxHashSet;
 use super::common;
 use super::traits::ArchCodegen;
 use super::state::StackSlot;
@@ -56,11 +57,62 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule) -> String {
     let ptr_dir = cg.ptr_directive();
     common::emit_data_sections(&mut cg.state().out, module, ptr_dir);
 
+    // Emit top-level asm("...") directives verbatim (e.g., musl's _start definition)
+    for asm_str in &module.toplevel_asm {
+        cg.state().emit(asm_str);
+    }
+
     // Text section
     cg.state().emit(".section .text");
     for func in &module.functions {
         if !func.is_declaration {
             generate_function(cg, func);
+        }
+    }
+
+    // Emit symbol aliases from __attribute__((alias("target")))
+    for (alias_name, target_name, is_weak) in &module.aliases {
+        cg.state().emit("");
+        if *is_weak {
+            cg.state().emit_fmt(format_args!(".weak {}", alias_name));
+        } else {
+            cg.state().emit_fmt(format_args!(".globl {}", alias_name));
+        }
+        cg.state().emit_fmt(format_args!(".set {},{}", alias_name, target_name));
+    }
+
+    // Emit symbol attribute directives (.weak, .hidden) for declarations.
+    // Only emit visibility directives for symbols that are actually defined in this module,
+    // since hidden/protected visibility on extern-only declarations would cause linker errors.
+    let defined_funcs: FxHashSet<&str> = module.functions.iter()
+        .filter(|f| !f.is_declaration)
+        .map(|f| f.name.as_str())
+        .collect();
+    let defined_globals: FxHashSet<&str> = module.globals.iter()
+        .filter(|g| !g.is_extern)
+        .map(|g| g.name.as_str())
+        .collect();
+    // Also collect alias names as "defined" since .set creates a definition
+    let alias_names: FxHashSet<&str> = module.aliases.iter()
+        .map(|(name, _, _)| name.as_str())
+        .collect();
+    for (name, is_weak, visibility) in &module.symbol_attrs {
+        let is_defined = defined_funcs.contains(name.as_str())
+            || defined_globals.contains(name.as_str())
+            || alias_names.contains(name.as_str());
+        if *is_weak {
+            cg.state().emit_fmt(format_args!(".weak {}", name));
+        }
+        // Only emit visibility for defined symbols
+        if is_defined {
+            if let Some(ref vis) = visibility {
+                match vis.as_str() {
+                    "hidden" => cg.state().emit_fmt(format_args!(".hidden {}", name)),
+                    "protected" => cg.state().emit_fmt(format_args!(".protected {}", name)),
+                    "internal" => cg.state().emit_fmt(format_args!(".internal {}", name)),
+                    _ => {}
+                }
+            }
         }
     }
 
