@@ -1,0 +1,7 @@
+Task: Fix _Complex long double stack argument passing ABI bug
+Owner: agent
+Status: in-progress
+Description: struct_arg_sizes vector was not updated when decompose_complex_call_args
+expanded complex arguments into (real, imag) pairs, causing index misalignment
+that made the backend dereference a float value as a memory pointer (segfault).
+Files: src/ir/lowering/complex.rs, src/ir/lowering/expr_calls.rs
