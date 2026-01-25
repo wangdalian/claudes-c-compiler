@@ -266,7 +266,7 @@ pub fn eval_const_expr(expr: &str) -> bool {
 enum ExprToken {
     Num(i64, bool),
     Ident(String),
-    Op(String),
+    Op(&'static str),
     LParen,
     RParen,
     Defined,
@@ -399,70 +399,70 @@ fn tokenize_expr(expr: &str) -> Vec<ExprToken> {
             tokens.push(ExprToken::RParen);
             i += 1;
         } else if chars[i] == '!' && i + 1 < len && chars[i + 1] == '=' {
-            tokens.push(ExprToken::Op("!=".to_string()));
+            tokens.push(ExprToken::Op("!="));
             i += 2;
         } else if chars[i] == '!' {
-            tokens.push(ExprToken::Op("!".to_string()));
+            tokens.push(ExprToken::Op("!"));
             i += 1;
         } else if chars[i] == '&' && i + 1 < len && chars[i + 1] == '&' {
-            tokens.push(ExprToken::Op("&&".to_string()));
+            tokens.push(ExprToken::Op("&&"));
             i += 2;
         } else if chars[i] == '&' {
-            tokens.push(ExprToken::Op("&".to_string()));
+            tokens.push(ExprToken::Op("&"));
             i += 1;
         } else if chars[i] == '|' && i + 1 < len && chars[i + 1] == '|' {
-            tokens.push(ExprToken::Op("||".to_string()));
+            tokens.push(ExprToken::Op("||"));
             i += 2;
         } else if chars[i] == '|' {
-            tokens.push(ExprToken::Op("|".to_string()));
+            tokens.push(ExprToken::Op("|"));
             i += 1;
         } else if chars[i] == '=' && i + 1 < len && chars[i + 1] == '=' {
-            tokens.push(ExprToken::Op("==".to_string()));
+            tokens.push(ExprToken::Op("=="));
             i += 2;
         } else if chars[i] == '<' && i + 1 < len && chars[i + 1] == '=' {
-            tokens.push(ExprToken::Op("<=".to_string()));
+            tokens.push(ExprToken::Op("<="));
             i += 2;
         } else if chars[i] == '<' && i + 1 < len && chars[i + 1] == '<' {
-            tokens.push(ExprToken::Op("<<".to_string()));
+            tokens.push(ExprToken::Op("<<"));
             i += 2;
         } else if chars[i] == '<' {
-            tokens.push(ExprToken::Op("<".to_string()));
+            tokens.push(ExprToken::Op("<"));
             i += 1;
         } else if chars[i] == '>' && i + 1 < len && chars[i + 1] == '=' {
-            tokens.push(ExprToken::Op(">=".to_string()));
+            tokens.push(ExprToken::Op(">="));
             i += 2;
         } else if chars[i] == '>' && i + 1 < len && chars[i + 1] == '>' {
-            tokens.push(ExprToken::Op(">>".to_string()));
+            tokens.push(ExprToken::Op(">>"));
             i += 2;
         } else if chars[i] == '>' {
-            tokens.push(ExprToken::Op(">".to_string()));
+            tokens.push(ExprToken::Op(">"));
             i += 1;
         } else if chars[i] == '+' {
-            tokens.push(ExprToken::Op("+".to_string()));
+            tokens.push(ExprToken::Op("+"));
             i += 1;
         } else if chars[i] == '-' {
-            tokens.push(ExprToken::Op("-".to_string()));
+            tokens.push(ExprToken::Op("-"));
             i += 1;
         } else if chars[i] == '*' {
-            tokens.push(ExprToken::Op("*".to_string()));
+            tokens.push(ExprToken::Op("*"));
             i += 1;
         } else if chars[i] == '/' {
-            tokens.push(ExprToken::Op("/".to_string()));
+            tokens.push(ExprToken::Op("/"));
             i += 1;
         } else if chars[i] == '%' {
-            tokens.push(ExprToken::Op("%".to_string()));
+            tokens.push(ExprToken::Op("%"));
             i += 1;
         } else if chars[i] == '~' {
-            tokens.push(ExprToken::Op("~".to_string()));
+            tokens.push(ExprToken::Op("~"));
             i += 1;
         } else if chars[i] == '^' {
-            tokens.push(ExprToken::Op("^".to_string()));
+            tokens.push(ExprToken::Op("^"));
             i += 1;
         } else if chars[i] == '?' {
-            tokens.push(ExprToken::Op("?".to_string()));
+            tokens.push(ExprToken::Op("?"));
             i += 1;
         } else if chars[i] == ':' {
-            tokens.push(ExprToken::Op(":".to_string()));
+            tokens.push(ExprToken::Op(":"));
             i += 1;
         } else {
             i += 1; // skip unknown
@@ -503,7 +503,7 @@ impl<'a> ExprParser<'a> {
 
     /// Check if the next token matches a given operator string
     fn peek_op(&self, op: &str) -> bool {
-        matches!(self.peek(), Some(ExprToken::Op(s)) if s == op)
+        matches!(self.peek(), Some(ExprToken::Op(s)) if *s == op)
     }
 
     fn parse_ternary(&mut self) -> PpVal {
