@@ -1552,7 +1552,16 @@ impl Lowerer {
                 let ctype = self.type_spec_to_ctype(type_spec);
                 match &ctype {
                     CType::Pointer(inner) => self.struct_layout_from_ctype(inner),
-                    CType::Array(inner, _) => self.struct_layout_from_ctype(inner),
+                    CType::Array(_, _) => {
+                        // Unwrap all Array levels to find the innermost element type.
+                        // This handles multi-dimensional typedef'd arrays like:
+                        // typedef struct s tyst[2][2]; -> CType::Array(Array(Struct, 2), 2)
+                        let mut ct = &ctype;
+                        while let CType::Array(inner, _) = ct {
+                            ct = inner.as_ref();
+                        }
+                        self.struct_layout_from_ctype(ct)
+                    }
                     _ => None,
                 }
             });

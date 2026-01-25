@@ -65,6 +65,12 @@ impl Parser {
                     self.skip_array_qualifiers();
                     let size = if matches!(self.peek(), TokenKind::RBracket) {
                         None
+                    } else if matches!(self.peek(), TokenKind::Star)
+                        && self.pos + 1 < self.tokens.len()
+                        && matches!(self.tokens[self.pos + 1].kind, TokenKind::RBracket) {
+                        // C99 VLA star syntax: [*] or [const *] means unspecified VLA size
+                        self.advance(); // consume '*'
+                        None
                     } else {
                         Some(Box::new(self.parse_expr()))
                     };
@@ -397,7 +403,7 @@ impl Parser {
         let mut fptr_params: Option<Vec<ParamDecl>> = None;
 
         let name = if matches!(self.peek(), TokenKind::LParen) {
-            self.parse_paren_param_declarator(&mut pointer_depth, &mut is_func_ptr, &mut ptr_to_array_dims, &mut fptr_params)
+            self.parse_paren_param_declarator(&mut pointer_depth, &mut array_dims, &mut is_func_ptr, &mut ptr_to_array_dims, &mut fptr_params)
         } else if let TokenKind::Identifier(ref n) = self.peek() {
             let n = n.clone();
             self.advance();
@@ -414,6 +420,13 @@ impl Parser {
             if matches!(self.peek(), TokenKind::RBracket) {
                 array_dims.push(None);
                 self.advance();
+            } else if matches!(self.peek(), TokenKind::Star)
+                && self.pos + 1 < self.tokens.len()
+                && matches!(self.tokens[self.pos + 1].kind, TokenKind::RBracket) {
+                // C99 VLA star syntax: [*] or [static *] means unspecified VLA size
+                self.advance(); // consume '*'
+                array_dims.push(None);
+                self.advance(); // consume ']'
             } else {
                 let dim_expr = self.parse_expr();
                 array_dims.push(Some(Box::new(dim_expr)));
@@ -433,6 +446,7 @@ impl Parser {
     fn parse_paren_param_declarator(
         &mut self,
         pointer_depth: &mut u32,
+        array_dims: &mut Vec<Option<Box<Expr>>>,
         is_func_ptr: &mut bool,
         ptr_to_array_dims: &mut Vec<Option<Box<Expr>>>,
         fptr_params: &mut Option<Vec<ParamDecl>>,
@@ -457,15 +471,38 @@ impl Parser {
                 None
             };
             *pointer_depth += inner_ptr_depth.saturating_sub(1);
-            self.skip_array_dimensions();
+            // Parse array dimensions inside parens: (*a[]) or (*a[N])
+            // These represent "array of pointers" and need to be propagated
+            // to the caller so array-to-pointer decay is properly applied.
+            // E.g. int (*a[]) = array of ptr-to-int = int **a (after decay)
+            let mut inner_array_dims = Vec::new();
+            while matches!(self.peek(), TokenKind::LBracket) {
+                self.advance();
+                self.skip_array_qualifiers();
+                if matches!(self.peek(), TokenKind::RBracket) {
+                    inner_array_dims.push(None);
+                    self.advance();
+                } else {
+                    let dim_expr = self.parse_expr();
+                    inner_array_dims.push(Some(Box::new(dim_expr)));
+                    self.expect(&TokenKind::RBracket);
+                }
+            }
             self.expect(&TokenKind::RParen);
-            if matches!(self.peek(), TokenKind::LParen) {
-                // Function pointer
+            if !inner_array_dims.is_empty() && !matches!(self.peek(), TokenKind::LParen) {
+                // Array of pointers: (*a[]) or (*a[N])
+                // The * gives one level of pointer, and the array dims are
+                // propagated for the caller to apply array-to-pointer decay.
+                // E.g. int (*a[]) → array_dims=[None], pointer_depth+=1 → int **a
+                *pointer_depth += 1;
+                *array_dims = inner_array_dims;
+            } else if matches!(self.peek(), TokenKind::LParen) {
+                // Function pointer: (*fp)(params) or (*fp[])(params)
                 *is_func_ptr = true;
                 let (fp_params, _variadic) = self.parse_param_list();
                 *fptr_params = Some(fp_params);
             } else if matches!(self.peek(), TokenKind::LBracket) {
-                // Pointer-to-array
+                // Pointer-to-array: (*p)[N]
                 while matches!(self.peek(), TokenKind::LBracket) {
                     self.advance();
                     self.skip_array_qualifiers();
