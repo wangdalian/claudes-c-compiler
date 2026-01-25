@@ -30,6 +30,13 @@ const REG_NONE: RegId = 255;
 #[derive(Clone, Copy)]
 struct LineInfo {
     kind: LineKind,
+    /// Byte offset of the first non-space character in the raw line.
+    /// Caches `trim_asm` so passes don't repeatedly scan leading whitespace.
+    trim_start: u16,
+    /// Cached result of `has_indirect_memory_access` for `Other` lines.
+    /// `false` for all non-`Other` kinds. This avoids repeated byte scans in
+    /// `eliminate_dead_stores` and `global_store_forwarding`.
+    has_indirect_mem: bool,
 }
 
 /// What kind of assembly line this is, with pre-extracted fields for the
@@ -93,102 +100,130 @@ impl LineInfo {
     }
     #[inline]
     fn is_push(self) -> bool { matches!(self.kind, LineKind::Push { .. }) }
+
+    /// Get the trimmed content of a line using the cached trim offset.
+    /// This avoids re-scanning leading whitespace on every access.
+    #[inline]
+    fn trimmed<'a>(&self, line: &'a str) -> &'a str {
+        &line[self.trim_start as usize..]
+    }
 }
 
 // ── Line parsing ─────────────────────────────────────────────────────────────
-
-/// Strip leading spaces from an assembly line.
-#[inline]
-fn trim_asm(s: &str) -> &str {
-    let b = s.as_bytes();
-    if b.first() == Some(&b' ') {
-        let mut i = 0;
-        while i < b.len() && b[i] == b' ' {
-            i += 1;
-        }
-        &s[i..]
-    } else {
-        s
-    }
-}
 
 /// Parse one assembly line into a `LineInfo`.
 fn classify_line(raw: &str) -> LineInfo {
     let b = raw.as_bytes();
     // NUL sentinel = dead line
     if b.first() == Some(&0) {
-        return LineInfo { kind: LineKind::Nop };
-    }
-    let s = trim_asm(raw);
-    if s.is_empty() {
-        return LineInfo { kind: LineKind::Empty };
+        return LineInfo { kind: LineKind::Nop, trim_start: 0, has_indirect_mem: false };
     }
 
+    // Compute trim offset once and cache it
+    let trim_start = compute_trim_offset(b);
+    debug_assert!(trim_start <= u16::MAX as usize, "assembly line with >65535 leading spaces");
+    let s = &raw[trim_start..];
+    let sb = s.as_bytes();
+
+    if sb.is_empty() {
+        return LineInfo { kind: LineKind::Empty, trim_start: trim_start as u16, has_indirect_mem: false };
+    }
+
+    let first = sb[0];
+    let last = sb[sb.len() - 1];
+    let ts = trim_start as u16;
+
     // Label: ends with ':'
-    if s.as_bytes().last() == Some(&b':') {
-        return LineInfo { kind: LineKind::Label };
+    if last == b':' {
+        return LineInfo { kind: LineKind::Label, trim_start: ts, has_indirect_mem: false };
     }
 
     // Directive: starts with '.'
-    if s.as_bytes().first() == Some(&b'.') {
-        return LineInfo { kind: LineKind::Directive };
+    if first == b'.' {
+        return LineInfo { kind: LineKind::Directive, trim_start: ts, has_indirect_mem: false };
     }
 
-    // Try store/load to/from rbp first (hottest path)
-    if let Some((reg_str, offset_str, size)) = parse_store_to_rbp_str(s) {
-        let reg = register_family(reg_str).unwrap_or(REG_NONE);
-        let offset = fast_parse_i32(offset_str);
-        return LineInfo { kind: LineKind::StoreRbp { reg, offset, size } };
-    }
-    if let Some((offset_str, reg_str, size)) = parse_load_from_rbp_str(s) {
-        let reg = register_family(reg_str).unwrap_or(REG_NONE);
-        let offset = fast_parse_i32(offset_str);
-        return LineInfo { kind: LineKind::LoadRbp { reg, offset, size } };
-    }
-
-    // Control flow
-    if s.starts_with("jmp ") {
-        return LineInfo { kind: LineKind::Jmp };
-    }
-    if s.starts_with("call") {
-        return LineInfo { kind: LineKind::Call };
-    }
-    if s == "ret" {
-        return LineInfo { kind: LineKind::Ret };
+    // Fast path: only try store/load parsing if line starts with 'mov'
+    if first == b'm' && sb.len() >= 4 && sb[1] == b'o' && sb[2] == b'v' {
+        if let Some((reg_str, offset_str, size)) = parse_store_to_rbp_str(s) {
+            let reg = register_family_fast(reg_str);
+            let offset = fast_parse_i32(offset_str);
+            return LineInfo { kind: LineKind::StoreRbp { reg, offset, size }, trim_start: ts, has_indirect_mem: false };
+        }
+        if let Some((offset_str, reg_str, size)) = parse_load_from_rbp_str(s) {
+            let reg = register_family_fast(reg_str);
+            let offset = fast_parse_i32(offset_str);
+            return LineInfo { kind: LineKind::LoadRbp { reg, offset, size }, trim_start: ts, has_indirect_mem: false };
+        }
     }
 
-    // Conditional jumps
-    if is_conditional_jump(s) {
-        return LineInfo { kind: LineKind::CondJmp };
+    // Control flow: dispatch on first byte
+    if first == b'j' {
+        if sb.len() >= 4 && sb[1] == b'm' && sb[2] == b'p' && sb[3] == b' ' {
+            return LineInfo { kind: LineKind::Jmp, trim_start: ts, has_indirect_mem: false };
+        }
+        if is_conditional_jump(s) {
+            return LineInfo { kind: LineKind::CondJmp, trim_start: ts, has_indirect_mem: false };
+        }
+    }
+
+    if first == b'c' {
+        if sb.len() >= 4 && sb[1] == b'a' && sb[2] == b'l' && sb[3] == b'l' {
+            return LineInfo { kind: LineKind::Call, trim_start: ts, has_indirect_mem: false };
+        }
+        // Compare: cmpX or cqto/cltq/cdq/cqo handled below
+        if sb.len() >= 5 && sb[1] == b'm' && sb[2] == b'p' {
+            // cmpq, cmpl, cmpw, cmpb
+            return LineInfo { kind: LineKind::Cmp, trim_start: ts, has_indirect_mem: false };
+        }
+    }
+
+    if first == b'r' && s == "ret" {
+        return LineInfo { kind: LineKind::Ret, trim_start: ts, has_indirect_mem: false };
+    }
+
+    // Test instructions
+    if first == b't' && sb.len() >= 5 && sb[1] == b'e' && sb[2] == b's' && sb[3] == b't' {
+        return LineInfo { kind: LineKind::Cmp, trim_start: ts, has_indirect_mem: false };
+    }
+
+    // ucomis* instructions
+    if first == b'u' && (s.starts_with("ucomisd ") || s.starts_with("ucomiss ")) {
+        return LineInfo { kind: LineKind::Cmp, trim_start: ts, has_indirect_mem: false };
     }
 
     // Push / Pop (extract register for fast checks)
-    if s.starts_with("pushq ") {
-        let reg = register_family(s[6..].trim()).unwrap_or(REG_NONE);
-        return LineInfo { kind: LineKind::Push { reg } };
-    }
-    if s.starts_with("popq ") {
-        let reg = register_family(s[5..].trim()).unwrap_or(REG_NONE);
-        return LineInfo { kind: LineKind::Pop { reg } };
+    if first == b'p' {
+        if s.starts_with("pushq ") {
+            let reg = register_family_fast(s[6..].trim());
+            return LineInfo { kind: LineKind::Push { reg }, trim_start: ts, has_indirect_mem: false };
+        }
+        if s.starts_with("popq ") {
+            let reg = register_family_fast(s[5..].trim());
+            return LineInfo { kind: LineKind::Pop { reg }, trim_start: ts, has_indirect_mem: false };
+        }
     }
 
     // SetCC
-    if s.starts_with("set") && parse_setcc(s).is_some() {
-        return LineInfo { kind: LineKind::SetCC };
-    }
-
-    // Compare / test
-    if s.starts_with("cmpq ") || s.starts_with("cmpl ") || s.starts_with("cmpw ")
-        || s.starts_with("cmpb ") || s.starts_with("testq ") || s.starts_with("testl ")
-        || s.starts_with("testw ") || s.starts_with("testb ")
-        || s.starts_with("ucomisd ") || s.starts_with("ucomiss ")
-    {
-        return LineInfo { kind: LineKind::Cmp };
+    if first == b's' && sb.len() >= 4 && sb[1] == b'e' && sb[2] == b't' && parse_setcc(s).is_some() {
+        return LineInfo { kind: LineKind::SetCC, trim_start: ts, has_indirect_mem: false };
     }
 
     // Pre-parse destination register for fast modification checks.
     let dest_reg = parse_dest_reg_fast(s);
-    LineInfo { kind: LineKind::Other { dest_reg } }
+    // Cache has_indirect_memory_access for Other lines
+    let has_indirect = has_indirect_memory_access(s);
+    LineInfo { kind: LineKind::Other { dest_reg }, trim_start: ts, has_indirect_mem: has_indirect }
+}
+
+/// Compute byte offset to first non-space character.
+#[inline]
+fn compute_trim_offset(b: &[u8]) -> usize {
+    let mut i = 0;
+    while i < b.len() && b[i] == b' ' {
+        i += 1;
+    }
+    i
 }
 
 /// Fast extraction of the destination register family from a generic instruction.
@@ -329,7 +364,7 @@ fn parse_load_from_rbp_str(s: &str) -> Option<(&str, &str, MoveSize)> {
 fn mark_nop(line: &mut String, info: &mut LineInfo) {
     line.clear();
     line.push('\0');
-    *info = LineInfo { kind: LineKind::Nop };
+    *info = LineInfo { kind: LineKind::Nop, trim_start: 0, has_indirect_mem: false };
 }
 
 /// Replace a line's text and re-classify it.
@@ -439,7 +474,7 @@ fn combined_local_pass(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
 
         // --- Pattern: self-move elimination (movq %reg, %reg) ---
         if matches!(infos[i].kind, LineKind::Other { .. }) {
-            let trimmed = trim_asm(&lines[i]);
+            let trimmed = infos[i].trimmed(&lines[i]);
             if is_self_move(trimmed) {
                 mark_nop(&mut lines[i], &mut infos[i]);
                 changed = true;
@@ -450,7 +485,7 @@ fn combined_local_pass(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
 
         // --- Pattern: redundant jump to next label ---
         if infos[i].kind == LineKind::Jmp {
-            let jmp_line = trim_asm(&lines[i]);
+            let jmp_line = infos[i].trimmed(&lines[i]);
             if let Some(target) = jmp_line.strip_prefix("jmp ") {
                 let target = target.trim();
                 // Find the next non-NOP, non-empty line
@@ -460,7 +495,7 @@ fn combined_local_pass(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
                         continue;
                     }
                     if infos[j].kind == LineKind::Label {
-                        let next = trim_asm(&lines[j]);
+                        let next = infos[j].trimmed(&lines[j]);
                         if let Some(label) = next.strip_suffix(':') {
                             if label == target {
                                 mark_nop(&mut lines[i], &mut infos[i]);
@@ -489,12 +524,10 @@ fn combined_local_pass(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
                             changed = true;
                             i += 1;
                             continue;
-                        } else {
-                            // Different register: replace with reg-to-reg move
-                            let store_line = trim_asm(&lines[i]);
-                            let (store_reg, _, _) = parse_store_to_rbp_str(store_line).unwrap();
-                            let load_line = trim_asm(&lines[i + 1]);
-                            let (_, load_reg, _) = parse_load_from_rbp_str(load_line).unwrap();
+                        } else if sr != REG_NONE && lr != REG_NONE {
+                            // Different register: generate reg-to-reg move
+                            let store_reg = reg_id_to_name(sr, ss);
+                            let load_reg = reg_id_to_name(lr, ls);
                             let new_text = format!("    {} {}, {}", ss.mnemonic(), store_reg, load_reg);
                             replace_line(&mut lines[i + 1], &mut infos[i + 1], new_text);
                             changed = true;
@@ -525,8 +558,8 @@ fn combined_local_pass(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
         }
 
         if ext_idx < len && !infos[ext_idx].is_nop() {
-            let next = trim_asm(&lines[ext_idx]);
-            let prev = trim_asm(&lines[i]);
+            let next = infos[ext_idx].trimmed(&lines[ext_idx]);
+            let prev = infos[i].trimmed(&lines[i]);
 
             // --- Pattern: redundant zero/sign extension (including cltq) ---
             let is_redundant_ext = {
@@ -662,7 +695,7 @@ fn eliminate_binop_push_pop_pattern(lines: &mut [String], infos: &mut [LineInfo]
             _ => { i += 1; continue; }
         };
 
-        let push_line = trim_asm(&lines[i]);
+        let push_line = infos[i].trimmed(&lines[i]);
         let push_reg = match push_line.strip_prefix("pushq ") {
             Some(r) => r.trim(),
             None => { i += 1; continue; }
@@ -687,8 +720,8 @@ fn eliminate_binop_push_pop_pattern(lines: &mut [String], infos: &mut [LineInfo]
 
             if let LineKind::Pop { reg: pop_reg_id } = infos[pop_idx].kind {
                 if pop_reg_id == push_reg_id {
-                    let load_line = trim_asm(&lines[load_idx]);
-                    let move_line = trim_asm(&lines[move_idx]);
+                    let load_line = infos[load_idx].trimmed(&lines[load_idx]);
+                    let move_line = infos[move_idx].trimmed(&lines[move_idx]);
 
                     if let Some(move_target) = parse_reg_to_reg_move(move_line, push_reg) {
                         if instruction_writes_to(load_line, push_reg) && can_redirect_instruction(load_line) {
@@ -748,7 +781,7 @@ fn fuse_compare_and_branch(lines: &mut [String], infos: &mut [LineInfo]) -> bool
             i += 1;
             continue;
         }
-        let set_line = trim_asm(&lines[seq_indices[1]]);
+        let set_line = infos[seq_indices[1]].trimmed(&lines[seq_indices[1]]);
         let cc = match parse_setcc(set_line) {
             Some(c) => c,
             None => { i += 1; continue; }
@@ -759,7 +792,7 @@ fn fuse_compare_and_branch(lines: &mut [String], infos: &mut [LineInfo]) -> bool
         let mut scan = 2;
         while scan < seq_count {
             let si = seq_indices[scan];
-            let line = trim_asm(&lines[si]);
+            let line = infos[si].trimmed(&lines[si]);
 
             // Skip zero-extend of setcc result
             if line.starts_with("movzbq %al,") || line.starts_with("movzbl %al,") {
@@ -798,7 +831,7 @@ fn fuse_compare_and_branch(lines: &mut [String], infos: &mut [LineInfo]) -> bool
             continue;
         }
 
-        let jmp_line = trim_asm(&lines[seq_indices[test_scan + 1]]);
+        let jmp_line = infos[seq_indices[test_scan + 1]].trimmed(&lines[seq_indices[test_scan + 1]]);
         let (is_jne, branch_target) = if let Some(target) = jmp_line.strip_prefix("jne ") {
             (true, target.trim())
         } else if let Some(target) = jmp_line.strip_prefix("je ") {
@@ -880,12 +913,9 @@ fn eliminate_dead_stores(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
             // Catch-all: check if line references the offset via string search
             // (handles leaq, movslq, etc. that aren't classified as store/load)
             if matches!(infos[j].kind, LineKind::Other { .. }) {
-                let line = trim_asm(&lines[j]);
-                // Check for indirect memory access through a register (not %rbp).
-                // E.g., (%rcx), (%rdi), 8(%rax) -- these could alias any stack
-                // slot when the register holds a pointer to a stack variable
-                // (address-taken via &var). Treat as barrier.
-                if has_indirect_memory_access(line) {
+                // Check for indirect memory access using cached flag (computed
+                // once during classify_line, avoiding repeated byte scans).
+                if infos[j].has_indirect_mem {
                     slot_read = true;
                     break;
                 }
@@ -896,6 +926,7 @@ fn eliminate_dead_stores(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
                     write!(pattern_buf, "{}(%rbp)", store_offset).unwrap();
                     pattern_built = true;
                 }
+                let line = infos[j].trimmed(&lines[j]);
                 if line.contains(pattern_buf.as_str()) {
                     slot_read = true;
                     break;
@@ -937,13 +968,36 @@ fn has_indirect_memory_access(s: &str) -> bool {
 // ── Helper functions ─────────────────────────────────────────────────────────
 
 /// Check if a line is a conditional jump instruction.
+/// Uses byte-level dispatch on the second character to avoid 18 `starts_with` calls.
 fn is_conditional_jump(s: &str) -> bool {
-    s.starts_with("je ") || s.starts_with("jne ") || s.starts_with("jl ")
-        || s.starts_with("jle ") || s.starts_with("jg ") || s.starts_with("jge ")
-        || s.starts_with("jb ") || s.starts_with("jbe ") || s.starts_with("ja ")
-        || s.starts_with("jae ") || s.starts_with("js ") || s.starts_with("jns ")
-        || s.starts_with("jo ") || s.starts_with("jno ") || s.starts_with("jp ")
-        || s.starts_with("jnp ") || s.starts_with("jz ") || s.starts_with("jnz ")
+    let b = s.as_bytes();
+    if b.len() < 3 || b[0] != b'j' {
+        return false;
+    }
+    // Dispatch on second byte to narrow candidates quickly
+    match b[1] {
+        b'e' => b[2] == b' ',                                         // je
+        b'l' => b[2] == b' ' || (b.len() >= 4 && b[2] == b'e' && b[3] == b' '),  // jl, jle
+        b'g' => b[2] == b' ' || (b.len() >= 4 && b[2] == b'e' && b[3] == b' '),  // jg, jge
+        b'b' => b[2] == b' ' || (b.len() >= 4 && b[2] == b'e' && b[3] == b' '),  // jb, jbe
+        b'a' => b[2] == b' ' || (b.len() >= 4 && b[2] == b'e' && b[3] == b' '),  // ja, jae
+        b's' => b[2] == b' ',                                         // js
+        b'o' => b[2] == b' ',                                         // jo
+        b'p' => b[2] == b' ',                                         // jp
+        b'z' => b[2] == b' ',                                         // jz
+        b'n' => {
+            // jne, jns, jno, jnp, jnz
+            if b.len() >= 4 {
+                match b[2] {
+                    b'e' | b's' | b'o' | b'p' | b'z' => b[3] == b' ',
+                    _ => false,
+                }
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
 }
 
 /// Check if an instruction is a self-move (e.g., movq %rax, %rax).
@@ -1086,24 +1140,153 @@ fn register_overlaps(a: &str, b: &str) -> bool {
 
 /// Get the register family (0-15) for an x86 register name.
 fn register_family(reg: &str) -> Option<u8> {
-    match reg {
-        "%rax" | "%eax" | "%ax" | "%al" | "%ah" => Some(0),
-        "%rcx" | "%ecx" | "%cx" | "%cl" | "%ch" => Some(1),
-        "%rdx" | "%edx" | "%dx" | "%dl" | "%dh" => Some(2),
-        "%rbx" | "%ebx" | "%bx" | "%bl" | "%bh" => Some(3),
-        "%rsp" | "%esp" | "%sp" | "%spl" => Some(4),
-        "%rbp" | "%ebp" | "%bp" | "%bpl" => Some(5),
-        "%rsi" | "%esi" | "%si" | "%sil" => Some(6),
-        "%rdi" | "%edi" | "%di" | "%dil" => Some(7),
-        "%r8" | "%r8d" | "%r8w" | "%r8b" => Some(8),
-        "%r9" | "%r9d" | "%r9w" | "%r9b" => Some(9),
-        "%r10" | "%r10d" | "%r10w" | "%r10b" => Some(10),
-        "%r11" | "%r11d" | "%r11w" | "%r11b" => Some(11),
-        "%r12" | "%r12d" | "%r12w" | "%r12b" => Some(12),
-        "%r13" | "%r13d" | "%r13w" | "%r13b" => Some(13),
-        "%r14" | "%r14d" | "%r14w" | "%r14b" => Some(14),
-        "%r15" | "%r15d" | "%r15w" | "%r15b" => Some(15),
-        _ => None,
+    let id = register_family_fast(reg);
+    if id == REG_NONE { None } else { Some(id) }
+}
+
+/// Fast register family lookup using byte-level dispatch.
+/// Returns REG_NONE if the register is not recognized.
+/// This avoids the 60-pattern string match in `register_family` for the hot path.
+#[inline]
+fn register_family_fast(reg: &str) -> RegId {
+    let b = reg.as_bytes();
+    let len = b.len();
+    // All register names start with '%'
+    if len < 3 || b[0] != b'%' {
+        return REG_NONE;
+    }
+    match b[1] {
+        b'r' => {
+            // %rax, %rcx, %rdx, %rbx, %rsp, %rbp, %rsi, %rdi, %r8..%r15, %r8d..%r15b
+            if len >= 4 {
+                match b[2] {
+                    b'a' => if b[3] == b'x' { 0 } else { REG_NONE },  // %rax
+                    b'c' => if b[3] == b'x' { 1 } else { REG_NONE },  // %rcx
+                    b'd' => if b[3] == b'x' { 2 } else if b[3] == b'i' { 7 } else { REG_NONE }, // %rdx, %rdi
+                    b'b' => if b[3] == b'x' { 3 } else if b[3] == b'p' { 5 } else { REG_NONE }, // %rbx, %rbp
+                    b's' => if b[3] == b'p' { 4 } else if b[3] == b'i' { 6 } else { REG_NONE }, // %rsp, %rsi
+                    b'1' if len >= 4 => {
+                        // %r10..%r15, %r10d..%r15b
+                        match b[3] {
+                            b'0' => 10, b'1' => 11, b'2' => 12,
+                            b'3' => 13, b'4' => 14, b'5' => 15,
+                            _ => REG_NONE,
+                        }
+                    }
+                    b'8' => 8,  // %r8, %r8d, %r8w, %r8b
+                    b'9' => 9,  // %r9, %r9d, %r9w, %r9b
+                    _ => REG_NONE,
+                }
+            } else if len == 3 {
+                // %r8, %r9
+                match b[2] {
+                    b'8' => 8,
+                    b'9' => 9,
+                    _ => REG_NONE,
+                }
+            } else {
+                REG_NONE
+            }
+        }
+        b'e' => {
+            // %eax, %ecx, %edx, %ebx, %esp, %ebp, %esi, %edi
+            if len >= 4 {
+                match b[2] {
+                    b'a' => if b[3] == b'x' { 0 } else { REG_NONE },  // %eax
+                    b'c' => if b[3] == b'x' { 1 } else { REG_NONE },  // %ecx
+                    b'd' => if b[3] == b'x' { 2 } else if b[3] == b'i' { 7 } else { REG_NONE },
+                    b'b' => if b[3] == b'x' { 3 } else if b[3] == b'p' { 5 } else { REG_NONE },
+                    b's' => if b[3] == b'p' { 4 } else if b[3] == b'i' { 6 } else { REG_NONE },
+                    _ => REG_NONE,
+                }
+            } else {
+                REG_NONE
+            }
+        }
+        b'a' => {
+            // %ax, %al, %ah
+            if len >= 3 && (b[2] == b'x' || b[2] == b'l' || b[2] == b'h') { 0 } else { REG_NONE }
+        }
+        b'c' => {
+            // %cx, %cl, %ch
+            if len >= 3 && (b[2] == b'x' || b[2] == b'l' || b[2] == b'h') { 1 } else { REG_NONE }
+        }
+        b'd' => {
+            // %dx, %dl, %dh, %di, %dil
+            if len >= 3 {
+                match b[2] {
+                    b'i' => 7,  // %di, %dil
+                    b'x' | b'l' | b'h' => 2,  // %dx, %dl, %dh
+                    _ => REG_NONE,
+                }
+            } else {
+                REG_NONE
+            }
+        }
+        b'b' => {
+            // %bx, %bl, %bh, %bp, %bpl
+            if len >= 3 {
+                match b[2] {
+                    b'p' => 5,  // %bp, %bpl
+                    b'x' | b'l' | b'h' => 3,  // %bx, %bl, %bh
+                    _ => REG_NONE,
+                }
+            } else {
+                REG_NONE
+            }
+        }
+        b's' => {
+            // %sp, %spl, %si, %sil
+            if len >= 3 {
+                match b[2] {
+                    b'p' => 4,  // %sp, %spl
+                    b'i' => 6,  // %si, %sil
+                    _ => REG_NONE,
+                }
+            } else {
+                REG_NONE
+            }
+        }
+        _ => REG_NONE,
+    }
+}
+
+/// Convert a register family ID and move size to the register name string.
+/// This avoids re-parsing assembly lines when we just need the register name.
+///
+/// # Panics
+/// Debug-asserts that `id` is a valid register family (0..=15).
+fn reg_id_to_name(id: RegId, size: MoveSize) -> &'static str {
+    debug_assert!(id <= 15, "invalid register family id: {}", id);
+    match size {
+        MoveSize::Q | MoveSize::SLQ => match id {
+            0 => "%rax", 1 => "%rcx", 2 => "%rdx", 3 => "%rbx",
+            4 => "%rsp", 5 => "%rbp", 6 => "%rsi", 7 => "%rdi",
+            8 => "%r8", 9 => "%r9", 10 => "%r10", 11 => "%r11",
+            12 => "%r12", 13 => "%r13", 14 => "%r14", 15 => "%r15",
+            _ => unreachable!(),
+        },
+        MoveSize::L => match id {
+            0 => "%eax", 1 => "%ecx", 2 => "%edx", 3 => "%ebx",
+            4 => "%esp", 5 => "%ebp", 6 => "%esi", 7 => "%edi",
+            8 => "%r8d", 9 => "%r9d", 10 => "%r10d", 11 => "%r11d",
+            12 => "%r12d", 13 => "%r13d", 14 => "%r14d", 15 => "%r15d",
+            _ => unreachable!(),
+        },
+        MoveSize::W => match id {
+            0 => "%ax", 1 => "%cx", 2 => "%dx", 3 => "%bx",
+            4 => "%sp", 5 => "%bp", 6 => "%si", 7 => "%di",
+            8 => "%r8w", 9 => "%r9w", 10 => "%r10w", 11 => "%r11w",
+            12 => "%r12w", 13 => "%r13w", 14 => "%r14w", 15 => "%r15w",
+            _ => unreachable!(),
+        },
+        MoveSize::B => match id {
+            0 => "%al", 1 => "%cl", 2 => "%dl", 3 => "%bl",
+            4 => "%spl", 5 => "%bpl", 6 => "%sil", 7 => "%dil",
+            8 => "%r8b", 9 => "%r9b", 10 => "%r10b", 11 => "%r11b",
+            12 => "%r12b", 13 => "%r13b", 14 => "%r14b", 15 => "%r15b",
+            _ => unreachable!(),
+        },
     }
 }
 
@@ -1124,8 +1307,6 @@ fn register_family(reg: &str) -> Option<u8> {
 struct SlotMapping {
     reg_id: RegId,
     size: MoveSize,
-    /// Index of the store instruction that created this mapping
-    store_idx: usize,
 }
 
 /// Clear all slot→register mappings. Used at control flow boundaries
@@ -1151,7 +1332,7 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
     let mut max_label_num: u32 = 0;
     for i in 0..len {
         if infos[i].kind == LineKind::Label {
-            let trimmed = trim_asm(&lines[i]);
+            let trimmed = infos[i].trimmed(&lines[i]);
             if let Some(n) = parse_label_number(trimmed) {
                 if n > max_label_num {
                     max_label_num = n;
@@ -1164,7 +1345,7 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
     for i in 0..len {
         match infos[i].kind {
             LineKind::Jmp | LineKind::CondJmp => {
-                let trimmed = trim_asm(&lines[i]);
+                let trimmed = infos[i].trimmed(&lines[i]);
                 if let Some(target) = extract_jump_target(trimmed) {
                     if let Some(n) = parse_dotl_number(target) {
                         if (n as usize) < is_jump_target.len() {
@@ -1202,7 +1383,7 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
 
         match infos[i].kind {
             LineKind::Label => {
-                let label_name = trim_asm(&lines[i]);
+                let label_name = infos[i].trimmed(&lines[i]);
                 // Check if this label is a jump target
                 let is_target = if let Some(n) = parse_label_number(label_name) {
                     (n as usize) < is_jump_target.len() && is_jump_target[n as usize]
@@ -1234,7 +1415,7 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
                 if reg != REG_NONE {
                     slot_entries.push(SlotEntry {
                         offset,
-                        mapping: SlotMapping { reg_id: reg, size, store_idx: i },
+                        mapping: SlotMapping { reg_id: reg, size },
                         active: true,
                     });
                     reg_offsets[reg as usize].push(offset);
@@ -1256,21 +1437,20 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
                     .find(|e| e.active && e.offset == load_offset)
                     .map(|e| e.mapping);
                 if let Some(mapping) = mapping {
-                    if mapping.size == load_size {
-                        let store_trimmed = trim_asm(&lines[mapping.store_idx]);
-                        if let Some((store_reg_str, _, _)) = parse_store_to_rbp_str(store_trimmed) {
-                            if load_reg == mapping.reg_id {
-                                mark_nop(&mut lines[i], &mut infos[i]);
-                                changed = true;
-                            } else {
-                                let load_trimmed = trim_asm(&lines[i]);
-                                if let Some((_, load_reg_str, _)) = parse_load_from_rbp_str(load_trimmed) {
-                                    let new_text = format!("    {} {}, {}",
-                                        load_size.mnemonic(), store_reg_str, load_reg_str);
-                                    replace_line(&mut lines[i], &mut infos[i], new_text);
-                                    changed = true;
-                                }
-                            }
+                    if mapping.size == load_size && mapping.reg_id != REG_NONE {
+                        if load_reg == mapping.reg_id {
+                            // Same register: load is redundant
+                            mark_nop(&mut lines[i], &mut infos[i]);
+                            changed = true;
+                        } else if load_reg != REG_NONE {
+                            // Different register: replace with reg-to-reg move
+                            // Use reg_id_to_name to avoid re-parsing the store line
+                            let store_reg_str = reg_id_to_name(mapping.reg_id, load_size);
+                            let load_reg_str = reg_id_to_name(load_reg, load_size);
+                            let new_text = format!("    {} {}, {}",
+                                load_size.mnemonic(), store_reg_str, load_reg_str);
+                            replace_line(&mut lines[i], &mut infos[i], new_text);
+                            changed = true;
                         }
                     }
                 }
@@ -1333,7 +1513,7 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
                     // div/idiv/mul also clobber rdx (family 2).
                     // parse_dest_reg_fast returns 0 (rax) for these; also invalidate rdx.
                     if dest_reg == 0 {
-                        let trimmed = trim_asm(&lines[i]);
+                        let trimmed = infos[i].trimmed(&lines[i]);
                         if trimmed.starts_with("div") || trimmed.starts_with("idiv")
                             || trimmed.starts_with("mul")
                         {
@@ -1341,9 +1521,8 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
                         }
                     }
                 }
-                // Indirect memory access through a register (e.g., movl %edx, (%rcx))
-                // could write to any stack slot, invalidating all slot→register mappings.
-                if has_indirect_memory_access(trim_asm(&lines[i])) {
+                // Use cached has_indirect_mem flag instead of re-scanning the line.
+                if infos[i].has_indirect_mem {
                     invalidate_all_mappings(&mut slot_entries, &mut reg_offsets);
                 }
                 prev_was_unconditional_jump = false;
