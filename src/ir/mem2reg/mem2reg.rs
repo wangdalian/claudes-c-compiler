@@ -290,6 +290,11 @@ fn instruction_used_values(inst: &Instruction) -> Vec<u32> {
                 add_operand_values(arg, &mut used);
             }
         }
+        Instruction::Select { cond, true_val, false_val, .. } => {
+            add_operand_values(cond, &mut used);
+            add_operand_values(true_val, &mut used);
+            add_operand_values(false_val, &mut used);
+        }
     }
     used
 }

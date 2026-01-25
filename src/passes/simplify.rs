@@ -54,6 +54,13 @@ fn try_simplify(inst: &Instruction) -> Option<Instruction> {
         Instruction::GetElementPtr { dest, base, offset, ty } => {
             simplify_gep(*dest, *base, offset, *ty)
         }
+        Instruction::Select { dest, true_val, false_val, .. } => {
+            // select cond, x, x => x (both arms are the same)
+            if same_operand(true_val, false_val) {
+                return Some(Instruction::Copy { dest: *dest, src: *true_val });
+            }
+            None
+        }
         _ => None,
     }
 }
@@ -324,6 +331,15 @@ fn is_one(op: &Operand) -> bool {
 fn same_value_operands(lhs: &Operand, rhs: &Operand) -> bool {
     match (lhs, rhs) {
         (Operand::Value(a), Operand::Value(b)) => a.0 == b.0,
+        _ => false,
+    }
+}
+
+/// Check if two operands are identical (same value or same constant).
+fn same_operand(a: &Operand, b: &Operand) -> bool {
+    match (a, b) {
+        (Operand::Value(va), Operand::Value(vb)) => va.0 == vb.0,
+        (Operand::Const(ca), Operand::Const(cb)) => ca.to_hash_key() == cb.to_hash_key(),
         _ => false,
     }
 }

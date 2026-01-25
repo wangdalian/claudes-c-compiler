@@ -1566,6 +1566,42 @@ impl ArchCodegen for RiscvCodegen {
         self.state.reg_cache.invalidate_all();
     }
 
+    /// Emit conditional select for RISC-V using a compact branch sequence.
+    ///
+    /// RISC-V doesn't have cmov. We use a 4-instruction branchless-ish sequence:
+    ///   1. Load false_val into t0 (default)
+    ///   2. Load condition into t1
+    ///   3. beqz t1, skip  (if cond == 0, keep false_val)
+    ///   4. Load true_val into t0
+    ///   skip:
+    ///   5. Store t0 to dest
+    fn emit_select(&mut self, dest: &Value, cond: &Operand, true_val: &Operand, false_val: &Operand, _ty: IrType) {
+        let label_id = self.state.next_label_id();
+        let skip_label = format!(".Lsel_skip_{}", label_id);
+
+        // Load false_val (default) into t0
+        self.operand_to_t0(false_val);
+        // Save to t2 so we can test the condition
+        self.state.emit("    mv t2, t0");
+
+        // Load condition
+        self.operand_to_t0(cond);
+        // Branch to skip if condition is zero (keep false_val)
+        self.state.emit_fmt(format_args!("    beqz t0, {}", skip_label));
+
+        // Load true_val into t2 (overrides the false_val)
+        self.operand_to_t0(true_val);
+        self.state.emit("    mv t2, t0");
+
+        // Skip label
+        self.state.emit_fmt(format_args!("{}:", skip_label));
+
+        // Move result to t0 and store
+        self.state.emit("    mv t0, t2");
+        self.state.reg_cache.invalidate_acc();
+        self.store_t0_to(dest);
+    }
+
     // emit_call: uses shared default from ArchCodegen trait (traits.rs)
 
     fn call_abi_config(&self) -> CallAbiConfig {

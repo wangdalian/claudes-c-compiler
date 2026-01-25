@@ -324,6 +324,18 @@ pub enum Instruction {
         /// Operand arguments (varies by op)
         args: Vec<Operand>,
     },
+
+    /// Conditional select: %dest = select cond, true_val, false_val
+    /// Equivalent to: cond != 0 ? true_val : false_val
+    /// Lowered to cmov on x86, csel on ARM, branch-based on RISC-V.
+    /// Unlike a branch diamond, both operands are always evaluated.
+    Select {
+        dest: Value,
+        cond: Operand,
+        true_val: Operand,
+        false_val: Operand,
+        ty: IrType,
+    },
 }
 
 /// Block terminator.
@@ -908,6 +920,7 @@ impl Instruction {
             | Instruction::LabelAddr { .. } => Some(IrType::Ptr),
             Instruction::Copy { .. } => None, // unknown without tracking
             Instruction::Phi { ty, .. } => Some(*ty),
+            Instruction::Select { ty, .. } => Some(*ty),
             _ => None,
         }
     }
@@ -931,7 +944,8 @@ impl Instruction {
             | Instruction::Phi { dest, .. }
             | Instruction::LabelAddr { dest, .. }
             | Instruction::GetReturnF64Second { dest }
-            | Instruction::GetReturnF32Second { dest } => Some(*dest),
+            | Instruction::GetReturnF32Second { dest }
+            | Instruction::Select { dest, .. } => Some(*dest),
             Instruction::Call { dest, .. }
             | Instruction::CallIndirect { dest, .. } => *dest,
             Instruction::Intrinsic { dest, .. } => *dest,

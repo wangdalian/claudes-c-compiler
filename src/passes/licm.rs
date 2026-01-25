@@ -201,6 +201,7 @@ fn is_hoistable(inst: &Instruction) -> bool {
             | Instruction::GetElementPtr { .. }
             | Instruction::Copy { .. }
             | Instruction::GlobalAddr { .. }
+            | Instruction::Select { .. }
     )
 }
 
@@ -333,6 +334,11 @@ fn all_operand_values(inst: &Instruction) -> Vec<u32> {
         Instruction::SetReturnF64Second { src } => collect(src, &mut vals),
         Instruction::SetReturnF32Second { src } => collect(src, &mut vals),
         Instruction::DynAlloca { size, .. } => collect(size, &mut vals),
+        Instruction::Select { cond, true_val, false_val, .. } => {
+            collect(cond, &mut vals);
+            collect(true_val, &mut vals);
+            collect(false_val, &mut vals);
+        }
         // These don't use Value operands (or are already handled above).
         Instruction::Alloca { .. }
         | Instruction::Store { .. }
@@ -397,6 +403,11 @@ fn instruction_operand_values(inst: &Instruction) -> Vec<u32> {
         Instruction::Load { ptr, .. } => {
             // The pointer is the operand we need to check for loop-invariance.
             vals.push(ptr.0);
+        }
+        Instruction::Select { cond, true_val, false_val, .. } => {
+            collect_op(cond, &mut vals);
+            collect_op(true_val, &mut vals);
+            collect_op(false_val, &mut vals);
         }
         // All other instructions are non-hoistable and should never reach here.
         _ => unreachable!("instruction_operand_values called on non-hoistable instruction")

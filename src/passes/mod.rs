@@ -13,6 +13,7 @@ pub mod constant_fold;
 pub mod copy_prop;
 pub mod dce;
 pub mod gvn;
+pub mod if_convert;
 pub mod licm;
 pub mod simplify;
 
@@ -76,7 +77,12 @@ pub fn run_passes(module: &mut IrModule, opt_level: u32) {
             changes += licm::run(module);
         }
 
-        // Phase 7: Copy propagation again (clean up copies created by GVN/simplify)
+        // Phase 7: If-conversion - convert simple branch+phi diamonds to Select
+        // instructions. Runs after scalar optimizations have simplified the CFG,
+        // enabling cmov/csel emission instead of branches for simple conditionals.
+        changes += if_convert::run(module);
+
+        // Phase 8: Copy propagation again (clean up copies created by GVN/simplify)
         changes += copy_prop::run(module);
 
         // Phase 8: Dead code elimination (clean up dead instructions including dead copies)

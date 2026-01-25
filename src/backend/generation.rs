@@ -525,6 +525,10 @@ fn generate_instruction(cg: &mut dyn ArchCodegen, inst: &Instruction, gep_fold_m
             cg.emit_global_addr(dest, name);
             // The implementation calls emit_store_result(dest), so cache is valid.
         }
+        Instruction::Select { dest, cond, true_val, false_val, ty } => {
+            cg.emit_select(dest, cond, true_val, false_val, *ty);
+            // emit_select ends with emit_store_result(dest). Cache is valid.
+        }
         Instruction::LabelAddr { dest, label } => {
             let label_str = label.as_label();
             cg.emit_label_addr(dest, &label_str);
@@ -578,7 +582,8 @@ fn generate_instruction(cg: &mut dyn ArchCodegen, inst: &Instruction, gep_fold_m
                 | Instruction::Load { .. } | Instruction::BinOp { .. }
                 | Instruction::UnaryOp { .. } | Instruction::Cmp { .. }
                 | Instruction::Cast { .. } | Instruction::GetElementPtr { .. }
-                | Instruction::GlobalAddr { .. } | Instruction::LabelAddr { .. } => unreachable!(),
+                | Instruction::GlobalAddr { .. } | Instruction::LabelAddr { .. }
+                | Instruction::Select { .. } => unreachable!(),
             }
             cg.state().reg_cache.invalidate_all();
         }

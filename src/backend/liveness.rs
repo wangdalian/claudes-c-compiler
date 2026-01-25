@@ -349,6 +349,7 @@ pub(super) fn for_each_operand_in_instruction(inst: &Instruction, mut f: impl Fn
             for (_, op, _) in inputs { f(op); }
         }
         Instruction::Intrinsic { args, .. } => { for a in args { f(a); } }
+        Instruction::Select { cond, true_val, false_val, .. } => { f(cond); f(true_val); f(false_val); }
     }
 }
 

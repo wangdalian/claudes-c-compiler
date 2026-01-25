@@ -2141,6 +2141,65 @@ impl ArchCodegen for X86Codegen {
         self.state.reg_cache.invalidate_all();
     }
 
+    /// Emit a conditional select using x86 cmov instructions.
+    ///
+    /// Strategy:
+    ///   1. Load false_val into %rax (the default/fallback value)
+    ///   2. Load true_val into %rcx
+    ///   3. Load condition into %rdx and test it (sets flags)
+    ///   4. cmovneq %rcx, %rax (if cond != 0, select true_val)
+    ///   5. Store result from %rax to dest
+    ///
+    /// We load the operands first and test the condition last, because
+    /// operand loading may use xorq (for zero constants) which clobbers flags.
+    /// The movq instructions used for stack/register loads don't affect flags.
+    fn emit_select(&mut self, dest: &Value, cond: &Operand, true_val: &Operand, false_val: &Operand, _ty: IrType) {
+        // Step 1: Load false_val into %rax (the default value if cond == 0).
+        self.operand_to_rax(false_val);
+
+        // Step 2: Load true_val into %rcx.
+        self.operand_to_rcx(true_val);
+
+        // Step 3: Load condition and test. We use %rdx as a scratch register
+        // to avoid clobbering %rax or %rcx.
+        match cond {
+            Operand::Const(c) => {
+                let val = match c {
+                    IrConst::I8(v) => *v as i64,
+                    IrConst::I16(v) => *v as i64,
+                    IrConst::I32(v) => *v as i64,
+                    IrConst::I64(v) => *v,
+                    IrConst::Zero => 0,
+                    _ => 0,
+                };
+                if val >= i32::MIN as i64 && val <= i32::MAX as i64 {
+                    self.state.emit_fmt(format_args!("    movq ${}, %rdx", val));
+                } else {
+                    self.state.emit_fmt(format_args!("    movabsq ${}, %rdx", val));
+                }
+            }
+            Operand::Value(v) => {
+                // Load condition value into %rdx
+                if let Some(&reg) = self.reg_assignments.get(&v.0) {
+                    let reg_name = callee_saved_name(reg);
+                    self.state.emit_fmt(format_args!("    movq %{}, %rdx", reg_name));
+                } else if let Some(slot) = self.state.get_slot(v.0) {
+                    self.state.emit_fmt(format_args!("    movq {}(%rbp), %rdx", slot.0));
+                } else {
+                    self.state.emit("    xorq %rdx, %rdx");
+                }
+            }
+        }
+        self.state.emit("    testq %rdx, %rdx");
+
+        // Step 4: cmovne - if condition was nonzero, select true_val (rcx) over false_val (rax)
+        self.state.emit("    cmovneq %rcx, %rax");
+
+        // Step 5: Store result
+        self.state.reg_cache.invalidate_acc();
+        self.store_rax_to(dest);
+    }
+
     // emit_call: uses shared default from ArchCodegen trait (traits.rs)
 
     fn call_abi_config(&self) -> CallAbiConfig {

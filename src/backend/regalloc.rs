@@ -206,4 +206,73 @@ pub fn allocate_registers(
     }
 }
 
+/// Count operand uses in an instruction.
+fn count_operand_uses(inst: &Instruction, use_count: &mut FxHashMap<u32, u32>) {
+    let mut count_op = |op: &Operand| {
+        if let Operand::Value(v) = op {
+            *use_count.entry(v.0).or_insert(0) += 1;
+        }
+    };
+
+    match inst {
+        Instruction::Alloca { .. } => {}
+        Instruction::DynAlloca { size, .. } => count_op(size),
+        Instruction::Store { val, .. } => count_op(val),
+        Instruction::Load { .. } => {}
+        Instruction::BinOp { lhs, rhs, .. } => { count_op(lhs); count_op(rhs); }
+        Instruction::UnaryOp { src, .. } => count_op(src),
+        Instruction::Cmp { lhs, rhs, .. } => { count_op(lhs); count_op(rhs); }
+        Instruction::Call { args, .. } => { for a in args { count_op(a); } }
+        Instruction::CallIndirect { func_ptr, args, .. } => { count_op(func_ptr); for a in args { count_op(a); } }
+        Instruction::GetElementPtr { offset, .. } => count_op(offset),
+        Instruction::Cast { src, .. } => count_op(src),
+        Instruction::Copy { src, .. } => count_op(src),
+        Instruction::GlobalAddr { .. } => {}
+        Instruction::Memcpy { .. } => {}
+        Instruction::VaArg { .. } => {}
+        Instruction::VaStart { .. } => {}
+        Instruction::VaEnd { .. } => {}
+        Instruction::VaCopy { .. } => {}
+        Instruction::AtomicRmw { ptr, val, .. } => { count_op(ptr); count_op(val); }
+        Instruction::AtomicCmpxchg { ptr, expected, desired, .. } => {
+            count_op(ptr); count_op(expected); count_op(desired);
+        }
+        Instruction::AtomicLoad { ptr, .. } => count_op(ptr),
+        Instruction::AtomicStore { ptr, val, .. } => { count_op(ptr); count_op(val); }
+        Instruction::Fence { .. } => {}
+        Instruction::Phi { incoming, .. } => { for (op, _) in incoming { count_op(op); } }
+        Instruction::LabelAddr { .. } => {}
+        Instruction::GetReturnF64Second { .. } => {}
+        Instruction::SetReturnF64Second { src } => count_op(src),
+        Instruction::GetReturnF32Second { .. } => {}
+        Instruction::SetReturnF32Second { src } => count_op(src),
+        Instruction::InlineAsm { inputs, .. } => {
+            for (_, op, _) in inputs { count_op(op); }
+        }
+        Instruction::Intrinsic { args, .. } => { for a in args { count_op(a); } }
+        Instruction::Select { cond, true_val, false_val, .. } => { count_op(cond); count_op(true_val); count_op(false_val); }
+    }
+}
+
+/// Count operand uses in a terminator.
+fn count_terminator_uses(term: &Terminator, use_count: &mut FxHashMap<u32, u32>) {
+    match term {
+        Terminator::Return(Some(op)) => {
+            if let Operand::Value(v) = op {
+                *use_count.entry(v.0).or_insert(0) += 1;
+            }
+        }
+        Terminator::CondBranch { cond, .. } => {
+            if let Operand::Value(v) = cond {
+                *use_count.entry(v.0).or_insert(0) += 1;
+            }
+        }
+        Terminator::IndirectBranch { target, .. } => {
+            if let Operand::Value(v) = target {
+                *use_count.entry(v.0).or_insert(0) += 1;
+            }
+        }
+        _ => {}
+    }
+}
 

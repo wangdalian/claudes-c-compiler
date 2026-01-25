@@ -223,6 +223,11 @@ fn replace_operands_in_instruction(inst: &mut Instruction, copy_map: &[Option<Op
                 count += replace_operand(arg, copy_map);
             }
         }
+        Instruction::Select { cond, true_val, false_val, .. } => {
+            count += replace_operand(cond, copy_map);
+            count += replace_operand(true_val, copy_map);
+            count += replace_operand(false_val, copy_map);
+        }
     }
 
     count

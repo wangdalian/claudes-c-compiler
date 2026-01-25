@@ -172,6 +172,11 @@ fn collect_instruction_uses(inst: &Instruction, used: &mut [bool]) {
                 mark_operand_used(op, used);
             }
         }
+        Instruction::Select { cond, true_val, false_val, .. } => {
+            mark_operand_used(cond, used);
+            mark_operand_used(true_val, used);
+            mark_operand_used(false_val, used);
+        }
         Instruction::LabelAddr { .. } => {}
         Instruction::GetReturnF64Second { .. } => {}
         Instruction::GetReturnF32Second { .. } => {}

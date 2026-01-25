@@ -1382,6 +1382,37 @@ impl ArchCodegen for ArmCodegen {
         self.state.reg_cache.invalidate_all();
     }
 
+    /// Emit conditional select using AArch64 csel instruction.
+    ///
+    /// Strategy:
+    ///   1. Load false_val into x0
+    ///   2. Save to x1
+    ///   3. Load true_val into x0
+    ///   4. Save to x2
+    ///   5. Load condition into x0, compare against zero
+    ///   6. csel x0, x2, x1, ne (select true_val if cond != 0, else false_val)
+    ///   7. Store x0 to dest
+    fn emit_select(&mut self, dest: &Value, cond: &Operand, true_val: &Operand, false_val: &Operand, _ty: IrType) {
+        // Load false_val into x1
+        self.operand_to_x0(false_val);
+        self.state.emit("    mov x1, x0");
+
+        // Load true_val into x2
+        self.operand_to_x0(true_val);
+        self.state.emit("    mov x2, x0");
+
+        // Load condition and compare against zero
+        self.operand_to_x0(cond);
+        self.state.emit("    cmp x0, #0");
+
+        // csel: select x2 (true_val) if ne, else x1 (false_val)
+        self.state.emit("    csel x0, x2, x1, ne");
+
+        // Store result
+        self.state.reg_cache.invalidate_acc();
+        self.store_x0_to(dest);
+    }
+
     // emit_call: uses shared default from ArchCodegen trait (traits.rs)
 
     fn call_abi_config(&self) -> CallAbiConfig {

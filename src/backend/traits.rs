@@ -674,6 +674,34 @@ pub trait ArchCodegen {
         self.state().emit_fmt(format_args!("    {}", trap));
     }
 
+    /// Emit a conditional select: dest = cond != 0 ? true_val : false_val.
+    ///
+    /// Default implementation uses a branch-based sequence. Backends can override
+    /// this to emit cmov (x86), csel (ARM), or other conditional move instructions.
+    fn emit_select(&mut self, dest: &Value, cond: &Operand, true_val: &Operand, false_val: &Operand, _ty: IrType) {
+        // Default: branch-based select
+        let label_id = self.state().next_label_id();
+        let true_label = format!(".Lsel_true_{}", label_id);
+        let end_label = format!(".Lsel_end_{}", label_id);
+
+        // Load condition and branch
+        self.emit_load_operand(cond);
+        self.emit_branch_nonzero(&true_label);
+
+        // False path: load false_val -> dest, jump to end
+        self.emit_load_operand(false_val);
+        self.emit_store_result(dest);
+        self.emit_branch(&end_label);
+
+        // True path: load true_val -> dest
+        self.state().emit_fmt(format_args!("{}:", true_label));
+        self.emit_load_operand(true_val);
+        self.emit_store_result(dest);
+
+        // End label
+        self.state().emit_fmt(format_args!("{}:", end_label));
+    }
+
     /// Emit a conditional branch.
     fn emit_cond_branch(&mut self, cond: &Operand, true_label: &str, false_label: &str) {
         self.emit_load_operand(cond);

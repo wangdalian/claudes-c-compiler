@@ -97,6 +97,15 @@ fn try_fold(inst: &Instruction) -> Option<Instruction> {
                 src: Operand::Const(IrConst::from_i64(result, *to_ty)),
             })
         }
+        Instruction::Select { dest, cond, true_val, false_val, .. } => {
+            // If the condition is a known constant, fold to the appropriate value
+            let cond_const = as_i64_const(cond)?;
+            let result = if cond_const != 0 { *true_val } else { *false_val };
+            Some(Instruction::Copy {
+                dest: *dest,
+                src: result,
+            })
+        }
         _ => None,
     }
 }
