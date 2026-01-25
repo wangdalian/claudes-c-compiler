@@ -1,0 +1,12 @@
+Fix RISC-V va_list functions (va_start, va_arg, va_copy) to properly handle
+register-allocated values.
+
+Problem: emit_va_start, emit_va_arg, and emit_va_copy in the RISC-V backend
+don't check reg_assignments when loading non-alloca pointer values. When a
+va_list pointer value has been register-allocated to a callee-saved register
+(e.g., s1), the code still tries to load from the stack slot, which was
+never written to (since register-allocated values skip stack stores).
+This causes segfaults (~56 test failures on RISC-V).
+
+Fix: Add reg_assignments checks to all three functions, similar to how
+emit_slot_addr_to_secondary already does it.
