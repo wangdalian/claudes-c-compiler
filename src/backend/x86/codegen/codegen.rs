@@ -1076,13 +1076,12 @@ impl ArchCodegen for X86Codegen {
                 }
                 ParamClass::F128AlwaysStack { offset } => {
                     // x86: F128 (long double) always passes on stack via x87.
+                    // Load the 80-bit extended value from caller's stack and store
+                    // it in 80-bit format to the local slot (fstpt), so that later
+                    // emit_load can read it back with fldt.
                     let src = stack_base + offset;
                     self.state.emit_fmt(format_args!("    fldt {}(%rbp)", src));
-                    self.state.emit("    subq $8, %rsp");
-                    self.state.emit("    fstpl (%rsp)");
-                    self.state.emit("    movq (%rsp), %rax");
-                    self.state.emit("    addq $8, %rsp");
-                    self.state.emit_fmt(format_args!("    movq %rax, {}(%rbp)", slot.0));
+                    self.state.emit_fmt(format_args!("    fstpt {}(%rbp)", slot.0));
                 }
                 ParamClass::I128Stack { offset } => {
                     let src = stack_base + offset;

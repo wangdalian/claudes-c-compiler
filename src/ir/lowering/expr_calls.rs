@@ -238,11 +238,24 @@ impl Lowerer {
     /// Returns (arg_vals, arg_types, struct_arg_sizes) where struct_arg_sizes[i] is
     /// Some(size) if the ith argument is a struct/union passed by value.
     pub(super) fn lower_call_arguments(&mut self, func: &Expr, args: &[Expr]) -> (Vec<Operand>, Vec<IrType>, Vec<Option<usize>>) {
-        let func_name = if let Expr::Identifier(name, _) = func { Some(name.as_str()) } else { None };
+        // Extract function name from direct calls, or the underlying variable name
+        // from indirect calls through function pointers (e.g., (*afp)(args) -> "afp").
+        let func_name = match func {
+            Expr::Identifier(name, _) => Some(name.as_str()),
+            Expr::Deref(inner, _) => {
+                if let Expr::Identifier(name, _) = inner.as_ref() {
+                    Some(name.as_str())
+                } else { None }
+            }
+            _ => None,
+        };
         let sig = func_name.and_then(|name|
             self.func_meta.sigs.get(name)
                 .or_else(|| self.func_meta.ptr_sigs.get(name))
         );
+        // If the signature has an empty parameter list (unprototyped function like `int f()`),
+        // all arguments need default argument promotions (float->double, char/short->int).
+        let is_unprototyped = sig.map_or(false, |s| s.param_types.is_empty());
         let param_types: Option<Vec<IrType>> = sig.map(|s| s.param_types.clone()).filter(|v| !v.is_empty());
         let param_ctypes: Option<Vec<CType>> = sig.map(|s| s.param_ctypes.clone()).filter(|v| !v.is_empty());
         let param_bool_flags: Option<Vec<bool>> = sig.map(|s| s.param_bool_flags.clone()).filter(|v| !v.is_empty());
@@ -320,7 +333,9 @@ impl Lowerer {
                     return cast_val;
                 }
             }
-            if arg_ty == IrType::F32 && (pre_call_variadic || param_types.is_some()) {
+            // Default argument promotion: float->double for variadic args,
+            // args beyond known params, or all args for unprototyped functions.
+            if arg_ty == IrType::F32 && (pre_call_variadic || param_types.is_some() || is_unprototyped) {
                 arg_types.push(IrType::F64);
                 return self.emit_implicit_cast(val, IrType::F32, IrType::F64);
             }
