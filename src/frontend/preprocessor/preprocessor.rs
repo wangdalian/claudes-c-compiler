@@ -397,20 +397,26 @@ impl Preprocessor {
             } else {
                 false
             };
-            let process_directive = is_directive
-                && (!is_include || pending_line.is_empty() || is_conditional_directive);
 
-            // If we're in an included file with a pending line and hit a conditional
-            // directive, flush the pending line first so it doesn't get lost.
-            if process_directive && is_include && !pending_line.is_empty() && is_conditional_directive {
-                let expanded = self.macros.expand_line(&pending_line);
-                output.push_str(&expanded);
-                for _ in 0..pending_newlines {
-                    output.push('\n');
-                }
-                pending_line.clear();
-                pending_newlines = 0;
+            // When we're accumulating a multi-line macro invocation (pending_line
+            // is non-empty) and hit a conditional directive, we must process the
+            // directive to update the conditional stack but NOT flush the pending
+            // line. The macro argument collection must continue across
+            // #ifdef/#endif boundaries. This handles cases like:
+            //   FOO(1, #ifdef BAR 2, #endif 3)
+            // where the #ifdef/#endif must be evaluated but the macro args keep
+            // accumulating until the closing ')'.
+            if is_conditional_directive && !pending_line.is_empty() {
+                // Process the conditional directive (updates conditional stack)
+                self.process_directive(trimmed, source_line_num + 1);
+                // Don't add the directive line to pending_line, don't flush.
+                // Just count a newline for line numbering preservation.
+                pending_newlines += 1;
+                continue;
             }
+
+            let process_directive = is_directive
+                && (!is_include || pending_line.is_empty());
 
             if process_directive {
                 let include_result = self.process_directive(trimmed, source_line_num + 1);
@@ -443,7 +449,7 @@ impl Preprocessor {
                 );
             } else {
                 // Inactive conditional block - skip the line but preserve numbering
-                if !is_include && !pending_line.is_empty() {
+                if !pending_line.is_empty() {
                     pending_newlines += 1;
                 } else {
                     output.push('\n');
