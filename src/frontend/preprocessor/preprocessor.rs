@@ -444,7 +444,7 @@ impl Preprocessor {
         // Phase 3: Comment replacement
         // So we must join continued lines BEFORE stripping comments.
         let source = self.join_continued_lines(source);
-        let source = Self::strip_block_comments(&source);
+        let (source, line_map) = Self::strip_block_comments(&source);
         let mut output = String::with_capacity(source.len());
 
         // For included files, save and reset the conditional stack and line override
@@ -466,13 +466,18 @@ impl Preprocessor {
         for (line_num, line) in source.lines().enumerate() {
             let trimmed = line.trim();
 
+            // Map output line number to original source line number using the
+            // line_map from comment stripping (accounts for removed newlines in
+            // block comments).
+            let source_line_num = line_map.get(line_num).copied().unwrap_or(line_num);
+
             // Update __LINE__, accounting for any #line directive override
             let effective_line = if let Some((target_line, source_line_at_directive)) = self.line_override {
                 // After #line N, __LINE__ = N + (current_source_line - source_line_of_directive)
-                let offset = line_num.saturating_sub(source_line_at_directive);
+                let offset = source_line_num.saturating_sub(source_line_at_directive);
                 target_line + offset
             } else {
-                line_num + 1
+                source_line_num + 1
             };
             self.macros.define(MacroDef {
                 name: "__LINE__".to_string(),
@@ -513,7 +518,7 @@ impl Preprocessor {
             }
 
             if process_directive {
-                let include_result = self.process_directive(trimmed, line_num + 1);
+                let include_result = self.process_directive(trimmed, source_line_num + 1);
                 if let Some(included_content) = include_result {
                     output.push_str(&included_content);
                     output.push('\n');
@@ -852,37 +857,57 @@ impl Preprocessor {
         depth > 0
     }
 
-    /// Strip C-style block comments (/* ... */), preserving newlines
-    /// within comments for correct line numbering.
-    /// Also strips C++ style line comments (// ...).
+    /// Strip C-style block comments (/* ... */) and C++ line comments (// ...).
+    /// Returns the stripped source and a mapping from output line numbers to
+    /// original source line numbers, for correct __LINE__ tracking.
+    ///
+    /// Block comments are replaced with a single space (per C11 5.1.1.2 phase 3),
+    /// which avoids breaking preprocessor directives that have block comments
+    /// between `#` and the directive keyword (e.g., `#/*...\n...*/if 1`).
     /// Uses raw byte operations to preserve UTF-8 sequences in string literals.
-    fn strip_block_comments(source: &str) -> String {
+    fn strip_block_comments(source: &str) -> (String, Vec<usize>) {
         let mut result: Vec<u8> = Vec::with_capacity(source.len());
         let bytes = source.as_bytes();
         let len = bytes.len();
         let mut i = 0;
+        // Track source line number (0-based) as we scan through input
+        let mut src_line: usize = 0;
+        // For each output line, record which source line it corresponds to
+        let mut line_map: Vec<usize> = Vec::new();
+        // Track the source line at the start of the current output line
+        let mut current_output_line_src = 0usize;
 
         while i < len {
             match bytes[i] {
                 b'"' | b'\'' => {
                     // Copy string/char literals verbatim (don't strip comments inside)
+                    let old_i = i;
                     i = copy_literal_bytes_raw(bytes, i, bytes[i], &mut result);
+                    // Count newlines in the literal for source line tracking
+                    for &b in &bytes[old_i..i] {
+                        if b == b'\n' {
+                            src_line += 1;
+                            // Record mapping for each output line
+                            line_map.push(current_output_line_src);
+                            current_output_line_src = src_line;
+                        }
+                    }
                 }
                 b'/' if i + 1 < len && bytes[i + 1] == b'*' => {
-                    // Block comment - replace with spaces, preserving newlines
+                    // Block comment - replace entire comment with a single space
                     i += 2;
                     result.push(b' ');
                     while i < len {
                         if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'/' {
                             i += 2;
-                            result.push(b' ');
                             break;
                         }
                         if bytes[i] == b'\n' {
-                            result.push(b'\n');
+                            src_line += 1;
                         }
                         i += 1;
                     }
+                    // Don't emit newlines - the comment is fully replaced by one space
                 }
                 b'/' if i + 1 < len && bytes[i + 1] == b'/' => {
                     // Line comment - skip to end of line
@@ -891,16 +916,26 @@ impl Preprocessor {
                         i += 1;
                     }
                 }
+                b'\n' => {
+                    result.push(b'\n');
+                    line_map.push(current_output_line_src);
+                    src_line += 1;
+                    current_output_line_src = src_line;
+                    i += 1;
+                }
                 _ => {
                     result.push(bytes[i]);
                     i += 1;
                 }
             }
         }
+        // Record the last line
+        line_map.push(current_output_line_src);
 
         // SAFETY: input was valid UTF-8, and we only removed/replaced ASCII characters
         // (comments with spaces/newlines), so result is still valid UTF-8
-        unsafe { String::from_utf8_unchecked(result) }
+        let text = unsafe { String::from_utf8_unchecked(result) };
+        (text, line_map)
     }
 
     /// Join lines that end with backslash (line continuation).

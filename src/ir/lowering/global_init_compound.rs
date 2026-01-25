@@ -486,6 +486,8 @@ impl Lowerer {
                         // &(compound_literal) at file scope: create anonymous global
                         let addr_init = self.create_compound_literal_global(cl_type_spec, cl_init);
                         elements.push(addr_init);
+                    } else if let Some(addr_init) = self.eval_string_literal_addr_expr(expr) {
+                        elements.push(addr_init);
                     } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
                         elements.push(addr_init);
                     } else {
@@ -501,6 +503,9 @@ impl Lowerer {
                         val.coerce_to(field_ir_ty)
                     };
                     self.push_const_as_bytes(elements, &coerced, field_size);
+                } else if let Some(addr_init) = self.eval_string_literal_addr_expr(expr) {
+                    // String literal +/- offset expression - emit as relocation
+                    elements.push(addr_init);
                 } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
                     // Address expression - emit as relocation
                     elements.push(addr_init);
@@ -734,6 +739,8 @@ impl Lowerer {
                 if let Expr::StringLiteral(s, _) = expr {
                     let label = self.intern_string_literal(s);
                     elements.push(GlobalInit::GlobalAddr(label));
+                } else if let Some(addr_init) = self.eval_string_literal_addr_expr(expr) {
+                    elements.push(addr_init);
                 } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
                     elements.push(addr_init);
                 } else if let Some(val) = self.eval_const_expr(expr) {
@@ -792,6 +799,8 @@ impl Lowerer {
                     if let Expr::StringLiteral(s, _) = expr {
                         let label = self.intern_string_literal(s);
                         elements.push(GlobalInit::GlobalAddr(label));
+                    } else if let Some(addr_init) = self.eval_string_literal_addr_expr(expr) {
+                        elements.push(addr_init);
                     } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
                         elements.push(addr_init);
                     } else if let Some(val) = self.eval_const_expr(expr) {
@@ -845,6 +854,8 @@ impl Lowerer {
                     if let Expr::StringLiteral(s, _) = expr {
                         let label = self.intern_string_literal(s);
                         elements.push(GlobalInit::GlobalAddr(label));
+                    } else if let Some(addr_init) = self.eval_string_literal_addr_expr(expr) {
+                        elements.push(addr_init);
                     } else if let Some(addr_init) = self.eval_global_addr_expr(expr) {
                         elements.push(addr_init);
                     } else if let Some(val) = self.eval_const_expr(expr) {
@@ -897,6 +908,10 @@ impl Lowerer {
         if let Expr::StringLiteral(s, _) = expr {
             let label = self.intern_string_literal(s);
             return Some(GlobalInit::GlobalAddr(label));
+        }
+        // String literal +/- offset: "str" + N
+        if let Some(addr) = self.eval_string_literal_addr_expr(expr) {
+            return Some(addr);
         }
         // Try as a global address expression (&x, func name, array name, etc.)
         if let Some(addr) = self.eval_global_addr_expr(expr) {

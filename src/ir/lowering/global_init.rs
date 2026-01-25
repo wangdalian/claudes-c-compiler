@@ -104,6 +104,10 @@ impl Lowerer {
                         return self.create_compound_literal_global(cl_type_spec, cl_init);
                     }
                 }
+                // Handle string literal with constant offset: "str" + N or "str" - N
+                if let Some(addr_init) = self.eval_string_literal_addr_expr(expr) {
+                    return addr_init;
+                }
                 // Try to evaluate as a global address expression (e.g., &x, func, arr, &arr[3], &s.field)
                 if let Some(addr_init) = self.eval_global_addr_expr(expr) {
                     return addr_init;
@@ -391,6 +395,78 @@ impl Lowerer {
         }
     }
 
+    /// Evaluate a string literal address expression for static initializers.
+    /// Handles patterns like:
+    ///   "hello"        -> GlobalAddr(.Lstr0)
+    ///   "hello" + 2    -> GlobalAddrOffset(.Lstr0, 2)
+    ///   "hello" - 1    -> GlobalAddrOffset(.Lstr0, -1)
+    ///   (type*)"hello"       -> GlobalAddr(.Lstr0)
+    ///   (type*)("hello" + 2) -> GlobalAddrOffset(.Lstr0, 2)
+    /// Returns None if the expression is not a string literal address expression.
+    pub(super) fn eval_string_literal_addr_expr(&mut self, expr: &Expr) -> Option<GlobalInit> {
+        match expr {
+            // "str" + N  or  N + "str"
+            Expr::BinaryOp(BinOp::Add, lhs, rhs, _) => {
+                // Try lhs = string, rhs = offset
+                if let Some(result) = self.eval_string_literal_with_offset(lhs, rhs, false) {
+                    return Some(result);
+                }
+                // Try rhs = string, lhs = offset (commutative)
+                if let Some(result) = self.eval_string_literal_with_offset(rhs, lhs, false) {
+                    return Some(result);
+                }
+                None
+            }
+            // "str" - N
+            Expr::BinaryOp(BinOp::Sub, lhs, rhs, _) => {
+                self.eval_string_literal_with_offset(lhs, rhs, true)
+            }
+            // (type*)"str" or (type*)("str" + N)
+            Expr::Cast(_, inner, _) => {
+                self.eval_string_literal_addr_expr(inner)
+            }
+            _ => None,
+        }
+    }
+
+    /// Helper: given a string literal expression and an offset expression,
+    /// intern the string and return GlobalAddr or GlobalAddrOffset.
+    fn eval_string_literal_with_offset(
+        &mut self,
+        str_expr: &Expr,
+        offset_expr: &Expr,
+        negate: bool,
+    ) -> Option<GlobalInit> {
+        // Check if str_expr is a string literal (possibly through a cast)
+        let (s, is_wide) = self.extract_string_literal(str_expr)?;
+        let offset_val = self.eval_const_expr(offset_expr)?;
+        let offset = self.const_to_i64(&offset_val)?;
+        let byte_offset = if negate { -offset } else { offset };
+
+        let label = if is_wide {
+            self.intern_wide_string_literal(&s)
+        } else {
+            self.intern_string_literal(&s)
+        };
+
+        if byte_offset == 0 {
+            Some(GlobalInit::GlobalAddr(label))
+        } else {
+            Some(GlobalInit::GlobalAddrOffset(label, byte_offset))
+        }
+    }
+
+    /// Extract a string literal from an expression, possibly through casts.
+    /// Returns (string_content, is_wide).
+    fn extract_string_literal(&self, expr: &Expr) -> Option<(String, bool)> {
+        match expr {
+            Expr::StringLiteral(s, _) => Some((s.clone(), false)),
+            Expr::WideStringLiteral(s, _) => Some((s.clone(), true)),
+            Expr::Cast(_, inner, _) => self.extract_string_literal(inner),
+            _ => None,
+        }
+    }
+
     /// Create an anonymous global for a compound literal at file scope.
     /// Used for: struct S *s = &(struct S){1, 2};
     pub(super) fn create_compound_literal_global(
@@ -487,7 +563,8 @@ impl Lowerer {
     fn init_has_addr_exprs(&self, init: &Initializer) -> bool {
         match init {
             Initializer::Expr(expr) => {
-                if matches!(expr, Expr::StringLiteral(_, _)) {
+                // String literal or expression containing one (e.g., "str" + N)
+                if Self::expr_contains_string_literal(expr) {
                     return true;
                 }
                 // &(compound_literal) at file scope
@@ -604,8 +681,8 @@ impl Lowerer {
 
             match &item.init {
                 Initializer::Expr(expr) => {
-                    // Direct string literal or address expression
-                    if matches!(expr, Expr::StringLiteral(_, _)) {
+                    // Direct string literal or expression containing one (e.g., "str" + N)
+                    if Self::expr_contains_string_literal(expr) {
                         // Check if field is a pointer or array of pointers
                         if Self::type_has_pointer_elements_ctx(field_ty, &self.types) {
                             return true;
@@ -939,10 +1016,23 @@ impl Lowerer {
     /// Check if an initializer item contains a string literal anywhere (including nested lists).
     fn init_contains_string_literal(item: &InitializerItem) -> bool {
         match &item.init {
-            Initializer::Expr(expr) => matches!(expr, Expr::StringLiteral(_, _)),
+            Initializer::Expr(expr) => Self::expr_contains_string_literal(expr),
             Initializer::List(sub_items) => {
                 sub_items.iter().any(|sub| Self::init_contains_string_literal(sub))
             }
+        }
+    }
+
+    /// Check if an expression contains a string literal, recursing into
+    /// binary operations and casts (for patterns like "str" + N).
+    fn expr_contains_string_literal(expr: &Expr) -> bool {
+        match expr {
+            Expr::StringLiteral(_, _) | Expr::WideStringLiteral(_, _) => true,
+            Expr::BinaryOp(_, lhs, rhs, _) => {
+                Self::expr_contains_string_literal(lhs) || Self::expr_contains_string_literal(rhs)
+            }
+            Expr::Cast(_, inner, _) => Self::expr_contains_string_literal(inner),
+            _ => false,
         }
     }
 
@@ -962,6 +1052,9 @@ impl Lowerer {
                     elements.push(GlobalInit::GlobalAddr(scoped_label.as_label()));
                 } else if let Some(val) = self.eval_const_expr(expr) {
                     elements.push(GlobalInit::Scalar(val));
+                } else if let Some(addr) = self.eval_string_literal_addr_expr(expr) {
+                    // String literal +/- offset: "str" + N -> GlobalAddrOffset
+                    elements.push(addr);
                 } else if let Some(addr) = self.eval_global_addr_expr(expr) {
                     elements.push(addr);
                 } else {
