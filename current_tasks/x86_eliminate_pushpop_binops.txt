@@ -1,0 +1,26 @@
+Task: Eliminate push/pop accumulator pattern in x86 binop/cmp codegen
+
+Problem: emit_int_binop and emit_cmp use a 7-instruction push/pop pattern for every
+binary operation:
+  operand_to_rax(lhs)   # load lhs into rax
+  pushq %rax            # save lhs to stack
+  operand_to_rax(rhs)   # load rhs into rax
+  movq %rax, %rcx       # move rhs to rcx
+  popq %rax             # restore lhs from stack
+  <op> %rcx, %rax       # perform operation
+  movq %rax, slot       # store result
+
+This is 7+ instructions per binop. The fix:
+1. Add operand_to_rcx() that loads directly to %rcx, skipping the push/pop dance
+2. Use immediate operands for constant RHS where possible (addq $4, %rax)
+3. Same pattern for emit_cmp (load lhs to rax, rhs to rcx, cmpq %rcx, %rax)
+4. Fix emit_float_binop/emit_cmp float paths to avoid push/pop
+
+Expected: 3-4 fewer instructions per binop/cmp, major code quality improvement.
+
+Scope: x86 codegen only (emit_int_binop, emit_cmp, + helper methods)
+
+Related: optimize_x86_immediate_operands.txt covers immediate operand optimization.
+This task is broader - it eliminates the entire push/pop pattern for the common case.
+
+Status: in progress
