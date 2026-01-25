@@ -312,6 +312,7 @@ pub fn peephole_optimize(asm: String) -> String {
         changed |= fuse_compare_and_branch(&mut lines, &mut infos);
         changed |= forward_store_load_non_adjacent(&mut lines, &mut infos);
         changed |= eliminate_redundant_cltq(&mut lines, &mut infos);
+        changed |= eliminate_redundant_zero_extend(&mut lines, &mut infos);
         changed |= eliminate_dead_stores(&mut lines, &mut infos);
         pass_count += 1;
     }
@@ -1052,6 +1053,111 @@ fn invert_cc(cc: &str) -> &str {
         "np" => "p",
         _ => cc,
     }
+}
+
+/// Pattern 10b: Eliminate redundant zero/sign-extension after instructions that
+/// already produce a fully extended result.
+///
+/// Examples:
+///   movzbq (%rcx), %rax / movzbq %al, %rax  -> remove second movzbq
+///   movzwq (%rcx), %rax / movzwq %ax, %rax  -> remove second movzwq
+///   movsbq (%rcx), %rax / movsbq %al, %rax  -> remove second movsbq
+///   movslq (%rcx), %rax / movslq %eax, %rax -> remove second movslq
+///   addl %ecx, %eax / cltq / cltq           -> remove second cltq
+///
+/// Also: movzbq %al, %rax after cmpq/testq + setCC + movzbq is redundant
+/// (the setCC + first movzbq already produces a zero-extended result).
+///
+/// We handle the general case: if instruction N writes a zero/sign-extended
+/// value to %rax, and instruction N+1 or N+2 does the same extension again,
+/// the second one is redundant.
+fn eliminate_redundant_zero_extend(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
+    let mut changed = false;
+    let len = lines.len();
+
+    for i in 0..len.saturating_sub(1) {
+        if infos[i].is_nop() {
+            continue;
+        }
+
+        // Find the next non-NOP instruction after i
+        let mut ext_idx = i + 1;
+        // Look through intervening stores to rbp (which don't modify %rax)
+        while ext_idx < len && ext_idx < i + 4 {
+            if infos[ext_idx].is_nop() {
+                ext_idx += 1;
+                continue;
+            }
+            // Skip stores to rbp - they read %rax but don't modify it
+            if matches!(infos[ext_idx].kind, LineKind::StoreRbp { .. }) {
+                ext_idx += 1;
+                continue;
+            }
+            break;
+        }
+
+        if ext_idx >= len || infos[ext_idx].is_nop() {
+            continue;
+        }
+
+        let next = trim_asm(&lines[ext_idx]);
+        let prev = trim_asm(&lines[i]);
+
+        // Check if the next instruction is a redundant zero/sign extension to rax
+        let is_redundant_ext = {
+            // movzbq %al, %rax after movzbq <mem>, %rax
+            if next == "movzbq %al, %rax" {
+                prev.starts_with("movzbq ") && prev.ends_with("%rax")
+            }
+            // movzwq %ax, %rax after movzwq <mem>, %rax
+            else if next == "movzwq %ax, %rax" {
+                prev.starts_with("movzwq ") && prev.ends_with("%rax")
+            }
+            // movsbq %al, %rax after movsbq <mem>, %rax
+            else if next == "movsbq %al, %rax" {
+                prev.starts_with("movsbq ") && prev.ends_with("%rax")
+            }
+            // movslq %eax, %rax after movslq <mem>, %rax
+            else if next == "movslq %eax, %rax" {
+                prev.starts_with("movslq ") && prev.ends_with("%rax")
+            }
+            // movl %eax, %eax (zero-extend 32->64) after operations that already
+            // produce a zero-extended 32-bit result:
+            // - addl/subl/imull/andl/orl/xorl write eax (auto-zeroes upper 32 bits)
+            // - movl <mem>, %eax (auto-zeroes upper 32 bits)
+            // - movzbl/movzbq already zero-extends
+            else if next == "movl %eax, %eax" {
+                prev.starts_with("addl ") || prev.starts_with("subl ")
+                    || prev.starts_with("imull ") || prev.starts_with("andl ")
+                    || prev.starts_with("orl ") || prev.starts_with("xorl ")
+                    || prev.starts_with("shll ") || prev.starts_with("shrl ")
+                    || (prev.starts_with("movl ") && prev.ends_with("%eax"))
+                    || (prev.starts_with("movzbl ") && prev.ends_with("%eax"))
+                    || (prev.starts_with("movzbq ") && prev.ends_with("%rax"))
+                    || (prev.starts_with("movzwl ") && prev.ends_with("%eax"))
+                    || (prev.starts_with("movzwq ") && prev.ends_with("%rax"))
+                    || prev == "divl %ecx" || prev == "idivl %ecx"
+            }
+            // cltq after movslq ... %rax (sign-extend already done)
+            // Also: cltq after addl/subl etc. + cltq (already handled by eliminate_redundant_cltq)
+            else if next == "cltq" {
+                // Already covered by eliminate_redundant_cltq for adjacent, but
+                // handle through intervening stores here
+                (prev.starts_with("movslq ") && prev.ends_with("%rax"))
+                    || (prev.starts_with("movq $") && prev.ends_with("%rax"))
+            }
+            else {
+                false
+            }
+        };
+
+        if is_redundant_ext {
+            mark_nop(&mut lines[ext_idx], &mut infos[ext_idx]);
+            changed = true;
+        }
+    }
+
+    changed
 }
 
 /// Check if two register names overlap (e.g., %eax overlaps with %rax).

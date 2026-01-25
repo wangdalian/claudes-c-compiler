@@ -144,6 +144,66 @@ impl X86Codegen {
         }
     }
 
+    /// Load an operand directly into %rcx, bypassing %rax.
+    /// Used by emit_int_binop and emit_cmp to avoid the push/pop dance when
+    /// loading the RHS operand. For constants, emits movq $IMM, %rcx.
+    /// For values, loads directly from the stack slot into %rcx.
+    fn load_rhs_to_rcx(&mut self, op: &Operand) {
+        match op {
+            Operand::Const(c) => {
+                match c {
+                    IrConst::I8(v) => self.state.emit_fmt(format_args!("    movq ${}, %rcx", *v as i64)),
+                    IrConst::I16(v) => self.state.emit_fmt(format_args!("    movq ${}, %rcx", *v as i64)),
+                    IrConst::I32(v) => self.state.emit_fmt(format_args!("    movq ${}, %rcx", *v as i64)),
+                    IrConst::I64(v) => {
+                        if *v >= i32::MIN as i64 && *v <= i32::MAX as i64 {
+                            self.state.emit_fmt(format_args!("    movq ${}, %rcx", v));
+                        } else {
+                            self.state.emit_fmt(format_args!("    movabsq ${}, %rcx", v));
+                        }
+                    }
+                    IrConst::I128(v) => {
+                        let low = *v as i64;
+                        if low >= i32::MIN as i64 && low <= i32::MAX as i64 {
+                            self.state.emit_fmt(format_args!("    movq ${}, %rcx", low));
+                        } else {
+                            self.state.emit_fmt(format_args!("    movabsq ${}, %rcx", low));
+                        }
+                    }
+                    IrConst::Zero => self.state.emit("    xorq %rcx, %rcx"),
+                    // Float constants: unlikely as RHS of int binop, but handle gracefully
+                    IrConst::F32(v) => {
+                        let bits = v.to_bits() as u64;
+                        self.state.emit_fmt(format_args!("    movq ${}, %rcx", bits as i64));
+                    }
+                    IrConst::F64(v) => {
+                        let bits = v.to_bits();
+                        if bits == 0 {
+                            self.state.emit("    xorq %rcx, %rcx");
+                        } else {
+                            self.state.emit_fmt(format_args!("    movabsq ${}, %rcx", bits as i64));
+                        }
+                    }
+                    IrConst::LongDouble(v) => {
+                        let bits = v.to_bits();
+                        if bits == 0 {
+                            self.state.emit("    xorq %rcx, %rcx");
+                        } else {
+                            self.state.emit_fmt(format_args!("    movabsq ${}, %rcx", bits as i64));
+                        }
+                    }
+                }
+            }
+            Operand::Value(v) => {
+                if self.state.get_slot(v.0).is_some() {
+                    self.value_to_reg(v, "rcx");
+                } else {
+                    self.state.emit("    xorq %rcx, %rcx");
+                }
+            }
+        }
+    }
+
     // --- 128-bit integer helpers ---
     // Convention: 128-bit values use %rax (low 64 bits) and %rdx (high 64 bits).
     // Stack slots for 128-bit values are 16 bytes: slot(%rbp) = low, slot+8(%rbp) = high.
@@ -1163,19 +1223,122 @@ impl ArchCodegen for X86Codegen {
     // emit_float_binop uses the shared default implementation.
 
     fn emit_int_binop(&mut self, dest: &Value, op: IrBinOp, lhs: &Operand, rhs: &Operand, ty: IrType) {
-        self.operand_to_rax(lhs);
-        self.state.emit("    pushq %rax");
-        // Invalidate acc before loading rhs: after popq, rax will be restored to lhs,
-        // not whatever rhs we're about to load. Without this, if the cache says acc=rhs
-        // after the rhs load, the popq would make that stale.
-        self.state.reg_cache.invalidate_acc();
-        self.operand_to_rax(rhs);
-        self.state.emit("    movq %rax, %rcx");
-        self.state.emit("    popq %rax");
-        // After popq, rax has lhs again, rcx has rhs. Cache is invalidated (correct).
-
         let use_32bit = ty == IrType::I32 || ty == IrType::U32;
         let is_unsigned = ty.is_unsigned();
+
+        // Try immediate operand optimization: when RHS is a small constant,
+        // many x86 instructions accept an immediate operand directly, avoiding
+        // the need to load the constant into a register (saves 3+ instructions).
+        if let Operand::Const(c) = rhs {
+            if let Some(imm) = c.to_i64() {
+                let fits_i32 = imm >= i32::MIN as i64 && imm <= i32::MAX as i64;
+
+                // Shift operations always use immediate (shift amount fits in u8)
+                if matches!(op, IrBinOp::Shl | IrBinOp::AShr | IrBinOp::LShr) {
+                    let shift = (imm as u32) & 63;
+                    self.operand_to_rax(lhs);
+                    match op {
+                        IrBinOp::Shl => {
+                            if use_32bit {
+                                self.state.emit_fmt(format_args!("    shll ${}, %eax", shift & 31));
+                                if !is_unsigned { self.state.emit("    cltq"); }
+                            } else {
+                                self.state.emit_fmt(format_args!("    shlq ${}, %rax", shift));
+                            }
+                        }
+                        IrBinOp::AShr => {
+                            if use_32bit {
+                                self.state.emit_fmt(format_args!("    sarl ${}, %eax", shift & 31));
+                                if !is_unsigned { self.state.emit("    cltq"); }
+                            } else {
+                                self.state.emit_fmt(format_args!("    sarq ${}, %rax", shift));
+                            }
+                        }
+                        IrBinOp::LShr => {
+                            if use_32bit {
+                                self.state.emit_fmt(format_args!("    shrl ${}, %eax", shift & 31));
+                            } else {
+                                self.state.emit_fmt(format_args!("    shrq ${}, %rax", shift));
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                    self.state.reg_cache.invalidate_acc();
+                    self.store_rax_to(dest);
+                    return;
+                }
+
+                // Add/Sub/And/Or/Xor with immediate (must fit in i32 for x86 encoding)
+                if fits_i32 && matches!(op, IrBinOp::Add | IrBinOp::Sub | IrBinOp::And | IrBinOp::Or | IrBinOp::Xor) {
+                    self.operand_to_rax(lhs);
+                    match op {
+                        IrBinOp::Add => {
+                            if use_32bit {
+                                self.state.emit_fmt(format_args!("    addl ${}, %eax", imm as i32));
+                                if !is_unsigned { self.state.emit("    cltq"); }
+                            } else {
+                                self.state.emit_fmt(format_args!("    addq ${}, %rax", imm));
+                            }
+                        }
+                        IrBinOp::Sub => {
+                            if use_32bit {
+                                self.state.emit_fmt(format_args!("    subl ${}, %eax", imm as i32));
+                                if !is_unsigned { self.state.emit("    cltq"); }
+                            } else {
+                                self.state.emit_fmt(format_args!("    subq ${}, %rax", imm));
+                            }
+                        }
+                        IrBinOp::And => {
+                            if use_32bit {
+                                self.state.emit_fmt(format_args!("    andl ${}, %eax", imm as i32));
+                                if !is_unsigned { self.state.emit("    cltq"); }
+                            } else {
+                                self.state.emit_fmt(format_args!("    andq ${}, %rax", imm));
+                            }
+                        }
+                        IrBinOp::Or => {
+                            if use_32bit {
+                                self.state.emit_fmt(format_args!("    orl ${}, %eax", imm as i32));
+                                if !is_unsigned { self.state.emit("    cltq"); }
+                            } else {
+                                self.state.emit_fmt(format_args!("    orq ${}, %rax", imm));
+                            }
+                        }
+                        IrBinOp::Xor => {
+                            if use_32bit {
+                                self.state.emit_fmt(format_args!("    xorl ${}, %eax", imm as i32));
+                                if !is_unsigned { self.state.emit("    cltq"); }
+                            } else {
+                                self.state.emit_fmt(format_args!("    xorq ${}, %rax", imm));
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                    self.state.reg_cache.invalidate_acc();
+                    self.store_rax_to(dest);
+                    return;
+                }
+
+                // Mul with immediate: use imulq $imm, %rax, %rax (3-operand form)
+                if fits_i32 && op == IrBinOp::Mul {
+                    self.operand_to_rax(lhs);
+                    if use_32bit {
+                        self.state.emit_fmt(format_args!("    imull ${}, %eax, %eax", imm as i32));
+                        if !is_unsigned { self.state.emit("    cltq"); }
+                    } else {
+                        self.state.emit_fmt(format_args!("    imulq ${}, %rax, %rax", imm));
+                    }
+                    self.state.reg_cache.invalidate_acc();
+                    self.store_rax_to(dest);
+                    return;
+                }
+            }
+        }
+
+        // Optimized path: load LHS into rax, then load RHS directly into rcx.
+        // This avoids the push/pop dance when RHS is a Value or non-i32 Const.
+        self.operand_to_rax(lhs);
+        self.load_rhs_to_rcx(rhs);
 
         match op {
             IrBinOp::Add => {
@@ -1252,6 +1415,8 @@ impl ArchCodegen for X86Codegen {
             IrBinOp::LShr => self.state.emit("    shrq %cl, %rax"),
         }
 
+        // The binary operation modified %rax, invalidate the acc cache
+        self.state.reg_cache.invalidate_acc();
         self.store_rax_to(dest);
     }
 
@@ -1321,14 +1486,26 @@ impl ArchCodegen for X86Codegen {
             return;
         }
 
+        // Optimized comparison: avoid push/pop dance.
+        // When RHS is a small constant, use cmpq $IMM, %rax directly.
+        // Otherwise, load LHS to rax and RHS directly to rcx.
         self.operand_to_rax(lhs);
-        self.state.emit("    pushq %rax");
-        self.state.reg_cache.invalidate_acc();
-        self.operand_to_rax(rhs);
-        self.state.emit("    movq %rax, %rcx");
-        self.state.emit("    popq %rax");
-        self.state.reg_cache.invalidate_acc();
-        self.state.emit("    cmpq %rcx, %rax");
+        if let Operand::Const(c) = rhs {
+            if let Some(imm) = c.to_i64() {
+                if imm >= i32::MIN as i64 && imm <= i32::MAX as i64 {
+                    self.state.emit_fmt(format_args!("    cmpq ${}, %rax", imm));
+                } else {
+                    self.load_rhs_to_rcx(rhs);
+                    self.state.emit("    cmpq %rcx, %rax");
+                }
+            } else {
+                self.load_rhs_to_rcx(rhs);
+                self.state.emit("    cmpq %rcx, %rax");
+            }
+        } else {
+            self.load_rhs_to_rcx(rhs);
+            self.state.emit("    cmpq %rcx, %rax");
+        }
 
         let set_instr = match op {
             IrCmpOp::Eq => "sete",
