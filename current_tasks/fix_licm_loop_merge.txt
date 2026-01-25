@@ -1,0 +1,18 @@
+Fix LICM: merge natural loops with same header to prevent incorrect hoisting
+
+Root cause: find_natural_loops() creates separate NaturalLoop entries for each
+back edge targeting the same header. When a loop has multiple back edges (e.g.,
+"continue" in a while-loop plus "break" from switch cases that loop back),
+each back edge produces a loop body that is a SUBSET of the full loop.
+
+LICM then processes each subset independently. A small subset may lack stores
+or calls that exist in the full loop, causing LICM to incorrectly determine
+that a load is safe to hoist. For example, in TCC's tcc_parse_args(), the
+while(optind < argc) loop has many back edges. A subset with only 5 blocks
+has no calls and no stores to the argc alloca, so LICM hoists the argc load
+to the preheader. But the full loop modifies argc through &argc passed to a
+called function. This causes an infinite loop at runtime.
+
+Fix: After collecting all natural loops, merge loops that share the same
+header block by taking the union of their body sets. This ensures LICM
+analyzes the complete loop body for memory effects.
