@@ -76,6 +76,9 @@ pub struct Parser {
     pub(super) parsing_visibility: Option<String>,
     /// Set when __attribute__((section("..."))) is encountered; holds the section name.
     pub(super) parsing_section: Option<String>,
+    /// Set to true when __attribute__((gnu_inline)) is encountered.
+    /// Forces GNU89 inline semantics: extern inline = no external definition emitted.
+    pub(super) parsing_gnu_inline: bool,
     /// Set when parse_type_specifier or consume_post_type_qualifiers encounters _Alignas(N).
     /// Consumed and reset by callers that need it (e.g., struct field parsing).
     pub(super) parsed_alignas: Option<usize>,
@@ -108,6 +111,7 @@ impl Parser {
             parsing_alias_target: None,
             parsing_visibility: None,
             parsing_section: None,
+            parsing_gnu_inline: false,
             parsed_alignas: None,
             pragma_pack_stack: Vec::new(),
             pragma_pack_align: None,
@@ -429,6 +433,10 @@ impl Parser {
                                                 self.advance();
                                             }
                                         }
+                                    }
+                                    TokenKind::Identifier(name) if name == "gnu_inline" || name == "__gnu_inline__" => {
+                                        self.parsing_gnu_inline = true;
+                                        self.advance();
                                     }
                                     TokenKind::Identifier(name) if name == "mode" || name == "__mode__" => {
                                         self.advance();

@@ -27,6 +27,7 @@ impl Parser {
         self.parsing_alias_target = None;
         self.parsing_visibility = None;
         self.parsing_section = None;
+        self.parsing_gnu_inline = false;
 
         self.skip_gcc_extensions();
 
@@ -174,6 +175,8 @@ impl Parser {
 
         let is_static = self.parsing_static;
         let is_inline = self.parsing_inline;
+        let is_extern = self.parsing_extern;
+        let is_gnu_inline = self.parsing_gnu_inline;
 
         // Build return type from derived declarators
         let return_type = self.build_return_type(type_spec, &derived);
@@ -198,6 +201,8 @@ impl Parser {
             body,
             is_static,
             is_inline,
+            is_extern,
+            is_gnu_inline,
             is_kr: is_kr_style,
             is_constructor,
             is_destructor,

@@ -25,6 +25,10 @@ pub struct FunctionDef {
     pub body: CompoundStmt,
     pub is_static: bool,
     pub is_inline: bool,
+    /// True when `extern` storage class was used on the function definition.
+    pub is_extern: bool,
+    /// True when __attribute__((gnu_inline)) forces GNU89 inline semantics.
+    pub is_gnu_inline: bool,
     pub is_kr: bool,
     pub is_constructor: bool,
     pub is_destructor: bool,
