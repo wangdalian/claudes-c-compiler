@@ -1,0 +1,14 @@
+Unify type_spec_to_ctype dispatch between sema and lowering
+
+Problem: The core type_spec_to_ctype() match dispatch is duplicated between
+sema.rs (~150 lines) and lowering/types.rs (~90 lines). The 22 primitive-type
+arms are pure boilerplate duplication. Only 4 arms differ: TypedefName,
+Struct/Union, Enum, and Typeof.
+
+Plan:
+1. Add trait methods to TypeConvertContext for the 4 divergent cases
+2. Move the shared match dispatch into a default method on TypeConvertContext
+3. Each side implements only the divergent trait methods
+4. Delete the duplicated type_spec_to_ctype methods
+
+Files: src/common/type_builder.rs, src/frontend/sema/sema.rs, src/ir/lowering/types.rs
