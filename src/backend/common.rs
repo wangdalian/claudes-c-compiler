@@ -178,6 +178,19 @@ impl PtrDirective {
             PtrDirective::Dword => ".dword",
         }
     }
+
+    /// Convert a byte alignment value to the correct `.align` argument for this target.
+    /// On x86-64, `.align N` means N bytes. On ARM and RISC-V, `.align N` means 2^N bytes,
+    /// so we must emit log2(N) instead.
+    pub fn align_arg(self, bytes: usize) -> usize {
+        debug_assert!(bytes == 0 || bytes.is_power_of_two(), "alignment must be power of 2");
+        match self {
+            PtrDirective::Quad => bytes,
+            PtrDirective::Xword | PtrDirective::Dword => {
+                if bytes <= 1 { 0 } else { bytes.trailing_zeros() as usize }
+            }
+        }
+    }
 }
 
 /// Emit all data sections (rodata for string literals, .data and .bss for globals).
@@ -191,7 +204,7 @@ pub fn emit_data_sections(out: &mut AsmOutput, module: &IrModule, ptr_dir: PtrDi
         }
         // Wide string literals (L"..."): each char is a 4-byte wchar_t value
         for (label, chars) in &module.wide_string_literals {
-            out.emit_fmt(format_args!(".align 4"));
+            out.emit_fmt(format_args!(".align {}", ptr_dir.align_arg(4)));
             out.emit_fmt(format_args!("{}:", label));
             for &ch in chars {
                 out.emit_fmt(format_args!("  .long {}", ch));
@@ -281,6 +294,7 @@ fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective
         if !g.is_common || !matches!(g.init, GlobalInit::Zero) {
             continue;
         }
+        // .comm alignment is always in bytes on all platforms, unlike .align
         out.emit_fmt(format_args!(".comm {},{},{}", g.name, g.size, effective_align(g)));
     }
 
@@ -309,7 +323,7 @@ fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective
         if !g.is_static {
             out.emit_fmt(format_args!(".globl {}", g.name));
         }
-        out.emit_fmt(format_args!(".align {}", effective_align(g)));
+        out.emit_fmt(format_args!(".align {}", ptr_dir.align_arg(effective_align(g))));
         out.emit_fmt(format_args!(".type {}, @object", g.name));
         out.emit_fmt(format_args!(".size {}, {}", g.name, g.size));
         out.emit_fmt(format_args!("{}:", g.name));
@@ -325,7 +339,7 @@ fn emit_global_def(out: &mut AsmOutput, g: &IrGlobal, ptr_dir: PtrDirective) {
     if !g.is_static {
         out.emit_fmt(format_args!(".globl {}", g.name));
     }
-    out.emit_fmt(format_args!(".align {}", effective_align(g)));
+    out.emit_fmt(format_args!(".align {}", ptr_dir.align_arg(effective_align(g))));
     out.emit_fmt(format_args!(".type {}, @object", g.name));
     out.emit_fmt(format_args!(".size {}, {}", g.name, g.size));
     out.emit_fmt(format_args!("{}:", g.name));

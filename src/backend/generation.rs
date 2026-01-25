@@ -128,7 +128,7 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule) -> String {
     for ctor in &module.constructors {
         cg.state().emit("");
         cg.state().emit(".section .init_array,\"aw\",@init_array");
-        cg.state().emit(".align 8");
+        cg.state().emit_fmt(format_args!(".align {}", ptr_dir.align_arg(8)));
         cg.state().emit_fmt(format_args!("{} {}", ptr_dir.as_str(), ctor));
     }
 
@@ -136,7 +136,7 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule) -> String {
     for dtor in &module.destructors {
         cg.state().emit("");
         cg.state().emit(".section .fini_array,\"aw\",@fini_array");
-        cg.state().emit(".align 8");
+        cg.state().emit_fmt(format_args!(".align {}", ptr_dir.align_arg(8)));
         cg.state().emit_fmt(format_args!("{} {}", ptr_dir.as_str(), dtor));
     }
 
