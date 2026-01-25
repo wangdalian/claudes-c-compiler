@@ -9,6 +9,10 @@ pub mod call_emit;   // Callee-side parameter classification (shared by emit_sto
 pub mod cast;        // Cast and float operation classification
 pub mod inline_asm;  // InlineAsmEmitter trait and shared framework
 
+// Register allocation and liveness analysis
+pub mod liveness;     // Live interval computation
+pub mod regalloc;     // Linear scan register allocator
+
 // Re-export shim for backwards compatibility with existing imports
 pub mod codegen_shared;
 

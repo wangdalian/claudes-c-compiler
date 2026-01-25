@@ -21,6 +21,8 @@ The shared framework is split into focused modules to keep each under ~400 lines
 - **`call_emit.rs`** — `ParamClass` enum, `classify_params()`. Callee-side parameter classification: determines how each function parameter arrives (GP register, FP register, stack, i128 pair, F128, etc.) for `emit_store_params`.
 - **`cast.rs`** — `CastKind` enum, `classify_cast()`, `FloatOp`, `classify_float_binop()`. Shared cast decision logic (Ptr normalization, F128 reduction, float↔int, widen/narrow).
 - **`inline_asm.rs`** — `InlineAsmEmitter` trait, `AsmOperandKind`, `AsmOperand`, `emit_inline_asm_common()`. Shared 4-phase inline asm framework (classify→load→emit→store).
+- **`liveness.rs`** — Live interval computation for IR values. Assigns sequential program points and computes [def, last_use] intervals per value.
+- **`regalloc.rs`** — Linear scan register allocator. Assigns callee-saved registers to values with the longest live intervals. Includes back-edge detection to disable allocation for functions with loops.
 - **`codegen_shared.rs`** — Thin re-export shim. Existing `use crate::backend::codegen_shared::*` imports continue to work unchanged.
 - **`common.rs`** — Assembly output buffer, data section emission, assembler/linker invocation via GCC toolchain.
 - **`mod.rs`** — `Target` enum for target dispatch, module declarations.
@@ -45,6 +47,6 @@ Per-architecture backends:
 
 - **Shared emit_call default**: The trait provides a default `emit_call` that implements the shared 6-phase call algorithm. Each backend implements ~10 small hook methods (`emit_call_compute_stack_space`, `emit_call_spill_fptr`, `emit_call_stack_args`, `emit_call_reg_args`, `emit_call_instruction`, `emit_call_cleanup`, `emit_call_store_result`, etc.) that provide the arch-specific instruction emission for each phase. This eliminates ~300 lines of structural duplication per backend.
 
-- **Stack-based codegen with register caching and direct reg loads**: All backends use a stack-based strategy (no register allocator yet). Each IR value gets a stack slot. Instructions load to accumulator, operate, store back. The `RegCache` tracks which value is in the accumulator register, skipping redundant loads. On x86, binary operations and comparisons load the RHS operand directly to `%rcx` instead of using push/pop, and use immediate operands for small constants where possible. This eliminates the push/pop accumulator dance for the most common code patterns.
+- **Stack-based codegen with register caching and direct reg loads**: x86 and ARM backends use a stack-based strategy where each IR value gets a stack slot. Instructions load to accumulator, operate, store back. The `RegCache` tracks which value is in the accumulator register, skipping redundant loads. On x86, binary operations and comparisons load the RHS operand directly to `%rcx` instead of using push/pop, and use immediate operands for small constants where possible. The RISC-V backend extends this with a linear scan register allocator (see `liveness.rs` and `regalloc.rs`) that assigns callee-saved registers (s1, s7-s11) to frequently-used values, using a write-through strategy to keep the stack slot always valid.
 
 - **Assembler/linker via GCC**: Currently delegates to the system's GCC toolchain. Will eventually be replaced by a native ELF writer.

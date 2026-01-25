@@ -1,22 +1,25 @@
-RISC-V Register Allocator: Linear Scan with Callee-Saved Registers
+COMPLETED: RISC-V Register Allocator - Linear Scan with Callee-Saved Registers
 
-Goal: Implement a register allocator for the RISC-V backend that assigns
-frequently-used IR values to callee-saved registers (s1-s11) instead of
+Implemented a linear scan register allocator for the RISC-V backend that assigns
+frequently-used IR values to callee-saved registers (s1, s7-s11) instead of
 always spilling everything to the stack.
 
-Approach:
-1. Implement liveness analysis (live intervals for each IR value)
-2. Implement linear scan register allocator using s1-s11 (11 callee-saved regs)
-3. Add ValueLocation enum (Stack/Register) to backend state
-4. Update RISC-V operand_to_t0 / store_t0_to to check ValueLocation
-5. Save/restore used callee-saved registers in prologue/epilogue
-6. Handle register pressure with spilling back to stack slots
+Implementation:
+1. src/backend/liveness.rs - Live interval computation for IR values
+2. src/backend/regalloc.rs - Linear scan register allocator
+3. src/backend/riscv/codegen/codegen.rs - RISC-V integration:
+   - operand_to_t0: reads from callee-saved register when available
+   - store_t0_to: write-through to both stack slot AND callee-saved register
+   - calculate_stack_space: runs register allocator after stack layout
+   - emit_prologue: saves callee-saved registers
+   - emit_epilogue/emit_epilogue_and_ret: restores callee-saved registers
 
-This is the first backend to get a register allocator. x86 and ARM remain
-stack-based. The architecture changes are designed to be backend-specific
-so other backends are unaffected.
+Safety measures:
+- Disabled for functions with inline assembly or atomics
+- Disabled for functions with loops (back-edges in CFG) due to linear liveness limitation
+- Only allocates for simple instruction types (BinOp, UnaryOp, Cmp, Cast, Load, GEP)
+- Excludes float, i128, and long double types
+- Write-through strategy ensures stack always has correct value
+- Excludes s2-s6 (used as temporaries in emit_call_reg_args)
 
-Key files:
-- src/backend/state.rs (ValueLocation, allocator data structures)
-- src/backend/riscv/codegen/codegen.rs (RISC-V-specific register allocation)
-- src/backend/generation.rs (instruction dispatch, cache management)
+Test results (RISC-V, ratio 10): 2830/2861 (98.9%) - matches baseline exactly, 0 regressions.

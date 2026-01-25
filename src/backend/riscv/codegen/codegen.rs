@@ -1,11 +1,30 @@
 use crate::ir::ir::*;
 use crate::common::types::IrType;
+use crate::common::fx_hash::FxHashMap;
 use crate::backend::common::PtrDirective;
 use crate::backend::codegen_shared::*;
+use crate::backend::regalloc::{self, PhysReg, RegAllocConfig};
 use super::inline_asm::{RvConstraintKind, classify_rv_constraint};
 
+/// RISC-V callee-saved registers available for register allocation.
+/// s0 is the frame pointer; s2-s6 are used as temporaries in emit_call_reg_args.
+/// Available for allocation: s1, s7-s11 (6 registers).
+/// PhysReg encoding: 1=s1, 7=s7, 8=s8, 9=s9, 10=s10, 11=s11.
+const RISCV_CALLEE_SAVED: [PhysReg; 6] = [
+    PhysReg(1), PhysReg(7), PhysReg(8), PhysReg(9), PhysReg(10), PhysReg(11),
+];
+
+/// Map a PhysReg index to its RISC-V register name.
+fn callee_saved_name(reg: PhysReg) -> &'static str {
+    match reg.0 {
+        1 => "s1", 2 => "s2", 3 => "s3", 4 => "s4", 5 => "s5",
+        6 => "s6", 7 => "s7", 8 => "s8", 9 => "s9", 10 => "s10", 11 => "s11",
+        _ => unreachable!("invalid RISC-V callee-saved register index"),
+    }
+}
+
 /// RISC-V 64 code generator. Implements the ArchCodegen trait for the shared framework.
-/// Uses standard RISC-V calling convention with stack-based allocation.
+/// Uses standard RISC-V calling convention with register allocation for hot values.
 pub struct RiscvCodegen {
     pub(super) state: CodegenState,
     current_return_type: IrType,
@@ -18,6 +37,11 @@ pub struct RiscvCodegen {
     /// Scratch register indices for inline asm allocation.
     asm_gp_scratch_idx: usize,
     asm_fp_scratch_idx: usize,
+    /// Register allocation results for the current function.
+    /// Maps value ID -> callee-saved register assignment.
+    reg_assignments: FxHashMap<u32, PhysReg>,
+    /// Which callee-saved registers are used and need save/restore.
+    used_callee_saved: Vec<PhysReg>,
 }
 
 impl RiscvCodegen {
@@ -30,6 +54,8 @@ impl RiscvCodegen {
             is_variadic: false,
             asm_gp_scratch_idx: 0,
             asm_fp_scratch_idx: 0,
+            reg_assignments: FxHashMap::default(),
+            used_callee_saved: Vec::new(),
         }
     }
 
@@ -211,7 +237,12 @@ impl RiscvCodegen {
                 if self.state.reg_cache.acc_has(v.0, is_alloca) {
                     return; // Cache hit — t0 already holds this value.
                 }
-                if let Some(slot) = self.state.get_slot(v.0) {
+                // Check if this value is register-allocated.
+                if let Some(&reg) = self.reg_assignments.get(&v.0) {
+                    let reg_name = callee_saved_name(reg);
+                    self.state.emit_fmt(format_args!("    mv t0, {}", reg_name));
+                    self.state.reg_cache.set_acc(v.0, false);
+                } else if let Some(slot) = self.state.get_slot(v.0) {
                     if is_alloca {
                         self.emit_addi_s0("t0", slot.0);
                     } else {
@@ -226,12 +257,20 @@ impl RiscvCodegen {
         }
     }
 
-    /// Store t0 to a value's stack slot.
+    /// Store t0 to a value's location (register and/or stack slot).
+    /// Write-through strategy: always write to stack slot for safety (other code
+    /// paths may read it directly), and also write to the callee-saved register
+    /// so subsequent loads via operand_to_t0 can use the fast register path.
     fn store_t0_to(&mut self, dest: &Value) {
         if let Some(slot) = self.state.get_slot(dest.0) {
             self.emit_store_to_s0("t0", slot.0, "sd");
-            self.state.reg_cache.set_acc(dest.0, false);
         }
+        // Also mirror to the assigned callee-saved register.
+        if let Some(&reg) = self.reg_assignments.get(&dest.0) {
+            let reg_name = callee_saved_name(reg);
+            self.state.emit_fmt(format_args!("    mv {}, t0", reg_name));
+        }
+        self.state.reg_cache.set_acc(dest.0, false);
     }
 
     // --- 128-bit integer helpers ---
@@ -804,7 +843,18 @@ impl ArchCodegen for RiscvCodegen {
             self.is_variadic = false;
         }
 
-        space
+        // Run register allocator: assign callee-saved registers to hot values.
+        let config = RegAllocConfig {
+            available_regs: RISCV_CALLEE_SAVED.to_vec(),
+        };
+        let alloc_result = regalloc::allocate_registers(func, &config);
+        self.reg_assignments = alloc_result.assignments;
+        self.used_callee_saved = alloc_result.used_regs;
+
+        // Add space for saving callee-saved registers.
+        // Each callee-saved register needs 8 bytes on the stack.
+        let callee_save_space = (self.used_callee_saved.len() as i64) * 8;
+        space + callee_save_space
     }
 
     fn aligned_frame_size(&self, raw_space: i64) -> i64 {
@@ -815,9 +865,25 @@ impl ArchCodegen for RiscvCodegen {
         self.current_return_type = func.return_type;
         self.current_frame_size = frame_size;
         self.emit_prologue_riscv(frame_size);
+
+        // Save callee-saved registers used by the register allocator.
+        // They are saved at the bottom of the frame (highest negative offsets from s0).
+        let used_regs = self.used_callee_saved.clone();
+        for (i, &reg) in used_regs.iter().enumerate() {
+            let offset = -(frame_size as i64) + (i as i64 * 8);
+            let reg_name = callee_saved_name(reg);
+            self.emit_store_to_s0(reg_name, offset, "sd");
+        }
     }
 
     fn emit_epilogue(&mut self, frame_size: i64) {
+        // Restore callee-saved registers before epilogue.
+        let used_regs = self.used_callee_saved.clone();
+        for (i, &reg) in used_regs.iter().enumerate() {
+            let offset = -(frame_size as i64) + (i as i64 * 8);
+            let reg_name = callee_saved_name(reg);
+            self.emit_load_from_s0(reg_name, offset, "ld");
+        }
         self.emit_epilogue_riscv(frame_size);
     }
 
@@ -1108,6 +1174,13 @@ impl ArchCodegen for RiscvCodegen {
     }
 
     fn emit_epilogue_and_ret(&mut self, frame_size: i64) {
+        // Restore callee-saved registers before frame teardown.
+        let used_regs = self.used_callee_saved.clone();
+        for (i, &reg) in used_regs.iter().enumerate() {
+            let offset = -(frame_size as i64) + (i as i64 * 8);
+            let reg_name = callee_saved_name(reg);
+            self.emit_load_from_s0(reg_name, offset, "ld");
+        }
         self.emit_epilogue_riscv(frame_size);
         self.state.emit("    ret");
     }
