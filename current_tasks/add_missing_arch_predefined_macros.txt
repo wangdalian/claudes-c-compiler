@@ -1,0 +1,25 @@
+Task: Add missing architecture-specific predefined macros
+
+For RISC-V:
+- __riscv_flen 64
+- __riscv_float_abi_double 1
+- __riscv_atomic 1
+- __riscv_mul 1
+- __riscv_muldiv 1
+- __riscv_div 1
+- __riscv_compressed 1
+- __riscv_a, __riscv_c, __riscv_d, __riscv_f, __riscv_i, __riscv_m
+
+For ARM64:
+- __ARM_FP 14
+- __ARM_NEON 1
+- __ARM_PCS_AAPCS64 1
+- __ARM_FEATURE_CLZ 1
+- __ARM_FEATURE_FMA 1
+- __ARM_FEATURE_IDIV 1
+- __ARM_FEATURE_UNALIGNED 1
+- __ARM_FP16_ARGS 1
+- __ARM_FP16_FORMAT_IEEE 1
+
+These are needed for system headers (e.g. bits/setjmp.h on RISC-V uses __riscv_float_abi_double).
+Fixes 9+ RISC-V test failures (#error unsupported FLEN) and potentially ARM failures.
