@@ -1,0 +1,12 @@
+Task: Fix _Thread_local parsing and x86 long double to integer conversion
+
+1. _Thread_local parsing: TokenKind::ThreadLocal is missing from is_type_specifier()
+   and consume_post_type_qualifiers(), so declarations starting with _Thread_local
+   (e.g., `_Thread_local static int y;`) fail to parse.
+   Fix: Add ThreadLocal to both functions.
+
+2. x86 long double -> integer: Converting long double values near LLONG_MAX or ULLONG_MAX
+   to long long / unsigned long long produces wrong results on x86.
+   The x87 FPU fisttp instruction has undefined behavior for out-of-range values.
+   ARM and RISC-V are unaffected (they use proper library calls or hardware support).
+   Fix: Add range checking or use the correct x87 conversion sequence.
