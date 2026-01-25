@@ -1,0 +1,16 @@
+Fix x86 peephole store forwarding bug with bswap instructions
+
+Bug: The peephole optimizer's global_store_forwarding pass incorrectly
+eliminates loads after bswapl/bswapq instructions.
+
+Root cause: parse_dest_reg_fast() does not recognize bswapl/bswapq as
+single-operand instructions that modify their operand register. This
+causes the store-forwarding pass to retain stale slot->register mappings
+across bswap instructions, leading to incorrect load elimination.
+
+Fix: Add bswapl/bswapq to the single-operand modifier pattern in
+parse_dest_reg_fast().
+
+Impact: Fixes mbedtls ARIA-ECB-128 test (making mbedtls 7/7 pass).
+Also fixes any code using __builtin_bswap32/64 in expressions where
+the bswap result is used inline rather than stored to a named variable.
