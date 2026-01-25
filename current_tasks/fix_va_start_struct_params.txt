@@ -1,0 +1,7 @@
+Task: Fix va_start struct parameter offset miscalculation
+Owner: agent
+Status: in-progress
+Description: va_start was counting large struct params (>16 bytes) as GP register
+consumers instead of stack-passed params, causing gp_offset and overflow_arg_area
+to be wrong in variadic functions with struct params.
+Files: src/backend/x86/codegen/codegen.rs
