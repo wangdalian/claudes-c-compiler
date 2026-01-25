@@ -1,0 +1,11 @@
+Fix postgres SIGSEGV during boolean query execution
+
+The postgres verification fails because the server crashes with SIGSEGV during
+boolean queries. This is a cascading failure - once the server crashes, all
+subsequent tests also fail. Currently only 43/216 tests pass.
+
+Plan:
+1. Reproduce the crash by running the postgres verification
+2. Identify what query/code path triggers the crash
+3. Isolate the compiler bug (likely a codegen or IR issue)
+4. Fix the bug and verify postgres improves
