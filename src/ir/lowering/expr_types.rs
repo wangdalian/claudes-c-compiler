@@ -1000,23 +1000,48 @@ impl Lowerer {
 
     /// Apply C "usual arithmetic conversions" to determine the common type
     /// of two operands in a binary arithmetic expression.
+    /// Per C11 6.3.1.8, when one operand is complex and the other is real,
+    /// the corresponding real type of the complex is compared with the other
+    /// operand's type to determine the wider type, and the result is the
+    /// complex version of the wider type.
     fn usual_arithmetic_conversion(lhs: &CType, rhs: &CType) -> CType {
         // First apply integer promotions
         let l = Self::integer_promote_ctype(lhs);
         let r = Self::integer_promote_ctype(rhs);
 
-        // If either is complex long double, result is complex long double
-        if matches!(&l, CType::ComplexLongDouble) || matches!(&r, CType::ComplexLongDouble) {
-            return CType::ComplexLongDouble;
+        // Handle complex types per C11 6.3.1.8:
+        // When one operand is complex and the other is real, determine the
+        // common real type first, then return the complex version.
+        let l_complex = l.is_complex();
+        let r_complex = r.is_complex();
+        if l_complex || r_complex {
+            // Get the "corresponding real type" rank for each operand
+            let l_real_rank = match &l {
+                CType::ComplexLongDouble | CType::LongDouble => 3,
+                CType::ComplexDouble | CType::Double => 2,
+                CType::ComplexFloat | CType::Float => 1,
+                _ => 0, // integers have no floating rank
+            };
+            let r_real_rank = match &r {
+                CType::ComplexLongDouble | CType::LongDouble => 3,
+                CType::ComplexDouble | CType::Double => 2,
+                CType::ComplexFloat | CType::Float => 1,
+                _ => 0,
+            };
+            let max_rank = l_real_rank.max(r_real_rank);
+            // At least one operand is complex, so result is always complex
+            return match max_rank {
+                3 => CType::ComplexLongDouble,
+                2 => CType::ComplexDouble,
+                1 => CType::ComplexFloat,
+                _ => {
+                    // Both integer-ranked: the complex type wins with its own rank
+                    if l_complex { l.clone() } else { r.clone() }
+                }
+            };
         }
-        // If either is complex double, result is complex double
-        if matches!(&l, CType::ComplexDouble) || matches!(&r, CType::ComplexDouble) {
-            return CType::ComplexDouble;
-        }
-        // If either is complex float, result is complex float
-        if matches!(&l, CType::ComplexFloat) || matches!(&r, CType::ComplexFloat) {
-            return CType::ComplexFloat;
-        }
+
+        // Non-complex types: standard hierarchy
         // If either is long double, result is long double
         if matches!(&l, CType::LongDouble) || matches!(&r, CType::LongDouble) {
             return CType::LongDouble;

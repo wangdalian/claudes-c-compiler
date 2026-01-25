@@ -395,28 +395,27 @@ impl Lowerer {
                 self.type_spec_to_ctype(type_spec)
             }
             Expr::BinaryOp(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, lhs, rhs, _) => {
-                // Iterate left-skewed chains to avoid O(2^n) recursion
+                // Determine the result type for arithmetic involving complex operands.
+                // Per C11 6.3.1.8, when mixing complex and real types, the result type
+                // is determined by applying usual arithmetic conversions to the
+                // corresponding real type of the complex and the other operand's type.
+                // e.g., _Complex float + double => _Complex double
+                let lt = self.expr_ctype(lhs);
                 let rt = self.expr_ctype(rhs);
-                if rt.is_complex() {
-                    let lt = self.expr_ctype(lhs);
+                if lt.is_complex() || rt.is_complex() {
                     return self.common_complex_type(&lt, &rt);
                 }
-                let mut cur = lhs.as_ref();
-                loop {
-                    match cur {
-                        Expr::BinaryOp(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, inner_lhs, inner_rhs, _) => {
-                            let inner_rt = self.expr_ctype(inner_rhs);
-                            if inner_rt.is_complex() {
-                                let inner_lt = self.expr_ctype(inner_lhs);
-                                return self.common_complex_type(&inner_lt, &inner_rt);
-                            }
-                            cur = inner_lhs.as_ref();
-                        }
-                        _ => {
-                            return self.expr_ctype(cur);
-                        }
-                    }
+                // Neither is complex: return the wider floating type or the left type
+                if matches!(lt, CType::LongDouble) || matches!(rt, CType::LongDouble) {
+                    return CType::LongDouble;
                 }
+                if matches!(lt, CType::Double) || matches!(rt, CType::Double) {
+                    return CType::Double;
+                }
+                if matches!(lt, CType::Float) || matches!(rt, CType::Float) {
+                    return CType::Float;
+                }
+                lt
             }
             Expr::FunctionCall(callee, args, _) => {
                 if let Expr::Identifier(name, _) = callee.as_ref() {
