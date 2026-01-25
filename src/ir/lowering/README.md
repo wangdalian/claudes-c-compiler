@@ -109,6 +109,10 @@ designator chains. These are extracted into free functions to avoid duplication:
 - `first_field_designator(item)` — Extracts field name from first designator
 - `has_nested_field_designator(item)` — Checks for multi-level `.field.subfield` patterns
 - `is_anon_member_designator(name, field_name, field_ty)` — Detects anonymous struct/union members
+- `resolve_anonymous_member(layout, idx, name, init, layouts)` — Resolves anonymous struct/union
+  member during init: looks up sub-layout and creates synthetic `InitializerItem`. Used by both
+  local struct init (`stmt.rs`) and global byte init (`global_init_bytes.rs`) to avoid duplicating
+  the sub-layout lookup + synthetic item construction pattern
 - `has_array_field_designators(items)` — Detects `[N].field` designated init patterns
 - `expr_contains_string_literal(expr)` — Recursive check for string literals in expressions
 - `init_contains_string_literal/addr_expr(item)` — Recursive init-level checks

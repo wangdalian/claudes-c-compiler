@@ -51,24 +51,9 @@ impl Lowerer {
             let field_idx = match &resolution {
                 Some(crate::common::types::InitFieldResolution::Direct(idx)) => *idx,
                 Some(crate::common::types::InitFieldResolution::AnonymousMember { anon_field_idx, inner_name }) => {
-                    // Designated init targets a field inside an anonymous member.
-                    // Drill into the anonymous member.
-                    let anon_field = &layout.fields[*anon_field_idx];
-                    let anon_offset = base_offset + anon_field.offset;
-                    let sub_layout = match &anon_field.ty {
-                        CType::Struct(key) | CType::Union(key) => {
-                            match self.types.struct_layouts.get(&**key) {
-                                Some(l) => l.clone(),
-                                None => { item_idx += 1; current_field_idx = *anon_field_idx + 1; continue; }
-                            }
-                        }
-                        _ => { item_idx += 1; current_field_idx = *anon_field_idx + 1; continue; }
-                    };
-                    let sub_item = InitializerItem {
-                        designators: vec![Designator::Field(inner_name.clone())],
-                        init: item.init.clone(),
-                    };
-                    self.fill_struct_global_bytes(&[sub_item], &sub_layout, bytes, anon_offset);
+                    if let Some(res) = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &item.init, &self.types.struct_layouts) {
+                        self.fill_struct_global_bytes(&[res.sub_item], &res.sub_layout, bytes, base_offset + res.anon_offset);
+                    }
                     item_idx += 1;
                     current_field_idx = *anon_field_idx + 1;
                     continue;

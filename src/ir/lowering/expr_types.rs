@@ -143,14 +143,6 @@ impl Lowerer {
         }
     }
 
-    /// Convert a function's return_type CType to the corresponding IrType.
-    /// The return_type CType directly represents the C return type (no spurious
-    /// Pointer wrapper -- all typedef registration paths now skip the (*name)
-    /// indirection pointer).
-    pub(super) fn peel_ptr_from_return_type(return_type: &CType) -> IrType {
-        IrType::from_ctype(return_type)
-    }
-
     /// For indirect calls (function pointer calls), determine if the return type is a struct
     /// and return its size. Returns None if not a struct return or if the type cannot be determined.
     pub(super) fn get_call_return_struct_size(&self, func: &Expr) -> Option<usize> {

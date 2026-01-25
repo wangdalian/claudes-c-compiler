@@ -791,8 +791,12 @@ impl Lowerer {
         if let Some(expr) = Self::unwrap_nested_init_expr(items) {
             let val = self.lower_expr(expr);
             let expr_ty = self.get_expr_type(expr);
-            let val = self.emit_implicit_cast(val, expr_ty, da.var_ty);
-            let val = if da.is_bool { self.emit_bool_normalize(val) } else { val };
+            // For _Bool, normalize before any truncation to preserve high bits
+            let val = if da.is_bool {
+                self.emit_bool_normalize_typed(val, expr_ty)
+            } else {
+                self.emit_implicit_cast(val, expr_ty, da.var_ty)
+            };
             self.emit(Instruction::Store { val, ptr: alloca, ty: da.var_ty });
         }
     }

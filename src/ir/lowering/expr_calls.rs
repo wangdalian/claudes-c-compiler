@@ -519,7 +519,7 @@ impl Lowerer {
         match ctype {
             CType::Pointer(inner) => {
                 match inner.as_ref() {
-                    CType::Function(ft) => Self::ir_type_from_func_return(&ft.return_type),
+                    CType::Function(ft) => IrType::from_ctype(&ft.return_type),
                     CType::Pointer(ret) => {
                         match ret.as_ref() {
                             CType::Float => IrType::F32,
@@ -532,13 +532,8 @@ impl Lowerer {
                     _ => IrType::I64,
                 }
             }
-            CType::Function(ft) => Self::ir_type_from_func_return(&ft.return_type),
+            CType::Function(ft) => IrType::from_ctype(&ft.return_type),
             _ => IrType::I64,
         }
-    }
-
-    /// Convert a function's return CType to IrType.
-    fn ir_type_from_func_return(return_type: &CType) -> IrType {
-        Self::peel_ptr_from_return_type(return_type)
     }
 }

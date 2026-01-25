@@ -578,65 +578,6 @@ impl Parser {
         None
     }
 
-    /// Parse the ((...)) parameter list of __attribute__.
-    /// Called after the `__attribute__` token has been consumed.
-    /// Returns (is_constructor, is_destructor).
-    pub(super) fn parse_attribute_params(&mut self) -> (bool, bool) {
-        let mut is_constructor = false;
-        let mut is_destructor = false;
-        if matches!(self.peek(), TokenKind::LParen) {
-            self.advance(); // outer (
-            if matches!(self.peek(), TokenKind::LParen) {
-                self.advance(); // inner (
-                // Parse attribute list looking for constructor/destructor
-                loop {
-                    match self.peek() {
-                        TokenKind::Identifier(name) if name == "constructor" || name == "__constructor__" => {
-                            is_constructor = true;
-                            self.advance();
-                            if matches!(self.peek(), TokenKind::LParen) {
-                                self.skip_balanced_parens();
-                            }
-                        }
-                        TokenKind::Identifier(name) if name == "destructor" || name == "__destructor__" => {
-                            is_destructor = true;
-                            self.advance();
-                            if matches!(self.peek(), TokenKind::LParen) {
-                                self.skip_balanced_parens();
-                            }
-                        }
-                        TokenKind::Identifier(_) => {
-                            self.advance();
-                            if matches!(self.peek(), TokenKind::LParen) {
-                                self.skip_balanced_parens();
-                            }
-                        }
-                        TokenKind::Comma => { self.advance(); }
-                        TokenKind::RParen | TokenKind::Eof => break,
-                        _ => { self.advance(); }
-                    }
-                }
-                // Inner )
-                if matches!(self.peek(), TokenKind::RParen) {
-                    self.advance();
-                }
-                // Outer )
-                if matches!(self.peek(), TokenKind::RParen) {
-                    self.advance();
-                }
-            } else {
-                // Single-paren form, just skip
-                while !matches!(self.peek(), TokenKind::RParen | TokenKind::Eof) {
-                    self.advance();
-                }
-                if matches!(self.peek(), TokenKind::RParen) {
-                    self.advance();
-                }
-            }
-        }
-        (is_constructor, is_destructor)
-    }
-
     // === Pragma pack handling ===
 
     /// Check if current token is a pragma pack directive and handle it.

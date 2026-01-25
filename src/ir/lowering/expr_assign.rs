@@ -463,7 +463,7 @@ impl Lowerer {
 
             let store_val = self.narrow_from_op(Operand::Value(result), ty, lhs_ir_ty, op_ty);
             let store_val = if self.is_bool_lvalue(lhs) {
-                self.emit_bool_normalize(store_val)
+                self.emit_bool_normalize_typed(store_val, op_ty)
             } else {
                 store_val
             };

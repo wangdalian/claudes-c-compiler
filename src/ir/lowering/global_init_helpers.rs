@@ -1,12 +1,12 @@
-//! Shared helper functions for global initialization.
+//! Shared helper functions for initialization code.
 //!
 //! This module extracts common patterns that were duplicated across
-//! `global_init.rs`, `global_init_bytes.rs`, and `global_init_compound.rs`.
-//! These include designator inspection, field resolution, and init item
-//! classification utilities.
+//! `global_init.rs`, `global_init_bytes.rs`, `global_init_compound.rs`, and `stmt.rs`.
+//! These include designator inspection, field resolution, anonymous member
+//! drilling, and init item classification utilities.
 
 use crate::frontend::parser::ast::*;
-use crate::common::types::{CType, StructLayoutProvider};
+use crate::common::types::{CType, StructLayout, StructLayoutProvider, RcLayout};
 
 /// Extract the field name from the first designator of an initializer item.
 /// Returns `None` if the item has no designators or the first is not a Field.
@@ -137,4 +137,46 @@ pub(super) fn push_string_as_elements(elements: &mut Vec<crate::ir::ir::GlobalIn
     for _ in s_chars.len()..field_size {
         elements.push(crate::ir::ir::GlobalInit::Scalar(crate::ir::ir::IrConst::I8(0)));
     }
+}
+
+/// Result of resolving an anonymous member for struct initialization.
+/// Contains the sub-layout, the byte offset of the anonymous member, and
+/// a synthetic initializer item that re-targets the inner field.
+pub(super) struct AnonMemberResolution {
+    pub sub_layout: RcLayout,
+    pub anon_offset: usize,
+    pub sub_item: InitializerItem,
+}
+
+/// Resolve an anonymous member during struct initialization.
+///
+/// When a designator like `.x` targets a field inside an anonymous struct/union
+/// member, this function looks up the sub-layout and creates a synthetic
+/// initializer item that re-targets the inner field name.
+///
+/// Returns `None` if the anonymous field's type is not a struct/union or
+/// if the layout cannot be found.
+pub(super) fn resolve_anonymous_member(
+    layout: &StructLayout,
+    anon_field_idx: usize,
+    inner_name: &str,
+    init: &Initializer,
+    layouts: &crate::common::fx_hash::FxHashMap<String, RcLayout>,
+) -> Option<AnonMemberResolution> {
+    let anon_field = &layout.fields[anon_field_idx];
+    let anon_offset = anon_field.offset;
+    let key = match &anon_field.ty {
+        CType::Struct(key) | CType::Union(key) => key,
+        _ => return None,
+    };
+    let sub_layout = layouts.get(key.as_ref())?.clone(); // Rc::clone, not deep clone
+    let sub_item = InitializerItem {
+        designators: vec![Designator::Field(inner_name.to_string())],
+        init: init.clone(),
+    };
+    Some(AnonMemberResolution {
+        sub_layout,
+        anon_offset,
+        sub_item,
+    })
 }

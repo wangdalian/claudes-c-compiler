@@ -50,8 +50,8 @@ impl Lowerer {
             Expr::ImaginaryLiteralF32(val, _) => self.lower_imaginary_literal(*val, &CType::ComplexFloat),
             Expr::ImaginaryLiteralLongDouble(val, _) => self.lower_imaginary_literal(*val, &CType::ComplexLongDouble),
 
-            Expr::StringLiteral(s, _) => self.lower_string_literal(s),
-            Expr::WideStringLiteral(s, _) => self.lower_wide_string_literal(s),
+            Expr::StringLiteral(s, _) => self.lower_string_literal(s, false),
+            Expr::WideStringLiteral(s, _) => self.lower_string_literal(s, true),
             Expr::Identifier(name, _) => self.lower_identifier(name),
             Expr::BinaryOp(op, lhs, rhs, _) => self.lower_binary_op(op, lhs, rhs),
             Expr::UnaryOp(op, inner, _) => self.lower_unary_op(*op, inner),
@@ -109,15 +109,12 @@ impl Lowerer {
     // Literal and identifier helpers
     // -----------------------------------------------------------------------
 
-    fn lower_string_literal(&mut self, s: &str) -> Operand {
-        let label = self.intern_string_literal(s);
-        let dest = self.fresh_value();
-        self.emit(Instruction::GlobalAddr { dest, name: label });
-        Operand::Value(dest)
-    }
-
-    fn lower_wide_string_literal(&mut self, s: &str) -> Operand {
-        let label = self.intern_wide_string_literal(s);
+    fn lower_string_literal(&mut self, s: &str, wide: bool) -> Operand {
+        let label = if wide {
+            self.intern_wide_string_literal(s)
+        } else {
+            self.intern_string_literal(s)
+        };
         let dest = self.fresh_value();
         self.emit(Instruction::GlobalAddr { dest, name: label });
         Operand::Value(dest)
@@ -141,7 +138,7 @@ impl Lowerer {
 
     fn lower_identifier(&mut self, name: &str) -> Operand {
         if name == "__func__" || name == "__FUNCTION__" || name == "__PRETTY_FUNCTION__" {
-            let name = self.func().name.clone(); return self.lower_string_literal(&name);
+            let name = self.func().name.clone(); return self.lower_string_literal(&name, false);
         }
         if name == "NULL" {
             return Operand::Const(IrConst::I64(0));
@@ -698,7 +695,7 @@ impl Lowerer {
                 let dest = self.emit_cmp_val(IrCmpOp::Ne, src, zero, from_ty);
                 return Operand::Value(dest);
             }
-            return self.emit_bool_normalize(src);
+            return self.emit_bool_normalize_typed(src, from_ty);
         }
 
         if to_ty == from_ty
@@ -1270,14 +1267,10 @@ impl Lowerer {
         });
 
         let is_addr_type = match &field_ctype {
-            Some(ct) => matches!(ct,
-                CType::Array(_, _) | CType::Struct(_) | CType::Union(_) |
-                CType::ComplexFloat | CType::ComplexDouble | CType::ComplexLongDouble),
-            None => {
-                self.field_is_array(base_expr, field_name, is_pointer)
-                    || self.field_is_struct(base_expr, field_name, is_pointer)
-                    || self.field_is_complex(base_expr, field_name, is_pointer)
-            }
+            Some(ct) => Self::is_aggregate_or_complex(ct),
+            None => self.resolve_field_ctype(base_expr, field_name, is_pointer)
+                .map(|ct| Self::is_aggregate_or_complex(&ct))
+                .unwrap_or(false),
         };
         if is_addr_type {
             return Operand::Value(field_addr);
@@ -1302,19 +1295,12 @@ impl Lowerer {
         self.lower_member_access_impl(base_expr, field_name, true)
     }
 
-    fn field_is_array(&self, base_expr: &Expr, field_name: &str, is_pointer_access: bool) -> bool {
-        self.resolve_field_ctype(base_expr, field_name, is_pointer_access)
-            .map(|ct| matches!(ct, CType::Array(_, _))).unwrap_or(false)
-    }
-
-    fn field_is_struct(&self, base_expr: &Expr, field_name: &str, is_pointer_access: bool) -> bool {
-        self.resolve_field_ctype(base_expr, field_name, is_pointer_access)
-            .map(|ct| ct.is_struct_or_union()).unwrap_or(false)
-    }
-
-    fn field_is_complex(&self, base_expr: &Expr, field_name: &str, is_pointer_access: bool) -> bool {
-        self.resolve_field_ctype(base_expr, field_name, is_pointer_access)
-            .map(|ct| ct.is_complex()).unwrap_or(false)
+    /// Check if a CType is an aggregate (array/struct/union) or complex type.
+    /// These types are always accessed by address rather than loaded by value.
+    fn is_aggregate_or_complex(ct: &CType) -> bool {
+        matches!(ct,
+            CType::Array(_, _) | CType::Struct(_) | CType::Union(_) |
+            CType::ComplexFloat | CType::ComplexDouble | CType::ComplexLongDouble)
     }
 
     // -----------------------------------------------------------------------
@@ -1405,7 +1391,7 @@ impl Lowerer {
             let ir_op = if is_inc { IrBinOp::Add } else { IrBinOp::Sub };
             let result = self.emit_binop_val(ir_op, Operand::Value(loaded_val), step, binop_ty);
             let store_op = if self.is_bool_lvalue(inner) {
-                self.emit_bool_normalize(Operand::Value(result))
+                self.emit_bool_normalize_typed(Operand::Value(result), binop_ty)
             } else {
                 Operand::Value(result)
             };
@@ -1600,13 +1586,6 @@ impl Lowerer {
         src
     }
 
-    /// Normalize a value for _Bool storage: emit (val != 0) to clamp to 0 or 1.
-    /// Uses I64 comparison type (legacy — use emit_bool_normalize_typed for correctness).
-    pub(super) fn emit_bool_normalize(&mut self, val: Operand) -> Operand {
-        let dest = self.emit_cmp_val(IrCmpOp::Ne, val, Operand::Const(IrConst::I64(0)), IrType::I64);
-        Operand::Value(dest)
-    }
-
     /// Normalize a value for _Bool storage at the given source type.
     /// Emits (val != 0) for integers, (val != 0.0) for floats.
     /// This must be called BEFORE any truncation to avoid losing high bits.
@@ -1616,12 +1595,7 @@ impl Lowerer {
             IrType::F64 => Operand::Const(IrConst::F64(0.0)),
             _ => Operand::Const(IrConst::I64(0)),
         };
-        let cmp_ty = match src_ty {
-            IrType::F32 | IrType::F64 => src_ty,
-            // For integer types, compare at the source width to preserve all bits
-            _ => src_ty,
-        };
-        let dest = self.emit_cmp_val(IrCmpOp::Ne, val, zero, cmp_ty);
+        let dest = self.emit_cmp_val(IrCmpOp::Ne, val, zero, src_ty);
         Operand::Value(dest)
     }
 

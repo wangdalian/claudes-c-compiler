@@ -338,14 +338,12 @@ impl Lowerer {
         layout: &StructLayout,
     ) {
         use crate::common::types::InitFieldResolution;
+        use super::global_init_helpers as h;
         let mut current_field_idx = 0usize;
         let mut item_idx = 0usize;
         while item_idx < items.len() {
             let item = &items[item_idx];
-            let desig_name = match item.designators.first() {
-                Some(Designator::Field(ref name)) => Some(name.as_str()),
-                _ => None,
-            };
+            let desig_name = h::first_field_designator(item);
             let resolution = match layout.resolve_init_field(desig_name, current_field_idx, &self.types) {
                 Some(r) => r,
                 None => break,
@@ -377,24 +375,10 @@ impl Lowerer {
                     *idx
                 }
                 InitFieldResolution::AnonymousMember { anon_field_idx, inner_name } => {
-                    let anon_field = &layout.fields[*anon_field_idx].clone();
-                    let anon_offset = anon_field.offset;
-                    let sub_layout = match &anon_field.ty {
-                        CType::Struct(key) | CType::Union(key) => {
-                            match self.types.struct_layouts.get(&**key) {
-                                Some(l) => l.clone(),
-                                None => { current_field_idx = *anon_field_idx + 1; item_idx += 1; continue; }
-                            }
-                        }
-                        _ => { current_field_idx = *anon_field_idx + 1; item_idx += 1; continue; }
-                    };
-                    // Designated init: create a synthetic item with the inner designator
-                    let sub_item = InitializerItem {
-                        designators: vec![Designator::Field(inner_name.clone())],
-                        init: item.init.clone(),
-                    };
-                    let sub_base = self.emit_gep_offset(base, anon_offset, IrType::Ptr);
-                    self.lower_local_struct_init(&[sub_item], sub_base, &sub_layout);
+                    if let Some(res) = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &item.init, &self.types.struct_layouts) {
+                        let sub_base = self.emit_gep_offset(base, res.anon_offset, IrType::Ptr);
+                        self.lower_local_struct_init(&[res.sub_item], sub_base, &res.sub_layout);
+                    }
                     current_field_idx = *anon_field_idx + 1;
                     item_idx += 1;
                     continue;
