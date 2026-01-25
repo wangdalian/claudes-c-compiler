@@ -1,5 +1,0 @@
-Merge the 4 simple local peephole passes (eliminate_redundant_movq_self,
-eliminate_redundant_cltq, eliminate_redundant_zero_extend, eliminate_adjacent_store_load)
-into a single combined scan pass, reducing the number of full linear scans from 7 per
-iteration to 4. This should save ~3-5% of total compile time by eliminating redundant
-iteration and string parsing overhead.

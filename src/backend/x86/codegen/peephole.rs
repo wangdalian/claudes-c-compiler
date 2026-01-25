@@ -371,17 +371,15 @@ pub fn peephole_optimize(asm: String) -> String {
 
     // Phase 1: Iterative cheap local passes.
     // 8 iterations is sufficient: local patterns rarely chain deeper than 3-4 levels.
+    // The combined_local_pass merges 5 simple passes into one linear scan,
+    // reducing the number of full scans from 7 to 3 per iteration.
     let mut changed = true;
     let mut pass_count = 0;
     while changed && pass_count < 8 {
         changed = false;
-        changed |= eliminate_adjacent_store_load(&mut lines, &mut infos);
-        changed |= eliminate_redundant_jumps(&mut lines, &mut infos);
+        changed |= combined_local_pass(&mut lines, &mut infos);
         changed |= eliminate_push_pop_pairs(&mut lines, &mut infos);
         changed |= eliminate_binop_push_pop_pattern(&mut lines, &mut infos);
-        changed |= eliminate_redundant_movq_self(&mut lines, &mut infos);
-        changed |= eliminate_redundant_cltq(&mut lines, &mut infos);
-        changed |= eliminate_redundant_zero_extend(&mut lines, &mut infos);
         pass_count += 1;
     }
 
@@ -397,11 +395,7 @@ pub fn peephole_optimize(asm: String) -> String {
         let mut pass_count2 = 0;
         while changed2 && pass_count2 < 4 {
             changed2 = false;
-            changed2 |= eliminate_adjacent_store_load(&mut lines, &mut infos);
-            changed2 |= eliminate_redundant_jumps(&mut lines, &mut infos);
-            changed2 |= eliminate_redundant_movq_self(&mut lines, &mut infos);
-            changed2 |= eliminate_redundant_cltq(&mut lines, &mut infos);
-            changed2 |= eliminate_redundant_zero_extend(&mut lines, &mut infos);
+            changed2 |= combined_local_pass(&mut lines, &mut infos);
             changed2 |= eliminate_dead_stores(&mut lines, &mut infos);
             pass_count2 += 1;
         }
@@ -426,13 +420,183 @@ fn count_newlines(bytes: &[u8]) -> usize {
     bytes.iter().filter(|&&b| b == b'\n').count()
 }
 
-// ── Adjacent store/load optimization: when a store to stack (%rbp-relative)
-// is immediately followed by a load from the same offset, either eliminate
-// the load (if same register) or replace with a reg-to-reg move (if different
-// register). This handles two patterns in a single scan:
+// ── Combined local pass ───────────────────────────────────────────────────────
+//
+// Merges 5 simple local passes into a single linear scan to avoid redundant
+// iteration over the lines array. Each of the original passes did a full O(n)
+// scan; by combining them we do one scan that checks all patterns at each line.
+//
+// Merged passes:
+//   1. eliminate_adjacent_store_load: store/load at same %rbp offset
+//   2. eliminate_redundant_jumps: jmp to the immediately following label
+//   3. eliminate_redundant_movq_self: movq %reg, %reg (same src/dst)
+//   4. eliminate_redundant_cltq: cltq after movslq/movq$ to %rax
+//   5. eliminate_redundant_zero_extend: redundant zero/sign extensions
+
+fn combined_local_pass(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
+    let mut changed = false;
+    let len = lines.len();
+
+    let mut i = 0;
+    while i < len {
+        if infos[i].is_nop() {
+            i += 1;
+            continue;
+        }
+
+        // --- Pattern: self-move elimination (movq %reg, %reg) ---
+        if matches!(infos[i].kind, LineKind::Other { .. }) {
+            let trimmed = trim_asm(&lines[i]);
+            if is_self_move(trimmed) {
+                mark_nop(&mut lines[i], &mut infos[i]);
+                changed = true;
+                i += 1;
+                continue;
+            }
+        }
+
+        // --- Pattern: redundant jump to next label ---
+        if infos[i].kind == LineKind::Jmp {
+            let jmp_line = trim_asm(&lines[i]);
+            if let Some(target) = jmp_line.strip_prefix("jmp ") {
+                let target = target.trim();
+                // Find the next non-NOP, non-empty line
+                let mut found_redundant = false;
+                for j in (i + 1)..len {
+                    if infos[j].is_nop() || infos[j].kind == LineKind::Empty {
+                        continue;
+                    }
+                    if infos[j].kind == LineKind::Label {
+                        let next = trim_asm(&lines[j]);
+                        if let Some(label) = next.strip_suffix(':') {
+                            if label == target {
+                                mark_nop(&mut lines[i], &mut infos[i]);
+                                changed = true;
+                                found_redundant = true;
+                            }
+                        }
+                    }
+                    break;
+                }
+                if found_redundant {
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+
+        // --- Pattern: adjacent store/load at same %rbp offset ---
+        if let LineKind::StoreRbp { reg: sr, offset: so, size: ss } = infos[i].kind {
+            if i + 1 < len && !infos[i + 1].is_nop() {
+                if let LineKind::LoadRbp { reg: lr, offset: lo, size: ls } = infos[i + 1].kind {
+                    if so == lo && ss == ls {
+                        if sr == lr {
+                            // Same register: load is redundant
+                            mark_nop(&mut lines[i + 1], &mut infos[i + 1]);
+                            changed = true;
+                            i += 1;
+                            continue;
+                        } else {
+                            // Different register: replace with reg-to-reg move
+                            let store_line = trim_asm(&lines[i]);
+                            let (store_reg, _, _) = parse_store_to_rbp_str(store_line).unwrap();
+                            let load_line = trim_asm(&lines[i + 1]);
+                            let (_, load_reg, _) = parse_load_from_rbp_str(load_line).unwrap();
+                            let new_text = format!("    {} {}, {}", ss.mnemonic(), store_reg, load_reg);
+                            replace_line(&mut lines[i + 1], &mut infos[i + 1], new_text);
+                            changed = true;
+                            i += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        // For the next two patterns, we need the next non-NOP instruction after i.
+        // We compute it once and use it for both cltq and zero-extend checks.
+        //
+        // Find the next non-NOP instruction, skipping stores to rbp (which don't
+        // modify registers we care about for extension redundancy).
+        let mut ext_idx = i + 1;
+        while ext_idx < len && ext_idx < i + 10 {
+            if infos[ext_idx].is_nop() {
+                ext_idx += 1;
+                continue;
+            }
+            if matches!(infos[ext_idx].kind, LineKind::StoreRbp { .. }) {
+                ext_idx += 1;
+                continue;
+            }
+            break;
+        }
+
+        if ext_idx < len && !infos[ext_idx].is_nop() {
+            let next = trim_asm(&lines[ext_idx]);
+            let prev = trim_asm(&lines[i]);
+
+            // --- Pattern: redundant cltq after movslq/movq$ ---
+            if next == "cltq" {
+                // movslq already sign-extends, cltq is redundant
+                if (prev.starts_with("movslq ") && prev.contains("%rax"))
+                    || (prev.starts_with("movq $") && prev.ends_with("%rax"))
+                {
+                    mark_nop(&mut lines[ext_idx], &mut infos[ext_idx]);
+                    changed = true;
+                    i += 1;
+                    continue;
+                }
+            }
+
+            // --- Pattern: redundant zero/sign extension ---
+            let is_redundant_ext = {
+                if next == "movzbq %al, %rax" {
+                    prev.starts_with("movzbq ") && prev.ends_with("%rax")
+                } else if next == "movzwq %ax, %rax" {
+                    prev.starts_with("movzwq ") && prev.ends_with("%rax")
+                } else if next == "movsbq %al, %rax" {
+                    prev.starts_with("movsbq ") && prev.ends_with("%rax")
+                } else if next == "movslq %eax, %rax" {
+                    prev.starts_with("movslq ") && prev.ends_with("%rax")
+                } else if next == "movl %eax, %eax" {
+                    prev.starts_with("addl ") || prev.starts_with("subl ")
+                        || prev.starts_with("imull ") || prev.starts_with("andl ")
+                        || prev.starts_with("orl ") || prev.starts_with("xorl ")
+                        || prev.starts_with("shll ") || prev.starts_with("shrl ")
+                        || (prev.starts_with("movl ") && prev.ends_with("%eax"))
+                        || (prev.starts_with("movzbl ") && prev.ends_with("%eax"))
+                        || (prev.starts_with("movzbq ") && prev.ends_with("%rax"))
+                        || (prev.starts_with("movzwl ") && prev.ends_with("%eax"))
+                        || (prev.starts_with("movzwq ") && prev.ends_with("%rax"))
+                        || prev == "divl %ecx" || prev == "idivl %ecx"
+                } else if next == "cltq" {
+                    // cltq after movslq ... %rax (through intervening stores)
+                    (prev.starts_with("movslq ") && prev.ends_with("%rax"))
+                        || (prev.starts_with("movq $") && prev.ends_with("%rax"))
+                } else {
+                    false
+                }
+            };
+
+            if is_redundant_ext {
+                mark_nop(&mut lines[ext_idx], &mut infos[ext_idx]);
+                changed = true;
+                i += 1;
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+    changed
+}
+
+// ── Adjacent store/load optimization (kept for reference but no longer called
+// directly from the main loop — merged into combined_local_pass) ──────────────
 //   movq %rax, -8(%rbp); movq -8(%rbp), %rax  →  movq %rax, -8(%rbp)   [eliminated]
 //   movq %rax, -8(%rbp); movq -8(%rbp), %rcx  →  movq %rax, -8(%rbp); movq %rax, %rcx
 
+#[allow(dead_code)]
 fn eliminate_adjacent_store_load(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
     let mut changed = false;
     let len = lines.len();
@@ -466,8 +630,9 @@ fn eliminate_adjacent_store_load(lines: &mut [String], infos: &mut [LineInfo]) -
     changed
 }
 
-// ── Pattern 3: Redundant jumps ───────────────────────────────────────────────
+// ── Pattern 3: Redundant jumps (merged into combined_local_pass) ─────────────
 
+#[allow(dead_code)]
 fn eliminate_redundant_jumps(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
     let mut changed = false;
     let len = lines.len();
@@ -644,8 +809,9 @@ fn eliminate_binop_push_pop_pattern(lines: &mut [String], infos: &mut [LineInfo]
     changed
 }
 
-// ── Pattern 6: Redundant self-moves ──────────────────────────────────────────
+// ── Pattern 6: Redundant self-moves (merged into combined_local_pass) ────────
 
+#[allow(dead_code)]
 fn eliminate_redundant_movq_self(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
     let mut changed = false;
     for i in 0..lines.len() {
@@ -775,8 +941,9 @@ fn fuse_compare_and_branch(lines: &mut [String], infos: &mut [LineInfo]) -> bool
 }
 
 
-// ── Pattern 9: Redundant cltq after movslq ───────────────────────────────────
+// ── Pattern 9: Redundant cltq after movslq (merged into combined_local_pass) ──
 
+#[allow(dead_code)]
 fn eliminate_redundant_cltq(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
     let mut changed = false;
     let len = lines.len();
@@ -1073,6 +1240,7 @@ fn invert_cc(cc: &str) -> &str {
 /// We handle the general case: if instruction N writes a zero/sign-extended
 /// value to %rax, and instruction N+1 or N+2 does the same extension again,
 /// the second one is redundant.
+#[allow(dead_code)]
 fn eliminate_redundant_zero_extend(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
     let mut changed = false;
     let len = lines.len();
