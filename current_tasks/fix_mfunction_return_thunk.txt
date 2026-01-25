@@ -1,0 +1,15 @@
+Task: Implement -mfunction-return=thunk-extern for x86 kernel builds
+
+Problem:
+The Linux kernel uses -mfunction-return=thunk-extern to replace all `ret` instructions
+with `jmp __x86_return_thunk` as a Spectre v2 mitigation (retbleed). Our compiler
+silently ignores this flag, producing `ret` instructions. objtool then rejects the
+resulting object files with "'naked' return found in MITIGATION_RETHUNK build".
+
+This causes boot failures when any compiled .o is linked into the kernel.
+
+Fix plan:
+1. Parse -mfunction-return=thunk-extern in main.rs, store in Driver
+2. Thread the flag through to the x86 backend via CodegenState
+3. Change emit_epilogue_and_ret to emit `jmp __x86_return_thunk` instead of `ret`
+4. Add test case and verify kernel bisect passes
