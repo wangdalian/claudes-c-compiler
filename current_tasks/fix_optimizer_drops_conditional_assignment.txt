@@ -1,0 +1,7 @@
+Fix optimizer bug: conditional assignments like `if (x == 0) x = 1;` are being
+dropped by the optimizer. The condition is evaluated but the assignment in the
+if-branch is never executed. This causes TCC's section_realloc to infinite loop
+when data_allocated is 0.
+
+Root cause is likely in CFG simplification or copy propagation dropping the
+conditional store.
