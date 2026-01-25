@@ -8,6 +8,19 @@ use crate::backend::inline_asm::{constraint_has_immediate_alt, constraint_is_mem
 
 impl Lowerer {
     pub(super) fn lower_compound_stmt(&mut self, compound: &CompoundStmt) {
+        // If this block has __label__ declarations, push a local label scope
+        // that maps each declared name to a unique scope-qualified name.
+        let has_local_labels = !compound.local_labels.is_empty();
+        if has_local_labels {
+            let scope_id = self.next_local_label_scope;
+            self.next_local_label_scope += 1;
+            let mut scope = crate::common::fx_hash::FxHashMap::default();
+            for name in &compound.local_labels {
+                scope.insert(name.clone(), format!("{}$ll{}", name, scope_id));
+            }
+            self.local_label_scopes.push(scope);
+        }
+
         // Check if this block contains any declarations. If not, we can skip
         // scope tracking entirely since statements don't introduce new bindings.
         let has_declarations = compound.items.iter().any(|item| matches!(item, BlockItem::Declaration(_)));
@@ -35,6 +48,11 @@ impl Lowerer {
                     self.lower_stmt(stmt);
                 }
             }
+        }
+
+        // Pop the local label scope if we pushed one
+        if has_local_labels {
+            self.local_label_scopes.pop();
         }
     }
 

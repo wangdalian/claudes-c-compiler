@@ -1335,6 +1335,19 @@ impl Lowerer {
     // -----------------------------------------------------------------------
 
     fn lower_stmt_expr(&mut self, compound: &CompoundStmt) -> Operand {
+        // If this statement expression has __label__ declarations, push a local
+        // label scope so that labels are uniquified per expansion.
+        let has_local_labels = !compound.local_labels.is_empty();
+        if has_local_labels {
+            let scope_id = self.next_local_label_scope;
+            self.next_local_label_scope += 1;
+            let mut scope = crate::common::fx_hash::FxHashMap::default();
+            for name in &compound.local_labels {
+                scope.insert(name.clone(), format!("{}$ll{}", name, scope_id));
+            }
+            self.local_label_scopes.push(scope);
+        }
+
         let mut last_val = Operand::Const(IrConst::I64(0));
         for item in &compound.items {
             match item {
@@ -1350,6 +1363,11 @@ impl Lowerer {
                 }
             }
         }
+
+        if has_local_labels {
+            self.local_label_scopes.pop();
+        }
+
         last_val
     }
 

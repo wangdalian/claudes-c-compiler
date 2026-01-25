@@ -212,6 +212,10 @@ pub struct EnumVariant {
 pub struct CompoundStmt {
     pub items: Vec<BlockItem>,
     pub span: Span,
+    /// GNU __label__ declarations: local label names scoped to this block.
+    /// When non-empty, label definitions and gotos within this block use
+    /// scope-qualified names to avoid collisions (e.g., in statement expressions).
+    pub local_labels: Vec<String>,
 }
 
 /// Items within a block.

@@ -62,6 +62,13 @@ pub struct Lowerer {
     /// falls back to its own evaluation (which handles lowering-specific cases
     /// like global addresses, func_state const locals, etc.).
     pub(super) sema_const_values: ConstMap,
+    /// Stack of local label scopes from GNU __label__ declarations.
+    /// Each entry maps a label name to its scope-qualified name.
+    /// When resolving a label, the stack is searched top-down so that
+    /// inner __label__ declarations shadow outer ones.
+    pub(super) local_label_scopes: Vec<FxHashMap<String, String>>,
+    /// Counter for generating unique local label scope IDs.
+    pub(super) next_local_label_scope: u32,
 }
 
 impl Lowerer {
@@ -112,6 +119,8 @@ impl Lowerer {
             sema_functions,
             sema_expr_types,
             sema_const_values,
+            local_label_scopes: Vec::new(),
+            next_local_label_scope: 0,
         }
     }
 
@@ -1360,8 +1369,14 @@ impl Lowerer {
     }
 
     /// Get or create a unique IR label for a user-defined goto label.
+    /// If the label name is declared via __label__ in a local scope,
+    /// uses the scope-qualified name so that different invocations of
+    /// a macro with __label__ don't collide.
     pub(super) fn get_or_create_user_label(&mut self, name: &str) -> BlockId {
-        let key = format!("{}::{}", self.func_mut().name, name);
+        // Check local label scopes from innermost to outermost
+        let resolved_name = self.resolve_local_label(name);
+        let func_name = self.func_mut().name.clone();
+        let key = format!("{}::{}", func_name, resolved_name);
         if let Some(&label) = self.func_mut().user_labels.get(&key) {
             label
         } else {
@@ -1369,6 +1384,19 @@ impl Lowerer {
             self.func_mut().user_labels.insert(key, label);
             label
         }
+    }
+
+    /// Resolve a label name through the local label scope stack.
+    /// Returns a scope-qualified name if the label is declared via __label__,
+    /// or the original name if not.
+    fn resolve_local_label(&self, name: &str) -> String {
+        // Search scopes from innermost to outermost
+        for scope in self.local_label_scopes.iter().rev() {
+            if let Some(qualified) = scope.get(name) {
+                return qualified.clone();
+            }
+        }
+        name.to_string()
     }
 
     // --- String and array init helpers ---

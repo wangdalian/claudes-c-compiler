@@ -13,9 +13,28 @@ impl Parser {
         let start = self.peek_span();
         self.expect(&TokenKind::LBrace);
         let mut items = Vec::new();
+        let mut local_labels = Vec::new();
 
         // Save typedef shadowing state for this scope
         let saved_shadowed = self.shadowed_typedefs.clone();
+
+        // Parse GNU __label__ declarations at the start of the block.
+        // These must appear before any statements or declarations.
+        // Syntax: __label__ ident1, ident2, ... ;
+        while matches!(self.peek(), TokenKind::GnuLabel) {
+            self.advance(); // consume __label__
+            // Parse comma-separated list of label names
+            loop {
+                if let TokenKind::Identifier(name) = self.peek() {
+                    local_labels.push(name.clone());
+                    self.advance();
+                }
+                if !self.consume_if(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect(&TokenKind::Semicolon);
+        }
 
         while !matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
             self.skip_gcc_extensions();
@@ -25,6 +44,21 @@ impl Parser {
             }
             if matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
                 break;
+            }
+            // Handle __label__ declarations that appear after __extension__
+            if matches!(self.peek(), TokenKind::GnuLabel) {
+                self.advance();
+                loop {
+                    if let TokenKind::Identifier(name) = self.peek() {
+                        local_labels.push(name.clone());
+                        self.advance();
+                    }
+                    if !self.consume_if(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&TokenKind::Semicolon);
+                continue;
             }
             if matches!(self.peek(), TokenKind::StaticAssert) {
                 // _Static_assert - skip entirely (no codegen needed)
@@ -43,7 +77,7 @@ impl Parser {
 
         self.expect(&TokenKind::RBrace);
         self.shadowed_typedefs = saved_shadowed;
-        CompoundStmt { items, span: start }
+        CompoundStmt { items, span: start, local_labels }
     }
 
     pub(super) fn parse_stmt(&mut self) -> Stmt {

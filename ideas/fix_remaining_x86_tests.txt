@@ -1,0 +1,211 @@
+Fix Remaining x86 Test Failures
+================================
+Date: 2026-01-25
+Total: 402 failing out of 29893 (98.6% pass rate)
+
+SUMMARY BY CATEGORY
+===================
+  Inline assembly (x86-specific):   243 tests
+  Common frontend/codegen bugs:     134 tests  (shared with ARM + RISC-V)
+  x86-specific non-asm bugs:         17 tests
+  Shared with ARM only:               1 test
+  Shared with RISC-V only:            7 tests
+
+================================================================================
+1. INLINE ASSEMBLY FAILURES (243 tests)
+================================================================================
+
+These are x86 inline asm tests that compile but produce wrong results at runtime.
+Root causes:
+  - Incorrect register constraint satisfaction (wrong register chosen for operands)
+  - Memory operand emission errors (wrong addressing modes)
+  - SSE/AVX instruction encoding bugs (AES-NI, SSE4.2, etc.)
+  - Missing support for some x86 asm modifiers (%b, %w, %k, %q, %a, etc.)
+  - Early clobber (&) constraint not fully respected
+
+Sample failing tests:
+  asm-adcl-x86-001g-run2, asm-adcq-carry-x86-002-run1, asm-aesenc-x86-001-run2,
+  asm-bsr-x86-001-run1, asm-bt-x86-001-run1, asm-cmov-x86-001-run1,
+  asm-cpuid-x86-001-run1, asm-divq-x86-001-run1, asm-fld-fstp-x86-001-run1,
+  asm-imulq-x86-001-run1, asm-movq-xmm-x86-001-run1, asm-popcnt-x86-001-run1,
+  asm-rdtsc-x86-001-run1, asm-sse-add-x86-001-run1, asm-xchg-x86-001-run1, ...
+
+FIX STRATEGY: Improve x86 inline asm constraint handling, operand modifier support,
+and register allocation for asm blocks. This is a large effort; prioritize by
+which tests are needed for real-world code (Linux kernel, TCC self-compile).
+
+================================================================================
+2. COMMON FAILURES (134 tests) -- shared across all 3 architectures
+================================================================================
+
+These are frontend/IR/codegen bugs, not arch-specific. Fixing these fixes all 3 arches.
+
+2a. COMPILE ERRORS (12 tests)
+------------------------------
+
+  __label__ (GNU local labels):
+    compiler_suite_0059_0002
+    Error: "expected Semicolon, got Identifier" -- parser doesn't recognize __label__
+    FIX: Add __label__ as a keyword, parse local label declarations in block scope
+
+  Nested functions (GCC extension):
+    compiler_suite_0086_0000
+    Error: "expected Semicolon, got LBrace" -- parser can't parse nested function defs
+    FIX: Support nested function definitions (complex: needs closure-like semantics)
+
+  _Thread_local in expressions:
+    compiler_suite_0005_0061
+    Error: "unexpected token ThreadLocal in expression"
+    FIX: Allow _Thread_local as storage-class in declaration expressions
+
+  Complex function pointer declarators:
+    compiler_suite_0048_0123, compiler_suite_0048_0125, compiler_suite_0139_0074
+    Error: "expected RParen, got Int" -- parser fails on complex declarator syntax
+    FIX: Improve declarator parsing for function pointers with parameter lists
+
+  __attribute__ in unusual positions:
+    c_testsuite_00210
+    Error: "unexpected token Int in expression"
+    FIX: Handle __attribute__ in more declaration positions
+
+  Escaped newlines in identifiers/preprocessing:
+    compiler_suite_0059_0082
+    Error: "expected declaration, got Identifier" -- line continuation in identifiers
+    FIX: Handle backslash-newline in more lexer contexts
+
+  Missing builtins:
+    gcc_torture_20020411_1 -- needs __builtin_conjf (complex conjugate)
+    gcc_torture_20040709_1, gcc_torture_20040709_2 -- need __builtin_classify_type
+    FIX: Implement these GCC builtins
+
+  Macro expansion edge case:
+    gcc_torture_va_arg_22
+    Error: "expected RParen, got Identifier" -- preprocessor concatenation issue
+    FIX: Fix macro expansion when tokens form declarations
+
+2b. RUNTIME FAILURES (122 tests)
+---------------------------------
+
+  _Complex arithmetic (36 tests):
+    compiler_suite_0030_0055, 0030_0056, 0030_0057, 0030_0103 -- complex +,-,*,/
+    compiler_suite_0036_0051, 0036_0052 -- complex array operations
+    compiler_suite_0105_0346-0349 -- complex math functions (cexp, csin, etc.)
+    compiler_suite_0109_0089, 0109_0090, 0109_0124, 0109_0127 -- complex conversions
+    compiler_suite_0112_0115, 0112_0136-0147 -- long double complex trig/hyperbolic
+    compiler_suite_0147_0045-0051, 0147_0068-0070 -- complex ABI/passing
+    FIX: Fix complex number codegen -- arithmetic, ABI, math library linkage
+
+  Long double operations (10+ tests):
+    compiler_suite_0017_0024-0028 -- isgreater/isless with long double
+    compiler_suite_0024_0009, 0024_0011 -- long double comparisons
+    compiler_suite_0172_0027, 0172_0032 -- long double conversion
+    FIX: Fix long double comparison macros and conversion codegen
+
+  Vector types __attribute__((vector_size)) (6 tests):
+    gcc_torture_scal_to_vec1, scal_to_vec2, scal_to_vec3 -- scalar-to-vector
+    compiler_suite_0093_0048, 0093_0050 -- vector arithmetic
+    FIX: Implement vector type arithmetic and scalar-to-vector conversion
+
+  Alignment _Alignas / __aligned__ (8+ tests):
+    compiler_suite_0057_0008, 0057_0037, 0057_0048, 0057_0049, 0057_0080-0083
+    compiler_suite_0076_0009
+    gcc_torture_stkalign
+    FIX: Fix _Alignas with qualified types, stack alignment for large alignments
+
+  Bitfield layout/access (5+ tests):
+    gcc_torture_20030714_1 -- bool bitfields in structs
+    compiler_suite_0048_0087, 0048_0120, 0048_0286 -- bitfield operations
+    llvm_unittest_ms_struct_pack_layout_1 -- ms_struct packing
+    FIX: Fix bitfield layout edge cases and ms_struct attribute
+
+  Packed structs (3+ tests):
+    compiler_suite_0044_0007 -- pragma pack(1) with volatile arrays
+    compiler_suite_0054_0007, 0054_0008 -- packed struct access
+    FIX: Fix unaligned member access in packed structs
+
+  Struct initialization edge cases (5+ tests):
+    compiler_suite_0150_0004, 0150_0005, 0150_0141 -- deeply nested struct init
+    compiler_suite_0151_0004, 0151_0048, 0151_0080 -- complex initializers
+    llvm_unittest_2006_01_23_UnionInit -- union initialization
+    FIX: Fix nested struct/union initialization corner cases
+
+  Computed goto (labels as values) (2 tests):
+    gcc_torture_comp_goto_1 -- threaded interpreter dispatch
+    FIX: Fix computed goto with bitfield-packed dispatch tables
+
+  Preprocessor edge cases (3+ tests):
+    compiler_suite_0059_0022, 0059_0081, 0059_0087 -- stringification, paste
+    compiler_suite_0068_0030 -- string concatenation
+    FIX: Fix preprocessor token paste and stringification corner cases
+
+  General codegen bugs (15+ tests):
+    compiler_suite_0011_0092, 0011_0176, 0011_0301 -- integer/float conversions
+    compiler_suite_0013_0602, 0013_0669 -- pointer arithmetic
+    compiler_suite_0032_0434, 0049_0003 -- switch/control flow
+    compiler_suite_0077_0033, 0092_0005 -- struct return values
+    compiler_suite_0094_0000, 0094_0074 -- enum handling
+    compiler_suite_0095_0047 -- typedef/type aliases
+    compiler_suite_0106_0075 -- function declarations
+    compiler_suite_0119_0129, 0119_0200, 0121_0238 -- misc codegen
+    compiler_suite_0132_0237, 0137_0376 -- optimization bugs
+    compiler_suite_0139_0039, 0139_0075 -- declaration edge cases
+    compiler_suite_0161_0002, 0169_0004 -- misc
+    gcc_torture_20041214_1, 20050316_1-3, 20050604_1, 20071210_1
+    gcc_torture_pr19449, pr34154, pr44942, pr53645, pr53645_2
+    gcc_torture_pr57568, pr70903, pr71626_1, pr77767, pr84169, pr85156, pr85169
+    gcc_torture_const_addr_expr_1
+    llvm_unittest_2005_07_17_INT_To_FP
+    FIX: These need individual investigation; many are optimization-related
+
+================================================================================
+3. x86-SPECIFIC NON-ASM FAILURES (17 tests)
+================================================================================
+
+  array-init-001 -- array initialization edge case
+  struct-init-designator-001 -- designated initializer bug
+  compiler_suite_0011_0161 -- integer conversion (x86-specific ABI?)
+  compiler_suite_0017_0030 -- float comparison
+  compiler_suite_0049_0006 -- control flow
+  compiler_suite_0077_0073, 0077_0074 -- struct operations
+  compiler_suite_0093_0047 -- vector type
+  compiler_suite_0103_0020 -- SSE intrinsics (_mm_store_pd) -- COMPILE ERROR
+  compiler_suite_0132_0229 -- optimization bug
+  compiler_suite_0137_0503, 0137_0506 -- codegen edge cases
+  compiler_suite_0183_0030, 0183_0033 -- recent test additions
+  gcc_torture_20030408_1 -- builtin_memcpy optimization
+  gcc_torture_20180921_1 -- control flow
+  gcc_torture_pr19515 -- optimization
+
+================================================================================
+4. SHARED WITH RISC-V ONLY (7 tests)
+================================================================================
+
+  compiler_suite_0048_0047 -- comprehensive stress test
+  compiler_suite_0081_0002 -- codegen
+  compiler_suite_0172_0038 -- float conversion
+  gcc_torture_20040811_1 -- optimization
+  gcc_torture_pr43220 -- VLA in loop with goto
+  gcc_torture_pr65427 -- optimization
+  gcc_torture_vla_dealloc_1 -- VLA deallocation
+
+================================================================================
+PRIORITY ORDER FOR FIXING
+================================================================================
+
+HIGH IMPACT (fixes tests across all architectures):
+  1. _Complex number arithmetic codegen (36+ tests across all 3 arches)
+  2. Long double operations and comparisons (10+ tests)
+  3. Alignment (_Alignas) with qualified types (8+ tests)
+  4. Struct initialization edge cases (5+ tests)
+  5. __label__ local labels (parse error, 1 test but blocks other features)
+
+MEDIUM IMPACT (x86-specific):
+  6. Inline asm constraint handling improvements (243 tests)
+  7. Vector type support (6+ tests)
+  8. Missing GCC builtins (__builtin_conjf, __builtin_classify_type)
+  9. Complex declarator parsing (3 tests)
+
+LOW IMPACT:
+  10. Nested functions (1 test)
+  11. _Thread_local in expressions (1 test)
+  12. SSE intrinsics parsing (1 test)

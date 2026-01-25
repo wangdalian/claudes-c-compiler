@@ -1,0 +1,142 @@
+Fix Remaining ARM (AArch64) Test Failures
+==========================================
+Date: 2026-01-25
+Total: 540 failing out of 28671 (98.1% pass rate)
+
+SUMMARY BY CATEGORY
+===================
+  Inline assembly (ARM-specific):    368 tests
+  Common frontend/codegen bugs:      134 tests  (shared with x86 + RISC-V)
+  ARM-specific non-asm bugs:          28 tests
+  Shared with x86 only:                1 test
+  Shared with RISC-V only:             9 tests
+
+================================================================================
+1. INLINE ASSEMBLY FAILURES (368 tests)
+================================================================================
+
+The largest category. ARM inline asm tests compile but produce wrong results.
+
+Root causes:
+  a) NEON/SIMD register handling (80+ tests):
+     - NEON intrinsic types not parsed (arm_neon.h defines int8x8_t etc.)
+     - Vector register constraint 'w' not fully supported
+     - Missing FMOV, FADD, FMUL for NEON registers
+     Sample: asm-aes-chain-arm-007, asm-aesd-arm-002, asm-fabs-arm-001,
+             asm-fadd-arm-001, asm-fmla-arm-001, asm-ld1-arm-001
+
+  b) AES/SHA crypto instructions (15+ tests):
+     - Tests require -march=armv8-a+crypto flag support
+     - AESD, AESE, AESMC, AESIMC, SHA1H instructions
+     Sample: asm-aesd-aesimc-arm-008, asm-aese-aesmc-arm-007
+
+  c) Atomic load/store pair emission (20+ tests):
+     - LDXR/STXR emitting empty base register [] instead of [xN]
+     Sample: asm-ldxr-stxr-arm-001, asm-cas-arm-001
+
+  d) Memory operand formatting (30+ tests):
+     - Incorrect addressing mode emission for load/store pairs
+     - LDP/STP, LDR/STR with immediate offset errors
+     Sample: asm-ldp-arm-001, asm-ldr-offset-arm-001, asm-str-pair-arm-001
+
+  e) Branch/control flow in asm (20+ tests):
+     - CBZ/CBNZ, TBZ/TBNZ incorrect label emission
+     - B.cond incorrect condition code mapping
+     Sample: asm-cbz-arm-001, asm-tbz-arm-001, asm-bcond-arm-001
+
+  f) Register constraint satisfaction (50+ tests):
+     - Wrong register chosen for 'r', 'w', 'x' constraints
+     - Early clobber '&' not respected
+     - Multiple output operands interfering
+     Sample: asm-add-arm-002d, asm-add-lsl-arm-001, asm-mov-arm-001
+
+FIX STRATEGY: ARM inline asm is the #1 area for improvement. Focus on:
+  1. Fix basic register constraint satisfaction
+  2. Fix memory operand emission (addressing modes)
+  3. Add NEON/vector register support
+  4. Add crypto instruction support
+
+================================================================================
+2. COMMON FAILURES (134 tests) -- shared across all 3 architectures
+================================================================================
+
+See fix_remaining_x86_tests.txt for full details. These are all frontend/IR bugs
+that affect all architectures equally.
+
+Key categories:
+  - _Complex arithmetic (36 tests)
+  - Long double operations (10+ tests)
+  - Alignment _Alignas (8+ tests)
+  - Parse errors: __label__, nested functions, complex declarators (12 tests)
+  - Vector types (6 tests)
+  - Bitfield/packed struct layout (8+ tests)
+  - Struct initialization edge cases (5+ tests)
+  - General codegen/optimization bugs (40+ tests)
+
+================================================================================
+3. ARM-SPECIFIC NON-ASM FAILURES (28 tests)
+================================================================================
+
+3a. Struct passing via varargs -- ARM ABI (11 tests):
+    compiler_suite_0080_0002, 0080_0003, 0080_0018, 0080_0019, 0080_0020,
+    compiler_suite_0080_0053, 0080_0054, 0080_0055, 0080_0056
+    compiler_suite_0080_0014 (shared with RISC-V)
+    Root cause: ARM AAPCS64 struct-passing in variadic functions uses different
+    rules than fixed-arg functions. va_arg must handle composite types passed
+    on stack with proper alignment.
+    FIX: Fix va_arg handling for structs on AArch64.
+
+3b. Long double _Complex on ARM (3 tests):
+    compiler_suite_0147_0054, 0147_0055, 0147_0056
+    Root cause: AArch64 long double is IEEE 128-bit (vs x86 80-bit), causing
+    different struct layout and ABI for complex long double.
+    FIX: Ensure 128-bit long double complex is handled correctly on AArch64.
+
+3c. ARM float/conversion ABI (8 tests):
+    compiler_suite_0016_0136 -- float precision
+    compiler_suite_0024_0014, 0024_0015 -- float comparison macros
+    compiler_suite_0069_0036, 0069_0037 -- math function vectorization
+    compiler_suite_0172_0018, 0172_0022, 0172_0024-0026 -- float conversions
+    Root cause: ARM floating-point ABI differences (NEON vs VFP, calling convention)
+    FIX: Review ARM float ABI for edge cases.
+
+3d. Other ARM-specific (6 tests):
+    compiler_suite_0108_0094 -- struct operations
+    gcc_torture_pr20621_1 -- large struct pass-by-value
+    gcc_torture_pr28982b -- optimization edge case
+    gcc_torture_simd_6 -- SIMD vector types
+    llvm_singlesource_uint64_to_float -- uint64->float conversion
+    llvm_unittest_2007_04_25_weak -- __attribute__((weak)) symbol resolution
+    FIX: Individual investigation needed.
+
+================================================================================
+4. SHARED WITH RISC-V ONLY (9 tests)
+================================================================================
+
+  compiler_suite_0005_0053, 0005_0055 -- storage class / thread-local
+  compiler_suite_0069_0084, 0069_0087, 0069_0088 -- math function loops
+  compiler_suite_0080_0014 -- struct varargs
+  compiler_suite_0172_0039 -- float conversion
+  gcc_torture_pr65053_2 -- optimization
+  inline-asm-ptr-deref-output -- asm output to dereferenced pointer
+
+================================================================================
+PRIORITY ORDER FOR FIXING
+================================================================================
+
+HIGH IMPACT (fixes most tests):
+  1. ARM inline asm register constraint handling (200+ tests)
+  2. _Complex number arithmetic codegen (36+ tests, shared)
+  3. ARM va_arg struct passing (11 tests, ARM-specific)
+  4. Long double operations (10+ tests, shared)
+
+MEDIUM IMPACT:
+  5. ARM inline asm memory operand emission (50+ tests)
+  6. ARM AES/crypto instruction support (15+ tests)
+  7. Alignment fixes (8+ tests, shared)
+  8. ARM float conversion ABI (8 tests)
+
+LOW IMPACT:
+  9. Parse error fixes (__label__, etc.) (12 tests, shared)
+  10. Vector type support (6+ tests, shared)
+  11. __attribute__((weak)) resolution (1 test)

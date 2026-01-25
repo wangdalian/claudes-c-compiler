@@ -90,6 +90,8 @@ pub enum TokenKind {
     ImagPart,
     /// __auto_type - GCC extension for type inference from initializer
     AutoType,
+    /// __label__ - GCC extension for local label declarations in block scope
+    GnuLabel,
 
     /// #pragma pack directive, emitted by preprocessor as synthetic token.
     /// Variants: Set(N), Push(N), PushOnly (push without change), Pop, Reset (pack())
@@ -239,6 +241,7 @@ impl TokenKind {
             "__real__" | "__real" => Some(TokenKind::RealPart),
             "__imag__" | "__imag" => Some(TokenKind::ImagPart),
             "__auto_type" => Some(TokenKind::AutoType),
+            "__label__" => Some(TokenKind::GnuLabel),
             // __builtin_va_start, __builtin_va_end, __builtin_va_copy remain as
             // Identifier tokens so they flow through the normal builtin call path
             _ => None,

@@ -1,0 +1,22 @@
+Task: Fix if-conversion speculative load crash (Load treated as side-effect-free)
+Status: In Progress
+
+Problem:
+The if-conversion pass (passes/if_convert.rs) treats Load instructions as side-effect-free
+in is_side_effect_free(). While loads don't have write side effects, they CAN TRAP
+(segfault) on invalid pointers. When the pass hoists loads from conditional arms into
+unconditional code, it speculatively executes loads that were originally guarded by
+null-pointer checks.
+
+This causes crashes in Lua, mquickjs, libpng, libsodium, redis, mbedtls, and postgres.
+For example, Lua's enterblock() function has:
+  bl->insidetbc = (fs->bl != NULL && fs->bl->insidetbc);
+The && gets lowered to a conditional branch diamond, which if-conversion converts to
+a Select/cmov. But the right-hand side (fs->bl->insidetbc) dereferences fs->bl even
+when it's NULL.
+
+Fix:
+1. Remove Instruction::Load from is_side_effect_free()
+2. Also remove Instruction::GetElementPtr since it feeds into loads
+3. Add regression test
+4. Verify multiple projects are restored

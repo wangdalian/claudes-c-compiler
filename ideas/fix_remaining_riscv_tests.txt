@@ -1,0 +1,165 @@
+Fix Remaining RISC-V Test Failures
+===================================
+Date: 2026-01-25
+Total: 198 failing out of 28589 (99.3% pass rate)
+
+SUMMARY BY CATEGORY
+===================
+  Inline assembly (RISC-V-specific):  42 tests
+  Common frontend/codegen bugs:      134 tests  (shared with x86 + ARM)
+  RISC-V-specific non-asm bugs:        7 tests
+  Shared with x86 only:                7 tests
+  Shared with ARM only:                9 tests
+  Note: 1 test shared with both x86+ARM but not counted above
+
+RISC-V has the best pass rate (99.3%) of all three architectures.
+
+================================================================================
+1. INLINE ASSEMBLY FAILURES (42 tests)
+================================================================================
+
+RISC-V inline asm tests that compile but produce wrong results at runtime.
+
+Root causes:
+  a) Load/store word emission (10+ tests):
+     - SW/LW instruction operand formatting errors
+     - Store word to stack slot producing wrong offsets
+     Sample: asm-sw-lw-riscv-001, asm-sw-riscv-003, asm-lw-riscv-002,
+             asm-store-word-riscv-002, asm-add-store-riscv-001
+
+  b) Fence/barrier instructions (5 tests):
+     - FENCE instruction variants not properly emitted
+     - FENCE.I, FENCE.IO not recognized
+     Sample: asm-fence-riscv-001-run2, asm-fence-io-riscv-001,
+             asm-fence-riscv-005
+
+  c) Branch/jump instructions (3 tests):
+     - BLTU, BNEZ, JAL, JALR label or register handling
+     Sample: asm-bltu-riscv-006, asm-bnez-riscv-001f, asm-jal-riscv-001
+
+  d) Memory operand constraints (5 tests):
+     - 'm' constraint producing wrong addressing
+     - LW with constraint mishandling
+     Sample: asm-lw-constraint-riscv-005, asm-lw-pair-riscv-002,
+             asm-lla-riscv-001
+
+  e) Register chaining and multi-output (5 tests):
+     - Multiple register outputs interfering
+     - Register variable asm declarations
+     Sample: asm-multi-output-riscv-006, asm-multi-reg-riscv-001,
+             asm-reg-chain-riscv-001, asm-regvar-riscv-004
+
+  f) String/memory operations in asm (6 tests):
+     - STRCMP/STRLEN/MEMCPY loop implementations
+     Sample: asm-strcmp-loop-riscv-001, asm-strlen-basic-riscv-001,
+             asm-memcpy-riscv-001, asm-memcopy-riscv-001
+
+  g) Other (8 tests):
+     - Stack manipulation, clobber handling, FP load/store, LR/SC atomics,
+       SRL/SLLI shifts, XOR loops, early clobber, SP manipulation
+     Sample: asm-clobber-riscv-001, asm-fld-fsd-riscv-001,
+             asm-lr-sc-riscv-004c, asm-sp-manip-riscv-001,
+             asm-srl-slli-riscv-001, asm-xor-loop-riscv-003,
+             asm-stack-frame-riscv-001, asm-load-earlyclobber-riscv-007,
+             asm-lr-w-riscv-001
+
+FIX STRATEGY: RISC-V inline asm is relatively close to working. Focus on:
+  1. Fix SW/LW operand emission
+  2. Fix FENCE instruction variants
+  3. Fix multi-output register allocation in asm
+
+================================================================================
+2. COMMON FAILURES (134 tests) -- shared across all 3 architectures
+================================================================================
+
+See fix_remaining_x86_tests.txt for full details. These are all frontend/IR bugs.
+
+Key categories:
+  - _Complex arithmetic (36 tests)
+  - Long double operations (10+ tests)
+  - Alignment _Alignas (8+ tests)
+  - Parse errors: __label__, nested functions, complex declarators (12 tests)
+  - Vector types (6 tests)
+  - Bitfield/packed struct layout (8+ tests)
+  - Struct initialization edge cases (5+ tests)
+  - General codegen/optimization bugs (40+ tests)
+
+================================================================================
+3. RISC-V-SPECIFIC NON-ASM FAILURES (7 tests)
+================================================================================
+
+  compiler_suite_0016_0007:
+    Complex long double on RISC-V. RISC-V long double is 128-bit IEEE.
+    FIX: Ensure 128-bit long double codegen works on RISC-V.
+
+  compiler_suite_0041_0009:
+    Loop optimization edge case specific to RISC-V codegen.
+    FIX: Investigate RISC-V-specific loop codegen.
+
+  compiler_suite_0059_0080:
+    Constructor/destructor ordering (__attribute__((constructor/destructor))).
+    FIX: Fix .init_array/.fini_array section ordering on RISC-V ELF.
+
+  compiler_suite_0126_0020:
+    setjmp/longjmp support on RISC-V.
+    FIX: Ensure callee-saved registers are properly saved/restored for setjmp.
+
+  compiler_suite_0166_0003, compiler_suite_0166_0004:
+    alloca() on RISC-V. Stack pointer manipulation differs from x86.
+    FIX: Fix RISC-V alloca implementation (SP alignment, frame pointer interaction).
+
+  gcc_torture_va_arg_24:
+    va_arg with 11 integer arguments (exceeds register args on RISC-V).
+    FIX: Fix va_arg stack access when arguments spill beyond register window.
+
+================================================================================
+4. SHARED WITH x86 ONLY (7 tests)
+================================================================================
+
+  compiler_suite_0048_0047 -- comprehensive stress test
+  compiler_suite_0081_0002 -- codegen edge case
+  compiler_suite_0172_0038 -- float conversion
+  gcc_torture_20040811_1 -- optimization edge case
+  gcc_torture_pr43220 -- VLA in loop with goto (stack leak)
+  gcc_torture_pr65427 -- optimization
+  gcc_torture_vla_dealloc_1 -- VLA deallocation
+
+  Root cause: These likely share a codegen bug in VLA handling or float
+  conversion that affects x86 and RISC-V but not ARM (possibly due to
+  different stack frame management).
+
+================================================================================
+5. SHARED WITH ARM ONLY (9 tests)
+================================================================================
+
+  compiler_suite_0005_0053, 0005_0055 -- storage class / _Thread_local
+  compiler_suite_0069_0084, 0069_0087, 0069_0088 -- math function loop tests
+  compiler_suite_0080_0014 -- struct varargs
+  compiler_suite_0172_0039 -- float conversion
+  gcc_torture_pr65053_2 -- optimization
+  inline-asm-ptr-deref-output -- asm output to dereferenced pointer
+
+  Root cause: These affect ARM and RISC-V but not x86. Likely ABI differences
+  in struct passing, float conversion, or inline asm output operand handling
+  on non-x86 architectures.
+
+================================================================================
+PRIORITY ORDER FOR FIXING
+================================================================================
+
+HIGH IMPACT (fixes most tests):
+  1. _Complex number arithmetic codegen (36+ tests, shared)
+  2. Long double operations (10+ tests, shared)
+  3. RISC-V inline asm load/store emission (10+ tests)
+  4. Alignment fixes (8+ tests, shared)
+
+MEDIUM IMPACT:
+  5. RISC-V alloca/VLA implementation (2 RISC-V + 2 shared tests)
+  6. RISC-V va_arg for large arg counts (1+ tests)
+  7. RISC-V fence instruction support (5 tests)
+  8. Parse error fixes (__label__, etc.) (12 tests, shared)
+
+LOW IMPACT:
+  9. setjmp/longjmp on RISC-V (1 test)
+  10. Constructor/destructor ordering (1 test)
+  11. Inline asm pointer deref output (1 test, shared with ARM)
