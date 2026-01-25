@@ -1,0 +1,13 @@
+Task: Fix global register asm variables (e.g., register unsigned long x asm("rsp"))
+
+Problem:
+Global register variables declared with `register <type> <name> asm("<reg>")` are not supported.
+The compiler emits them as regular .bss symbols instead of recognizing them as register-bound.
+This causes linker failures in the Linux kernel (undefined symbol `current_stack_pointer`).
+
+Files to modify:
+- src/frontend/parser/declarations.rs: Store asm_register on global declarators
+- src/ir/lowering/definitions.rs: Add asm_register field to GlobalInfo
+- src/ir/lowering/lowering.rs: Skip emitting storage for global register vars
+- src/ir/lowering/expr.rs: Emit register read (inline asm) for global register vars
+- src/ir/lowering/stmt.rs: Extend asm constraint rewriting to check globals
