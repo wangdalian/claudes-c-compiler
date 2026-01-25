@@ -131,6 +131,12 @@ impl SemanticAnalyzer {
 
     /// Get the analysis results (consumed after analysis).
     pub fn into_result(self) -> SemaResult {
+        // Synchronize the TypeContext's anonymous struct counter with sema's counter.
+        // Both generate keys in the format "__anon_struct_{id}", and the lowerer uses
+        // TypeContext's counter. Without this, the lowerer would start at 0 and
+        // overwrite struct layouts that sema stored at those keys.
+        let sema_count = self.anon_struct_counter.get() as u32;
+        self.result.type_context.set_anon_ctype_counter(sema_count);
         self.result
     }
 
