@@ -18,6 +18,7 @@
 /// unify constant expression evaluation between sema and lowering.
 
 use crate::common::types::CType;
+use crate::common::const_arith::{wrap_result, unsigned_op, bool_to_i64};
 use crate::ir::ir::IrConst;
 use crate::frontend::parser::ast::*;
 use super::type_context::TypeContext;
@@ -754,27 +755,6 @@ impl<'a> SemaConstEval<'a> {
             })
         }).collect()
     }
-}
-
-// === Helper functions (matching lowerer's const_eval.rs) ===
-
-/// Wrap an i64 result to 32-bit width if `is_32bit` is true.
-fn wrap_result(v: i64, is_32bit: bool) -> i64 {
-    if is_32bit { v as i32 as i64 } else { v }
-}
-
-/// Perform an unsigned binary operation, handling 32-bit vs 64-bit width.
-fn unsigned_op(l: i64, r: i64, is_32bit: bool, op: fn(u64, u64) -> u64) -> i64 {
-    if is_32bit {
-        op(l as u32 as u64, r as u32 as u64) as u32 as i64
-    } else {
-        op(l as u64, r as u64) as i64
-    }
-}
-
-/// Convert a boolean to i64.
-fn bool_to_i64(b: bool) -> i64 {
-    if b { 1 } else { 0 }
 }
 
 /// Convert a TypeSpecifier to CType using the TypeContext for typedef/struct resolution.

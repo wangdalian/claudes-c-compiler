@@ -7,7 +7,7 @@
 
 use crate::ir::ir::*;
 use crate::common::types::IrType;
-use crate::backend::codegen_shared::*;
+use crate::backend::state::CodegenState;
 use super::codegen::ArmCodegen;
 
 impl ArmCodegen {

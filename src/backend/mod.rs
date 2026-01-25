@@ -13,8 +13,6 @@ pub mod inline_asm;  // InlineAsmEmitter trait and shared framework
 pub mod liveness;     // Live interval computation
 pub mod regalloc;     // Linear scan register allocator
 
-// Re-export shim for backwards compatibility with existing imports
-pub mod codegen_shared;
 
 pub mod x86;
 pub mod arm;

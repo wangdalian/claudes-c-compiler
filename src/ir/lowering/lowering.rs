@@ -9,7 +9,7 @@
 //! - Scope management delegation
 //!
 //! Data structure definitions are in `definitions.rs`, per-function state in
-//! `func_state.rs`, and type-system state in `type_context.rs`.
+//! `func_state.rs`, and type-system state in `frontend::sema::type_context`.
 
 use crate::common::fx_hash::{FxHashMap, FxHashSet};
 use crate::frontend::parser::ast::*;
@@ -19,7 +19,7 @@ use crate::common::types::{IrType, CType};
 use crate::backend::Target;
 use super::definitions::*;
 use super::func_state::FunctionBuildState;
-use super::type_context::TypeContext;
+use crate::frontend::sema::type_context::TypeContext;
 
 /// Lowers AST to IR (alloca-based, not yet SSA).
 pub struct Lowerer {

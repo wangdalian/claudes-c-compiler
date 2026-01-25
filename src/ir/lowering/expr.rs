@@ -1511,29 +1511,26 @@ impl Lowerer {
     // Type inference for binary operations
     // -----------------------------------------------------------------------
 
+    /// Infer the C semantic type of an expression for arithmetic conversions.
+    ///
+    /// This differs from `get_expr_type` in that it returns the C-level type
+    /// (e.g., IntLiteral → I32 if it fits, CharLiteral → I8, comparisons → I32)
+    /// whereas `get_expr_type` returns the IR storage type (literals → I64,
+    /// comparisons → I64). Use this for binary operation type selection and
+    /// arithmetic promotion decisions.
+    ///
+    /// For cases that don't differ, delegates to `get_expr_type`.
     pub(super) fn infer_expr_type(&self, expr: &Expr) -> IrType {
         match expr {
-            Expr::Identifier(name, _) => {
-                if name == "__func__" || name == "__FUNCTION__" || name == "__PRETTY_FUNCTION__" {
-                    return IrType::Ptr;
-                }
-                if self.types.enum_constants.contains_key(name) { return IrType::I32; }
-                if let Some(vi) = self.lookup_var_info(name) { return vi.ty; }
-                IrType::I64
-            }
+            // Literals: use C semantic types (narrower than get_expr_type's I64)
             Expr::IntLiteral(val, _) => {
                 if *val >= i32::MIN as i64 && *val <= i32::MAX as i64 { IrType::I32 } else { IrType::I64 }
             }
             Expr::UIntLiteral(val, _) => {
                 if *val <= u32::MAX as u64 { IrType::U32 } else { IrType::U64 }
             }
-            Expr::LongLiteral(_, _) => IrType::I64,
-            Expr::ULongLiteral(_, _) => IrType::U64,
             Expr::CharLiteral(_, _) => IrType::I8,
-            Expr::FloatLiteral(_, _) => IrType::F64,
-            Expr::FloatLiteralF32(_, _) => IrType::F32,
-            Expr::FloatLiteralLongDouble(_, _) => IrType::F128,
-            Expr::Cast(ref target_type, _, _) => self.type_spec_to_ir(target_type),
+            // Comparisons and logical ops produce C int (I32), not I64
             Expr::BinaryOp(op, lhs, rhs, _) => {
                 if op.is_comparison() || matches!(op, BinOp::LogicalAnd | BinOp::LogicalOr) {
                     IrType::I32
@@ -1564,24 +1561,14 @@ impl Lowerer {
                     result
                 }
             }
-            Expr::UnaryOp(op, inner, _) => {
-                match op {
-                    UnaryOp::Neg | UnaryOp::BitNot | UnaryOp::Plus => {
-                        let inner_ty = self.infer_expr_type(inner);
-                        if inner_ty.is_float() { inner_ty } else { Self::integer_promote(inner_ty) }
-                    }
-                    UnaryOp::LogicalNot => IrType::I32,
-                    _ => self.infer_expr_type(inner),
-                }
+            Expr::UnaryOp(UnaryOp::LogicalNot, _, _) => IrType::I32,
+            Expr::UnaryOp(UnaryOp::Neg | UnaryOp::BitNot | UnaryOp::Plus, inner, _) => {
+                let inner_ty = self.infer_expr_type(inner);
+                if inner_ty.is_float() { inner_ty } else { Self::integer_promote(inner_ty) }
             }
-            Expr::Sizeof(_, _) => IrType::U64,
-            Expr::FunctionCall(func, _, _) => {
-                self.get_call_return_type(func)
-            }
-            Expr::Deref(_, _) | Expr::ArraySubscript(_, _, _)
-            | Expr::MemberAccess(_, _, _) | Expr::PointerMemberAccess(_, _, _) => {
-                self.get_expr_type(expr)
-            }
+            // Recursive cases that must use infer_expr_type (not get_expr_type)
+            // to propagate narrow literal types through the expression tree
+            Expr::UnaryOp(_, inner, _) => self.infer_expr_type(inner),
             Expr::PostfixOp(_, inner, _) => self.infer_expr_type(inner),
             Expr::Assign(lhs, _, _) | Expr::CompoundAssign(_, lhs, _, _) => {
                 self.infer_expr_type(lhs)
@@ -1593,10 +1580,8 @@ impl Lowerer {
                 Self::common_type(self.infer_expr_type(cond), self.infer_expr_type(else_expr))
             }
             Expr::Comma(_, rhs, _) => self.infer_expr_type(rhs),
-            Expr::AddressOf(_, _) => IrType::Ptr,
-            Expr::StringLiteral(_, _) | Expr::WideStringLiteral(_, _) => IrType::Ptr,
-            Expr::VaArg(_, type_spec, _) => self.resolve_va_arg_type(type_spec),
-            _ => IrType::I64,
+            // All other cases: delegate to get_expr_type (same result)
+            _ => self.get_expr_type(expr),
         }
     }
 

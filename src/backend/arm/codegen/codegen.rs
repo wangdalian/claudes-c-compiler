@@ -1,7 +1,13 @@
 use crate::ir::ir::*;
 use crate::common::types::IrType;
 use crate::backend::common::PtrDirective;
-use crate::backend::codegen_shared::*;
+use crate::backend::state::{CodegenState, StackSlot};
+use crate::backend::traits::ArchCodegen;
+use crate::backend::generation::{generate_module, is_i128_type, calculate_stack_space_common, find_param_alloca};
+use crate::backend::call_abi::{CallAbiConfig, CallArgClass, compute_stack_arg_space};
+use crate::backend::call_emit::{ParamClass, classify_params};
+use crate::backend::cast::{CastKind, classify_cast, FloatOp};
+use crate::backend::inline_asm::{InlineAsmEmitter, AsmOperandKind, AsmOperand, emit_inline_asm_common};
 
 /// AArch64 code generator. Implements the ArchCodegen trait for the shared framework.
 /// Uses AAPCS64 calling convention with stack-based allocation.

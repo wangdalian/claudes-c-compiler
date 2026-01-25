@@ -23,7 +23,6 @@ The shared framework is split into focused modules to keep each under ~400 lines
 - **`inline_asm.rs`** — `InlineAsmEmitter` trait, `AsmOperandKind`, `AsmOperand`, `emit_inline_asm_common()`. Shared 4-phase inline asm framework (classify→load→emit→store).
 - **`liveness.rs`** — Live interval computation for IR values. Assigns sequential program points and computes [def, last_use] intervals per value.
 - **`regalloc.rs`** — Linear scan register allocator. Assigns callee-saved registers to values with the longest live intervals. Includes back-edge detection to disable allocation for functions with loops.
-- **`codegen_shared.rs`** — Thin re-export shim. Existing `use crate::backend::codegen_shared::*` imports continue to work unchanged.
 - **`common.rs`** — Assembly output buffer, data section emission, assembler/linker invocation via GCC toolchain.
 - **`mod.rs`** — `Target` enum for target dispatch, module declarations.
 

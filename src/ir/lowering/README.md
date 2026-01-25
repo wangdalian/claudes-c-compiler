@@ -9,7 +9,6 @@ handles every C language construct. The `mem2reg` pass later promotes allocas to
 |---|---|
 | `definitions.rs` | Shared data structures: `VarInfo`, `LocalInfo`, `GlobalInfo`, `DeclAnalysis`, `LValue`, `SwitchFrame`, `FuncSig`, `FunctionMeta`, `ParamKind`, `IrParamBuildResult` |
 | `func_state.rs` | `FunctionBuildState` (per-function build state) and `FuncScopeFrame` (undo-log scope tracking for locals/statics/consts) |
-| `type_context.rs` | Re-exports `TypeContext`, `TypeScopeFrame`, `FunctionTypedefInfo` from `frontend::sema::type_context` |
 | `lowering.rs` | `Lowerer` struct, `lower()` entry point, `lower_function` pipeline, `DeclAnalysis` computation, IR emission helpers |
 | `stmt.rs` | Statement dispatch (`lower_stmt`), `lower_local_decl`, `emit_struct_init`, control flow |
 | `stmt_init.rs` | Local variable init helpers: expr-init, list-init, extern/func-decl handling |
