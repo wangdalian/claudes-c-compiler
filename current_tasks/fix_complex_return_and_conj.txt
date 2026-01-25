@@ -1,9 +1,0 @@
-Task: Fix complex return through _Bool and conj() type derivation
-Owner: agent
-Status: in-progress
-Description: Two fixes:
-1. try_two_reg_struct_return and try_small_struct_return intercepted
-   complex types that should go through try_complex_return
-2. expr_ctype for conj/conjf/conjl always returned ComplexDouble
-   instead of preserving the argument's actual complex type
-Files: src/ir/lowering/stmt_return.rs, src/ir/lowering/complex.rs
