@@ -1,0 +1,24 @@
+Task: Fix LICM load hoisting regression causing infinite loops
+
+Problem:
+The LICM pass (commit 7bd1987) introduced load hoisting that incorrectly hoists
+loads from allocas that ARE modified in the loop body through derived pointers
+(GEPs). This causes infinite loops because the loop condition variable is loaded
+once in the preheader and never re-read.
+
+Root cause (two defects):
+1. analyze_loop_memory records store ptr VALUE IDs, not alloca bases. When a store
+   goes through a GEP (store val, %gep where %gep = GEP %alloca, offset), only
+   %gep is recorded, not %alloca. So is_load_hoistable thinks the alloca is unmodified.
+
+2. The address_taken check in is_load_hoistable is gated on has_calls. Even when
+   an alloca is address-taken (its address escapes via GEP), the load is still
+   hoistable if there are no calls. But the loop body can modify memory through
+   the escaped pointer without any calls.
+
+Fix:
+1. Remove the has_calls gate on the address_taken check - if an alloca is
+   address-taken, never hoist loads from it (conservative but safe).
+2. Also trace store pointers back through GEPs/Copies to find base allocas.
+
+This fixes the LICM regression that causes hangs in tcc, jq, sqlite, and others.
