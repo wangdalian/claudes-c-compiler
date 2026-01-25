@@ -1,0 +1,28 @@
+Move TypeContext and FunctionTypedefInfo from ir/lowering to common/
+
+Problem: TypeContext is defined in ir/lowering/type_context.rs but is created and
+populated by sema, then transferred to the lowerer. This creates a backwards
+dependency: sema imports from ir::lowering. FunctionTypedefInfo is similarly
+defined in ir/lowering/definitions.rs but used by sema.
+
+This architectural issue means:
+- sema depends on ir/lowering types (wrong dependency direction)
+- TypeContext is conceptually shared infrastructure, not lowering-specific
+- Moving more functionality into sema requires importing more from lowering
+
+Plan:
+1. Move TypeContext to common/type_context.rs
+2. Move FunctionTypedefInfo to common/type_context.rs (it's used by both)
+3. Move extract_fptr_typedef_info helper to common/type_context.rs
+4. Update all imports across sema and lowering
+5. Re-export from ir/lowering/type_context.rs for backward compat if needed
+6. Verify with full build and CI tests
+
+Files affected:
+- src/ir/lowering/type_context.rs (source, becomes thin re-export)
+- src/ir/lowering/definitions.rs (remove FunctionTypedefInfo)
+- src/common/mod.rs (add type_context module)
+- src/common/type_context.rs (new, target of move)
+- src/frontend/sema/sema.rs (update imports)
+- src/ir/lowering/mod.rs (update exports)
+- src/ir/lowering/*.rs (update imports as needed)
