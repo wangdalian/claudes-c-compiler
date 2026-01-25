@@ -1,0 +1,11 @@
+Task: Eliminate unnecessary TokenKind::clone() overhead in parser
+
+Profiling shows TokenKind::clone at 2.58% of compile time. The parser uses
+peek().clone() pattern ~25 times, cloning entire TokenKind (including owned
+String payloads) when most callers only need the variant discriminant.
+
+Fix: Match on &TokenKind from peek() directly, only clone inner Strings
+when actually consumed. This eliminates heap allocations for identifier/string
+tokens that are only peeked at but not consumed.
+
+Status: in progress
