@@ -1,0 +1,15 @@
+Task: x86-64 peephole compare-and-branch fusion + enhanced store/load forwarding
+
+Goal: Significantly speed up generated code by adding two new peephole patterns:
+
+1. Compare-and-branch fusion: The codegen produces this sequence for every if/loop:
+     cmpq %rcx, %rax / setCC %al / movzbq %al, %rax / movq %rax, N(%rbp) / movq N(%rbp), %rax / testq %rax, %rax / jne .L / jmp .L
+   Fuse this into: cmpq %rcx, %rax / jCC .Ltrue / jmp .Lfalse
+   Eliminates 5 instructions per branch.
+
+2. Non-adjacent store/load forwarding: The existing peephole only handles
+   immediately adjacent store-then-load. Extend to forward through intervening
+   instructions that don't alias the stack slot.
+
+Impact: Every loop iteration and every if-statement benefits. Expected large
+speedup for real workloads (zlib, libjpeg).
