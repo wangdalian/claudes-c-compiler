@@ -1,0 +1,10 @@
+Fix x86 long double parameter passing
+
+The F128AlwaysStack branch in emit_store_params was using fstpl (store as 64-bit
+double) instead of fstpt (store as 80-bit extended) when copying incoming long
+double parameters to local stack slots. This caused emit_load (which uses fldt)
+to read garbage bytes, producing -nan or 0.0 for long double function parameters.
+
+Fix: Use fldt/fstpt to preserve 80-bit format from caller stack to local slot.
+
+This fixes ~30+ compiler_suite tests that were failing with long double parameters.
