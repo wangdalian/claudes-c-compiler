@@ -1,0 +1,16 @@
+Fix preprocessor # (stringification) operator not escaping double-quotes inside char literals
+
+Bug: When the # operator stringifies a macro argument containing a char literal
+with a double-quote character (e.g., assert(*p == '"')), the double-quote
+inside the char literal is not escaped in the output string. This produces
+a malformed string literal like "*p == '"'" instead of the correct
+"*p == '\\\"'".
+
+This breaks Redis's bundled lua_cjson.c which uses assert(*json->ptr == '"').
+
+Fix location: src/frontend/preprocessor/macro_defs.rs, stringify_arg function,
+char literal handling branch (lines 869-894).
+
+Root cause: The char literal handler escapes backslashes but not double-quote
+characters. Per C11 6.10.3.2, all " and \ in the token sequence must be
+preceded by \ in the stringified result.
