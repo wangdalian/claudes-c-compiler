@@ -733,6 +733,100 @@ impl CType {
         }
     }
 
+    /// Whether this is an unsigned integer type.
+    /// Used by usual arithmetic conversions (C11 6.3.1.8).
+    pub fn is_unsigned(&self) -> bool {
+        matches!(self, CType::Bool | CType::UChar | CType::UShort | CType::UInt
+            | CType::ULong | CType::ULongLong | CType::UInt128)
+    }
+
+    /// Integer conversion rank for C types (C11 6.3.1.1).
+    /// Higher rank = larger type. Used by usual arithmetic conversions.
+    pub fn integer_rank(&self) -> u32 {
+        match self {
+            CType::Bool => 0,
+            CType::Char | CType::UChar => 1,
+            CType::Short | CType::UShort => 2,
+            CType::Int | CType::UInt | CType::Enum(_) => 3,
+            CType::Long | CType::ULong => 4,
+            CType::LongLong | CType::ULongLong => 5,
+            CType::Int128 | CType::UInt128 => 6,
+            _ => 3, // fallback to int rank for non-integer types
+        }
+    }
+
+    /// Apply C "usual arithmetic conversions" (C11 6.3.1.8) to determine
+    /// the common type of two operands in a binary arithmetic expression.
+    ///
+    /// When one operand is complex and the other is real, the corresponding
+    /// real type of the complex is compared with the other operand's type to
+    /// determine the wider type, and the result is the complex version.
+    pub fn usual_arithmetic_conversion(lhs: &CType, rhs: &CType) -> CType {
+        // First apply integer promotions
+        let l = lhs.integer_promoted();
+        let r = rhs.integer_promoted();
+
+        // Handle complex types per C11 6.3.1.8
+        let l_complex = l.is_complex();
+        let r_complex = r.is_complex();
+        if l_complex || r_complex {
+            let l_real_rank = match &l {
+                CType::ComplexLongDouble | CType::LongDouble => 3,
+                CType::ComplexDouble | CType::Double => 2,
+                CType::ComplexFloat | CType::Float => 1,
+                _ => 0,
+            };
+            let r_real_rank = match &r {
+                CType::ComplexLongDouble | CType::LongDouble => 3,
+                CType::ComplexDouble | CType::Double => 2,
+                CType::ComplexFloat | CType::Float => 1,
+                _ => 0,
+            };
+            let max_rank = l_real_rank.max(r_real_rank);
+            return match max_rank {
+                3 => CType::ComplexLongDouble,
+                2 => CType::ComplexDouble,
+                1 => CType::ComplexFloat,
+                _ => {
+                    if l_complex { l.clone() } else { r.clone() }
+                }
+            };
+        }
+
+        // Non-complex: standard type hierarchy
+        if matches!(&l, CType::LongDouble) || matches!(&r, CType::LongDouble) {
+            return CType::LongDouble;
+        }
+        if matches!(&l, CType::Double) || matches!(&r, CType::Double) {
+            return CType::Double;
+        }
+        if matches!(&l, CType::Float) || matches!(&r, CType::Float) {
+            return CType::Float;
+        }
+
+        // Both integer types after promotion: apply conversion rank rules
+        let l_rank = l.integer_rank();
+        let r_rank = r.integer_rank();
+        let l_unsigned = l.is_unsigned();
+        let r_unsigned = r.is_unsigned();
+
+        if l_unsigned == r_unsigned {
+            if l_rank >= r_rank { l } else { r }
+        } else if l_unsigned && l_rank >= r_rank {
+            l
+        } else if r_unsigned && r_rank >= l_rank {
+            r
+        } else {
+            // The signed type has higher rank and can represent all values
+            if l_unsigned { r } else { l }
+        }
+    }
+
+    /// Whether this is a pointer type (including arrays which decay to pointers).
+    pub fn is_pointer_like(&self) -> bool {
+        matches!(self, CType::Pointer(_) | CType::Array(_, _))
+    }
+
 }
 
 /// IR-level types (simpler than C types).

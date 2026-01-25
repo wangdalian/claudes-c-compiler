@@ -946,7 +946,7 @@ impl Lowerer {
                         if *op == BinOp::Sub {
                             // ptr - ptr = ptrdiff_t (long)
                             if let Some(rct) = self.get_expr_ctype(rhs) {
-                                if matches!(&rct, CType::Pointer(_) | CType::Array(_, _)) {
+                                if rct.is_pointer_like() {
                                     return Some(CType::Long);
                                 }
                             }
@@ -955,8 +955,9 @@ impl Lowerer {
                     }
                     CType::Array(elem, _) => {
                         if *op == BinOp::Sub {
+                            // array - ptr/array = ptrdiff_t (long)
                             if let Some(rct) = self.get_expr_ctype(rhs) {
-                                if matches!(&rct, CType::Pointer(_) | CType::Array(_, _)) {
+                                if rct.is_pointer_like() {
                                     return Some(CType::Long);
                                 }
                             }
@@ -983,7 +984,7 @@ impl Lowerer {
         let lct = self.get_expr_ctype(lhs);
         let rct = self.get_expr_ctype(rhs);
         match (lct, rct) {
-            (Some(l), Some(r)) => Some(Self::usual_arithmetic_conversion(&l, &r)),
+            (Some(l), Some(r)) => Some(CType::usual_arithmetic_conversion(&l, &r)),
             (Some(l), None) => Some(Self::integer_promote_ctype(&l)),
             (None, Some(r)) => Some(Self::integer_promote_ctype(&r)),
             (None, None) => None,
@@ -992,107 +993,9 @@ impl Lowerer {
 
     /// Apply C integer promotion rules to a CType.
     /// Types smaller than int are promoted to int.
+    /// Delegates to CType::integer_promoted().
     fn integer_promote_ctype(ct: &CType) -> CType {
-        match ct {
-            CType::Bool | CType::Char | CType::UChar | CType::Short | CType::UShort => CType::Int,
-            other => other.clone(),
-        }
-    }
-
-    /// Apply C "usual arithmetic conversions" to determine the common type
-    /// of two operands in a binary arithmetic expression.
-    /// Per C11 6.3.1.8, when one operand is complex and the other is real,
-    /// the corresponding real type of the complex is compared with the other
-    /// operand's type to determine the wider type, and the result is the
-    /// complex version of the wider type.
-    fn usual_arithmetic_conversion(lhs: &CType, rhs: &CType) -> CType {
-        // First apply integer promotions
-        let l = Self::integer_promote_ctype(lhs);
-        let r = Self::integer_promote_ctype(rhs);
-
-        // Handle complex types per C11 6.3.1.8:
-        // When one operand is complex and the other is real, determine the
-        // common real type first, then return the complex version.
-        let l_complex = l.is_complex();
-        let r_complex = r.is_complex();
-        if l_complex || r_complex {
-            // Get the "corresponding real type" rank for each operand
-            let l_real_rank = match &l {
-                CType::ComplexLongDouble | CType::LongDouble => 3,
-                CType::ComplexDouble | CType::Double => 2,
-                CType::ComplexFloat | CType::Float => 1,
-                _ => 0, // integers have no floating rank
-            };
-            let r_real_rank = match &r {
-                CType::ComplexLongDouble | CType::LongDouble => 3,
-                CType::ComplexDouble | CType::Double => 2,
-                CType::ComplexFloat | CType::Float => 1,
-                _ => 0,
-            };
-            let max_rank = l_real_rank.max(r_real_rank);
-            // At least one operand is complex, so result is always complex
-            return match max_rank {
-                3 => CType::ComplexLongDouble,
-                2 => CType::ComplexDouble,
-                1 => CType::ComplexFloat,
-                _ => {
-                    // Both integer-ranked: the complex type wins with its own rank
-                    if l_complex { l.clone() } else { r.clone() }
-                }
-            };
-        }
-
-        // Non-complex types: standard hierarchy
-        // If either is long double, result is long double
-        if matches!(&l, CType::LongDouble) || matches!(&r, CType::LongDouble) {
-            return CType::LongDouble;
-        }
-        // If either is double, result is double
-        if matches!(&l, CType::Double) || matches!(&r, CType::Double) {
-            return CType::Double;
-        }
-        // If either is float, result is float
-        if matches!(&l, CType::Float) || matches!(&r, CType::Float) {
-            return CType::Float;
-        }
-
-        // Both are integer types after promotion. Apply integer conversion rank rules.
-        let l_rank = Self::integer_rank(&l);
-        let r_rank = Self::integer_rank(&r);
-        let l_unsigned = Self::is_unsigned_ctype(&l);
-        let r_unsigned = Self::is_unsigned_ctype(&r);
-
-        if l_unsigned == r_unsigned {
-            // Same signedness: pick the one with higher rank
-            if l_rank >= r_rank { l } else { r }
-        } else if l_unsigned && l_rank >= r_rank {
-            l
-        } else if r_unsigned && r_rank >= l_rank {
-            r
-        } else {
-            // The signed type has higher rank; it can represent all values of the unsigned type
-            if l_unsigned { r } else { l }
-        }
-    }
-
-    /// Integer conversion rank for C types (higher = larger type).
-    fn integer_rank(ct: &CType) -> u32 {
-        match ct {
-            CType::Bool => 0,
-            CType::Char | CType::UChar => 1,
-            CType::Short | CType::UShort => 2,
-            CType::Int | CType::UInt => 3,
-            CType::Long | CType::ULong => 4,
-            CType::LongLong | CType::ULongLong => 5,
-            CType::Int128 | CType::UInt128 => 6,
-            _ => 3, // fallback to int rank for non-integer types
-        }
-    }
-
-    /// Check if a CType is an unsigned integer type.
-    fn is_unsigned_ctype(ct: &CType) -> bool {
-        matches!(ct, CType::Bool | CType::UChar | CType::UShort | CType::UInt
-            | CType::ULong | CType::ULongLong | CType::UInt128)
+        ct.integer_promoted()
     }
 
     /// Resolve a potentially stale (forward-declared) struct/union CType by looking

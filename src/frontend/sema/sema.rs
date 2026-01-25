@@ -3,9 +3,14 @@
 //! Walks the AST to:
 //! - Build a scoped symbol table of declarations
 //! - Track function signatures for call validation
-//! - Resolve typedef names
+//! - Resolve typedef names and typeof(expr) via ExprTypeChecker
 //! - Collect information needed by the IR lowering phase
 //! - Map __builtin_* identifiers to their libc equivalents
+//!
+//! Expression CType inference is available via `type_checker::ExprTypeChecker`,
+//! which uses SymbolTable + TypeContext + FunctionInfo to infer types without
+//! depending on lowering state. This enables typeof(expr) resolution and
+//! will eventually support type annotations on AST nodes.
 //!
 //! This pass does NOT reject programs with type errors (yet); it collects
 //! information for the lowerer. Full type checking is TODO.
@@ -1014,9 +1019,14 @@ impl type_builder::TypeConvertContext for SemanticAnalyzer {
         })
     }
 
-    fn resolve_typeof_expr(&self, _expr: &Expr) -> CType {
-        // TODO: typeof(expr): sema doesn't have full expr type resolution yet
-        CType::Int
+    fn resolve_typeof_expr(&self, expr: &Expr) -> CType {
+        // Use the ExprTypeChecker to infer typeof(expr) from sema state.
+        let checker = super::type_checker::ExprTypeChecker {
+            symbols: &self.symbol_table,
+            types: &self.result.type_context,
+            functions: &self.result.functions,
+        };
+        checker.infer_expr_ctype(expr).unwrap_or(CType::Int)
     }
 
     fn eval_const_expr_as_usize(&self, expr: &Expr) -> Option<usize> {
