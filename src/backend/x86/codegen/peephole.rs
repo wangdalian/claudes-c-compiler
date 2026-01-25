@@ -43,7 +43,7 @@ struct LineInfo {
 /// patterns we care about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LineKind {
-    Nop,                // Deleted line (NUL sentinel)
+    Nop,                // Deleted line (marked via LineInfo only)
     Empty,              // Blank line
 
     /// `movX %reg, offset(%rbp)` – store register to stack slot
@@ -114,10 +114,6 @@ impl LineInfo {
 /// Parse one assembly line into a `LineInfo`.
 fn classify_line(raw: &str) -> LineInfo {
     let b = raw.as_bytes();
-    // NUL sentinel = dead line
-    if b.first() == Some(&0) {
-        return LineInfo { kind: LineKind::Nop, trim_start: 0, has_indirect_mem: false };
-    }
 
     // Compute trim offset once and cache it
     let trim_start = compute_trim_offset(b);
@@ -358,20 +354,144 @@ fn parse_load_from_rbp_str(s: &str) -> Option<(&str, &str, MoveSize)> {
     Some((offset, dst, size))
 }
 
-// ── NOP helpers ──────────────────────────────────────────────────────────────
+// ── Zero-allocation line storage ─────────────────────────────────────────────
+//
+// Instead of splitting the input assembly into N individual heap-allocated
+// Strings (which causes thousands of malloc/free calls per function), we keep
+// the original contiguous String and store (start, end) byte offsets for each
+// line. When a line is replaced by an optimization pass, the replacement is
+// stored in a small side Vec<String>. When a line is NOPed, only the LineInfo
+// is updated (no string mutation).
+//
+// This replaces N heap allocations with:
+// - 1 Vec<u32> for byte offsets (2 u32 per line, no heap per entry)
+// - A small Vec<String> for replaced lines (typically <1% of total lines)
+
+/// Storage for assembly lines that avoids per-line heap allocation.
+///
+/// Lines reference byte ranges in the original assembly string. Replaced lines
+/// are stored in a side buffer. NOP lines are tracked only via LineInfo.
+struct LineStore {
+    /// The original assembly text (kept alive for the duration of optimization).
+    original: String,
+    /// For each line: (start_offset, len_or_replacement).
+    /// If `len != u32::MAX`, the line is `original[start..start+len]`.
+    /// If `len == u32::MAX`, the line has been replaced; `start` is the index
+    /// into `replacements`.
+    entries: Vec<LineEntry>,
+    /// Side buffer for lines that have been replaced by optimization passes.
+    /// Only a small fraction of lines are ever replaced.
+    replacements: Vec<String>,
+}
+
+/// Compact entry for one line (8 bytes instead of 24 bytes for String).
+#[derive(Clone, Copy)]
+struct LineEntry {
+    /// Byte offset into original string, OR index into replacements vec.
+    start: u32,
+    /// Length of the line in the original string. u32::MAX means replaced.
+    len: u32,
+}
+
+impl LineStore {
+    /// Build a LineStore from an assembly string without per-line allocation.
+    fn new(asm: String) -> Self {
+        let bytes = asm.as_bytes();
+        let line_count = bytes.iter().filter(|&&b| b == b'\n').count() + 1;
+        let mut entries = Vec::with_capacity(line_count);
+
+        let mut start = 0usize;
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b'\n' {
+                entries.push(LineEntry {
+                    start: start as u32,
+                    len: (i - start) as u32,
+                });
+                start = i + 1;
+            }
+        }
+        // Handle last line (no trailing newline)
+        if start <= bytes.len() {
+            let remaining = bytes.len() - start;
+            if remaining > 0 || entries.is_empty() {
+                entries.push(LineEntry {
+                    start: start as u32,
+                    len: remaining as u32,
+                });
+            }
+        }
+
+        LineStore {
+            original: asm,
+            entries,
+            replacements: Vec::new(),
+        }
+    }
+
+    /// Get the text of line `idx`.
+    #[inline]
+    fn get(&self, idx: usize) -> &str {
+        let e = &self.entries[idx];
+        if e.len == u32::MAX {
+            // Replaced line
+            &self.replacements[e.start as usize]
+        } else {
+            // Original line
+            let start = e.start as usize;
+            let end = start + e.len as usize;
+            &self.original[start..end]
+        }
+    }
+
+    /// Get the number of lines.
+    #[inline]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Check if the store is empty.
+    #[inline]
+    #[allow(dead_code)]
+    fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Replace a line with new text. Stores the replacement in the side buffer.
+    fn replace(&mut self, idx: usize, new_text: String) {
+        let rep_idx = self.replacements.len();
+        self.replacements.push(new_text);
+        self.entries[idx] = LineEntry {
+            start: rep_idx as u32,
+            len: u32::MAX,
+        };
+    }
+
+    /// Build the final output string, skipping NOP lines.
+    fn build_result(&self, infos: &[LineInfo]) -> String {
+        // Estimate total size from original length (close upper bound).
+        let mut result = String::with_capacity(self.original.len());
+        for (i, info) in infos.iter().enumerate() {
+            if !info.is_nop() {
+                result.push_str(self.get(i));
+                result.push('\n');
+            }
+        }
+        result
+    }
+}
+
+// ── NOP / replace helpers ────────────────────────────────────────────────────
 
 #[inline]
-fn mark_nop(line: &mut String, info: &mut LineInfo) {
-    line.clear();
-    line.push('\0');
+fn mark_nop(info: &mut LineInfo) {
     *info = LineInfo { kind: LineKind::Nop, trim_start: 0, has_indirect_mem: false };
 }
 
 /// Replace a line's text and re-classify it.
 #[inline]
-fn replace_line(line: &mut String, info: &mut LineInfo, new_text: String) {
-    *line = new_text;
-    *info = classify_line(line);
+fn replace_line(store: &mut LineStore, info: &mut LineInfo, idx: usize, new_text: String) {
+    store.replace(idx, new_text);
+    *info = classify_line(store.get(idx));
 }
 
 // ── Main entry point ─────────────────────────────────────────────────────────
@@ -388,14 +508,9 @@ fn replace_line(line: &mut String, info: &mut LineInfo, new_text: String) {
 /// 3. Run local passes one more time to clean up opportunities exposed by the
 ///    global passes (e.g., dead stores from forwarded loads).
 pub fn peephole_optimize(asm: String) -> String {
-    // Pre-count lines to avoid Vec reallocation during split
-    let line_count = count_newlines(asm.as_bytes()) + 1;
-    let mut lines: Vec<String> = Vec::with_capacity(line_count);
-    lines.extend(asm.lines().map(|s| s.to_string()));
-    // Drop the original string early to free memory before we allocate the result.
-    drop(asm);
-
-    let mut infos: Vec<LineInfo> = lines.iter().map(|l| classify_line(l)).collect();
+    let mut store = LineStore::new(asm);
+    let line_count = store.len();
+    let mut infos: Vec<LineInfo> = (0..line_count).map(|i| classify_line(store.get(i))).collect();
 
     // Phase 1: Iterative cheap local passes.
     // 8 iterations is sufficient: local patterns rarely chain deeper than 3-4 levels.
@@ -405,16 +520,16 @@ pub fn peephole_optimize(asm: String) -> String {
     let mut pass_count = 0;
     while changed && pass_count < 8 {
         changed = false;
-        changed |= combined_local_pass(&mut lines, &mut infos);
-        changed |= eliminate_push_pop_pairs(&mut lines, &mut infos);
-        changed |= eliminate_binop_push_pop_pattern(&mut lines, &mut infos);
+        changed |= combined_local_pass(&store, &mut infos);
+        changed |= eliminate_push_pop_pairs(&store, &mut infos);
+        changed |= eliminate_binop_push_pop_pattern(&mut store, &mut infos);
         pass_count += 1;
     }
 
     // Phase 2: Expensive global passes (run once)
-    let global_changed = fuse_compare_and_branch(&mut lines, &mut infos);
-    let global_changed = global_changed | global_store_forwarding(&mut lines, &mut infos);
-    let global_changed = global_changed | eliminate_dead_stores(&mut lines, &mut infos);
+    let global_changed = fuse_compare_and_branch(&mut store, &mut infos);
+    let global_changed = global_changed | global_store_forwarding(&mut store, &mut infos);
+    let global_changed = global_changed | eliminate_dead_stores(&store, &mut infos);
 
     // Phase 3: One more local cleanup if global passes made changes.
     // 4 iterations: cleanup after globals is shallow (mostly dead store + adjacent pairs).
@@ -423,29 +538,13 @@ pub fn peephole_optimize(asm: String) -> String {
         let mut pass_count2 = 0;
         while changed2 && pass_count2 < 4 {
             changed2 = false;
-            changed2 |= combined_local_pass(&mut lines, &mut infos);
-            changed2 |= eliminate_dead_stores(&mut lines, &mut infos);
+            changed2 |= combined_local_pass(&store, &mut infos);
+            changed2 |= eliminate_dead_stores(&store, &mut infos);
             pass_count2 += 1;
         }
     }
 
-    // Remove NOP markers and rebuild. Use total line bytes as capacity upper bound
-    // (cheaper than computing exact surviving size).
-    let total_bytes: usize = lines.iter().map(|l| l.len() + 1).sum();
-    let mut result = String::with_capacity(total_bytes);
-    for (line, info) in lines.iter().zip(infos.iter()) {
-        if !info.is_nop() {
-            result.push_str(line);
-            result.push('\n');
-        }
-    }
-    result
-}
-
-/// Count newlines in a byte slice for pre-sizing the lines Vec.
-#[inline]
-fn count_newlines(bytes: &[u8]) -> usize {
-    bytes.iter().filter(|&&b| b == b'\n').count()
+    store.build_result(&infos)
 }
 
 // ── Combined local pass ───────────────────────────────────────────────────────
@@ -461,9 +560,9 @@ fn count_newlines(bytes: &[u8]) -> usize {
 //   4. eliminate_redundant_cltq: cltq after movslq/movq$ to %rax
 //   5. eliminate_redundant_zero_extend: redundant zero/sign extensions
 
-fn combined_local_pass(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
+fn combined_local_pass(store: &LineStore, infos: &mut [LineInfo]) -> bool {
     let mut changed = false;
-    let len = lines.len();
+    let len = store.len();
 
     let mut i = 0;
     while i < len {
@@ -474,9 +573,9 @@ fn combined_local_pass(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
 
         // --- Pattern: self-move elimination (movq %reg, %reg) ---
         if matches!(infos[i].kind, LineKind::Other { .. }) {
-            let trimmed = infos[i].trimmed(&lines[i]);
+            let trimmed = infos[i].trimmed(store.get(i));
             if is_self_move(trimmed) {
-                mark_nop(&mut lines[i], &mut infos[i]);
+                mark_nop(&mut infos[i]);
                 changed = true;
                 i += 1;
                 continue;
@@ -485,7 +584,7 @@ fn combined_local_pass(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
 
         // --- Pattern: redundant jump to next label ---
         if infos[i].kind == LineKind::Jmp {
-            let jmp_line = infos[i].trimmed(&lines[i]);
+            let jmp_line = infos[i].trimmed(store.get(i));
             if let Some(target) = jmp_line.strip_prefix("jmp ") {
                 let target = target.trim();
                 // Find the next non-NOP, non-empty line
@@ -495,10 +594,10 @@ fn combined_local_pass(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
                         continue;
                     }
                     if infos[j].kind == LineKind::Label {
-                        let next = infos[j].trimmed(&lines[j]);
+                        let next = infos[j].trimmed(store.get(j));
                         if let Some(label) = next.strip_suffix(':') {
                             if label == target {
-                                mark_nop(&mut lines[i], &mut infos[i]);
+                                mark_nop(&mut infos[i]);
                                 changed = true;
                                 found_redundant = true;
                             }
@@ -514,26 +613,20 @@ fn combined_local_pass(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
         }
 
         // --- Pattern: adjacent store/load at same %rbp offset ---
+        // Note: this pattern does NOT replace lines, it only NOPs or delegates
+        // to the store-forwarding global pass for reg-to-reg moves.
         if let LineKind::StoreRbp { reg: sr, offset: so, size: ss } = infos[i].kind {
             if i + 1 < len && !infos[i + 1].is_nop() {
                 if let LineKind::LoadRbp { reg: lr, offset: lo, size: ls } = infos[i + 1].kind {
                     if so == lo && ss == ls {
                         if sr == lr {
                             // Same register: load is redundant
-                            mark_nop(&mut lines[i + 1], &mut infos[i + 1]);
-                            changed = true;
-                            i += 1;
-                            continue;
-                        } else if sr != REG_NONE && lr != REG_NONE {
-                            // Different register: generate reg-to-reg move
-                            let store_reg = reg_id_to_name(sr, ss);
-                            let load_reg = reg_id_to_name(lr, ls);
-                            let new_text = format!("    {} {}, {}", ss.mnemonic(), store_reg, load_reg);
-                            replace_line(&mut lines[i + 1], &mut infos[i + 1], new_text);
+                            mark_nop(&mut infos[i + 1]);
                             changed = true;
                             i += 1;
                             continue;
                         }
+                        // Different register cases are handled by global_store_forwarding
                     }
                 }
             }
@@ -558,8 +651,8 @@ fn combined_local_pass(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
         }
 
         if ext_idx < len && !infos[ext_idx].is_nop() {
-            let next = infos[ext_idx].trimmed(&lines[ext_idx]);
-            let prev = infos[i].trimmed(&lines[i]);
+            let next = infos[ext_idx].trimmed(store.get(ext_idx));
+            let prev = infos[i].trimmed(store.get(i));
 
             // --- Pattern: redundant zero/sign extension (including cltq) ---
             let is_redundant_ext = {
@@ -592,7 +685,7 @@ fn combined_local_pass(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
             };
 
             if is_redundant_ext {
-                mark_nop(&mut lines[ext_idx], &mut infos[ext_idx]);
+                mark_nop(&mut infos[ext_idx]);
                 changed = true;
                 i += 1;
                 continue;
@@ -606,9 +699,9 @@ fn combined_local_pass(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
 
 // ── Push/pop pair elimination ─────────────────────────────────────────────────
 
-fn eliminate_push_pop_pairs(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
+fn eliminate_push_pop_pairs(store: &LineStore, infos: &mut [LineInfo]) -> bool {
     let mut changed = false;
-    let len = lines.len();
+    let len = store.len();
 
     for i in 0..len.saturating_sub(2) {
         let push_reg_id = match infos[i].kind {
@@ -633,8 +726,8 @@ fn eliminate_push_pop_pairs(lines: &mut [String], infos: &mut [LineInfo]) -> boo
                         }
                     }
                     if safe {
-                        mark_nop(&mut lines[i], &mut infos[i]);
-                        mark_nop(&mut lines[j], &mut infos[j]);
+                        mark_nop(&mut infos[i]);
+                        mark_nop(&mut infos[j]);
                         changed = true;
                     }
                 }
@@ -684,9 +777,9 @@ fn instruction_modifies_reg_id(info: &LineInfo, reg_id: RegId) -> bool {
 
 // ── Binary-op push/pop pattern ────────────────────────────────────────────────
 
-fn eliminate_binop_push_pop_pattern(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
+fn eliminate_binop_push_pop_pattern(store: &mut LineStore, infos: &mut [LineInfo]) -> bool {
     let mut changed = false;
-    let len = lines.len();
+    let len = store.len();
 
     let mut i = 0;
     while i + 3 < len {
@@ -695,7 +788,7 @@ fn eliminate_binop_push_pop_pattern(lines: &mut [String], infos: &mut [LineInfo]
             _ => { i += 1; continue; }
         };
 
-        let push_line = infos[i].trimmed(&lines[i]);
+        let push_line = infos[i].trimmed(store.get(i));
         let push_reg = match push_line.strip_prefix("pushq ") {
             Some(r) => r.trim(),
             None => { i += 1; continue; }
@@ -720,17 +813,17 @@ fn eliminate_binop_push_pop_pattern(lines: &mut [String], infos: &mut [LineInfo]
 
             if let LineKind::Pop { reg: pop_reg_id } = infos[pop_idx].kind {
                 if pop_reg_id == push_reg_id {
-                    let load_line = infos[load_idx].trimmed(&lines[load_idx]);
-                    let move_line = infos[move_idx].trimmed(&lines[move_idx]);
+                    let load_line = infos[load_idx].trimmed(store.get(load_idx));
+                    let move_line = infos[move_idx].trimmed(store.get(move_idx));
 
                     if let Some(move_target) = parse_reg_to_reg_move(move_line, push_reg) {
                         if instruction_writes_to(load_line, push_reg) && can_redirect_instruction(load_line) {
                             if let Some(new_load) = replace_dest_register(load_line, push_reg, move_target) {
-                                mark_nop(&mut lines[i], &mut infos[i]);
+                                mark_nop(&mut infos[i]);
                                 let new_text = format!("    {}", new_load);
-                                replace_line(&mut lines[load_idx], &mut infos[load_idx], new_text);
-                                mark_nop(&mut lines[move_idx], &mut infos[move_idx]);
-                                mark_nop(&mut lines[pop_idx], &mut infos[pop_idx]);
+                                replace_line(store, &mut infos[load_idx], load_idx, new_text);
+                                mark_nop(&mut infos[move_idx]);
+                                mark_nop(&mut infos[pop_idx]);
                                 changed = true;
                                 i = pop_idx + 1;
                                 continue;
@@ -748,9 +841,9 @@ fn eliminate_binop_push_pop_pattern(lines: &mut [String], infos: &mut [LineInfo]
 
 // ── Compare-and-branch fusion ─────────────────────────────────────────────────
 
-fn fuse_compare_and_branch(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
+fn fuse_compare_and_branch(store: &mut LineStore, infos: &mut [LineInfo]) -> bool {
     let mut changed = false;
-    let len = lines.len();
+    let len = store.len();
 
     let mut i = 0;
     while i < len {
@@ -781,7 +874,7 @@ fn fuse_compare_and_branch(lines: &mut [String], infos: &mut [LineInfo]) -> bool
             i += 1;
             continue;
         }
-        let set_line = infos[seq_indices[1]].trimmed(&lines[seq_indices[1]]);
+        let set_line = infos[seq_indices[1]].trimmed(store.get(seq_indices[1]));
         let cc = match parse_setcc(set_line) {
             Some(c) => c,
             None => { i += 1; continue; }
@@ -792,7 +885,7 @@ fn fuse_compare_and_branch(lines: &mut [String], infos: &mut [LineInfo]) -> bool
         let mut scan = 2;
         while scan < seq_count {
             let si = seq_indices[scan];
-            let line = infos[si].trimmed(&lines[si]);
+            let line = infos[si].trimmed(store.get(si));
 
             // Skip zero-extend of setcc result
             if line.starts_with("movzbq %al,") || line.starts_with("movzbl %al,") {
@@ -831,7 +924,7 @@ fn fuse_compare_and_branch(lines: &mut [String], infos: &mut [LineInfo]) -> bool
             continue;
         }
 
-        let jmp_line = infos[seq_indices[test_scan + 1]].trimmed(&lines[seq_indices[test_scan + 1]]);
+        let jmp_line = infos[seq_indices[test_scan + 1]].trimmed(store.get(seq_indices[test_scan + 1]));
         let (is_jne, branch_target) = if let Some(target) = jmp_line.strip_prefix("jne ") {
             (true, target.trim())
         } else if let Some(target) = jmp_line.strip_prefix("je ") {
@@ -846,11 +939,11 @@ fn fuse_compare_and_branch(lines: &mut [String], infos: &mut [LineInfo]) -> bool
 
         // NOP out everything from setCC through testq
         for s in 1..=test_scan {
-            mark_nop(&mut lines[seq_indices[s]], &mut infos[seq_indices[s]]);
+            mark_nop(&mut infos[seq_indices[s]]);
         }
         // Replace the jne/je with the fused conditional jump
         let idx = seq_indices[test_scan + 1];
-        replace_line(&mut lines[idx], &mut infos[idx], fused_jcc);
+        replace_line(store, &mut infos[idx], idx, fused_jcc);
 
         changed = true;
         i = idx + 1;
@@ -862,9 +955,9 @@ fn fuse_compare_and_branch(lines: &mut [String], infos: &mut [LineInfo]) -> bool
 
 // ── Dead store elimination ────────────────────────────────────────────────────
 
-fn eliminate_dead_stores(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
+fn eliminate_dead_stores(store: &LineStore, infos: &mut [LineInfo]) -> bool {
     let mut changed = false;
-    let len = lines.len();
+    let len = store.len();
     const WINDOW: usize = 16;
 
     // Reusable buffer for the "OFFSET(%rbp)" pattern string, avoiding
@@ -926,7 +1019,7 @@ fn eliminate_dead_stores(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
                     write!(pattern_buf, "{}(%rbp)", store_offset).unwrap();
                     pattern_built = true;
                 }
-                let line = infos[j].trimmed(&lines[j]);
+                let line = infos[j].trimmed(store.get(j));
                 if line.contains(pattern_buf.as_str()) {
                     slot_read = true;
                     break;
@@ -935,7 +1028,7 @@ fn eliminate_dead_stores(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
         }
 
         if slot_overwritten && !slot_read {
-            mark_nop(&mut lines[i], &mut infos[i]);
+            mark_nop(&mut infos[i]);
             changed = true;
         }
     }
@@ -1319,8 +1412,8 @@ fn invalidate_all_mappings(slot_entries: &mut Vec<SlotEntry>, reg_offsets: &mut 
     }
 }
 
-fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool {
-    let len = lines.len();
+fn global_store_forwarding(store: &mut LineStore, infos: &mut [LineInfo]) -> bool {
+    let len = store.len();
     if len == 0 {
         return false;
     }
@@ -1332,7 +1425,7 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
     let mut max_label_num: u32 = 0;
     for i in 0..len {
         if infos[i].kind == LineKind::Label {
-            let trimmed = infos[i].trimmed(&lines[i]);
+            let trimmed = infos[i].trimmed(store.get(i));
             if let Some(n) = parse_label_number(trimmed) {
                 if n > max_label_num {
                     max_label_num = n;
@@ -1345,7 +1438,7 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
     for i in 0..len {
         match infos[i].kind {
             LineKind::Jmp | LineKind::CondJmp => {
-                let trimmed = infos[i].trimmed(&lines[i]);
+                let trimmed = infos[i].trimmed(store.get(i));
                 if let Some(target) = extract_jump_target(trimmed) {
                     if let Some(n) = parse_dotl_number(target) {
                         if (n as usize) < is_jump_target.len() {
@@ -1383,7 +1476,7 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
 
         match infos[i].kind {
             LineKind::Label => {
-                let label_name = infos[i].trimmed(&lines[i]);
+                let label_name = infos[i].trimmed(store.get(i));
                 // Check if this label is a jump target
                 let is_target = if let Some(n) = parse_label_number(label_name) {
                     (n as usize) < is_jump_target.len() && is_jump_target[n as usize]
@@ -1440,7 +1533,7 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
                     if mapping.size == load_size && mapping.reg_id != REG_NONE {
                         if load_reg == mapping.reg_id {
                             // Same register: load is redundant
-                            mark_nop(&mut lines[i], &mut infos[i]);
+                            mark_nop(&mut infos[i]);
                             changed = true;
                         } else if load_reg != REG_NONE {
                             // Different register: replace with reg-to-reg move
@@ -1449,7 +1542,7 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
                             let load_reg_str = reg_id_to_name(load_reg, load_size);
                             let new_text = format!("    {} {}, {}",
                                 load_size.mnemonic(), store_reg_str, load_reg_str);
-                            replace_line(&mut lines[i], &mut infos[i], new_text);
+                            replace_line(store, &mut infos[i], i, new_text);
                             changed = true;
                         }
                     }
@@ -1513,7 +1606,7 @@ fn global_store_forwarding(lines: &mut [String], infos: &mut [LineInfo]) -> bool
                     // div/idiv/mul also clobber rdx (family 2).
                     // parse_dest_reg_fast returns 0 (rax) for these; also invalidate rdx.
                     if dest_reg == 0 {
-                        let trimmed = infos[i].trimmed(&lines[i]);
+                        let trimmed = infos[i].trimmed(store.get(i));
                         if trimmed.starts_with("div") || trimmed.starts_with("idiv")
                             || trimmed.starts_with("mul")
                         {
