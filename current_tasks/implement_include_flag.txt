@@ -1,0 +1,20 @@
+Task: Implement -include flag support for forced header inclusion
+
+The compiler currently does not handle the GCC -include flag, which pre-includes
+a header file before processing the main source file. This flag is used extensively
+by the Linux kernel build system:
+  -include ./include/linux/compiler-version.h
+  -include ./include/linux/kconfig.h
+  -include ./include/linux/compiler_types.h
+
+Without this, CONFIG_64BIT (and many other macros) are not defined, causing
+atomic64_t and other types to be missing, which causes ~50% of kernel files
+to fail compilation.
+
+Plan:
+1. Add force_includes field to Driver struct
+2. Handle -include flag in main.rs argument parsing
+3. In compile_to_assembly and run_preprocess_only, process forced includes
+   by prepending #include directives before the main source
+4. Add regression test
+5. Verify kernel bisect results improve
