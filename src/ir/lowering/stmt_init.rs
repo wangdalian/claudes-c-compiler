@@ -480,6 +480,8 @@ impl Lowerer {
     }
 
     /// Array of structs initialization with designator support.
+    /// Handles arbitrary dimensionality (1D, 2D, 3D, etc.) via recursive
+    /// stride peeling through `lower_struct_array_init_recursive`.
     fn lower_array_of_structs_init(
         &mut self,
         items: &[InitializerItem],
@@ -488,28 +490,56 @@ impl Lowerer {
         s_layout: &crate::common::types::StructLayout,
     ) {
         let struct_size = s_layout.size;
-        let is_multidim = da.array_dim_strides.len() > 1;
-        let row_size = if is_multidim && struct_size > 0 {
-            da.elem_size / struct_size
-        } else {
-            0
-        };
+        if struct_size == 0 {
+            return;
+        }
         self.zero_init_alloca(alloca, da.alloc_size);
-        let mut flat_struct_idx = 0usize;
+        let strides = da.array_dim_strides.clone();
+        let s_layout_cloned = s_layout.clone();
+        let mut flat_idx = 0usize;
+        self.lower_struct_array_init_recursive(items, alloca, &strides, struct_size, &s_layout_cloned, &mut flat_idx);
+    }
+
+    /// Recursively initialize a (possibly multi-dimensional) array of structs.
+    ///
+    /// `dim_strides` contains the byte strides for each remaining dimension.
+    /// For `struct t a[2][2][2]` with struct_size=8, strides are [32, 16, 8].
+    /// At each level, if stride > struct_size, the brace-delimited `List` items
+    /// represent sub-arrays that must be recursed into. When stride == struct_size,
+    /// we've reached leaf elements and each `List` is a single struct initializer.
+    fn lower_struct_array_init_recursive(
+        &mut self,
+        items: &[InitializerItem],
+        alloca: Value,
+        dim_strides: &[usize],
+        struct_size: usize,
+        s_layout: &crate::common::types::StructLayout,
+        flat_idx: &mut usize,
+    ) {
+        let (this_stride, remaining) = if dim_strides.len() > 1 {
+            (dim_strides[0], &dim_strides[1..])
+        } else if dim_strides.len() == 1 {
+            (dim_strides[0], &dim_strides[0..0])
+        } else {
+            (struct_size, &dim_strides[0..0])
+        };
+
+        // How many leaf structs fit in one element at this dimension level
+        let elems_per_slot = if struct_size > 0 { this_stride / struct_size } else { 1 };
+        let is_subarray = this_stride > struct_size && !remaining.is_empty();
+
         let mut item_idx = 0usize;
         while item_idx < items.len() {
             let item = &items[item_idx];
+
             // Handle designators for index positioning
             if let Some(Designator::Index(ref idx_expr)) = item.designators.first() {
                 if let Some(idx_val) = self.eval_const_expr_for_designator(idx_expr) {
-                    if is_multidim {
-                        flat_struct_idx = idx_val * row_size;
-                    } else {
-                        flat_struct_idx = idx_val;
-                    }
+                    *flat_idx = idx_val * elems_per_slot;
                 }
             }
-            let base_byte_offset = flat_struct_idx * struct_size;
+
+            let base_byte_offset = *flat_idx * struct_size;
             let field_designator_name = item.designators.iter().find_map(|d| {
                 if let Designator::Field(ref name) = d {
                     Some(name.clone())
@@ -517,133 +547,141 @@ impl Lowerer {
                     None
                 }
             });
+
             match &item.init {
                 Initializer::List(sub_items) => {
                     if let Some(ref fname) = field_designator_name {
                         // Field-designated list init: [idx].field = { ... }
-                        // Initialize just the specified field of the struct at this array index
-                        if let Some(field) = s_layout.fields.iter().find(|f| f.name == *fname) {
-                            let field_offset = base_byte_offset + field.offset;
-                            if field.ty.is_complex() {
-                                // Complex field: use complex list init
-                                let dest_addr = self.emit_gep_offset(alloca, field_offset, IrType::Ptr);
-                                self.lower_complex_list_init(sub_items, dest_addr, &field.ty);
-                            } else if let CType::Array(ref elem_ty, Some(arr_size)) = field.ty {
-                                // Array field: init elements from sub_items
-                                let elem_size = self.resolve_ctype_size(elem_ty);
-                                if elem_ty.is_complex() {
-                                    let complex_ctype = elem_ty.as_ref().clone();
-                                    for (ai, sub_item) in sub_items.iter().enumerate() {
-                                        if ai >= arr_size { break; }
-                                        let elem_offset = field_offset + ai * elem_size;
-                                        match &sub_item.init {
-                                            Initializer::Expr(e) => {
-                                                self.emit_complex_expr_to_offset(e, alloca, elem_offset, &complex_ctype);
-                                            }
-                                            Initializer::List(inner_items) => {
-                                                let dest = self.emit_gep_offset(alloca, elem_offset, IrType::Ptr);
-                                                self.lower_complex_list_init(inner_items, dest, &complex_ctype);
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    let elem_ir_ty = IrType::from_ctype(elem_ty);
-                                    let elem_is_bool = **elem_ty == CType::Bool;
-                                    for (ai, sub_item) in sub_items.iter().enumerate() {
-                                        if ai >= arr_size { break; }
-                                        if let Initializer::Expr(e) = &sub_item.init {
-                                            let elem_offset = field_offset + ai * elem_size;
-                                            self.emit_init_expr_to_offset_bool(e, alloca, elem_offset, elem_ir_ty, elem_is_bool);
-                                        }
-                                    }
-                                }
-                            } else if let CType::Struct(ref key) | CType::Union(ref key) = field.ty {
-                                // Nested struct field
-                                if let Some(sub_layout) = self.types.struct_layouts.get(&**key).cloned() {
-                                    let dest = self.emit_gep_offset(alloca, field_offset, IrType::I8);
-                                    self.lower_local_struct_init(sub_items, dest, &sub_layout);
-                                }
-                            } else {
-                                // Scalar field with braces: .field = { val }
-                                if let Some(first) = sub_items.first() {
-                                    if let Initializer::Expr(e) = &first.init {
-                                        let field_ir_ty = IrType::from_ctype(&field.ty);
-                                        let val = self.lower_and_cast_init_expr(e, field_ir_ty);
-                                        self.emit_store_at_offset(alloca, field_offset, val, field_ir_ty);
-                                    }
-                                }
-                            }
+                        self.lower_struct_array_field_designated_list(
+                            sub_items, alloca, base_byte_offset, fname, s_layout,
+                        );
+                    } else if is_subarray {
+                        // Sub-array: recurse with next dimension level
+                        let start_flat = *flat_idx;
+                        self.lower_struct_array_init_recursive(
+                            sub_items, alloca, remaining, struct_size, s_layout, flat_idx,
+                        );
+                        // After recursion, advance flat_idx to the next sub-array boundary
+                        // to handle partial initialization (C11 6.7.9p21: uninitialized
+                        // elements are zero-initialized, already done by zero_init_alloca).
+                        let boundary = start_flat + elems_per_slot;
+                        if *flat_idx < boundary {
+                            *flat_idx = boundary;
                         }
                         item_idx += 1;
-                        continue;
-                    } else if is_multidim {
-                        let mut sub_idx = 0usize;
-                        let mut row_elem = 0usize;
-                        while sub_idx < sub_items.len() && row_elem < row_size {
-                            let row_offset = (flat_struct_idx + row_elem) * struct_size;
-                            match &sub_items[sub_idx].init {
-                                Initializer::List(inner) => {
-                                    let elem_base = self.emit_gep_offset(alloca, row_offset, IrType::I8);
-                                    self.lower_local_struct_init(inner, elem_base, s_layout);
-                                    sub_idx += 1;
-                                    row_elem += 1;
-                                }
-                                Initializer::Expr(e) => {
-                                    if self.struct_value_size(e).is_some() {
-                                        // Whole struct copy (e.g., *ptr where ptr is struct *)
-                                        let src_addr = self.get_struct_base_addr(e);
-                                        self.emit_memcpy_at_offset(alloca, row_offset, src_addr, struct_size);
-                                        sub_idx += 1;
-                                    } else {
-                                        let consumed = self.emit_struct_init(&sub_items[sub_idx..], alloca, s_layout, row_offset);
-                                        sub_idx += consumed.max(1);
-                                    }
-                                    row_elem += 1;
-                                }
-                            }
-                        }
-                        flat_struct_idx += row_size;
+                        continue; // flat_idx already advanced
                     } else {
+                        // Leaf: this List is a single struct initializer
                         let elem_base = self.emit_gep_offset(alloca, base_byte_offset, IrType::I8);
                         self.lower_local_struct_init(sub_items, elem_base, s_layout);
-                        flat_struct_idx += 1;
                     }
-                    item_idx += 1;
                 }
                 Initializer::Expr(e) => {
                     if let Some(ref fname) = field_designator_name {
-                        if let Some(field) = s_layout.fields.iter().find(|f| &f.name == fname) {
-                            if field.ty.is_complex() {
-                                // Complex field: use complex-aware lowering
-                                let field_offset = base_byte_offset + field.offset;
-                                self.emit_complex_expr_to_offset(e, alloca, field_offset, &field.ty);
-                            } else {
-                                let field_ty = IrType::from_ctype(&field.ty);
-                                let val = if field.ty == CType::Bool {
-                                    let v = self.lower_expr(e);
-                                    let et = self.get_expr_type(e);
-                                    self.emit_bool_normalize_typed(v, et)
-                                } else {
-                                    self.lower_and_cast_init_expr(e, field_ty)
-                                };
-                                self.emit_store_at_offset(alloca, base_byte_offset + field.offset, val, field_ty);
-                            }
-                        }
-                        item_idx += 1;
+                        self.lower_struct_array_field_designated_expr(
+                            e, alloca, base_byte_offset, fname, s_layout,
+                        );
                     } else if self.struct_value_size(e).is_some() {
-                        // Whole struct copy (e.g., *ptr where ptr is struct *)
                         let src_addr = self.get_struct_base_addr(e);
                         self.emit_memcpy_at_offset(alloca, base_byte_offset, src_addr, struct_size);
-                        item_idx += 1;
-                        flat_struct_idx += 1;
-                        continue;
                     } else {
+                        // Flat scalar init without braces (e.g., `struct t a[2] = {1,2,3,4}`)
                         let consumed = self.emit_struct_init(&items[item_idx..], alloca, s_layout, base_byte_offset);
                         item_idx += consumed.max(1);
-                        flat_struct_idx += 1;
+                        *flat_idx += 1;
                         continue;
                     }
                 }
+            }
+            item_idx += 1;
+            *flat_idx += 1;
+        }
+    }
+
+    /// Handle field-designated list init for a struct array element:
+    /// `[idx].field = { ... }`
+    fn lower_struct_array_field_designated_list(
+        &mut self,
+        sub_items: &[InitializerItem],
+        alloca: Value,
+        base_byte_offset: usize,
+        fname: &str,
+        s_layout: &crate::common::types::StructLayout,
+    ) {
+        if let Some(field) = s_layout.fields.iter().find(|f| f.name == fname) {
+            let field_offset = base_byte_offset + field.offset;
+            if field.ty.is_complex() {
+                let dest_addr = self.emit_gep_offset(alloca, field_offset, IrType::Ptr);
+                self.lower_complex_list_init(sub_items, dest_addr, &field.ty);
+            } else if let CType::Array(ref elem_ty, Some(arr_size)) = field.ty {
+                let elem_size = self.resolve_ctype_size(elem_ty);
+                if elem_ty.is_complex() {
+                    let complex_ctype = elem_ty.as_ref().clone();
+                    for (ai, sub_item) in sub_items.iter().enumerate() {
+                        if ai >= arr_size { break; }
+                        let elem_offset = field_offset + ai * elem_size;
+                        match &sub_item.init {
+                            Initializer::Expr(e) => {
+                                self.emit_complex_expr_to_offset(e, alloca, elem_offset, &complex_ctype);
+                            }
+                            Initializer::List(inner_items) => {
+                                let dest = self.emit_gep_offset(alloca, elem_offset, IrType::Ptr);
+                                self.lower_complex_list_init(inner_items, dest, &complex_ctype);
+                            }
+                        }
+                    }
+                } else {
+                    let elem_ir_ty = IrType::from_ctype(elem_ty);
+                    let elem_is_bool = **elem_ty == CType::Bool;
+                    for (ai, sub_item) in sub_items.iter().enumerate() {
+                        if ai >= arr_size { break; }
+                        if let Initializer::Expr(e) = &sub_item.init {
+                            let elem_offset = field_offset + ai * elem_size;
+                            self.emit_init_expr_to_offset_bool(e, alloca, elem_offset, elem_ir_ty, elem_is_bool);
+                        }
+                    }
+                }
+            } else if let CType::Struct(ref key) | CType::Union(ref key) = field.ty {
+                if let Some(sub_layout) = self.types.struct_layouts.get(&**key).cloned() {
+                    let dest = self.emit_gep_offset(alloca, field_offset, IrType::I8);
+                    self.lower_local_struct_init(sub_items, dest, &sub_layout);
+                }
+            } else {
+                if let Some(first) = sub_items.first() {
+                    if let Initializer::Expr(e) = &first.init {
+                        let field_ir_ty = IrType::from_ctype(&field.ty);
+                        let val = self.lower_and_cast_init_expr(e, field_ir_ty);
+                        self.emit_store_at_offset(alloca, field_offset, val, field_ir_ty);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Handle field-designated expression init for a struct array element:
+    /// `[idx].field = expr`
+    fn lower_struct_array_field_designated_expr(
+        &mut self,
+        e: &Expr,
+        alloca: Value,
+        base_byte_offset: usize,
+        fname: &str,
+        s_layout: &crate::common::types::StructLayout,
+    ) {
+        if let Some(field) = s_layout.fields.iter().find(|f| f.name == fname) {
+            if field.ty.is_complex() {
+                let field_offset = base_byte_offset + field.offset;
+                self.emit_complex_expr_to_offset(e, alloca, field_offset, &field.ty);
+            } else {
+                let field_ty = IrType::from_ctype(&field.ty);
+                let val = if field.ty == CType::Bool {
+                    let v = self.lower_expr(e);
+                    let et = self.get_expr_type(e);
+                    self.emit_bool_normalize_typed(v, et)
+                } else {
+                    self.lower_and_cast_init_expr(e, field_ty)
+                };
+                self.emit_store_at_offset(alloca, base_byte_offset + field.offset, val, field_ty);
             }
         }
     }

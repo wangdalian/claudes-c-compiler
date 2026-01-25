@@ -1,9 +1,0 @@
-Fix 3D+ array of structs local variable initialization
-
-The local variable path in lower_array_of_structs_init (stmt_init.rs)
-uses a flat is_multidim/row_size model that only handles 2 dimensions.
-For 3D+ arrays, the code needs recursive stride-peeling like the global path has.
-
-Bug: struct t a[2][2][2] = { { {{1,2},{3,4}}, {{5,6},{7,8}} }, ... }
-initializes incorrectly because the second brace level's inner Lists are passed
-directly to lower_local_struct_init instead of being recursed into.
