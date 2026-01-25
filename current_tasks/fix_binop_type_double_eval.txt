@@ -1,0 +1,14 @@
+Fix double evaluation in infer_binop_ctype for Add/Sub operations
+
+Problem: In type_checker.rs, infer_binop_ctype() for Add/Sub operations evaluates
+infer_expr_ctype(lhs) twice: once in the pointer arithmetic check (line 265),
+and again in the general arithmetic conversion fallthrough (line 304). Same for rhs.
+This causes O(2^N) behavior on deeply nested binary expression chains.
+
+Fix: Evaluate both lhs and rhs types once at the start of infer_binop_ctype, and
+reuse the results for both the pointer arithmetic check and the arithmetic conversion.
+
+This is a complementary fix to the const_eval fix - this one fixes the type checker
+which is a root cause affecting all callers, not just enum const evaluation.
+
+Impact: Fixes jq build timeout (compile-time hang on opcode enum with 43 +1 terms).
