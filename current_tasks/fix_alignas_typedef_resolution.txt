@@ -1,0 +1,14 @@
+Fix _Alignas(typedef_name) resolution
+
+Problem:
+- _Alignas(type) is evaluated at parse time in Parser::alignof_type_spec()
+- This method has no access to typedef tables, so TypedefName falls through to hardcoded 8
+- This causes incorrect alignment for _Alignas(U) where U is a typedef for a type
+  with alignment != 8 (e.g., long double with align 16)
+- The test compiler_suite_0057_0008 fails because of this
+
+Fix:
+1. Defer _Alignas(type) evaluation: store the TypeSpecifier in the AST and resolve
+   alignment during IR lowering when full type info is available
+2. Fix parser state pollution in parse_alignas_argument (const/volatile leak)
+3. Add regression test
