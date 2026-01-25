@@ -1,0 +1,24 @@
+Fix x86 long double memory representation
+
+Problem:
+Our compiler stores `long double` values in memory as f64 bit-patterns
+(8 bytes + 8 zero padding) instead of x87 80-bit extended precision format.
+This causes TCC (compiled by our compiler) to produce wrong long double
+constants, as TCC's CValue union reads back raw bytes via an int[] array.
+
+The compiler correctly uses x87 instructions (fld/fstp) at ABI boundaries
+(function calls, returns, va_arg), but stores/loads to local variables and
+global data still use f64 format. Any code that type-puns a long double
+through a union (e.g., reading bytes via int[] overlay) will see wrong data.
+
+Root cause:
+- push_le_bytes for LongDouble emits f64 bytes + 8 zero bytes
+- Global data emission uses .quad with f64 bit pattern
+- Stack stores use movq with f64 bit pattern instead of fstpt for 80-bit
+
+Fix:
+- Change push_le_bytes to emit x87 80-bit bytes (using f64_to_x87_bytes)
+- Change global data emission for long double to emit x87 format
+- Change x86 codegen to use fstpt/fldt for all long double memory access
+
+Impact: Fixes TCC floating point literal test (last remaining TCC failure)
