@@ -2403,6 +2403,12 @@ impl InlineAsmEmitter for RiscvCodegen {
     fn asm_state_ref(&self) -> &CodegenState { &self.state }
 
     fn classify_constraint(&self, constraint: &str) -> AsmOperandKind {
+        // TODO: RISC-V =@cc not fully implemented — needs SLTU/SEQZ/etc. in store_output_from_reg.
+        // Currently stores incorrect results (just a GP register value, no condition capture).
+        let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+        if let Some(cond) = c.strip_prefix("@cc") {
+            return AsmOperandKind::ConditionCode(cond.to_string());
+        }
         // Map RISC-V's richer constraint types into the shared AsmOperandKind.
         let rv_kind = classify_rv_constraint(constraint);
         match rv_kind {
@@ -2577,6 +2583,9 @@ impl InlineAsmEmitter for RiscvCodegen {
             AsmOperandKind::ZeroOrReg => RvConstraintKind::ZeroOrReg,
             AsmOperandKind::Specific(r) => RvConstraintKind::Specific(r.clone()),
             AsmOperandKind::Tied(n) => RvConstraintKind::Tied(*n),
+            // TODO: RISC-V =@cc not fully implemented — needs SLTU/SEQZ/etc. instead of SETcc.
+            // Currently maps to GpReg which will store incorrect results.
+            AsmOperandKind::ConditionCode(_) => RvConstraintKind::GpReg,
         }).collect();
 
         let mut result = Self::substitute_riscv_asm_operands(line, &op_regs, &op_names, &op_kinds, &op_mem_offsets, &op_mem_addrs, &op_imm_values, gcc_to_internal);

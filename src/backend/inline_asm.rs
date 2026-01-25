@@ -35,6 +35,9 @@ pub enum AsmOperandKind {
     Address,
     /// Zero-or-register (RISC-V "rJ", "J").
     ZeroOrReg,
+    /// Condition code output (GCC =@cc<cond>, e.g. =@cce, =@ccne).
+    /// The string is the condition suffix (e.g. "e", "ne", "s", "ns").
+    ConditionCode(String),
 }
 
 /// Per-operand state tracked by the shared inline asm framework.

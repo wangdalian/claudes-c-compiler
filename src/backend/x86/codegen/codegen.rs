@@ -2072,6 +2072,10 @@ impl InlineAsmEmitter for X86Codegen {
 
     fn classify_constraint(&self, constraint: &str) -> AsmOperandKind {
         let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+        // GCC condition code output: =@cc<cond> (e.g. =@cce, =@ccne, =@ccs)
+        if let Some(cond) = c.strip_prefix("@cc") {
+            return AsmOperandKind::ConditionCode(cond.to_string());
+        }
         // Check for tied operand (all digits)
         if !c.is_empty() && c.chars().all(|ch| ch.is_ascii_digit()) {
             if let Ok(n) = c.parse::<usize>() {
@@ -2238,6 +2242,43 @@ impl InlineAsmEmitter for X86Codegen {
 
     fn store_output_from_reg(&mut self, op: &AsmOperand, ptr: &Value, _constraint: &str) {
         if matches!(op.kind, AsmOperandKind::Memory) {
+            return;
+        }
+        // Handle =@cc<cond> condition code outputs: emit SETcc + movzbl
+        if let AsmOperandKind::ConditionCode(ref cond) = op.kind {
+            let reg = &op.reg;
+            let reg8 = Self::reg_to_8l(reg);
+            // Map GCC condition suffix to x86 SETcc instruction suffix
+            let x86_cond = Self::gcc_cc_to_x86(cond);
+            self.state.emit_fmt(format_args!("    set{} %{}", x86_cond, reg8));
+            self.state.emit_fmt(format_args!("    movzbl %{}, %{}", reg8, Self::reg_to_32(reg)));
+            // Store the result (0 or 1) to the output variable
+            if let Some(slot) = self.state.get_slot(ptr.0) {
+                let ty = op.operand_type;
+                if self.state.is_alloca(ptr.0) {
+                    let store_instr = Self::mov_store_for_type(ty);
+                    let src_reg = match ty {
+                        IrType::I8 | IrType::U8 => format!("%{}", Self::reg_to_8l(reg)),
+                        IrType::I16 | IrType::U16 => format!("%{}", Self::reg_to_16(reg)),
+                        IrType::I32 | IrType::U32 | IrType::F32 => format!("%{}", Self::reg_to_32(reg)),
+                        _ => format!("%{}", reg),
+                    };
+                    self.state.emit_fmt(format_args!("    {} {}, {}(%rbp)", store_instr, src_reg, slot.0));
+                } else {
+                    let scratch = if reg != "rcx" { "rcx" } else { "rdx" };
+                    self.state.emit_fmt(format_args!("    pushq %{}", scratch));
+                    self.state.emit_fmt(format_args!("    movq {}(%rbp), %{}", slot.0, scratch));
+                    let store_instr = Self::mov_store_for_type(ty);
+                    let src_reg = match ty {
+                        IrType::I8 | IrType::U8 => format!("%{}", Self::reg_to_8l(reg)),
+                        IrType::I16 | IrType::U16 => format!("%{}", Self::reg_to_16(reg)),
+                        IrType::I32 | IrType::U32 | IrType::F32 => format!("%{}", Self::reg_to_32(reg)),
+                        _ => format!("%{}", reg),
+                    };
+                    self.state.emit_fmt(format_args!("    {} {}, (%{})", store_instr, src_reg, scratch));
+                    self.state.emit_fmt(format_args!("    popq %{}", scratch));
+                }
+            }
             return;
         }
         let reg = &op.reg;

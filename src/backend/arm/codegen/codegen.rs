@@ -2549,6 +2549,11 @@ impl InlineAsmEmitter for ArmCodegen {
 
     fn classify_constraint(&self, constraint: &str) -> AsmOperandKind {
         let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+        // TODO: ARM =@cc not fully implemented — needs CSET/CSINC in store_output_from_reg.
+        // Currently stores incorrect results (just a GP register value, no condition capture).
+        if let Some(cond) = c.strip_prefix("@cc") {
+            return AsmOperandKind::ConditionCode(cond.to_string());
+        }
         if !c.is_empty() && c.chars().all(|ch| ch.is_ascii_digit()) {
             if let Ok(n) = c.parse::<usize>() {
                 return AsmOperandKind::Tied(n);

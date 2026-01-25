@@ -279,4 +279,31 @@ impl X86Codegen {
             _ => Self::reg_to_8l(reg), // fallback to low byte
         }
     }
+
+    /// Map GCC inline asm condition code suffix to x86 SETcc suffix.
+    /// GCC's =@cc<cond> maps directly to x86 condition codes in most cases.
+    pub(super) fn gcc_cc_to_x86(cond: &str) -> &'static str {
+        match cond {
+            "e" | "z" => "e",       // equal / zero
+            "ne" | "nz" => "ne",    // not equal / not zero
+            "s" => "s",             // sign (negative)
+            "ns" => "ns",           // not sign (non-negative)
+            "o" => "o",             // overflow
+            "no" => "no",           // no overflow
+            "c" => "c",             // carry
+            "nc" => "nc",           // no carry
+            "a" | "nbe" => "a",     // above (unsigned >)
+            "ae" | "nb" => "ae",    // above or equal (unsigned >=)
+            "b" | "nae" => "b",     // below (unsigned <)
+            "be" | "na" => "be",    // below or equal (unsigned <=)
+            "g" | "nle" => "g",     // greater (signed >)
+            "ge" | "nl" => "ge",    // greater or equal (signed >=)
+            "l" | "nge" => "l",     // less (signed <)
+            "le" | "ng" => "le",    // less or equal (signed <=)
+            "p" | "pe" => "p",      // parity even
+            "np" | "po" => "np",    // parity odd / no parity
+            // TODO: emit a warning/diagnostic for unrecognized condition code suffixes
+            _ => "e",               // fallback to equal
+        }
+    }
 }

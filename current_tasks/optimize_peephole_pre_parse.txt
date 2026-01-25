@@ -1,0 +1,18 @@
+Task: Pre-parse assembly lines in peephole optimizer for faster pattern matching
+
+Problem:
+Profiling shows the x86 peephole optimizer is the #1 hotspot (~12.7% of total
+compile time for SQLite). Each peephole pass re-parses every assembly line with
+string operations (strip_prefix, split_once, contains, starts_with) on every
+pass. With up to 10 passes and 10 pattern functions, this means each line gets
+string-parsed ~100 times.
+
+Solution:
+Pre-classify every assembly line into a compact enum once at the start. Store
+structured data (register indices, offsets as integers, instruction kind) so
+that pattern matching can use integer comparisons instead of string parsing.
+This eliminates repeated string scanning across all passes.
+
+Expected speedup: 5-10% on SQLite compilation.
+
+Status: in progress
