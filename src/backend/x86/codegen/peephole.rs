@@ -144,6 +144,16 @@ impl MoveSize {
             MoveSize::SLQ => "movslq",
         }
     }
+
+    /// Return the number of bytes this move size covers.
+    fn byte_size(self) -> i32 {
+        match self {
+            MoveSize::Q => 8,
+            MoveSize::L | MoveSize::SLQ => 4,
+            MoveSize::W => 2,
+            MoveSize::B => 1,
+        }
+    }
 }
 
 impl LineInfo {
@@ -1268,10 +1278,15 @@ fn eliminate_dead_stores(store: &LineStore, infos: &mut [LineInfo]) -> bool {
     let mut pattern_buf = String::with_capacity(20);
 
     for i in 0..len {
-        let store_offset = match infos[i].kind {
-            LineKind::StoreRbp { offset, .. } => offset,
+        let (store_offset, store_size) = match infos[i].kind {
+            LineKind::StoreRbp { offset, size, .. } => (offset, size),
             _ => continue,
         };
+
+        // Byte range of the original store: [store_offset, store_end)
+        // Note: offsets are negative from rbp, so store_offset is the lowest address
+        // and store_offset + byte_size is the highest.
+        let store_bytes = store_size.byte_size();
 
         let end = std::cmp::min(i + WINDOW, len);
         let mut slot_read = false;
@@ -1289,23 +1304,36 @@ fn eliminate_dead_stores(store: &LineStore, infos: &mut [LineInfo]) -> bool {
                 break;
             }
 
-            // Load from same offset = slot is read
-            if let LineKind::LoadRbp { offset, .. } = infos[j].kind {
-                if offset == store_offset {
+            // Load from overlapping range = slot is read.
+            // Two ranges [a, a+sa) and [b, b+sb) overlap iff a < b+sb && b < a+sa.
+            if let LineKind::LoadRbp { offset: load_off, size: load_sz, .. } = infos[j].kind {
+                let load_bytes = load_sz.byte_size();
+                if store_offset < load_off + load_bytes && load_off < store_offset + store_bytes {
                     slot_read = true;
                     break;
                 }
             }
 
-            // Another store to same offset = slot overwritten
-            if let LineKind::StoreRbp { offset, .. } = infos[j].kind {
-                if offset == store_offset {
+            // Another store to same offset = slot overwritten, but ONLY if the new
+            // store fully covers the original store's byte range.
+            if let LineKind::StoreRbp { offset: new_off, size: new_sz, .. } = infos[j].kind {
+                let new_bytes = new_sz.byte_size();
+                // The new store covers [new_off, new_off+new_bytes).
+                // It fully overwrites the original iff new_off <= store_offset
+                // && new_off + new_bytes >= store_offset + store_bytes.
+                if new_off <= store_offset && new_off + new_bytes >= store_offset + store_bytes {
                     slot_overwritten = true;
+                    break;
+                }
+                // If the new store partially overlaps the original's range, treat
+                // it as a read (conservatively) to prevent eliminating the original.
+                if new_off < store_offset + store_bytes && store_offset < new_off + new_bytes {
+                    slot_read = true;
                     break;
                 }
             }
 
-            // Catch-all: check if line references the offset
+            // Catch-all: check if line references any byte in the store's range
             // (handles leaq, movslq, etc. that aren't classified as store/load)
             if matches!(infos[j].kind, LineKind::Other { .. }) {
                 // Check for indirect memory access using cached flag (computed
@@ -1318,11 +1346,21 @@ fn eliminate_dead_stores(store: &LineStore, infos: &mut [LineInfo]) -> bool {
                 // instead of O(n) string search.
                 let rbp_off = infos[j].rbp_offset;
                 if rbp_off != RBP_OFFSET_NONE {
-                    if rbp_off == store_offset {
+                    // Check if the other line's rbp reference falls within the
+                    // store's byte range. We don't know the other line's access
+                    // size, so conservatively treat any overlap as a read.
+                    if rbp_off >= store_offset && rbp_off < store_offset + store_bytes {
                         slot_read = true;
                         break;
                     }
-                    // rbp_offset is known and doesn't match - this line is safe
+                    // Also check if a wider access at rbp_off could overlap:
+                    // the other line could access up to 8 bytes starting at rbp_off.
+                    // Conservative: if rbp_off + 8 > store_offset, there could be overlap.
+                    if rbp_off < store_offset && rbp_off + 8 > store_offset {
+                        slot_read = true;
+                        break;
+                    }
+                    // rbp_offset is known and doesn't overlap - this line is safe
                     continue;
                 }
                 // Fallback: rbp_offset is RBP_OFFSET_NONE (no rbp ref or complex pattern).
@@ -1338,6 +1376,22 @@ fn eliminate_dead_stores(store: &LineStore, infos: &mut [LineInfo]) -> bool {
                 if line.contains(pattern_buf.as_str()) {
                     slot_read = true;
                     break;
+                }
+                // For wider stores, also check intermediate offsets in the store's range
+                if store_bytes > 1 {
+                    for byte_off in 1..store_bytes {
+                        let check_off = store_offset + byte_off;
+                        pattern_buf.clear();
+                        use std::fmt::Write;
+                        write!(pattern_buf, "{}(%rbp)", check_off).unwrap();
+                        pattern_built = true;
+                        let line = infos[j].trimmed(store.get(j));
+                        if line.contains(pattern_buf.as_str()) {
+                            slot_read = true;
+                            break;
+                        }
+                    }
+                    if slot_read { break; }
                 }
             }
         }
@@ -1888,11 +1942,19 @@ fn global_store_forwarding(store: &mut LineStore, infos: &mut [LineInfo]) -> boo
 
             LineKind::StoreRbp { reg, offset, size } => {
                 // A store updates the mapping for this slot.
-                // First, remove old mapping for this offset if any.
-                if let Some(entry) = slot_entries.iter_mut().find(|e| e.active && e.offset == offset) {
-                    let old_reg = entry.mapping.reg_id;
-                    entry.active = false;
-                    reg_offsets[old_reg as usize].remove_val(offset);
+                // Invalidate any existing mapping whose byte range overlaps with
+                // this store. A store of N bytes at `offset` covers the range
+                // [offset, offset + N). Any active mapping at `e.offset` with
+                // size `e.mapping.size` covers [e.offset, e.offset + e_bytes).
+                // Two ranges overlap iff: a < b_end && b < a_end.
+                let store_end = offset + size.byte_size();
+                for entry in slot_entries.iter_mut().filter(|e| e.active) {
+                    let e_end = entry.offset + entry.mapping.size.byte_size();
+                    if offset < e_end && entry.offset < store_end {
+                        let old_reg = entry.mapping.reg_id;
+                        entry.active = false;
+                        reg_offsets[old_reg as usize].remove_val(entry.offset);
+                    }
                 }
                 // Record the new mapping.
                 if reg != REG_NONE {
