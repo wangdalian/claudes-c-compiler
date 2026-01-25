@@ -49,7 +49,7 @@ impl ArmCodegen {
     fn emit_sub_sp(&mut self, n: i64) {
         if n == 0 { return; }
         if n <= 4095 {
-            self.state.emit(&format!("    sub sp, sp, #{}", n));
+            self.state.emit_fmt(format_args!("    sub sp, sp, #{}", n));
         } else {
             self.emit_load_imm64("x17", n);
             self.state.emit("    sub sp, sp, x17");
@@ -60,7 +60,7 @@ impl ArmCodegen {
     fn emit_add_sp(&mut self, n: i64) {
         if n == 0 { return; }
         if n <= 4095 {
-            self.state.emit(&format!("    add sp, sp, #{}", n));
+            self.state.emit_fmt(format_args!("    add sp, sp, #{}", n));
         } else {
             self.emit_load_imm64("x17", n);
             self.state.emit("    add sp, sp, x17");
@@ -98,11 +98,11 @@ impl ArmCodegen {
         // Use x29 (frame pointer) as the base instead, since x29 = SP after prologue.
         let base = if self.state.has_dyn_alloca { "x29" } else { "sp" };
         if Self::is_valid_imm_offset(offset, instr, reg) {
-            self.state.emit(&format!("    {} {}, [{}, #{}]", instr, reg, base, offset));
+            self.state.emit_fmt(format_args!("    {} {}, [{}, #{}]", instr, reg, base, offset));
         } else {
             self.load_large_imm("x17", offset);
-            self.state.emit(&format!("    add x17, {}, x17", base));
-            self.state.emit(&format!("    {} {}, [x17]", instr, reg));
+            self.state.emit_fmt(format_args!("    add x17, {}, x17", base));
+            self.state.emit_fmt(format_args!("    {} {}, [x17]", instr, reg));
         }
     }
 
@@ -112,11 +112,11 @@ impl ArmCodegen {
         // When DynAlloca is present, use x29 (frame pointer) as base.
         let base = if self.state.has_dyn_alloca { "x29" } else { "sp" };
         if Self::is_valid_imm_offset(offset, instr, reg) {
-            self.state.emit(&format!("    {} {}, [{}, #{}]", instr, reg, base, offset));
+            self.state.emit_fmt(format_args!("    {} {}, [{}, #{}]", instr, reg, base, offset));
         } else {
             self.load_large_imm("x17", offset);
-            self.state.emit(&format!("    add x17, {}, x17", base));
-            self.state.emit(&format!("    {} {}, [x17]", instr, reg));
+            self.state.emit_fmt(format_args!("    add x17, {}, x17", base));
+            self.state.emit_fmt(format_args!("    {} {}, [x17]", instr, reg));
         }
     }
 
@@ -125,11 +125,11 @@ impl ArmCodegen {
         let base = if self.state.has_dyn_alloca { "x29" } else { "sp" };
         // stp supports signed offsets in [-512, 504] range (multiples of 8)
         if offset >= -512 && offset <= 504 {
-            self.state.emit(&format!("    stp {}, {}, [{}, #{}]", reg1, reg2, base, offset));
+            self.state.emit_fmt(format_args!("    stp {}, {}, [{}, #{}]", reg1, reg2, base, offset));
         } else {
             self.load_large_imm("x17", offset);
-            self.state.emit(&format!("    add x17, {}, x17", base));
-            self.state.emit(&format!("    stp {}, {}, [x17]", reg1, reg2));
+            self.state.emit_fmt(format_args!("    add x17, {}, x17", base));
+            self.state.emit_fmt(format_args!("    stp {}, {}, [x17]", reg1, reg2));
         }
     }
 
@@ -138,10 +138,10 @@ impl ArmCodegen {
     fn emit_add_sp_offset(&mut self, dest: &str, offset: i64) {
         let base = if self.state.has_dyn_alloca { "x29" } else { "sp" };
         if offset >= 0 && offset <= 4095 {
-            self.state.emit(&format!("    add {}, {}, #{}", dest, base, offset));
+            self.state.emit_fmt(format_args!("    add {}, {}, #{}", dest, base, offset));
         } else {
             self.load_large_imm("x17", offset);
-            self.state.emit(&format!("    add {}, {}, x17", dest, base));
+            self.state.emit_fmt(format_args!("    add {}, {}, x17", dest, base));
         }
     }
 
@@ -149,21 +149,21 @@ impl ArmCodegen {
     /// Uses x17 (IP1) as scratch for offsets > 4095.
     fn emit_add_fp_offset(&mut self, dest: &str, offset: i64) {
         if offset >= 0 && offset <= 4095 {
-            self.state.emit(&format!("    add {}, x29, #{}", dest, offset));
+            self.state.emit_fmt(format_args!("    add {}, x29, #{}", dest, offset));
         } else {
             self.load_large_imm("x17", offset);
-            self.state.emit(&format!("    add {}, x29, x17", dest));
+            self.state.emit_fmt(format_args!("    add {}, x29, x17", dest));
         }
     }
 
     /// Load a large immediate into a register.
     fn load_large_imm(&mut self, reg: &str, val: i64) {
         if val <= 65535 {
-            self.state.emit(&format!("    mov {}, #{}", reg, val));
+            self.state.emit_fmt(format_args!("    mov {}, #{}", reg, val));
         } else {
-            self.state.emit(&format!("    movz {}, #{}", reg, val & 0xFFFF));
+            self.state.emit_fmt(format_args!("    movz {}, #{}", reg, val & 0xFFFF));
             if (val >> 16) & 0xFFFF != 0 {
-                self.state.emit(&format!("    movk {}, #{}, lsl #16", reg, (val >> 16) & 0xFFFF));
+                self.state.emit_fmt(format_args!("    movk {}, #{}, lsl #16", reg, (val >> 16) & 0xFFFF));
             }
         }
     }
@@ -172,25 +172,25 @@ impl ArmCodegen {
     fn emit_load_imm64(&mut self, reg: &str, val: i64) {
         let bits = val as u64;
         if bits == 0 {
-            self.state.emit(&format!("    mov {}, #0", reg));
+            self.state.emit_fmt(format_args!("    mov {}, #0", reg));
             return;
         }
-        self.state.emit(&format!("    mov {}, #{}", reg, bits & 0xffff));
+        self.state.emit_fmt(format_args!("    mov {}, #{}", reg, bits & 0xffff));
         if (bits >> 16) & 0xffff != 0 {
-            self.state.emit(&format!("    movk {}, #{}, lsl #16", reg, (bits >> 16) & 0xffff));
+            self.state.emit_fmt(format_args!("    movk {}, #{}, lsl #16", reg, (bits >> 16) & 0xffff));
         }
         if (bits >> 32) & 0xffff != 0 {
-            self.state.emit(&format!("    movk {}, #{}, lsl #32", reg, (bits >> 32) & 0xffff));
+            self.state.emit_fmt(format_args!("    movk {}, #{}, lsl #32", reg, (bits >> 32) & 0xffff));
         }
         if (bits >> 48) & 0xffff != 0 {
-            self.state.emit(&format!("    movk {}, #{}, lsl #48", reg, (bits >> 48) & 0xffff));
+            self.state.emit_fmt(format_args!("    movk {}, #{}, lsl #48", reg, (bits >> 48) & 0xffff));
         }
     }
 
     /// Emit function prologue: allocate stack and save fp/lr.
     fn emit_prologue_arm(&mut self, frame_size: i64) {
         if frame_size > 0 && frame_size <= 504 {
-            self.state.emit(&format!("    stp x29, x30, [sp, #-{}]!", frame_size));
+            self.state.emit_fmt(format_args!("    stp x29, x30, [sp, #-{}]!", frame_size));
         } else {
             self.emit_sub_sp(frame_size);
             self.state.emit("    stp x29, x30, [sp]");
@@ -205,7 +205,7 @@ impl ArmCodegen {
             self.state.emit("    mov sp, x29");
         }
         if frame_size > 0 && frame_size <= 504 {
-            self.state.emit(&format!("    ldp x29, x30, [sp], #{}", frame_size));
+            self.state.emit_fmt(format_args!("    ldp x29, x30, [sp], #{}", frame_size));
         } else {
             self.state.emit("    ldp x29, x30, [sp]");
             self.emit_add_sp(frame_size);
@@ -217,23 +217,23 @@ impl ArmCodegen {
         match op {
             Operand::Const(c) => {
                 match c {
-                    IrConst::I8(v) => self.state.emit(&format!("    mov x0, #{}", v)),
-                    IrConst::I16(v) => self.state.emit(&format!("    mov x0, #{}", v)),
+                    IrConst::I8(v) => self.state.emit_fmt(format_args!("    mov x0, #{}", v)),
+                    IrConst::I16(v) => self.state.emit_fmt(format_args!("    mov x0, #{}", v)),
                     IrConst::I32(v) => {
                         if *v >= 0 && *v <= 65535 {
-                            self.state.emit(&format!("    mov x0, #{}", v));
+                            self.state.emit_fmt(format_args!("    mov x0, #{}", v));
                         } else if *v < 0 && *v >= -65536 {
-                            self.state.emit(&format!("    mov x0, #{}", v));
+                            self.state.emit_fmt(format_args!("    mov x0, #{}", v));
                         } else {
-                            self.state.emit(&format!("    mov x0, #{}", *v as u32 & 0xffff));
-                            self.state.emit(&format!("    movk x0, #{}, lsl #16", (*v as u32 >> 16) & 0xffff));
+                            self.state.emit_fmt(format_args!("    mov x0, #{}", *v as u32 & 0xffff));
+                            self.state.emit_fmt(format_args!("    movk x0, #{}, lsl #16", (*v as u32 >> 16) & 0xffff));
                         }
                     }
                     IrConst::I64(v) => {
                         if *v >= 0 && *v <= 65535 {
-                            self.state.emit(&format!("    mov x0, #{}", v));
+                            self.state.emit_fmt(format_args!("    mov x0, #{}", v));
                         } else if *v < 0 && *v >= -65536 {
-                            self.state.emit(&format!("    mov x0, #{}", v));
+                            self.state.emit_fmt(format_args!("    mov x0, #{}", v));
                         } else {
                             self.emit_load_imm64("x0", *v);
                         }
@@ -413,7 +413,7 @@ impl ArmCodegen {
         }
         self.state.emit("    ldr q1, [x1]");
         // Apply the binary NEON operation
-        self.state.emit(&format!("    {} v0.16b, v0.16b, v1.16b", neon_inst));
+        self.state.emit_fmt(format_args!("    {} v0.16b, v0.16b, v1.16b", neon_inst));
         // Store result to dest_ptr
         self.load_ptr_to_reg(dest_ptr, "x0");
         self.state.emit("    str q0, [x0]");
@@ -593,9 +593,9 @@ impl ArmCodegen {
                     _ => unreachable!(),
                 };
                 self.operand_to_x0(&args[0]);
-                self.state.emit(&format!("    mov {}, {}", save_reg, if is_64 { "x0" } else { "w0" }));
+                self.state.emit_fmt(format_args!("    mov {}, {}", save_reg, if is_64 { "x0" } else { "w0" }));
                 self.operand_to_x0(&args[1]);
-                self.state.emit(&format!("    {}", crc_inst));
+                self.state.emit_fmt(format_args!("    {}", crc_inst));
                 self.state.emit("    mov x0, x9");
                 if let Some(d) = dest {
                     if let Some(slot) = self.state.get_slot(d.0) {
@@ -618,7 +618,7 @@ impl ArchCodegen for ArmCodegen {
     fn trap_instruction(&self) -> &'static str { "brk #0" }
 
     fn emit_branch_nonzero(&mut self, label: &str) {
-        self.state.emit(&format!("    cbnz x0, {}", label));
+        self.state.emit_fmt(format_args!("    cbnz x0, {}", label));
     }
 
     fn emit_jump_indirect(&mut self) {
@@ -754,7 +754,7 @@ impl ArchCodegen for ArmCodegen {
             // Save q0-q7 (128 bytes) before __trunctfdf2 clobbers them.
             self.emit_sub_sp(128);
             for i in 0..8usize {
-                self.state.emit(&format!("    str q{}, [sp, #{}]", i, i * 16));
+                self.state.emit_fmt(format_args!("    str q{}, [sp, #{}]", i, i * 16));
             }
 
             // Process non-F128 float params first (from saved Q area).
@@ -772,10 +772,10 @@ impl ArchCodegen for ArmCodegen {
                 };
                 let fp_reg_off = (reg_idx * 16) as i64;
                 if ty == IrType::F32 {
-                    self.state.emit(&format!("    ldr s0, [sp, #{}]", fp_reg_off));
+                    self.state.emit_fmt(format_args!("    ldr s0, [sp, #{}]", fp_reg_off));
                     self.state.emit("    fmov w0, s0");
                 } else {
-                    self.state.emit(&format!("    ldr d0, [sp, #{}]", fp_reg_off));
+                    self.state.emit_fmt(format_args!("    ldr d0, [sp, #{}]", fp_reg_off));
                     self.state.emit("    fmov x0, d0");
                 }
                 self.emit_store_to_sp("x0", slot.0 + 128, "str");
@@ -795,7 +795,7 @@ impl ArchCodegen for ArmCodegen {
                     None => continue,
                 };
                 let fp_reg_off = (reg_idx * 16) as i64;
-                self.state.emit(&format!("    ldr q0, [sp, #{}]", fp_reg_off));
+                self.state.emit_fmt(format_args!("    ldr q0, [sp, #{}]", fp_reg_off));
                 self.state.emit("    bl __trunctfdf2");
                 self.state.emit("    fmov x0, d0");
                 self.emit_store_to_sp("x0", slot.0 + 128, "str");
@@ -817,9 +817,9 @@ impl ArchCodegen for ArmCodegen {
                     None => continue,
                 };
                 if ty == IrType::F32 {
-                    self.state.emit(&format!("    fmov w0, s{}", reg_idx));
+                    self.state.emit_fmt(format_args!("    fmov w0, s{}", reg_idx));
                 } else {
-                    self.state.emit(&format!("    fmov x0, d{}", reg_idx));
+                    self.state.emit_fmt(format_args!("    fmov x0, d{}", reg_idx));
                 }
                 self.emit_store_to_sp("x0", slot.0, "str");
             }
@@ -1014,12 +1014,12 @@ impl ArchCodegen for ArmCodegen {
 
     fn emit_typed_store_indirect(&mut self, instr: &'static str, ty: IrType) {
         let reg = Self::reg_for_type("x1", ty);
-        self.state.emit(&format!("    {} {}, [x9]", instr, reg));
+        self.state.emit_fmt(format_args!("    {} {}, [x9]", instr, reg));
     }
 
     fn emit_typed_load_indirect(&mut self, instr: &'static str) {
         let (actual_instr, dest_reg) = Self::arm_parse_load(instr);
-        self.state.emit(&format!("    {} {}, [x9]", actual_instr, dest_reg));
+        self.state.emit_fmt(format_args!("    {} {}, [x9]", actual_instr, dest_reg));
     }
 
     fn emit_slot_addr_to_secondary(&mut self, slot: StackSlot, is_alloca: bool) {
@@ -1048,8 +1048,8 @@ impl ArchCodegen for ArmCodegen {
     }
 
     fn emit_align_acc(&mut self, align: usize) {
-        self.state.emit(&format!("    add x0, x0, #{}", align - 1));
-        self.state.emit(&format!("    and x0, x0, #{}", -(align as i64)));
+        self.state.emit_fmt(format_args!("    add x0, x0, #{}", align - 1));
+        self.state.emit_fmt(format_args!("    and x0, x0, #{}", -(align as i64)));
     }
 
     fn emit_memcpy_load_dest_addr(&mut self, slot: StackSlot, is_alloca: bool) {
@@ -1109,13 +1109,13 @@ impl ArchCodegen for ArmCodegen {
         let loop_label = format!(".Lmemcpy_loop_{}", label_id);
         let done_label = format!(".Lmemcpy_done_{}", label_id);
         self.load_large_imm("x11", size as i64);
-        self.state.emit(&format!("{}:", loop_label));
-        self.state.emit(&format!("    cbz x11, {}", done_label));
+        self.state.emit_fmt(format_args!("{}:", loop_label));
+        self.state.emit_fmt(format_args!("    cbz x11, {}", done_label));
         self.state.emit("    ldrb w12, [x10], #1");
         self.state.emit("    strb w12, [x9], #1");
         self.state.emit("    sub x11, x11, #1");
-        self.state.emit(&format!("    b {}", loop_label));
-        self.state.emit(&format!("{}:", done_label));
+        self.state.emit_fmt(format_args!("    b {}", loop_label));
+        self.state.emit_fmt(format_args!("{}:", done_label));
     }
 
     fn emit_float_neg(&mut self, ty: IrType) {
@@ -1277,7 +1277,7 @@ impl ArchCodegen for ArmCodegen {
                 IrCmpOp::Sgt | IrCmpOp::Ugt => "gt",
                 IrCmpOp::Sge | IrCmpOp::Uge => "ge",
             };
-            self.state.emit(&format!("    cset x0, {}", cond));
+            self.state.emit_fmt(format_args!("    cset x0, {}", cond));
             self.store_x0_to(dest);
             return;
         }
@@ -1306,7 +1306,7 @@ impl ArchCodegen for ArmCodegen {
             IrCmpOp::Ugt => "hi",
             IrCmpOp::Uge => "hs",
         };
-        self.state.emit(&format!("    cset x0, {}", cond));
+        self.state.emit_fmt(format_args!("    cset x0, {}", cond));
         self.store_x0_to(dest);
     }
 
@@ -1371,7 +1371,7 @@ impl ArchCodegen for ArmCodegen {
                         }
                         for qi in 0..n_dwords {
                             let src_off = (qi * 8) as i64;
-                            self.state.emit(&format!("    ldr x1, [x0, #{}]", src_off));
+                            self.state.emit_fmt(format_args!("    ldr x1, [x0, #{}]", src_off));
                             self.emit_store_to_sp("x1", stack_offset + src_off, "str");
                         }
                         stack_offset += (n_dwords as i64) * 8;
@@ -1445,7 +1445,7 @@ impl ArchCodegen for ArmCodegen {
                                 self.state.emit("    stp x9, x10, [sp, #-16]!");
                                 self.state.emit("    bl __extenddftf2");
                                 self.state.emit("    ldp x9, x10, [sp], #16");
-                                self.state.emit(&format!("    str q0, [sp, #{}]", stack_offset));
+                                self.state.emit_fmt(format_args!("    str q0, [sp, #{}]", stack_offset));
                             }
                         }
                         stack_offset += 16;
@@ -1502,7 +1502,7 @@ impl ArchCodegen for ArmCodegen {
             } else {
                 self.operand_to_x0(arg);
             }
-            self.state.emit(&format!("    mov {}, x0", ARM_TMP_REGS[gp_tmp_idx]));
+            self.state.emit_fmt(format_args!("    mov {}, x0", ARM_TMP_REGS[gp_tmp_idx]));
             gp_tmp_idx += 1;
         }
 
@@ -1547,7 +1547,7 @@ impl ArchCodegen for ArmCodegen {
                 self.state.emit("    bl __extenddftf2");
                 self.state.emit("    ldp x9, x10, [sp], #16");
                 let temp_off = f128_temp_idx * 16;
-                self.state.emit(&format!("    str q0, [sp, #{}]", temp_off));
+                self.state.emit_fmt(format_args!("    str q0, [sp, #{}]", temp_off));
                 f128_temp_slots.push((reg_i, temp_off));
                 f128_temp_idx += 1;
             }
@@ -1568,14 +1568,14 @@ impl ArchCodegen for ArmCodegen {
                 self.emit_load_imm64("x0", lo as i64);
                 self.emit_load_imm64("x1", hi as i64);
                 self.state.emit("    stp x0, x1, [sp, #-16]!");
-                self.state.emit(&format!("    ldr q{}, [sp]", reg_i));
+                self.state.emit_fmt(format_args!("    ldr q{}, [sp]", reg_i));
                 self.state.emit("    add sp, sp, #16");
             }
         }
 
         // Restore F128 variable results from temp stack
         for &(reg_i, temp_off) in &f128_temp_slots {
-            self.state.emit(&format!("    ldr q{}, [sp, #{}]", reg_i, temp_off));
+            self.state.emit_fmt(format_args!("    ldr q{}, [sp, #{}]", reg_i, temp_off));
         }
         if f128_temp_space_aligned > 0 {
             self.emit_add_sp(f128_temp_space_aligned as i64);
@@ -1600,9 +1600,9 @@ impl ArchCodegen for ArmCodegen {
                 self.operand_to_x0(&args[arg_i]);
             }
             if arg_ty == Some(IrType::F32) {
-                self.state.emit(&format!("    fmov s{}, w0", reg_i));
+                self.state.emit_fmt(format_args!("    fmov s{}, w0", reg_i));
             } else {
-                self.state.emit(&format!("    fmov d{}, x0", reg_i));
+                self.state.emit_fmt(format_args!("    fmov d{}, x0", reg_i));
             }
         }
 
@@ -1620,7 +1620,7 @@ impl ArchCodegen for ArmCodegen {
                 }
                 CallArgClass::IntReg { .. } => {
                     if gp_tmp_idx < 8 && int_reg_idx < 8 {
-                        self.state.emit(&format!("    mov {}, {}", ARM_ARG_REGS[int_reg_idx], ARM_TMP_REGS[gp_tmp_idx]));
+                        self.state.emit_fmt(format_args!("    mov {}, {}", ARM_ARG_REGS[int_reg_idx], ARM_TMP_REGS[gp_tmp_idx]));
                         int_reg_idx += 1;
                     }
                     gp_tmp_idx += 1;
@@ -1639,7 +1639,7 @@ impl ArchCodegen for ArmCodegen {
                                 let adjusted = slot.0 + total_sp_adjust;
                                 if self.state.is_alloca(v.0) {
                                     self.emit_load_from_sp(ARM_ARG_REGS[base_reg_idx], adjusted, "ldr");
-                                    self.state.emit(&format!("    mov {}, #0", ARM_ARG_REGS[base_reg_idx + 1]));
+                                    self.state.emit_fmt(format_args!("    mov {}, #0", ARM_ARG_REGS[base_reg_idx + 1]));
                                 } else {
                                     self.emit_load_from_sp(ARM_ARG_REGS[base_reg_idx], adjusted, "ldr");
                                     self.emit_load_from_sp(ARM_ARG_REGS[base_reg_idx + 1], adjusted + 8, "ldr");
@@ -1653,9 +1653,9 @@ impl ArchCodegen for ArmCodegen {
                             } else {
                                 self.operand_to_x0(arg);
                                 if base_reg_idx != 0 {
-                                    self.state.emit(&format!("    mov {}, x0", ARM_ARG_REGS[base_reg_idx]));
+                                    self.state.emit_fmt(format_args!("    mov {}, x0", ARM_ARG_REGS[base_reg_idx]));
                                 }
-                                self.state.emit(&format!("    mov {}, #0", ARM_ARG_REGS[base_reg_idx + 1]));
+                                self.state.emit_fmt(format_args!("    mov {}, #0", ARM_ARG_REGS[base_reg_idx + 1]));
                             }
                         }
                     }
@@ -1665,7 +1665,7 @@ impl ArchCodegen for ArmCodegen {
                             if let Some(slot) = self.state.get_slot(v.0) {
                                 if self.state.is_alloca(v.0) {
                                     self.emit_add_sp_offset(ARM_ARG_REGS[base_reg_idx], slot.0);
-                                    self.state.emit(&format!("    mov {}, #0", ARM_ARG_REGS[base_reg_idx + 1]));
+                                    self.state.emit_fmt(format_args!("    mov {}, #0", ARM_ARG_REGS[base_reg_idx + 1]));
                                 } else {
                                     self.emit_load_from_sp(ARM_ARG_REGS[base_reg_idx], slot.0, "ldr");
                                     self.emit_load_from_sp(ARM_ARG_REGS[base_reg_idx + 1], slot.0 + 8, "ldr");
@@ -1679,9 +1679,9 @@ impl ArchCodegen for ArmCodegen {
                             } else {
                                 self.operand_to_x0(arg);
                                 if base_reg_idx != 0 {
-                                    self.state.emit(&format!("    mov {}, x0", ARM_ARG_REGS[base_reg_idx]));
+                                    self.state.emit_fmt(format_args!("    mov {}, x0", ARM_ARG_REGS[base_reg_idx]));
                                 }
-                                self.state.emit(&format!("    mov {}, #0", ARM_ARG_REGS[base_reg_idx + 1]));
+                                self.state.emit_fmt(format_args!("    mov {}, #0", ARM_ARG_REGS[base_reg_idx + 1]));
                             }
                         }
                     }
@@ -1731,9 +1731,9 @@ impl ArchCodegen for ArmCodegen {
                         }
                     }
                 }
-                self.state.emit(&format!("    ldr {}, [x17]", ARM_ARG_REGS[base_reg_idx]));
+                self.state.emit_fmt(format_args!("    ldr {}, [x17]", ARM_ARG_REGS[base_reg_idx]));
                 if regs_needed > 1 {
-                    self.state.emit(&format!("    ldr {}, [x17, #8]", ARM_ARG_REGS[base_reg_idx + 1]));
+                    self.state.emit_fmt(format_args!("    ldr {}, [x17, #8]", ARM_ARG_REGS[base_reg_idx + 1]));
                 }
             }
         }
@@ -1741,7 +1741,7 @@ impl ArchCodegen for ArmCodegen {
 
     fn emit_call_instruction(&mut self, direct_name: Option<&str>, _func_ptr: Option<&Operand>, indirect: bool, stack_arg_space: usize) {
         if let Some(name) = direct_name {
-            self.state.emit(&format!("    bl {}", name));
+            self.state.emit_fmt(format_args!("    bl {}", name));
         } else if indirect {
             // fptr was spilled with "str x0, [sp, #-16]!" before stack args were allocated.
             // After sub_sp(stack_arg_space), the fptr is at sp + stack_arg_space.
@@ -1778,8 +1778,8 @@ impl ArchCodegen for ArmCodegen {
     }
 
     fn emit_global_addr(&mut self, dest: &Value, name: &str) {
-        self.state.emit(&format!("    adrp x0, {}", name));
-        self.state.emit(&format!("    add x0, x0, :lo12:{}", name));
+        self.state.emit_fmt(format_args!("    adrp x0, {}", name));
+        self.state.emit_fmt(format_args!("    add x0, x0, :lo12:{}", name));
         self.store_x0_to(dest);
     }
 
@@ -1912,7 +1912,7 @@ impl ArchCodegen for ArmCodegen {
 
             // Check __vr_offs (offset 28 in va_list)
             self.state.emit("    ldrsw x2, [x1, #28]");  // x2 = __vr_offs (sign-extended)
-            self.state.emit(&format!("    tbz x2, #63, {}", label_stack)); // if >= 0, go to stack
+            self.state.emit_fmt(format_args!("    tbz x2, #63, {}", label_stack)); // if >= 0, go to stack
             // Register save area path: addr = __vr_top + __vr_offs
             self.state.emit("    ldr x3, [x1, #16]");     // x3 = __vr_top
             self.state.emit("    add x3, x3, x2");         // x3 = __vr_top + __vr_offs
@@ -1925,10 +1925,10 @@ impl ArchCodegen for ArmCodegen {
             self.state.emit("    ldr q0, [x3]");           // load f128 into q0
             self.state.emit("    bl __trunctfdf2");         // q0 -> d0
             self.state.emit("    fmov x0, d0");
-            self.state.emit(&format!("    b {}", label_done));
+            self.state.emit_fmt(format_args!("    b {}", label_done));
 
             // Stack overflow path (when all 8 VR slots exhausted)
-            self.state.emit(&format!("{}:", label_stack));
+            self.state.emit_fmt(format_args!("{}:", label_stack));
             self.state.emit("    ldr x3, [x1]");           // x3 = __stack
             // Align x3 to 16 bytes
             self.state.emit("    add x3, x3, #15");
@@ -1942,7 +1942,7 @@ impl ArchCodegen for ArmCodegen {
             self.state.emit("    bl __trunctfdf2");         // q0 -> d0
             self.state.emit("    fmov x0, d0");
 
-            self.state.emit(&format!("{}:", label_done));
+            self.state.emit_fmt(format_args!("{}:", label_done));
         } else if is_fp {
             let label_id = self.state.next_label_id();
             let label_stack = format!(".Lva_stack_{}", label_id);
@@ -1950,7 +1950,7 @@ impl ArchCodegen for ArmCodegen {
 
             // FP type: check __vr_offs
             self.state.emit("    ldrsw x2, [x1, #28]");  // x2 = __vr_offs (sign-extended)
-            self.state.emit(&format!("    tbz x2, #63, {}", label_stack)); // if >= 0, go to stack
+            self.state.emit_fmt(format_args!("    tbz x2, #63, {}", label_stack)); // if >= 0, go to stack
             // Register save area path: addr = __vr_top + __vr_offs
             self.state.emit("    ldr x3, [x1, #16]");     // x3 = __vr_top
             self.state.emit("    add x3, x3, x2");         // x3 = __vr_top + __vr_offs
@@ -1963,10 +1963,10 @@ impl ArchCodegen for ArmCodegen {
             } else {
                 self.state.emit("    ldr x0, [x3]");
             }
-            self.state.emit(&format!("    b {}", label_done));
+            self.state.emit_fmt(format_args!("    b {}", label_done));
 
             // Stack overflow path
-            self.state.emit(&format!("{}:", label_stack));
+            self.state.emit_fmt(format_args!("{}:", label_stack));
             self.state.emit("    ldr x3, [x1]");
             if result_ty == IrType::F32 {
                 self.state.emit("    ldr w0, [x3]");
@@ -1976,7 +1976,7 @@ impl ArchCodegen for ArmCodegen {
             self.state.emit("    add x3, x3, #8");
             self.state.emit("    str x3, [x1]");
 
-            self.state.emit(&format!("{}:", label_done));
+            self.state.emit_fmt(format_args!("{}:", label_done));
         } else {
             let label_id = self.state.next_label_id();
             let label_stack = format!(".Lva_stack_{}", label_id);
@@ -1984,7 +1984,7 @@ impl ArchCodegen for ArmCodegen {
 
             // GP type: check __gr_offs
             self.state.emit("    ldrsw x2, [x1, #24]");  // x2 = __gr_offs (sign-extended)
-            self.state.emit(&format!("    tbz x2, #63, {}", label_stack)); // if >= 0, go to stack
+            self.state.emit_fmt(format_args!("    tbz x2, #63, {}", label_stack)); // if >= 0, go to stack
             // Register save area path: addr = __gr_top + __gr_offs
             self.state.emit("    ldr x3, [x1, #8]");      // x3 = __gr_top
             self.state.emit("    add x3, x3, x2");         // x3 = __gr_top + __gr_offs
@@ -1993,16 +1993,16 @@ impl ArchCodegen for ArmCodegen {
             self.state.emit("    str w2, [x1, #24]");
             // Load the value from the register save area
             self.state.emit("    ldr x0, [x3]");
-            self.state.emit(&format!("    b {}", label_done));
+            self.state.emit_fmt(format_args!("    b {}", label_done));
 
             // Stack overflow path
-            self.state.emit(&format!("{}:", label_stack));
+            self.state.emit_fmt(format_args!("{}:", label_stack));
             self.state.emit("    ldr x3, [x1]");
             self.state.emit("    ldr x0, [x3]");
             self.state.emit("    add x3, x3, #8");
             self.state.emit("    str x3, [x1]");
 
-            self.state.emit(&format!("{}:", label_done));
+            self.state.emit_fmt(format_args!("{}:", label_done));
         }
 
         // Store result to dest
@@ -2037,7 +2037,7 @@ impl ArchCodegen for ArmCodegen {
         // skip past them to point to the first variadic stack arg.
         let stack_offset = self.current_frame_size + (self.va_named_stack_gp_count as i64 * 8);
         if stack_offset <= 4095 {
-            self.state.emit(&format!("    add x1, x29, #{}", stack_offset));
+            self.state.emit_fmt(format_args!("    add x1, x29, #{}", stack_offset));
         } else {
             self.load_large_imm("x1", stack_offset);
             self.state.emit("    add x1, x29, x1");
@@ -2058,13 +2058,13 @@ impl ArchCodegen for ArmCodegen {
         // = -(8 - named_gp_count) * 8
         // If all 8 GP regs used by named params, __gr_offs = 0 (meaning overflow to stack)
         let gr_offs: i32 = -((8 - self.va_named_gp_count as i32) * 8);
-        self.state.emit(&format!("    mov w1, #{}", gr_offs));
+        self.state.emit_fmt(format_args!("    mov w1, #{}", gr_offs));
         self.state.emit("    str w1, [x0, #24]");  // __gr_offs at offset 24
 
         // __vr_offs: negative offset from __vr_top to next unnamed FP/SIMD reg
         // = -(8 - named_fp_count) * 16
         let vr_offs: i32 = -((8 - self.va_named_fp_count as i32) * 16);
-        self.state.emit(&format!("    mov w1, #{}", vr_offs));
+        self.state.emit_fmt(format_args!("    mov w1, #{}", vr_offs));
         self.state.emit("    str w1, [x0, #28]");  // __vr_offs at offset 28
     }
 
@@ -2118,7 +2118,7 @@ impl ArchCodegen for ArmCodegen {
             }
             Operand::Const(IrConst::F64(f)) => {
                 let bits = f.to_bits();
-                self.state.emit(&format!("    mov x0, #{}", bits));
+                self.state.emit_fmt(format_args!("    mov x0, #{}", bits));
                 self.state.emit("    fmov d1, x0");
             }
             _ => {
@@ -2146,7 +2146,7 @@ impl ArchCodegen for ArmCodegen {
             }
             Operand::Const(IrConst::F32(f)) => {
                 let bits = f.to_bits();
-                self.state.emit(&format!("    mov w0, #{}", bits));
+                self.state.emit_fmt(format_args!("    mov w0, #{}", bits));
                 self.state.emit("    fmov s1, w0");
             }
             _ => {
@@ -2173,30 +2173,30 @@ impl ArchCodegen for ArmCodegen {
                 // Simple exchange: old = *ptr; *ptr = val
                 let label_id = self.state.next_label_id();
                 let loop_label = format!(".Latomic_{}", label_id);
-                self.state.emit(&format!("{}:", loop_label));
-                self.state.emit(&format!("    {} {}, [x1]", ldxr, old_reg));
-                self.state.emit(&format!("    {} w4, {}, [x1]", stxr, val_reg));
-                self.state.emit(&format!("    cbnz w4, {}", loop_label));
+                self.state.emit_fmt(format_args!("{}:", loop_label));
+                self.state.emit_fmt(format_args!("    {} {}, [x1]", ldxr, old_reg));
+                self.state.emit_fmt(format_args!("    {} w4, {}, [x1]", stxr, val_reg));
+                self.state.emit_fmt(format_args!("    cbnz w4, {}", loop_label));
             }
             AtomicRmwOp::TestAndSet => {
                 let label_id = self.state.next_label_id();
                 let loop_label = format!(".Latomic_{}", label_id);
-                self.state.emit(&format!("{}:", loop_label));
-                self.state.emit(&format!("    {} {}, [x1]", ldxr, old_reg));
+                self.state.emit_fmt(format_args!("{}:", loop_label));
+                self.state.emit_fmt(format_args!("    {} {}, [x1]", ldxr, old_reg));
                 self.state.emit("    mov w3, #1");
-                self.state.emit(&format!("    {} w4, w3, [x1]", stxr));
-                self.state.emit(&format!("    cbnz w4, {}", loop_label));
+                self.state.emit_fmt(format_args!("    {} w4, w3, [x1]", stxr));
+                self.state.emit_fmt(format_args!("    cbnz w4, {}", loop_label));
             }
             _ => {
                 // Generic RMW: old = *ptr; new = op(old, val); *ptr = new
                 let label_id = self.state.next_label_id();
                 let loop_label = format!(".Latomic_{}", label_id);
-                self.state.emit(&format!("{}:", loop_label));
-                self.state.emit(&format!("    {} {}, [x1]", ldxr, old_reg));
+                self.state.emit_fmt(format_args!("{}:", loop_label));
+                self.state.emit_fmt(format_args!("    {} {}, [x1]", ldxr, old_reg));
                 // Compute x3 = op(x0, x2)
                 Self::emit_atomic_op_arm(&mut self.state, op, &tmp_reg, &old_reg, &val_reg);
-                self.state.emit(&format!("    {} w4, {}, [x1]", stxr, tmp_reg));
-                self.state.emit(&format!("    cbnz w4, {}", loop_label));
+                self.state.emit_fmt(format_args!("    {} w4, {}, [x1]", stxr, tmp_reg));
+                self.state.emit_fmt(format_args!("    cbnz w4, {}", loop_label));
             }
         }
         // Result is in x0 (old value)
@@ -2223,18 +2223,18 @@ impl ArchCodegen for ArmCodegen {
         let fail_label = format!(".Lcas_fail_{}", label_id);
         let done_label = format!(".Lcas_done_{}", label_id);
 
-        self.state.emit(&format!("{}:", loop_label));
-        self.state.emit(&format!("    {} {}, [x1]", ldxr, old_reg));
-        self.state.emit(&format!("    cmp {}, {}", old_reg, expected_reg));
-        self.state.emit(&format!("    b.ne {}", fail_label));
-        self.state.emit(&format!("    {} w4, {}, [x1]", stxr, desired_reg));
-        self.state.emit(&format!("    cbnz w4, {}", loop_label));
+        self.state.emit_fmt(format_args!("{}:", loop_label));
+        self.state.emit_fmt(format_args!("    {} {}, [x1]", ldxr, old_reg));
+        self.state.emit_fmt(format_args!("    cmp {}, {}", old_reg, expected_reg));
+        self.state.emit_fmt(format_args!("    b.ne {}", fail_label));
+        self.state.emit_fmt(format_args!("    {} w4, {}, [x1]", stxr, desired_reg));
+        self.state.emit_fmt(format_args!("    cbnz w4, {}", loop_label));
         if returns_bool {
             self.state.emit("    mov x0, #1");
         }
         // If !returns_bool, x0 already has old value (which equals expected on success)
-        self.state.emit(&format!("    b {}", done_label));
-        self.state.emit(&format!("{}:", fail_label));
+        self.state.emit_fmt(format_args!("    b {}", done_label));
+        self.state.emit_fmt(format_args!("{}:", fail_label));
         if returns_bool {
             self.state.emit("    mov x0, #0");
             // Clear exclusive monitor
@@ -2243,7 +2243,7 @@ impl ArchCodegen for ArmCodegen {
             // x0 has the old value (not equal to expected)
             self.state.emit("    clrex");
         }
-        self.state.emit(&format!("{}:", done_label));
+        self.state.emit_fmt(format_args!("{}:", done_label));
         self.store_x0_to(dest);
     }
 
@@ -2267,7 +2267,7 @@ impl ArchCodegen for ArmCodegen {
             _ => "x0",
         };
         // ldar/ldr with register indirect both use [x0] form
-        self.state.emit(&format!("    {} {}, [x0]", instr, dest_reg));
+        self.state.emit_fmt(format_args!("    {} {}, [x0]", instr, dest_reg));
         // Sign-extend if needed
         match ty {
             IrType::I8 => self.state.emit("    sxtb x0, w0"),
@@ -2299,7 +2299,7 @@ impl ArchCodegen for ArmCodegen {
             IrType::I8 | IrType::U8 | IrType::I16 | IrType::U16 | IrType::I32 | IrType::U32 => "w1",
             _ => "x1",
         };
-        self.state.emit(&format!("    {} {}, [x0]", instr, val_reg));
+        self.state.emit_fmt(format_args!("    {} {}, [x0]", instr, val_reg));
     }
 
     fn emit_fence(&mut self, ordering: AtomicOrdering) {
@@ -2349,13 +2349,13 @@ impl ArchCodegen for ArmCodegen {
         if ty == IrType::F32 {
             self.state.emit("    fmov s0, w1");
             self.state.emit("    fmov s1, w2");
-            self.state.emit(&format!("    {} s0, s0, s1", mnemonic));
+            self.state.emit_fmt(format_args!("    {} s0, s0, s1", mnemonic));
             self.state.emit("    fmov w0, s0");
             self.state.emit("    mov w0, w0"); // zero-extend
         } else {
             self.state.emit("    fmov d0, x1");
             self.state.emit("    fmov d1, x2");
-            self.state.emit(&format!("    {} d0, d0, d1", mnemonic));
+            self.state.emit_fmt(format_args!("    {} d0, d0, d1", mnemonic));
             self.state.emit("    fmov x0, d0");
         }
     }
@@ -2404,25 +2404,25 @@ impl ArchCodegen for ArmCodegen {
         let done = self.state.fresh_label("shl128_done");
         let noop = self.state.fresh_label("shl128_noop");
         self.state.emit("    and x4, x4, #127");
-        self.state.emit(&format!("    cbz x4, {}", noop));
+        self.state.emit_fmt(format_args!("    cbz x4, {}", noop));
         self.state.emit("    cmp x4, #64");
-        self.state.emit(&format!("    b.ge {}", lbl));
+        self.state.emit_fmt(format_args!("    b.ge {}", lbl));
         self.state.emit("    lsl x1, x3, x4");
         self.state.emit("    mov x5, #64");
         self.state.emit("    sub x5, x5, x4");
         self.state.emit("    lsr x6, x2, x5");
         self.state.emit("    orr x1, x1, x6");
         self.state.emit("    lsl x0, x2, x4");
-        self.state.emit(&format!("    b {}", done));
-        self.state.emit(&format!("{}:", lbl));
+        self.state.emit_fmt(format_args!("    b {}", done));
+        self.state.emit_fmt(format_args!("{}:", lbl));
         self.state.emit("    sub x4, x4, #64");
         self.state.emit("    lsl x1, x2, x4");
         self.state.emit("    mov x0, #0");
-        self.state.emit(&format!("    b {}", done));
-        self.state.emit(&format!("{}:", noop));
+        self.state.emit_fmt(format_args!("    b {}", done));
+        self.state.emit_fmt(format_args!("{}:", noop));
         self.state.emit("    mov x0, x2");
         self.state.emit("    mov x1, x3");
-        self.state.emit(&format!("{}:", done));
+        self.state.emit_fmt(format_args!("{}:", done));
     }
 
     fn emit_i128_lshr(&mut self) {
@@ -2430,25 +2430,25 @@ impl ArchCodegen for ArmCodegen {
         let done = self.state.fresh_label("lshr128_done");
         let noop = self.state.fresh_label("lshr128_noop");
         self.state.emit("    and x4, x4, #127");
-        self.state.emit(&format!("    cbz x4, {}", noop));
+        self.state.emit_fmt(format_args!("    cbz x4, {}", noop));
         self.state.emit("    cmp x4, #64");
-        self.state.emit(&format!("    b.ge {}", lbl));
+        self.state.emit_fmt(format_args!("    b.ge {}", lbl));
         self.state.emit("    lsr x0, x2, x4");
         self.state.emit("    mov x5, #64");
         self.state.emit("    sub x5, x5, x4");
         self.state.emit("    lsl x6, x3, x5");
         self.state.emit("    orr x0, x0, x6");
         self.state.emit("    lsr x1, x3, x4");
-        self.state.emit(&format!("    b {}", done));
-        self.state.emit(&format!("{}:", lbl));
+        self.state.emit_fmt(format_args!("    b {}", done));
+        self.state.emit_fmt(format_args!("{}:", lbl));
         self.state.emit("    sub x4, x4, #64");
         self.state.emit("    lsr x0, x3, x4");
         self.state.emit("    mov x1, #0");
-        self.state.emit(&format!("    b {}", done));
-        self.state.emit(&format!("{}:", noop));
+        self.state.emit_fmt(format_args!("    b {}", done));
+        self.state.emit_fmt(format_args!("{}:", noop));
         self.state.emit("    mov x0, x2");
         self.state.emit("    mov x1, x3");
-        self.state.emit(&format!("{}:", done));
+        self.state.emit_fmt(format_args!("{}:", done));
     }
 
     fn emit_i128_ashr(&mut self) {
@@ -2456,25 +2456,25 @@ impl ArchCodegen for ArmCodegen {
         let done = self.state.fresh_label("ashr128_done");
         let noop = self.state.fresh_label("ashr128_noop");
         self.state.emit("    and x4, x4, #127");
-        self.state.emit(&format!("    cbz x4, {}", noop));
+        self.state.emit_fmt(format_args!("    cbz x4, {}", noop));
         self.state.emit("    cmp x4, #64");
-        self.state.emit(&format!("    b.ge {}", lbl));
+        self.state.emit_fmt(format_args!("    b.ge {}", lbl));
         self.state.emit("    lsr x0, x2, x4");
         self.state.emit("    mov x5, #64");
         self.state.emit("    sub x5, x5, x4");
         self.state.emit("    lsl x6, x3, x5");
         self.state.emit("    orr x0, x0, x6");
         self.state.emit("    asr x1, x3, x4");
-        self.state.emit(&format!("    b {}", done));
-        self.state.emit(&format!("{}:", lbl));
+        self.state.emit_fmt(format_args!("    b {}", done));
+        self.state.emit_fmt(format_args!("{}:", lbl));
         self.state.emit("    sub x4, x4, #64");
         self.state.emit("    asr x0, x3, x4");
         self.state.emit("    asr x1, x3, #63");
-        self.state.emit(&format!("    b {}", done));
-        self.state.emit(&format!("{}:", noop));
+        self.state.emit_fmt(format_args!("    b {}", done));
+        self.state.emit_fmt(format_args!("{}:", noop));
         self.state.emit("    mov x0, x2");
         self.state.emit("    mov x1, x3");
-        self.state.emit(&format!("{}:", done));
+        self.state.emit_fmt(format_args!("{}:", done));
     }
 
     fn emit_i128_divrem_call(&mut self, func_name: &str, lhs: &Operand, rhs: &Operand) {
@@ -2489,7 +2489,7 @@ impl ArchCodegen for ArmCodegen {
         self.state.emit("    mov x1, x3");
         self.state.emit("    mov x2, x4");
         self.state.emit("    mov x3, x5");
-        self.state.emit(&format!("    bl {}", func_name));
+        self.state.emit_fmt(format_args!("    bl {}", func_name));
         // Result in x0:x1
     }
 
@@ -2522,11 +2522,11 @@ impl ArchCodegen for ArmCodegen {
             IrCmpOp::Ugt | IrCmpOp::Uge => ("hi", if op == IrCmpOp::Ugt { "hi" } else { "hs" }),
             _ => unreachable!(),
         };
-        self.state.emit(&format!("    cset x0, {}", hi_cond));
-        self.state.emit(&format!("    b.ne {}", done));
+        self.state.emit_fmt(format_args!("    cset x0, {}", hi_cond));
+        self.state.emit_fmt(format_args!("    b.ne {}", done));
         self.state.emit("    cmp x2, x4");
-        self.state.emit(&format!("    cset x0, {}", lo_cond));
-        self.state.emit(&format!("{}:", done));
+        self.state.emit_fmt(format_args!("    cset x0, {}", lo_cond));
+        self.state.emit_fmt(format_args!("{}:", done));
     }
 
     fn emit_i128_cmp_store_result(&mut self, dest: &Value) {
@@ -2642,7 +2642,7 @@ impl InlineAsmEmitter for ArmCodegen {
                 // Non-alloca: slot holds a pointer, store through it
                 let scratch = if reg != "x9" { "x9" } else { "x10" };
                 self.emit_load_from_sp(scratch, slot.0, "ldr");
-                self.state.emit(&format!("    str {}, [{}]", reg, scratch));
+                self.state.emit_fmt(format_args!("    str {}, [{}]", reg, scratch));
             }
         }
     }

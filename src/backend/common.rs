@@ -137,6 +137,22 @@ impl AsmOutput {
         self.buf.push_str(s);
         self.buf.push('\n');
     }
+
+    /// Emit formatted assembly directly into the buffer (no temporary String).
+    #[inline]
+    pub fn emit_fmt(&mut self, args: std::fmt::Arguments<'_>) {
+        std::fmt::Write::write_fmt(&mut self.buf, args).unwrap();
+        self.buf.push('\n');
+    }
+}
+
+/// Emit formatted assembly directly into the output buffer, avoiding temporary
+/// String allocations from `format!()`. Usage: `emit!(state, "    mov {}, {}", src, dst)`
+#[macro_export]
+macro_rules! emit {
+    ($state:expr, $($arg:tt)*) => {
+        $state.out.emit_fmt(format_args!($($arg)*))
+    };
 }
 
 /// The only arch-specific difference in data emission: the name of the 64-bit pointer directive.
@@ -164,15 +180,15 @@ pub fn emit_data_sections(out: &mut AsmOutput, module: &IrModule, ptr_dir: PtrDi
     if !module.string_literals.is_empty() || !module.wide_string_literals.is_empty() {
         out.emit(".section .rodata");
         for (label, value) in &module.string_literals {
-            out.emit(&format!("{}:", label));
+            out.emit_fmt(format_args!("{}:", label));
             emit_string_bytes(out, value);
         }
         // Wide string literals (L"..."): each char is a 4-byte wchar_t value
         for (label, chars) in &module.wide_string_literals {
-            out.emit(&format!(".align 4"));
-            out.emit(&format!("{}:", label));
+            out.emit_fmt(format_args!(".align 4"));
+            out.emit_fmt(format_args!("{}:", label));
             for &ch in chars {
-                out.emit(&format!("  .long {}", ch));
+                out.emit_fmt(format_args!("  .long {}", ch));
             }
         }
         out.emit("");
@@ -223,7 +239,7 @@ fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective
         if !g.is_common || !matches!(g.init, GlobalInit::Zero) {
             continue;
         }
-        out.emit(&format!(".comm {},{},{}", g.name, g.size, effective_align(g)));
+        out.emit_fmt(format_args!(".comm {},{},{}", g.name, g.size, effective_align(g)));
     }
 
     // Zero-initialized globals -> .bss
@@ -242,13 +258,13 @@ fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective
             has_bss = true;
         }
         if !g.is_static {
-            out.emit(&format!(".globl {}", g.name));
+            out.emit_fmt(format_args!(".globl {}", g.name));
         }
-        out.emit(&format!(".align {}", effective_align(g)));
-        out.emit(&format!(".type {}, @object", g.name));
-        out.emit(&format!(".size {}, {}", g.name, g.size));
-        out.emit(&format!("{}:", g.name));
-        out.emit(&format!("    .zero {}", g.size));
+        out.emit_fmt(format_args!(".align {}", effective_align(g)));
+        out.emit_fmt(format_args!(".type {}, @object", g.name));
+        out.emit_fmt(format_args!(".size {}, {}", g.name, g.size));
+        out.emit_fmt(format_args!("{}:", g.name));
+        out.emit_fmt(format_args!("    .zero {}", g.size));
     }
     if has_bss {
         out.emit("");
@@ -258,16 +274,16 @@ fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective
 /// Emit a single global variable definition.
 fn emit_global_def(out: &mut AsmOutput, g: &IrGlobal, ptr_dir: PtrDirective) {
     if !g.is_static {
-        out.emit(&format!(".globl {}", g.name));
+        out.emit_fmt(format_args!(".globl {}", g.name));
     }
-    out.emit(&format!(".align {}", effective_align(g)));
-    out.emit(&format!(".type {}, @object", g.name));
-    out.emit(&format!(".size {}, {}", g.name, g.size));
-    out.emit(&format!("{}:", g.name));
+    out.emit_fmt(format_args!(".align {}", effective_align(g)));
+    out.emit_fmt(format_args!(".type {}, @object", g.name));
+    out.emit_fmt(format_args!(".size {}, {}", g.name, g.size));
+    out.emit_fmt(format_args!("{}:", g.name));
 
     match &g.init {
         GlobalInit::Zero => {
-            out.emit(&format!("    .zero {}", g.size));
+            out.emit_fmt(format_args!("    .zero {}", g.size));
         }
         GlobalInit::Scalar(c) => {
             emit_const_data(out, c, g.ty, ptr_dir);
@@ -288,32 +304,32 @@ fn emit_global_def(out: &mut AsmOutput, g: &IrGlobal, ptr_dir: PtrDirective) {
             }
         }
         GlobalInit::String(s) => {
-            out.emit(&format!("    .asciz \"{}\"", escape_string(s)));
+            out.emit_fmt(format_args!("    .asciz \"{}\"", escape_string(s)));
             let string_bytes = s.len() + 1; // string + null terminator
             if g.size > string_bytes {
-                out.emit(&format!("    .zero {}", g.size - string_bytes));
+                out.emit_fmt(format_args!("    .zero {}", g.size - string_bytes));
             }
         }
         GlobalInit::WideString(chars) => {
             // Emit wide string as array of .long values (4 bytes each)
             for &ch in chars {
-                out.emit(&format!("    .long {}", ch));
+                out.emit_fmt(format_args!("    .long {}", ch));
             }
             // Null terminator
             out.emit("    .long 0");
             let wide_bytes = (chars.len() + 1) * 4;
             if g.size > wide_bytes {
-                out.emit(&format!("    .zero {}", g.size - wide_bytes));
+                out.emit_fmt(format_args!("    .zero {}", g.size - wide_bytes));
             }
         }
         GlobalInit::GlobalAddr(label) => {
-            out.emit(&format!("    {} {}", ptr_dir.as_str(), label));
+            out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), label));
         }
         GlobalInit::GlobalAddrOffset(label, offset) => {
             if *offset >= 0 {
-                out.emit(&format!("    {} {}+{}", ptr_dir.as_str(), label, offset));
+                out.emit_fmt(format_args!("    {} {}+{}", ptr_dir.as_str(), label, offset));
             } else {
-                out.emit(&format!("    {} {}{}", ptr_dir.as_str(), label, offset));
+                out.emit_fmt(format_args!("    {} {}{}", ptr_dir.as_str(), label, offset));
             }
         }
         GlobalInit::Compound(elements) => {
@@ -330,28 +346,28 @@ fn emit_global_def(out: &mut AsmOutput, g: &IrGlobal, ptr_dir: PtrDirective) {
                         emit_const_data(out, c, elem_ty, ptr_dir);
                     }
                     GlobalInit::GlobalAddr(label) => {
-                        out.emit(&format!("    {} {}", ptr_dir.as_str(), label));
+                        out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), label));
                     }
                     GlobalInit::GlobalAddrOffset(label, offset) => {
                         if *offset >= 0 {
-                            out.emit(&format!("    {} {}+{}", ptr_dir.as_str(), label, offset));
+                            out.emit_fmt(format_args!("    {} {}+{}", ptr_dir.as_str(), label, offset));
                         } else {
-                            out.emit(&format!("    {} {}{}", ptr_dir.as_str(), label, offset));
+                            out.emit_fmt(format_args!("    {} {}{}", ptr_dir.as_str(), label, offset));
                         }
                     }
                     GlobalInit::WideString(chars) => {
                         for &ch in chars {
-                            out.emit(&format!("    .long {}", ch));
+                            out.emit_fmt(format_args!("    .long {}", ch));
                         }
                         out.emit("    .long 0"); // null terminator
                     }
                     GlobalInit::Zero => {
                         // Emit a zero-initialized element of the appropriate size
-                        out.emit(&format!("    {} 0", ptr_dir.as_str()));
+                        out.emit_fmt(format_args!("    {} 0", ptr_dir.as_str()));
                     }
                     _ => {
                         // Nested compound or other - emit zero as fallback
-                        out.emit(&format!("    {} 0", ptr_dir.as_str()));
+                        out.emit_fmt(format_args!("    {} 0", ptr_dir.as_str()));
                     }
                 }
             }
@@ -366,60 +382,60 @@ pub fn emit_const_data(out: &mut AsmOutput, c: &IrConst, ty: IrType, ptr_dir: Pt
     match c {
         IrConst::I8(v) => {
             match ty {
-                IrType::I8 | IrType::U8 => out.emit(&format!("    .byte {}", *v as u8)),
-                IrType::I16 | IrType::U16 => out.emit(&format!("    .short {}", *v as i16 as u16)),
-                IrType::I32 | IrType::U32 => out.emit(&format!("    .long {}", *v as i32 as u32)),
-                _ => out.emit(&format!("    {} {}", ptr_dir.as_str(), *v as i64)),
+                IrType::I8 | IrType::U8 => out.emit_fmt(format_args!("    .byte {}", *v as u8)),
+                IrType::I16 | IrType::U16 => out.emit_fmt(format_args!("    .short {}", *v as i16 as u16)),
+                IrType::I32 | IrType::U32 => out.emit_fmt(format_args!("    .long {}", *v as i32 as u32)),
+                _ => out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), *v as i64)),
             }
         }
         IrConst::I16(v) => {
             match ty {
-                IrType::I8 | IrType::U8 => out.emit(&format!("    .byte {}", *v as u8)),
-                IrType::I16 | IrType::U16 => out.emit(&format!("    .short {}", *v as u16)),
-                IrType::I32 | IrType::U32 => out.emit(&format!("    .long {}", *v as i32 as u32)),
-                _ => out.emit(&format!("    {} {}", ptr_dir.as_str(), *v as i64)),
+                IrType::I8 | IrType::U8 => out.emit_fmt(format_args!("    .byte {}", *v as u8)),
+                IrType::I16 | IrType::U16 => out.emit_fmt(format_args!("    .short {}", *v as u16)),
+                IrType::I32 | IrType::U32 => out.emit_fmt(format_args!("    .long {}", *v as i32 as u32)),
+                _ => out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), *v as i64)),
             }
         }
         IrConst::I32(v) => {
             match ty {
-                IrType::I8 | IrType::U8 => out.emit(&format!("    .byte {}", *v as u8)),
-                IrType::I16 | IrType::U16 => out.emit(&format!("    .short {}", *v as u16)),
-                IrType::I32 | IrType::U32 => out.emit(&format!("    .long {}", *v as u32)),
-                _ => out.emit(&format!("    {} {}", ptr_dir.as_str(), *v as i64)),
+                IrType::I8 | IrType::U8 => out.emit_fmt(format_args!("    .byte {}", *v as u8)),
+                IrType::I16 | IrType::U16 => out.emit_fmt(format_args!("    .short {}", *v as u16)),
+                IrType::I32 | IrType::U32 => out.emit_fmt(format_args!("    .long {}", *v as u32)),
+                _ => out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), *v as i64)),
             }
         }
         IrConst::I64(v) => {
             match ty {
-                IrType::I8 | IrType::U8 => out.emit(&format!("    .byte {}", *v as u8)),
-                IrType::I16 | IrType::U16 => out.emit(&format!("    .short {}", *v as u16)),
-                IrType::I32 | IrType::U32 => out.emit(&format!("    .long {}", *v as u32)),
-                _ => out.emit(&format!("    {} {}", ptr_dir.as_str(), v)),
+                IrType::I8 | IrType::U8 => out.emit_fmt(format_args!("    .byte {}", *v as u8)),
+                IrType::I16 | IrType::U16 => out.emit_fmt(format_args!("    .short {}", *v as u16)),
+                IrType::I32 | IrType::U32 => out.emit_fmt(format_args!("    .long {}", *v as u32)),
+                _ => out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), v)),
             }
         }
         IrConst::F32(v) => {
-            out.emit(&format!("    .long {}", v.to_bits()));
+            out.emit_fmt(format_args!("    .long {}", v.to_bits()));
         }
         IrConst::F64(v) => {
-            out.emit(&format!("    {} {}", ptr_dir.as_str(), v.to_bits()));
+            out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), v.to_bits()));
         }
         IrConst::LongDouble(v) => {
             // Store as f64 bit pattern in the lower 8 bytes, with 8 bytes zero padding.
             // The ARM64/RISC-V codegen loads long doubles as f64 values (F128 is treated
             // as F64 at computation level), so the data must match the load format.
             // For function call arguments, f64->f128 conversion is handled by __extenddftf2.
-            out.emit(&format!("    {} {}", ptr_dir.as_str(), v.to_bits()));
-            out.emit(&format!("    {} 0", ptr_dir.as_str()));
+            out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), v.to_bits()));
+            out.emit_fmt(format_args!("    {} 0", ptr_dir.as_str()));
         }
         IrConst::I128(v) => {
             // Emit as two 64-bit values (little-endian: low quad first)
             let lo = *v as u64;
             let hi = (*v >> 64) as u64;
-            out.emit(&format!("    {} {}", ptr_dir.as_str(), lo as i64));
-            out.emit(&format!("    {} {}", ptr_dir.as_str(), hi as i64));
+            out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), lo as i64));
+            out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), hi as i64));
         }
         IrConst::Zero => {
             let size = ty.size();
-            out.emit(&format!("    .zero {}", if size == 0 { 4 } else { size }));
+            out.emit_fmt(format_args!("    .zero {}", if size == 0 { 4 } else { size }));
         }
     }
 }
@@ -434,7 +450,7 @@ pub fn emit_string_bytes(out: &mut AsmOutput, s: &str) {
         .chain(std::iter::once(0u8))
         .map(|b| format!("{}", b))
         .collect();
-    out.emit(&format!("    .byte {}", bytes.join(", ")));
+    out.emit_fmt(format_args!("    .byte {}", bytes.join(", ")));
 }
 
 /// Escape a string for use in assembly .asciz directives.

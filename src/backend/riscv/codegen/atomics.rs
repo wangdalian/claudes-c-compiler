@@ -123,8 +123,8 @@ impl RiscvCodegen {
         self.state.emit("    sllw t2, t2, a3"); // t2 = val << shift
 
         // LR/SC loop
-        self.state.emit(&format!("{}:", loop_label));
-        self.state.emit(&format!("    lr.w{} t0, (a2)", aq_rl));
+        self.state.emit_fmt(format_args!("{}:", loop_label));
+        self.state.emit_fmt(format_args!("    lr.w{} t0, (a2)", aq_rl));
 
         match op {
             AtomicRmwOp::Xchg | AtomicRmwOp::TestAndSet => {
@@ -184,9 +184,9 @@ impl RiscvCodegen {
         }
 
         // SC: rd (t5) must differ from rs2 (t4) per RISC-V spec
-        self.state.emit(&format!("    sc.w{} t5, t4, (a2)", aq_rl));
-        self.state.emit(&format!("    bnez t5, {}", loop_label));
-        self.state.emit(&format!("{}:", done_label));
+        self.state.emit_fmt(format_args!("    sc.w{} t5, t4, (a2)", aq_rl));
+        self.state.emit_fmt(format_args!("    bnez t5, {}", loop_label));
+        self.state.emit_fmt(format_args!("{}:", done_label));
         // Extract the old sub-word value: t0 = (old_word >> shift) & field_mask
         self.state.emit("    srlw t0, t0, a3");
         if bits == 8 {
@@ -248,17 +248,17 @@ impl RiscvCodegen {
         self.state.emit("    sllw t3, t3, a3"); // t3 = desired << shift
 
         // LR/SC loop
-        self.state.emit(&format!("{}:", loop_label));
-        self.state.emit(&format!("    lr.w{} t0, (a2)", aq_rl));
+        self.state.emit_fmt(format_args!("{}:", loop_label));
+        self.state.emit_fmt(format_args!("    lr.w{} t0, (a2)", aq_rl));
         // Compare only the sub-word field
         self.state.emit("    and t4, t0, a4"); // t4 = current field
-        self.state.emit(&format!("    bne t4, t2, {}", fail_label));
+        self.state.emit_fmt(format_args!("    bne t4, t2, {}", fail_label));
         // Build new word: (old & ~mask) | desired_shifted
         self.state.emit("    and t4, t0, a5");
         self.state.emit("    or t4, t4, t3");
         // SC: rd (t5) must differ from rs2 (t4) per RISC-V spec
-        self.state.emit(&format!("    sc.w{} t5, t4, (a2)", aq_rl));
-        self.state.emit(&format!("    bnez t5, {}", loop_label));
+        self.state.emit_fmt(format_args!("    sc.w{} t5, t4, (a2)", aq_rl));
+        self.state.emit_fmt(format_args!("    bnez t5, {}", loop_label));
         // Success
         if returns_bool {
             self.state.emit("    li t0, 1");
@@ -272,8 +272,8 @@ impl RiscvCodegen {
                 self.state.emit("    srli t0, t0, 48");
             }
         }
-        self.state.emit(&format!("    j {}", done_label));
-        self.state.emit(&format!("{}:", fail_label));
+        self.state.emit_fmt(format_args!("    j {}", done_label));
+        self.state.emit_fmt(format_args!("{}:", fail_label));
         if returns_bool {
             self.state.emit("    li t0, 0");
         } else {
@@ -286,7 +286,7 @@ impl RiscvCodegen {
                 self.state.emit("    srli t0, t0, 48");
             }
         }
-        self.state.emit(&format!("{}:", done_label));
+        self.state.emit_fmt(format_args!("{}:", done_label));
     }
 
     /// Software CLZ (count leading zeros). Input in t0, result in t0.
@@ -307,21 +307,21 @@ impl RiscvCodegen {
         }
 
         // Handle zero case: clz(0) = bits
-        self.state.emit(&format!("    beqz t0, {}", zero_label));
+        self.state.emit_fmt(format_args!("    beqz t0, {}", zero_label));
         // t1 = count = 0, scan from MSB
         self.state.emit("    li t1, 0");
         // t2 = mask = 1 << (bits-1)
         self.state.emit("    li t2, 1");
-        self.state.emit(&format!("    slli t2, t2, {}", bits - 1));
-        self.state.emit(&format!("{}:", loop_label));
+        self.state.emit_fmt(format_args!("    slli t2, t2, {}", bits - 1));
+        self.state.emit_fmt(format_args!("{}:", loop_label));
         self.state.emit("    and t3, t0, t2");
-        self.state.emit(&format!("    bnez t3, {}", done_label));
+        self.state.emit_fmt(format_args!("    bnez t3, {}", done_label));
         self.state.emit("    srli t2, t2, 1"); // shift mask right
         self.state.emit("    addi t1, t1, 1");
-        self.state.emit(&format!("    j {}", loop_label));
-        self.state.emit(&format!("{}:", zero_label));
-        self.state.emit(&format!("    li t1, {}", bits));
-        self.state.emit(&format!("{}:", done_label));
+        self.state.emit_fmt(format_args!("    j {}", loop_label));
+        self.state.emit_fmt(format_args!("{}:", zero_label));
+        self.state.emit_fmt(format_args!("    li t1, {}", bits));
+        self.state.emit_fmt(format_args!("{}:", done_label));
         self.state.emit("    mv t0, t1");
     }
 
@@ -336,15 +336,15 @@ impl RiscvCodegen {
 
         // t1 = count, starts at 0
         self.state.emit("    li t1, 0");
-        self.state.emit(&format!("{}:", loop_label));
-        self.state.emit(&format!("    li t2, {}", bits));
-        self.state.emit(&format!("    beq t1, t2, {}", done_label)); // if counted all bits, done
+        self.state.emit_fmt(format_args!("{}:", loop_label));
+        self.state.emit_fmt(format_args!("    li t2, {}", bits));
+        self.state.emit_fmt(format_args!("    beq t1, t2, {}", done_label)); // if counted all bits, done
         self.state.emit("    andi t3, t0, 1");
-        self.state.emit(&format!("    bnez t3, {}", done_label)); // found a 1 bit
+        self.state.emit_fmt(format_args!("    bnez t3, {}", done_label)); // found a 1 bit
         self.state.emit("    srli t0, t0, 1");
         self.state.emit("    addi t1, t1, 1");
-        self.state.emit(&format!("    j {}", loop_label));
-        self.state.emit(&format!("{}:", done_label));
+        self.state.emit_fmt(format_args!("    j {}", loop_label));
+        self.state.emit_fmt(format_args!("{}:", done_label));
         self.state.emit("    mv t0, t1");
     }
 
@@ -392,10 +392,10 @@ impl RiscvCodegen {
                 for i in 0..8u64 {
                     let src_shift = i * 8;
                     let dst_shift = (7 - i) * 8;
-                    self.state.emit(&format!("    srli t2, t1, {}", src_shift));
+                    self.state.emit_fmt(format_args!("    srli t2, t1, {}", src_shift));
                     self.state.emit("    andi t2, t2, 0xff");
                     if dst_shift > 0 {
-                        self.state.emit(&format!("    slli t2, t2, {}", dst_shift));
+                        self.state.emit_fmt(format_args!("    slli t2, t2, {}", dst_shift));
                     }
                     self.state.emit("    or t0, t0, t2");
                 }
@@ -417,13 +417,13 @@ impl RiscvCodegen {
 
         // t1 = count
         self.state.emit("    li t1, 0");
-        self.state.emit(&format!("{}:", loop_label));
-        self.state.emit(&format!("    beqz t0, {}", done_label));
+        self.state.emit_fmt(format_args!("{}:", loop_label));
+        self.state.emit_fmt(format_args!("    beqz t0, {}", done_label));
         self.state.emit("    addi t2, t0, -1"); // t2 = n - 1
         self.state.emit("    and t0, t0, t2");   // n &= n - 1 (clear lowest set bit)
         self.state.emit("    addi t1, t1, 1");
-        self.state.emit(&format!("    j {}", loop_label));
-        self.state.emit(&format!("{}:", done_label));
+        self.state.emit_fmt(format_args!("    j {}", loop_label));
+        self.state.emit_fmt(format_args!("{}:", done_label));
         self.state.emit("    mv t0, t1");
     }
 }

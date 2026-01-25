@@ -583,13 +583,13 @@ pub trait ArchCodegen {
     /// Emit an unconditional branch.
     fn emit_branch(&mut self, label: &str) {
         let mnemonic = self.jump_mnemonic();
-        self.state().emit(&format!("    {} {}", mnemonic, label));
+        self.state().emit_fmt(format_args!("    {} {}", mnemonic, label));
     }
 
     /// Emit an unreachable trap instruction.
     fn emit_unreachable(&mut self) {
         let trap = self.trap_instruction();
-        self.state().emit(&format!("    {}", trap));
+        self.state().emit_fmt(format_args!("    {}", trap));
     }
 
     /// Emit a conditional branch.

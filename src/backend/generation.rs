@@ -55,7 +55,7 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule) -> String {
         cg.state().emit("");
         cg.state().emit(".section .init_array,\"aw\",@init_array");
         cg.state().emit(".align 8");
-        cg.state().emit(&format!("{} {}", ptr_dir.as_str(), ctor));
+        cg.state().emit_fmt(format_args!("{} {}", ptr_dir.as_str(), ctor));
     }
 
     // Emit .fini_array for destructor functions
@@ -63,7 +63,7 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule) -> String {
         cg.state().emit("");
         cg.state().emit(".section .fini_array,\"aw\",@fini_array");
         cg.state().emit(".align 8");
-        cg.state().emit(&format!("{} {}", ptr_dir.as_str(), dtor));
+        cg.state().emit_fmt(format_args!("{} {}", ptr_dir.as_str(), dtor));
     }
 
     // Emit .note.GNU-stack section to indicate non-executable stack
@@ -79,10 +79,10 @@ fn generate_function(cg: &mut dyn ArchCodegen, func: &IrFunction) {
 
     let type_dir = cg.function_type_directive();
     if !func.is_static {
-        cg.state().emit(&format!(".globl {}", func.name));
+        cg.state().emit_fmt(format_args!(".globl {}", func.name));
     }
-    cg.state().emit(&format!(".type {}, {}", func.name, type_dir));
-    cg.state().emit(&format!("{}:", func.name));
+    cg.state().emit_fmt(format_args!(".type {}, {}", func.name, type_dir));
+    cg.state().emit_fmt(format_args!("{}:", func.name));
 
     // Pre-scan for DynAlloca: if present, the epilogue must restore SP from
     // the frame pointer instead of adding back the compile-time frame size.
@@ -103,7 +103,7 @@ fn generate_function(cg: &mut dyn ArchCodegen, func: &IrFunction) {
     let entry_label = func.blocks.first().map(|b| b.label);
     for block in &func.blocks {
         if Some(block.label) != entry_label {
-            cg.state().emit(&format!("{}:", block.label));
+            cg.state().emit_fmt(format_args!("{}:", block.label));
         }
         for inst in &block.instructions {
             generate_instruction(cg, inst);
@@ -111,7 +111,7 @@ fn generate_function(cg: &mut dyn ArchCodegen, func: &IrFunction) {
         generate_terminator(cg, &block.terminator, frame_size);
     }
 
-    cg.state().emit(&format!(".size {}, .-{}", func.name, func.name));
+    cg.state().emit_fmt(format_args!(".size {}, .-{}", func.name, func.name));
     cg.state().emit("");
 }
 

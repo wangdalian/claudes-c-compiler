@@ -286,7 +286,7 @@ pub fn emit_inline_asm_common(
             continue;
         }
         let resolved = emitter.substitute_template_line(line, &operands, &gcc_to_internal, operand_types);
-        emitter.asm_state().emit(&format!("    {}", resolved));
+        emitter.asm_state().emit_fmt(format_args!("    {}", resolved));
     }
 
     // Phase 4: Store output register values back to their stack slots

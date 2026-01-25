@@ -150,18 +150,18 @@ impl ArmCodegen {
     /// Emit the arithmetic operation for an atomic RMW.
     pub(super) fn emit_atomic_op_arm(state: &mut CodegenState, op: AtomicRmwOp, dest_reg: &str, old_reg: &str, val_reg: &str) {
         match op {
-            AtomicRmwOp::Add => state.emit(&format!("    add {}, {}, {}", dest_reg, old_reg, val_reg)),
-            AtomicRmwOp::Sub => state.emit(&format!("    sub {}, {}, {}", dest_reg, old_reg, val_reg)),
-            AtomicRmwOp::And => state.emit(&format!("    and {}, {}, {}", dest_reg, old_reg, val_reg)),
-            AtomicRmwOp::Or  => state.emit(&format!("    orr {}, {}, {}", dest_reg, old_reg, val_reg)),
-            AtomicRmwOp::Xor => state.emit(&format!("    eor {}, {}, {}", dest_reg, old_reg, val_reg)),
+            AtomicRmwOp::Add => state.emit_fmt(format_args!("    add {}, {}, {}", dest_reg, old_reg, val_reg)),
+            AtomicRmwOp::Sub => state.emit_fmt(format_args!("    sub {}, {}, {}", dest_reg, old_reg, val_reg)),
+            AtomicRmwOp::And => state.emit_fmt(format_args!("    and {}, {}, {}", dest_reg, old_reg, val_reg)),
+            AtomicRmwOp::Or  => state.emit_fmt(format_args!("    orr {}, {}, {}", dest_reg, old_reg, val_reg)),
+            AtomicRmwOp::Xor => state.emit_fmt(format_args!("    eor {}, {}, {}", dest_reg, old_reg, val_reg)),
             AtomicRmwOp::Nand => {
-                state.emit(&format!("    and {}, {}, {}", dest_reg, old_reg, val_reg));
-                state.emit(&format!("    mvn {}, {}", dest_reg, dest_reg));
+                state.emit_fmt(format_args!("    and {}, {}, {}", dest_reg, old_reg, val_reg));
+                state.emit_fmt(format_args!("    mvn {}, {}", dest_reg, dest_reg));
             }
             AtomicRmwOp::Xchg | AtomicRmwOp::TestAndSet => {
                 // Handled separately in emit_atomic_rmw
-                state.emit(&format!("    mov {}, {}", dest_reg, val_reg));
+                state.emit_fmt(format_args!("    mov {}, {}", dest_reg, val_reg));
             }
         }
     }

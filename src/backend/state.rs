@@ -75,6 +75,12 @@ impl CodegenState {
         self.out.emit(s);
     }
 
+    /// Emit formatted assembly directly (no temporary String allocation).
+    #[inline]
+    pub fn emit_fmt(&mut self, args: std::fmt::Arguments<'_>) {
+        self.out.emit_fmt(args);
+    }
+
     pub fn reset_for_function(&mut self) {
         self.stack_offset = 0;
         self.value_locations.clear();
