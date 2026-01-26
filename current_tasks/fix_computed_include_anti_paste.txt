@@ -1,0 +1,19 @@
+Fix computed #include paths broken by anti-paste space insertion.
+
+Problem: The preprocessor's would_paste_tokens() inserts a space between
+two '/' characters to prevent them from being lexed as a '//' comment start.
+This is correct for general macro expansion but breaks computed #include paths
+like the Linux kernel's trace system:
+
+  #define TRACE_INCLUDE_PATH asm/
+  #define __TRACE_INCLUDE(system) __stringify(TRACE_INCLUDE_PATH/system.h)
+  #include __TRACE_INCLUDE(TRACE_INCLUDE_FILE)
+
+The macro expansion produces "asm/ /msr-trace.h" (with a space between the
+slashes) instead of "asm//msr-trace.h", which fails to resolve as a file path.
+
+Fix: In handle_include(), normalize computed include paths by collapsing
+"/ /" back to "//" after macro expansion.
+
+This fixes kernel boot failures caused by missing trace point definitions
+(e.g., arch/x86/lib/msr.c failing with undefined __traceiter_write_msr).
