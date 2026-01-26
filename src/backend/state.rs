@@ -129,9 +129,9 @@ pub struct CodegenState {
     /// __attribute__((section("..."))). Used to restore the correct section
     /// after emitting data (e.g., jump tables) in other sections.
     pub current_text_section: String,
-    /// Whether to use the kernel code model (-mcmodel=kernel).
-    /// When true, global symbol addresses use absolute sign-extended 32-bit
-    /// addressing instead of RIP-relative, producing R_X86_64_32S relocations.
+    /// Whether to use the kernel code model (-mcmodel=kernel). All symbols
+    /// are assumed to be in the negative 2GB of the virtual address space.
+    /// Currently uses RIP-relative addressing (same as default model).
     pub code_model_kernel: bool,
     /// Whether to disable jump table emission for switch statements (-fno-jump-tables).
     pub no_jump_tables: bool,

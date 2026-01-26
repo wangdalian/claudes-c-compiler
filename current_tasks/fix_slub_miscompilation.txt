@@ -1,5 +1,0 @@
-Task: Fix mm/slub.c miscompilation causing kernel boot failure
-Status: in_progress
-
-The kernel's SLUB allocator (mm/slub.c) is miscompiled by ccc, causing boot failure.
-Will investigate by comparing ccc vs gcc assembly output to identify the miscompilation.

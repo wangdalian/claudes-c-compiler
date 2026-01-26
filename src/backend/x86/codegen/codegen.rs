@@ -214,8 +214,8 @@ impl X86Codegen {
         self.state.cf_protection_branch = enabled;
     }
 
-    /// Enable kernel code model (-mcmodel=kernel). Uses absolute sign-extended
-    /// 32-bit addressing for global symbols instead of RIP-relative.
+    /// Enable kernel code model (-mcmodel=kernel). All symbols are assumed
+    /// to be in the negative 2GB of the virtual address space.
     pub fn set_code_model_kernel(&mut self, enabled: bool) {
         self.state.code_model_kernel = enabled;
     }
@@ -3673,16 +3673,16 @@ impl ArchCodegen for X86Codegen {
         if self.state.needs_got(name) {
             // PIC mode: load the address from the GOT
             self.state.emit_fmt(format_args!("    movq {}@GOTPCREL(%rip), %rax", name));
-        } else if self.state.code_model_kernel {
-            // Kernel code model: use absolute sign-extended 32-bit addressing.
-            // This emits R_X86_64_32S relocations. Required for early boot code
-            // (e.g. __startup_64) that runs at physical addresses different from
-            // linked virtual addresses, where RIP-relative would be wrong.
-            // The kernel memory model assumes all symbols are in the negative 2GB
-            // of the virtual address space (0xFFFFFFFF80000000+).
-            self.state.emit_fmt(format_args!("    movq ${}, %rax", name));
         } else {
-            // Non-PIC, default code model: direct RIP-relative LEA
+            // Use RIP-relative LEA for both default and kernel code models.
+            // For mcmodel=kernel: GCC also uses RIP-relative addressing for global
+            // accesses. While absolute sign-extended 32-bit addressing (movq $symbol)
+            // would work for most kernel code (the linker/relocation handles it),
+            // RIP-relative is required for early boot code in .head.text (e.g.
+            // __startup_64) which runs at physical addresses before the kernel is
+            // relocated to its final virtual address. At that point, absolute
+            // addresses point to wrong locations, but RIP-relative offsets are
+            // correct since code and data maintain the same relative positions.
             self.state.emit_fmt(format_args!("    leaq {}(%rip), %rax", name));
         }
         self.store_rax_to(dest);

@@ -32,6 +32,16 @@ const MAX_INLINE_BLOCKS: usize = 6;
 /// Prevents exponential blowup from recursive inlining chains.
 const MAX_INLINE_BUDGET_PER_CALLER: usize = 800;
 
+/// Maximum total instruction count for a caller function after inlining.
+/// When the caller exceeds this threshold, normal (non-always_inline) inlining
+/// stops. This prevents stack frame bloat: in CCC's codegen model, each SSA
+/// value gets a stack slot (~8 bytes), so a function with many instructions
+/// can easily produce a multi-KB stack frame that overflows the kernel's 16KB
+/// stack. GCC enforces similar limits via -fconserve-stack.
+/// Set to 800 to keep stack frames under ~6-7KB even after optimization,
+/// leaving headroom for callers higher on the call stack.
+const MAX_CALLER_INSTRUCTIONS_AFTER_INLINE: usize = 800;
+
 /// Maximum instructions for __attribute__((always_inline)) functions.
 /// GCC silently refuses to inline always_inline functions that are too large
 /// or complex. We match this behavior by capping at 150 IR instructions.
@@ -117,6 +127,15 @@ pub fn run(module: &mut IrModule) -> usize {
             }
             changed = false;
 
+            // Check if the caller has grown too large for further normal inlining.
+            // Each SSA value in CCC gets an 8-byte stack slot, so functions with
+            // too many instructions will have massive stack frames. Stop normal
+            // inlining once the caller exceeds the threshold; always_inline
+            // callees are still inlined (required by C semantics).
+            let caller_inst_count: usize = module.functions[func_idx].blocks.iter()
+                .map(|b| b.instructions.len()).sum();
+            let caller_too_large = caller_inst_count > MAX_CALLER_INSTRUCTIONS_AFTER_INLINE;
+
             // Find call sites to inline in the current function.
             // When the caller has a custom section attribute, also consider callees
             // that exceed normal limits, to avoid dangerous cross-section calls.
@@ -136,6 +155,18 @@ pub fn run(module: &mut IrModule) -> usize {
             // Use appropriate budget based on whether callee is always_inline or
             // exceeds normal limits (section-caller inlining uses always_inline budget)
             let use_relaxed_budget = callee_data.is_always_inline || callee_data.exceeds_normal_limits;
+
+            // When the caller is too large, only allow always_inline callees.
+            // This prevents stack frame bloat that causes kernel stack overflows
+            // (e.g., ___slab_alloc in mm/slub.c growing to 19KB stack frame).
+            if caller_too_large && !callee_data.is_always_inline {
+                if debug_inline {
+                    eprintln!("[INLINE] Stopping normal inlining into '{}': caller has {} instructions (limit {})",
+                        module.functions[func_idx].name, caller_inst_count, MAX_CALLER_INSTRUCTIONS_AFTER_INLINE);
+                }
+                break;
+            }
+
             let effective_budget = if use_relaxed_budget {
                 always_inline_budget_remaining
             } else {

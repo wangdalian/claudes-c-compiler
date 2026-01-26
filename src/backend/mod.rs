@@ -43,13 +43,11 @@ pub struct CodegenOptions {
     /// operations, casts, and other FP codegen paths. Currently only the
     /// variadic ABI path is gated, which is sufficient for the Linux kernel.
     pub no_sse: bool,
-    /// Whether to use the kernel code model (-mcmodel=kernel). When true,
-    /// global symbol addresses are loaded using absolute 32-bit sign-extended
-    /// addressing (movq $symbol, %reg) instead of RIP-relative (leaq symbol(%rip), %reg).
-    /// This is required for the Linux kernel because early boot code (e.g. __startup_64)
-    /// runs at physical addresses different from its linked virtual addresses, making
-    /// RIP-relative references resolve incorrectly. The kernel memory model assumes all
-    /// kernel symbols reside in the negative 2GB of the virtual address space.
+    /// Whether to use the kernel code model (-mcmodel=kernel). All symbols
+    /// are assumed to be in the negative 2GB of the virtual address space.
+    /// Uses RIP-relative addressing for global access (same as default model).
+    /// RIP-relative is required for early boot code in .head.text which runs
+    /// at physical addresses before the kernel is relocated to virtual addresses.
     pub code_model_kernel: bool,
     /// Whether to disable jump table emission for switch statements (-fno-jump-tables).
     /// When true, all switch statements use compare-and-branch chains instead of

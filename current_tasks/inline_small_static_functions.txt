@@ -1,0 +1,17 @@
+Extend inlining pass to inline small static (non-inline) functions
+
+Problem: The inlining pass currently only inlines static inline functions (both is_static
+AND is_inline must be true). Plain static functions are never inlined, even when they are
+very small. This causes link failures when a small static function references an external
+symbol that is conditionally compiled.
+
+Example: drivers/gpu/drm/i915/pxp/intel_pxp.c has a static function
+pxp_fw_dependencies_completed() that calls intel_pxp_gsccs_is_ready_for_sessions() under
+a runtime condition. When CONFIG_DRM_I915_PXP is not set, the definition of
+intel_pxp_gsccs_is_ready_for_sessions doesn't exist. GCC at -O2 inlines the small static
+function and can then eliminate the dead reference. Our compiler leaves the external
+reference, causing a linker error.
+
+Fix: Extend build_callee_map() in src/passes/inline.rs to also consider small static
+(non-inline) functions as inlining candidates, with conservative size limits
+(e.g., max 30 instructions, max 3 blocks). This matches GCC -O2 behavior.

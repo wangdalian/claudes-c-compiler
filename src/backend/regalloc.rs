@@ -53,29 +53,17 @@ pub fn allocate_registers(
         };
     }
 
-    // Disable register allocation for functions with atomics.
-    // Atomic operations use complex multi-instruction sequences that may conflict
-    // with register allocator assumptions.
+    // Note: Register allocation is now enabled for functions with atomics.
+    // Atomic operations in all backends (x86, ARM, RISC-V) access their operands
+    // exclusively through regalloc-aware helpers (operand_to_rax/x0/t0 and
+    // store_rax_to/x0_to/t0_to), so register-allocated values work correctly.
+    // The atomic pointer operands are individually excluded from register
+    // allocation eligibility below (lines ~177-196) since they need stable
+    // stack addresses for the memory access instructions.
     //
-    // Note: functions with inline asm are no longer disabled here. Instead, each
-    // backend filters out callee-saved registers clobbered by inline asm from the
-    // available_regs list before calling this function. This allows register
-    // allocation for the many kernel functions that contain inline asm (e.g., from
-    // inlining spin_lock/spin_unlock) using the remaining non-clobbered registers.
-    let has_atomics = func.blocks.iter().any(|block| {
-        block.instructions.iter().any(|inst| matches!(inst,
-            Instruction::AtomicRmw { .. } |
-            Instruction::AtomicCmpxchg { .. } |
-            Instruction::AtomicLoad { .. } |
-            Instruction::AtomicStore { .. }
-        ))
-    });
-    if has_atomics {
-        return RegAllocResult {
-            assignments: FxHashMap::default(),
-            used_regs: Vec::new(),
-        };
-    }
+    // Previously, register allocation was completely disabled for functions with
+    // any atomic instruction, which caused massive stack frames (e.g., 19KB for
+    // the kernel's ___slab_alloc) and kernel stack overflows.
 
     // Liveness analysis now uses backward dataflow iteration to correctly
     // handle loops (values live across back-edges have their intervals extended).

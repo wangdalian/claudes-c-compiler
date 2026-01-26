@@ -247,7 +247,8 @@ fn real_main() {
             }
             "-mcmodel=kernel" => {
                 // Kernel code model: all symbols in the negative 2GB of virtual address space.
-                // Use absolute sign-extended 32-bit addressing instead of RIP-relative.
+                // Uses RIP-relative addressing for global access (same as default model),
+                // which is required for early boot code running at physical addresses.
                 driver.code_model_kernel = true;
             }
             "-mcmodel=small" | "-mcmodel=medlow" | "-mcmodel=medium" | "-mcmodel=medany" | "-mcmodel=large" => {

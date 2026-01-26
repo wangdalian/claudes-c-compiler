@@ -72,9 +72,10 @@ pub struct Driver {
     /// any SSE/SSE2/AVX instructions (movdqu, movss, movsd, etc.).
     /// The Linux kernel uses -mno-sse to avoid FPU state in kernel code.
     pub no_sse: bool,
-    /// Whether to use the kernel code model (-mcmodel=kernel). When true,
-    /// global symbol addresses use absolute 32-bit sign-extended addressing
-    /// instead of RIP-relative. Required for the Linux kernel.
+    /// Whether to use the kernel code model (-mcmodel=kernel). All symbols
+    /// are assumed to be in the negative 2GB of the virtual address space.
+    /// Uses RIP-relative addressing for global access, which is required for
+    /// early boot code in .head.text that runs at physical addresses.
     pub code_model_kernel: bool,
     /// Whether to disable jump table emission for switch statements (-fno-jump-tables).
     /// The Linux kernel uses this with -mindirect-branch=thunk-extern (retpoline) to
