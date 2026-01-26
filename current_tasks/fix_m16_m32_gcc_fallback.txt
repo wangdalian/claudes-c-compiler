@@ -1,0 +1,19 @@
+Task: Fix -m16/-m32 GCC fallback for kernel boot/realmode code
+
+Problem: The compiler silently ignores -m16 and -m32 flags, producing x86-64 ELF
+objects even when 32-bit/16-bit code is requested. The Linux kernel uses -m16 for
+boot and realmode code (arch/x86/boot/*.c, arch/x86/realmode/rm/*.c) which must
+produce 32-bit ELF objects with .code16gcc. When the kernel bisect tool picks one
+of these files, the linker fails with:
+  "i386:x86-64 architecture of input file is incompatible with i386 output"
+
+Fix: Detect -m16 and -m32 in argument parsing and set a gcc_fallback flag. When
+this flag is set, delegate the entire compilation to the system GCC by forwarding
+all original command-line arguments verbatim. This is correct because our compiler
+only supports x86-64 code generation; 32-bit/16-bit x86 codegen is out of scope.
+
+Files modified:
+- src/main.rs: Parse -m16/-m32, save original args, set gcc_fallback flag
+- src/driver/driver.rs: Add gcc_fallback field, run_gcc_fallback() method
+
+Status: IN PROGRESS
