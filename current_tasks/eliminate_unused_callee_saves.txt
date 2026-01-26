@@ -1,0 +1,19 @@
+Eliminate unused callee-saved register saves/restores in peephole optimizer
+
+Status: in_progress
+
+Problem: After peephole optimization, some callee-saved registers that were allocated
+by the register allocator may have had all their body uses eliminated by earlier peephole
+passes (e.g., store/load forwarding, dead store elimination, self-move elimination).
+However, the prologue save and epilogue restore instructions for these registers remain,
+wasting stack space (8 bytes per unused register) and adding unnecessary instructions.
+
+This is a significant issue for kernel compilation where cumulative stack usage across
+non-inlined functions can cause stack overflow during boot.
+
+Fix: Add a post-peephole pass (eliminate_unused_callee_saves) that:
+1. Scans for function prologues (pushq %rbp; movq %rsp, %rbp; subq $N, %rsp)
+2. Identifies callee-saved register saves immediately after the prologue
+3. Checks if each saved register is referenced anywhere else in the function body
+4. If not, NOPs the save and all epilogue restores for that register
+5. Shrinks the stack frame by adjusting the subq $N, %rsp instruction
