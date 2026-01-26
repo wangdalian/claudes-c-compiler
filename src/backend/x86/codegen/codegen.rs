@@ -1425,6 +1425,76 @@ impl X86Codegen {
             }
         }
     }
+
+    /// Load an F128 operand into x87 ST(0), using full 80-bit precision when available.
+    /// This is used for F128 arithmetic and for pushing F128 call arguments.
+    fn emit_f128_load_to_x87(&mut self, operand: &Operand) {
+        match operand {
+            Operand::Const(ref c) => {
+                match c {
+                    IrConst::LongDouble(_, raw) => {
+                        // Full-precision x87 bytes available; push to stack and fldt
+                        let lo = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+                        let hi = u16::from_le_bytes(raw[8..10].try_into().unwrap());
+                        self.state.emit("    subq $16, %rsp");
+                        self.state.emit_fmt(format_args!("    movabsq ${}, %rax", lo as i64));
+                        self.state.emit("    movq %rax, (%rsp)");
+                        self.state.emit_fmt(format_args!("    movq ${}, %rax", hi as i64));
+                        self.state.emit("    movq %rax, 8(%rsp)");
+                        self.state.emit("    fldt (%rsp)");
+                        self.state.emit("    addq $16, %rsp");
+                        self.state.reg_cache.invalidate_all();
+                    }
+                    _ => {
+                        // f64 constant: push and fldl
+                        let f64_val = c.to_f64().unwrap_or(0.0);
+                        let bits = f64_val.to_bits();
+                        self.state.emit("    subq $8, %rsp");
+                        self.state.emit_fmt(format_args!("    movabsq ${}, %rax", bits as i64));
+                        self.state.emit("    movq %rax, (%rsp)");
+                        self.state.emit("    fldl (%rsp)");
+                        self.state.emit("    addq $8, %rsp");
+                        self.state.reg_cache.invalidate_all();
+                    }
+                }
+            }
+            Operand::Value(ref v) => {
+                if self.state.f128_direct_slots.contains(&v.0) {
+                    // Full 80-bit x87 precision in the slot; use fldt
+                    if let Some(slot) = self.state.get_slot(v.0) {
+                        self.state.emit_fmt(format_args!("    fldt {}(%rbp)", slot.0));
+                    } else {
+                        // Fallback: load f64 from rax
+                        self.operand_to_rax(operand);
+                        self.state.emit("    subq $8, %rsp");
+                        self.state.emit("    movq %rax, (%rsp)");
+                        self.state.emit("    fldl (%rsp)");
+                        self.state.emit("    addq $8, %rsp");
+                    }
+                } else if let Some(slot) = self.state.get_slot(v.0) {
+                    if self.state.is_alloca(v.0) {
+                        // Alloca containing a long double; use fldt from alloca
+                        self.state.emit_fmt(format_args!("    fldt {}(%rbp)", slot.0));
+                    } else {
+                        // Regular f64 value in slot; push and fldl
+                        self.state.emit_fmt(format_args!("    movq {}(%rbp), %rax", slot.0));
+                        self.state.emit("    subq $8, %rsp");
+                        self.state.emit("    movq %rax, (%rsp)");
+                        self.state.emit("    fldl (%rsp)");
+                        self.state.emit("    addq $8, %rsp");
+                        self.state.reg_cache.invalidate_all();
+                    }
+                } else {
+                    // No slot; use operand_to_rax which gets f64 bit pattern
+                    self.operand_to_rax(operand);
+                    self.state.emit("    subq $8, %rsp");
+                    self.state.emit("    movq %rax, (%rsp)");
+                    self.state.emit("    fldl (%rsp)");
+                    self.state.emit("    addq $8, %rsp");
+                }
+            }
+        }
+    }
 }
 
 const X86_ARG_REGS: [&str; 6] = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
@@ -3073,21 +3143,42 @@ impl ArchCodegen for X86Codegen {
                             self.state.reg_cache.invalidate_all(); // rax clobbered by movabsq
                         }
                         Operand::Value(ref v) => {
-                            if let Some(slot) = self.state.get_slot(v.0) {
-                                if self.state.is_alloca(v.0) {
-                                    self.state.emit_fmt(format_args!("    leaq {}(%rbp), %rax", slot.0));
+                            // Check if this value has full 80-bit x87 precision
+                            // stored directly in its slot (f128_direct_slots), or
+                            // if it's an alloca containing a long double.
+                            if self.state.f128_direct_slots.contains(&v.0) {
+                                // Slot contains full 80-bit x87 extended precision data.
+                                // Use fldt to load it directly, then fstpt to the stack arg area.
+                                if let Some(slot) = self.state.get_slot(v.0) {
+                                    self.state.emit("    subq $16, %rsp");
+                                    self.state.emit_fmt(format_args!("    fldt {}(%rbp)", slot.0));
+                                    self.state.emit("    fstpt (%rsp)");
                                 } else {
+                                    // Fallback: push zero
+                                    self.state.emit("    subq $16, %rsp");
+                                }
+                            } else if let Some(slot) = self.state.get_slot(v.0) {
+                                if self.state.is_alloca(v.0) {
+                                    // Alloca contains a long double in memory.
+                                    // Use fldt to load from the alloca address.
+                                    self.state.emit("    subq $16, %rsp");
+                                    self.state.emit_fmt(format_args!("    fldt {}(%rbp)", slot.0));
+                                    self.state.emit("    fstpt (%rsp)");
+                                } else {
+                                    // Regular f64 value: convert via x87 to 80-bit
                                     self.state.emit_fmt(format_args!("    movq {}(%rbp), %rax", slot.0));
+                                    self.state.reg_cache.invalidate_all();
+                                    self.state.emit("    subq $16, %rsp");
+                                    self.state.emit("    pushq %rax");
+                                    self.state.emit("    fldl (%rsp)");
+                                    self.state.emit("    addq $8, %rsp");
+                                    self.state.emit("    fstpt (%rsp)");
                                 }
                             } else {
-                                self.state.emit("    xorq %rax, %rax");
+                                // No slot: push zeroed 16 bytes
+                                self.state.emit("    subq $16, %rsp");
                             }
-                            self.state.reg_cache.invalidate_all(); // rax clobbered by F128 load
-                            self.state.emit("    subq $16, %rsp");
-                            self.state.emit("    pushq %rax");
-                            self.state.emit("    fldl (%rsp)");
-                            self.state.emit("    addq $8, %rsp");
-                            self.state.emit("    fstpt (%rsp)");
+                            self.state.reg_cache.invalidate_all();
                         }
                     }
                 }
@@ -3786,8 +3877,6 @@ impl ArchCodegen for X86Codegen {
     fn emit_float_binop(&mut self, dest: &Value, op: FloatOp, lhs: &Operand, rhs: &Operand, ty: IrType) {
         if ty == IrType::F128 {
             // F128 (long double) arithmetic: use x87 FPU for 80-bit extended precision.
-            // Both operands are f64 bit-patterns in registers. We load them into x87,
-            // perform the operation at 80-bit precision, then store the result as f64.
             // x87 operand order: we load lhs first, then rhs, giving ST0=rhs, ST1=lhs.
             // For sub/div, we need lhs op rhs = ST1 op ST0, which requires the
             // "reverse" variants: fsubrp computes ST1-ST0, fdivrp computes ST1/ST0.
@@ -3798,23 +3887,30 @@ impl ArchCodegen for X86Codegen {
                 FloatOp::Mul => "fmulp",
                 FloatOp::Div => "fdivrp",   // ST1 / ST0 = lhs / rhs
             };
-            // Load lhs (f64 in rax) into x87 ST0
-            self.operand_to_rax(lhs);
-            self.state.emit("    subq $8, %rsp");
-            self.state.emit("    movq %rax, (%rsp)");
-            self.state.emit("    fldl (%rsp)");
-            // Load rhs (f64 in rcx) into x87 ST0 (pushes lhs to ST1)
-            self.operand_to_rcx(rhs);
-            self.state.emit("    movq %rcx, (%rsp)");
-            self.state.emit("    fldl (%rsp)");
+            // Load lhs into x87 ST0 (using full precision when available)
+            self.emit_f128_load_to_x87(lhs);
+            // Load rhs into x87 ST0 (pushes lhs to ST1)
+            self.emit_f128_load_to_x87(rhs);
             // ST0 = rhs, ST1 = lhs.
             self.state.emit_fmt(format_args!("    {} %st, %st(1)", x87_op));
-            // Result is now in ST0. Store back as f64 to stack, then to rax.
-            self.state.emit("    fstpl (%rsp)");
-            self.state.emit("    movq (%rsp), %rax");
-            self.state.emit("    addq $8, %rsp");
-            self.state.reg_cache.invalidate_acc();
-            self.emit_store_result(dest);
+            // Result is now in ST0. Store full 80-bit precision to dest slot if available.
+            if let Some(dest_slot) = self.state.get_slot(dest.0) {
+                self.state.emit_fmt(format_args!("    fstpt {}(%rbp)", dest_slot.0));
+                // Also keep f64 copy in rax for non-F128 consumers
+                self.state.emit_fmt(format_args!("    fldt {}(%rbp)", dest_slot.0));
+                self.state.emit("    subq $8, %rsp");
+                self.state.emit("    fstpl (%rsp)");
+                self.state.emit("    popq %rax");
+                self.state.reg_cache.set_acc(dest.0, false);
+                self.state.f128_direct_slots.insert(dest.0);
+            } else {
+                // No slot: just store as f64 in rax
+                self.state.emit("    subq $8, %rsp");
+                self.state.emit("    fstpl (%rsp)");
+                self.state.emit("    popq %rax");
+                self.state.reg_cache.invalidate_acc();
+                self.emit_store_result(dest);
+            }
             return;
         }
         let mnemonic = self.emit_float_binop_mnemonic(op);

@@ -149,6 +149,15 @@ impl Lowerer {
         Operand::Value(alloca)
     }
 
+    /// Lower a long double imaginary literal, preserving full x87 precision bytes.
+    pub(super) fn lower_imaginary_literal_ld(&mut self, val: f64, bytes: &[u8; 16], ctype: &CType) -> Operand {
+        let alloca = self.alloca_complex(ctype);
+        let zero = Operand::Const(IrConst::long_double(0.0));
+        let imag_val = Operand::Const(IrConst::long_double_with_bytes(val, *bytes));
+        self.store_complex_parts(alloca, zero, imag_val, ctype);
+        Operand::Value(alloca)
+    }
+
     /// Lower __real__ expr - extract real part of a complex expression.
     pub(super) fn lower_complex_real_part(&mut self, inner: &Expr) -> Operand {
         let inner_ctype = self.expr_ctype(inner);

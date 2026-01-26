@@ -55,7 +55,7 @@ impl Lowerer {
             // Imaginary literals
             Expr::ImaginaryLiteral(val, _) => self.lower_imaginary_literal(*val, &CType::ComplexDouble),
             Expr::ImaginaryLiteralF32(val, _) => self.lower_imaginary_literal(*val, &CType::ComplexFloat),
-            Expr::ImaginaryLiteralLongDouble(val, _, _) => self.lower_imaginary_literal(*val, &CType::ComplexLongDouble),
+            Expr::ImaginaryLiteralLongDouble(val, bytes, _) => self.lower_imaginary_literal_ld(*val, bytes, &CType::ComplexLongDouble),
 
             Expr::StringLiteral(s, _) => self.lower_string_literal(s, false),
             Expr::WideStringLiteral(s, _) => self.lower_string_literal(s, true),
