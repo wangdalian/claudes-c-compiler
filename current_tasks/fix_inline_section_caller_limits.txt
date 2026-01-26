@@ -1,0 +1,16 @@
+Task: Fix inlining limits for static inline functions called from section-attributed callers
+Status: in_progress
+
+Problem:
+When a function has __attribute__((section(".head.text"))) (or similar), it runs in a
+special context where cross-section calls may not work. For example, __startup_64 runs
+from .head.text during early boot before virtual memory is set up. It calls
+check_la57_support (a static inline function) but CCC doesn't inline it because
+MAX_INLINE_BLOCKS = 1 is too restrictive for functions with any control flow.
+This causes the compiled kernel to crash on boot.
+
+Fix:
+1. When the caller has a custom section attribute, use relaxed (always_inline-level) limits
+   for inlining static inline callees, since cross-section calls are dangerous.
+2. Also increase the general MAX_INLINE_BLOCKS from 1 to 6 to better match GCC behavior
+   for static inline functions.
