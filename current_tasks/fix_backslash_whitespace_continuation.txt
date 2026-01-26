@@ -1,0 +1,10 @@
+Task: Fix backslash-whitespace-newline line continuation
+Status: in_progress
+Agent: claude
+
+Problem: join_continued_lines() only handles backslash immediately before newline,
+but GCC/Clang also accept backslash followed by whitespace before newline as valid
+line continuation. This causes compilation failures for tests like compiler_suite_0059_0082.
+
+Files to modify:
+- src/frontend/preprocessor/preprocessor.rs (join_continued_lines function)
