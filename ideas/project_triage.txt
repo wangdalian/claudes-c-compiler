@@ -30,21 +30,20 @@ FAILING:
             binary — if it also fails, this is an environment issue.
 
   postgres:
-    Status: MOSTLY FIXED (211/216 tests pass)
-    Notes: Fixed typedef pointer cast arithmetic bug that caused 132 test
-           failures. The bug was in expr_is_pointer() which didn't resolve
-           typedef'd pointer types through the typedef table, causing
-           ((TypedefPtr) p) - 1 to subtract 1 byte instead of sizeof(struct).
-           This corrupted postgres trigger event chunk pointers, manifesting
-           as "could not open relation with OID 108544" errors.
-           Remaining 5 failures:
-           1. create_function_c, misc_functions: "ENOENT" instead of
-              "No such file or directory" in error messages
-           2. psql: output truncation or psql binary issue
-           3. stats_ext: statistics estimation difference (100 vs 1000)
-           4. plpgsql: stack depth exceeded (recurse test)
-    Action: Investigate strerror/ENOENT issue and stats_ext difference.
+    Status: MOSTLY FIXED (213/216 tests pass)
+    Notes: Fixed sizeof() on unsized arrays (declared with []) returning pointer
+           size (8) instead of actual array size. The bug was in fixup_unsized_array
+           which updated alloc_size but not c_type, leaving it as Array(elem, None).
+           sizeof_identifier for globals preferred c_type, and Array(_, None).size_ctx()
+           returned 8. This caused pg_char_to_encoding's lengthof(pg_encname_tbl) to
+           return 0, making all encoding lookups fail and initdb crash.
+           Previously also fixed typedef pointer cast arithmetic (132 failures).
+           Remaining 3 failures:
+           1. stats_ext: statistics estimation difference (100 vs 1000)
+           2. plpgsql: stack depth exceeded (recurse test)
+           3. One test triggers segfault (signal 11)
+    Action: Investigate stats_ext estimation and stack depth issues.
 
 PRIORITY ORDER for fixing:
-  1. Fix remaining postgres failures (strerror ENOENT, stats_ext, plpgsql)
+  1. Fix remaining postgres failures (stats_ext, plpgsql, segfault)
   2. Verify liburing is an environment issue

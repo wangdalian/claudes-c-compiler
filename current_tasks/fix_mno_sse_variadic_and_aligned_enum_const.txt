@@ -1,0 +1,25 @@
+Task: Fix -mno-sse variadic prologue SSE instructions and aligned(enum_const) evaluation
+Status: in_progress
+
+Bug 1 (-mno-sse variadic prologue):
+  When -mno-sse is set (e.g., Linux kernel build), the compiler unconditionally
+  emitted movdqu instructions to save XMM registers in variadic function prologues.
+  This caused invalid opcode traps in the kernel (SSE is disabled in kernel mode).
+
+  Fix: Parse -mno-sse/-mno-sse2/-mno-mmx/-mno-avx flags and propagate a no_sse
+  option through CodegenOptions to X86Codegen. When no_sse is true:
+  - Skip XMM register saves in variadic prologues (only save GP registers)
+  - Reserve only 48 bytes for register save area (not 176)
+  - Set fp_offset to 176 in va_start so va_arg for floats always uses stack path
+
+Bug 2 (aligned attribute with enum constants):
+  __attribute__((aligned(1 << ENUM_CONST))) silently failed because the parser's
+  eval_const_int_expr() had no Expr::Identifier case. Enum constants were only
+  available in sema, but aligned() was evaluated at parse time.
+
+  Fix: Add an enum_constants map to the Parser struct, populated when enum
+  definitions are parsed. eval_const_int_expr_with_enums() resolves identifiers
+  against this map, allowing aligned(expr) to evaluate enum-constant expressions.
+
+Kernel bisect: kernel/workqueue.c and net/sunrpc/clnt.c now pass (both had
+struct pool_workqueue __aligned(1 << WORK_STRUCT_PWQ_SHIFT) which uses enum constants).

@@ -1777,6 +1777,8 @@ impl Lowerer {
     }
 
     /// Fix up allocation size and strides for unsized arrays (int a[] = {...}).
+    /// Also updates c_type from Array(elem, None) to Array(elem, Some(count))
+    /// so that sizeof() returns the correct array size rather than pointer size.
     pub(super) fn fixup_unsized_array(
         &self,
         da: &mut DeclAnalysis,
@@ -1829,6 +1831,16 @@ impl Lowerer {
                         if da.array_dim_strides.len() == 1 {
                             da.array_dim_strides = vec![da.elem_size];
                         }
+                    }
+                }
+            }
+            // Update c_type from Array(elem, None) to Array(elem, Some(count))
+            // so that sizeof() on this array returns the correct total size.
+            if da.elem_size > 0 && da.alloc_size > 0 {
+                let resolved_count = da.alloc_size / da.elem_size;
+                if let Some(ref ct) = da.c_type {
+                    if let CType::Array(elem, None) = ct {
+                        da.c_type = Some(CType::Array(elem.clone(), Some(resolved_count)));
                     }
                 }
             }
