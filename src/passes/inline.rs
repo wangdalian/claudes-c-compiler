@@ -298,6 +298,8 @@ fn terminator_used_values(term: &Terminator) -> Vec<u32> {
 struct CalleeData {
     blocks: Vec<BasicBlock>,
     params: Vec<IrType>,  // types of parameters
+    /// For each param, Some(size) if it's a struct-by-value parameter, None otherwise.
+    param_struct_sizes: Vec<Option<usize>>,
     return_type: IrType,
     num_params: usize,
     next_value_id: u32,
@@ -401,10 +403,12 @@ fn build_callee_map(module: &IrModule) -> HashMap<String, CalleeData> {
             .unwrap_or(0);
 
         let param_types: Vec<IrType> = func.params.iter().map(|p| p.ty).collect();
+        let param_struct_sizes: Vec<Option<usize>> = func.params.iter().map(|p| p.struct_size).collect();
 
         map.insert(func.name.clone(), CalleeData {
             blocks: func.blocks.clone(),
             params: param_types,
+            param_struct_sizes,
             return_type: func.return_type,
             num_params: func.params.len(),
             next_value_id: func.next_value_id,
@@ -534,17 +538,8 @@ fn inline_call_site(
         }
     }
 
-    // Skip inlining functions with struct-by-value parameters.
-    // Struct params use Memcpy in the caller instead of Store, and handling
-    // them correctly requires matching the calling convention's decomposition.
-    for (_, _, alloca_size) in &param_alloca_info {
-        if *alloca_size > 8 {
-            return false;
-        }
-    }
-
-    // Insert stores of arguments into param allocas at the beginning of the entry block
-    // (after the allocas themselves)
+    // Insert stores/memcpys of arguments into param allocas at the beginning of the
+    // entry block (after the allocas themselves)
     let mut insert_pos = 0;
     // Find position after all allocas in the entry block
     for (i, inst) in entry_block.instructions.iter().enumerate() {
@@ -558,14 +553,31 @@ fn inline_call_site(
     // Insert stores in reverse order so indices stay valid
     let num_args_to_store = std::cmp::min(site.args.len(), param_alloca_info.len());
     for i in (0..num_args_to_store).rev() {
-        // Use the alloca's type for the store, which matches what the callee expects
-        let store_ty = param_alloca_info[i].1;
-        entry_block.instructions.insert(insert_pos, Instruction::Store {
-            val: site.args[i],
-            ptr: param_alloca_info[i].0,
-            ty: store_ty,
-            seg_override: AddressSpace::Default,
-        });
+        let param_struct_size = callee.param_struct_sizes.get(i).copied().flatten();
+        if let Some(struct_size) = param_struct_size {
+            // Struct-by-value parameter: the caller passes a pointer to the struct data.
+            // We must copy the struct data from that pointer into the callee's param alloca.
+            if let Operand::Value(src_ptr) = site.args[i] {
+                entry_block.instructions.insert(insert_pos, Instruction::Memcpy {
+                    dest: param_alloca_info[i].0,
+                    src: src_ptr,
+                    size: struct_size,
+                });
+            } else {
+                // Struct arg should always be a Value (pointer), not a Const.
+                // If somehow it's a Const, bail out of inlining.
+                return false;
+            }
+        } else {
+            // Scalar parameter: store the value directly into the param alloca.
+            let store_ty = param_alloca_info[i].1;
+            entry_block.instructions.insert(insert_pos, Instruction::Store {
+                val: site.args[i],
+                ptr: param_alloca_info[i].0,
+                ty: store_ty,
+                seg_override: AddressSpace::Default,
+            });
+        }
     }
 
     // Now split the caller's block at the call site:

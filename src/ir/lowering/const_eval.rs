@@ -312,7 +312,19 @@ impl Lowerer {
                 let is_multi_field_aggregate = match &cl_ctype {
                     CType::Struct(key) | CType::Union(key) => {
                         if let Some(layout) = self.types.struct_layouts.get(&**key) {
+                            // A struct is an aggregate if it has multiple fields, OR if its
+                            // single field is itself an aggregate (array/struct/union).
+                            // Without this check, (arr_t){ {100, 200, 300} } where arr_t
+                            // has one array field would be scalar-evaluated to just 100.
                             layout.fields.len() > 1
+                                || layout.fields.iter().any(|f| {
+                                    matches!(
+                                        f.ty,
+                                        CType::Array(..)
+                                            | CType::Struct(..)
+                                            | CType::Union(..)
+                                    )
+                                })
                         } else {
                             false
                         }

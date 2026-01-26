@@ -1,0 +1,35 @@
+Fix multi-dimensional designated initializer for compound/pointer global arrays
+
+Status: in_progress
+
+Bug: When a global array containing address expressions (pointers) uses
+multi-dimensional designated initializers like [1][0] = ptr1, [1][1] = ptr2,
+[1][2] = ptr3, [1][3] = ptr4, only the first designator index is used. All
+entries in the same row collapse to the same flat position, and only the last
+entry survives.
+
+Example:
+  int *table[3][4] = {
+      [1][0] = sub1,
+      [1][1] = sub2,
+      [1][2] = sub3,
+      [1][3] = sub4,
+  };
+  CCC: only table[0][1] = sub4, all others NULL (wrong)
+  GCC: table[1][0..3] = sub1..sub4 (correct)
+
+Root cause: In global_init.rs, the compound init path for arrays with address
+expressions only reads item.designators.first() to get the outer index, ignoring
+any additional [col] designators. The flat index is computed as just
+current_idx * outer_stride or current_idx, missing inner dimensions.
+
+Fix: Collect all Designator::Index entries from the item and use
+compute_flat_index_from_designators() to compute the correct flat position.
+
+Impact: Fixes kernel boot failure caused by miscompiled arch/x86/lib/inat.c
+(inat_escape_tables, inat_group_tables, inat_avx_tables all use [row][col]
+designated initializers for 2D pointer arrays).
+
+Files modified:
+  - src/ir/lowering/global_init.rs
+  - tests/multidim-designated-init-compound/main.c (regression test)
