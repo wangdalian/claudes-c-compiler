@@ -89,6 +89,9 @@ pub struct Parser {
     /// Functions with this attribute must always be inlined and should not be
     /// emitted as standalone functions.
     pub(super) parsing_always_inline: bool,
+    /// Set when __attribute__((cleanup(func))) is encountered; holds the cleanup function name.
+    /// The cleanup function is called with a pointer to the variable when it goes out of scope.
+    pub(super) parsing_cleanup_fn: Option<String>,
     /// Set when parse_type_specifier or consume_post_type_qualifiers encounters _Alignas(N).
     /// Consumed and reset by callers that need it (e.g., struct field parsing).
     pub(super) parsed_alignas: Option<usize>,
@@ -140,6 +143,7 @@ impl Parser {
             parsing_error_attr: false,
             parsing_gnu_inline: false,
             parsing_always_inline: false,
+            parsing_cleanup_fn: None,
             parsed_alignas: None,
             parsed_alignas_type: None,
             pragma_pack_stack: Vec::new(),
@@ -502,6 +506,20 @@ impl Parser {
                                     TokenKind::Identifier(name) if name == "always_inline" || name == "__always_inline__" => {
                                         self.parsing_always_inline = true;
                                         self.advance();
+                                    }
+                                    TokenKind::Identifier(name) if name == "cleanup" || name == "__cleanup__" => {
+                                        self.advance();
+                                        // Parse cleanup(func_name) - the function to call when variable goes out of scope
+                                        if matches!(self.peek(), TokenKind::LParen) {
+                                            self.advance(); // consume (
+                                            if let TokenKind::Identifier(func_name) = self.peek() {
+                                                self.parsing_cleanup_fn = Some(func_name.clone());
+                                                self.advance();
+                                            }
+                                            if matches!(self.peek(), TokenKind::RParen) {
+                                                self.advance(); // consume )
+                                            }
+                                        }
                                     }
                                     TokenKind::Identifier(name) if name == "mode" || name == "__mode__" => {
                                         self.advance();

@@ -125,6 +125,9 @@ pub struct InitDeclarator {
     /// Functions with this attribute are compile-time assertion traps.
     /// Calls to them should be treated as unreachable.
     pub is_error_attr: bool,
+    /// __attribute__((cleanup(func))) - call func(&var) when var goes out of scope.
+    /// Used for RAII-style cleanup (e.g., Linux kernel guard()/scoped_guard() for mutex_unlock).
+    pub cleanup_fn: Option<String>,
     pub span: Span,
 }
 

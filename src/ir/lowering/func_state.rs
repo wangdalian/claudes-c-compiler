@@ -44,6 +44,11 @@ pub(super) struct FuncScopeFrame {
     /// Saved stack pointer before the first VLA in this scope.
     /// When set, StackRestore is emitted at scope exit to reclaim VLA stack space.
     pub scope_stack_save: Option<Value>,
+    /// Variables with __attribute__((cleanup(func))) in this scope.
+    /// Stored in declaration order; cleanup calls are emitted in reverse order at scope exit.
+    /// Each entry is (cleanup_function_name, alloca_value) where alloca_value is the
+    /// address of the variable to pass as &var to the cleanup function.
+    pub cleanup_vars: Vec<(String, Value)>,
 }
 
 impl FuncScopeFrame {
@@ -60,6 +65,7 @@ impl FuncScopeFrame {
             vla_typedef_sizes_added: Vec::new(),
             vla_typedef_sizes_shadowed: Vec::new(),
             scope_stack_save: None,
+            cleanup_vars: Vec::new(),
         }
     }
 }
@@ -85,10 +91,14 @@ pub(super) struct FunctionBuildState {
     pub sret_ptr: Option<Value>,
     /// Variable -> alloca mapping with metadata
     pub locals: FxHashMap<String, LocalInfo>,
-    /// Loop context: labels to jump to on `break`
-    pub break_labels: Vec<BlockId>,
-    /// Loop context: labels to jump to on `continue`
-    pub continue_labels: Vec<BlockId>,
+    /// Loop context: (label, scope_depth) to jump to on `break`.
+    /// scope_depth records the scope_stack length when the loop was entered,
+    /// so break can emit cleanup calls for scopes being exited.
+    pub break_labels: Vec<(BlockId, usize)>,
+    /// Loop context: (label, scope_depth) to jump to on `continue`.
+    /// scope_depth records the scope_stack length when the loop was entered,
+    /// so continue can emit cleanup calls for scopes being exited.
+    pub continue_labels: Vec<(BlockId, usize)>,
     /// Stack of switch statement contexts
     pub switch_stack: Vec<SwitchFrame>,
     /// User-defined goto labels -> unique IR labels
@@ -155,10 +165,11 @@ impl FunctionBuildState {
 
     /// Pop the top function-local scope frame and undo changes to locals,
     /// static_local_names, const_local_values, and var_ctypes.
-    /// Returns the scope's saved stack pointer value if VLAs were declared in this scope.
-    pub fn pop_scope(&mut self) -> Option<Value> {
+    /// Returns (scope_stack_save, cleanup_vars) - the VLA save value and cleanup variables.
+    pub fn pop_scope(&mut self) -> (Option<Value>, Vec<(String, Value)>) {
         if let Some(frame) = self.scope_stack.pop() {
             let scope_stack_save = frame.scope_stack_save;
+            let cleanup_vars = frame.cleanup_vars;
             for key in frame.locals_added {
                 self.locals.remove(&key);
             }
@@ -189,9 +200,9 @@ impl FunctionBuildState {
             for (key, val) in frame.vla_typedef_sizes_shadowed {
                 self.vla_typedef_sizes.insert(key, val);
             }
-            scope_stack_save
+            (scope_stack_save, cleanup_vars)
         } else {
-            None
+            (None, Vec::new())
         }
     }
 

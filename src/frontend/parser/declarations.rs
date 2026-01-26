@@ -30,6 +30,7 @@ impl Parser {
         self.parsing_visibility = None;
         self.parsing_section = None;
         self.parsing_error_attr = false;
+        self.parsing_cleanup_fn = None;
         self.parsing_gnu_inline = false;
         self.parsing_always_inline = false;
         self.parsing_address_space = AddressSpace::Default;
@@ -143,6 +144,7 @@ impl Parser {
             .or_else(|| self.pragma_default_visibility.clone());
         let section = self.parsing_section.take();
         let is_error_attr = self.parsing_error_attr;
+        let cleanup_fn = self.parsing_cleanup_fn.take();
 
         // Apply __attribute__((mode(...))): transform type to specified bit-width
         let type_spec = if let Some(mk) = mode_kind {
@@ -159,7 +161,7 @@ impl Parser {
         if is_funcdef {
             self.parse_function_def(type_spec, name, derived, start, is_constructor, is_destructor, section, visibility, is_weak)
         } else {
-            self.parse_declaration_rest(type_spec, name, derived, start, is_constructor, is_destructor, is_common, merged_alignment, alignas_type, is_weak, alias_target, visibility, section, first_asm_reg, is_error_attr)
+            self.parse_declaration_rest(type_spec, name, derived, start, is_constructor, is_destructor, is_common, merged_alignment, alignas_type, is_weak, alias_target, visibility, section, first_asm_reg, is_error_attr, cleanup_fn)
         }
     }
 
@@ -411,6 +413,7 @@ impl Parser {
         section: Option<String>,
         first_asm_register: Option<String>,
         is_error_attr: bool,
+        cleanup_fn: Option<String>,
     ) -> Option<ExternalDecl> {
         let mut declarators = Vec::new();
         let init = if self.consume_if(&TokenKind::Assign) {
@@ -430,6 +433,7 @@ impl Parser {
             section: section.clone(),
             asm_register: first_asm_register,
             is_error_attr,
+            cleanup_fn,
             span: start,
         });
 
@@ -458,11 +462,15 @@ impl Parser {
         if let Some(ref sect) = self.parsing_section {
             declarators.last_mut().unwrap().section = Some(sect.clone());
         }
+        if let Some(ref cleanup) = self.parsing_cleanup_fn {
+            declarators.last_mut().unwrap().cleanup_fn = Some(cleanup.clone());
+        }
         self.parsing_weak = false;
         self.parsing_alias_target = None;
         self.parsing_visibility = None;
         self.parsing_section = None;
         self.parsing_error_attr = false;
+        self.parsing_cleanup_fn = None;
         is_common = is_common || extra_common;
         if let Some(a) = extra_aligned {
             alignment = Some(alignment.map_or(a, |prev| prev.max(a)));
@@ -478,6 +486,7 @@ impl Parser {
             let d_vis = self.parsing_visibility.take()
                 .or_else(|| self.pragma_default_visibility.clone());
             let d_section = self.parsing_section.take();
+            let d_cleanup_fn = self.parsing_cleanup_fn.take();
             self.parsing_weak = false;
             let dinit = if self.consume_if(&TokenKind::Assign) {
                 Some(self.parse_initializer())
@@ -497,6 +506,7 @@ impl Parser {
                 section: d_section,
                 asm_register: d_asm_reg,
                 is_error_attr: d_error_attr,
+                cleanup_fn: d_cleanup_fn,
                 span: start,
             });
             let (_, skip_aligned, skip_asm_reg) = self.skip_asm_and_attributes();
@@ -561,6 +571,7 @@ impl Parser {
         loop {
             let (name, derived, decl_mode, _, decl_aligned) = self.parse_declarator_with_attrs();
             let (skip_mode, skip_aligned, skip_asm_reg) = self.skip_asm_and_attributes();
+            let local_cleanup_fn = self.parsing_cleanup_fn.take();
             mode_kind = mode_kind.or(decl_mode).or(skip_mode);
             // Merge alignment from declarator and post-declarator attributes
             for a in [decl_aligned, skip_aligned].iter().copied().flatten() {
@@ -583,6 +594,7 @@ impl Parser {
                 section: None,
                 asm_register: skip_asm_reg,
                 is_error_attr: false,
+                cleanup_fn: local_cleanup_fn,
                 span: start,
             });
             let (_, post_init_aligned, _post_asm_reg) = self.skip_asm_and_attributes();

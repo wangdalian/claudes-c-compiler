@@ -93,6 +93,12 @@ impl Lowerer {
                         if let Some(ref init) = declarator.init {
                             self.collect_refs_from_initializer(init, refs);
                         }
+                        // __attribute__((cleanup(func))) references func
+                        if let Some(ref cleanup_fn) = declarator.cleanup_fn {
+                            if self.known_functions.contains(cleanup_fn) {
+                                refs.insert(cleanup_fn.clone());
+                            }
+                        }
                     }
                 }
                 BlockItem::Statement(stmt) => {
@@ -137,6 +143,12 @@ impl Lowerer {
                             for declarator in &d.declarators {
                                 if let Some(ref init) = declarator.init {
                                     self.collect_refs_from_initializer(init, refs);
+                                }
+                                // __attribute__((cleanup(func))) references func
+                                if let Some(ref cleanup_fn) = declarator.cleanup_fn {
+                                    if self.known_functions.contains(cleanup_fn) {
+                                        refs.insert(cleanup_fn.clone());
+                                    }
                                 }
                             }
                         }

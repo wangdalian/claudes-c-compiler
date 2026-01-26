@@ -211,16 +211,58 @@ impl Lowerer {
 
     /// Pop the top scope frame from both TypeContext and FunctionBuildState,
     /// undoing all scoped changes made in that scope.
-    /// If the scope contained VLA declarations, emits StackRestore to reclaim
-    /// VLA stack space, preventing stack leaks in loops.
+    /// Emits cleanup function calls for variables with __attribute__((cleanup(func)))
+    /// in reverse declaration order, then restores the stack pointer for VLAs.
     pub(super) fn pop_scope(&mut self) {
-        let scope_stack_save = self.func_mut().pop_scope();
+        let (scope_stack_save, cleanup_vars) = self.func_mut().pop_scope();
         self.types.pop_scope();
+        // Emit cleanup calls in reverse declaration order (C semantics: last declared = first cleaned up)
+        self.emit_cleanup_calls(&cleanup_vars);
         // If this scope contained VLA declarations, restore the stack pointer
         // to reclaim the dynamically-allocated stack space.
         if let Some(save_val) = scope_stack_save {
             self.emit(Instruction::StackRestore { ptr: save_val });
         }
+    }
+
+    /// Emit cleanup function calls for variables with __attribute__((cleanup(func))).
+    /// Calls func(&var) for each cleanup variable, in reverse declaration order.
+    pub(super) fn emit_cleanup_calls(&mut self, cleanup_vars: &[(String, Value)]) {
+        for (func_name, alloca_val) in cleanup_vars.iter().rev() {
+            let dest = Some(self.fresh_value());
+            self.emit(Instruction::Call {
+                dest,
+                func: func_name.clone(),
+                args: vec![Operand::Value(*alloca_val)],
+                arg_types: vec![IrType::Ptr],
+                return_type: IrType::Void,
+                is_variadic: false,
+                num_fixed_args: 1,
+                struct_arg_sizes: vec![None],
+            });
+        }
+    }
+
+    /// Collect all cleanup variables from all active scopes (for return statements).
+    /// Returns cleanup vars from innermost scope to outermost scope, each scope's
+    /// vars in reverse declaration order.
+    pub(super) fn collect_all_scope_cleanup_vars(&self) -> Vec<(String, Value)> {
+        self.collect_scope_cleanup_vars_above_depth(0)
+    }
+
+    /// Collect cleanup variables from scopes above `target_depth` (for break/continue).
+    /// This collects from the innermost scope down to (but not including) the scope at
+    /// target_depth, with each scope's vars in reverse declaration order.
+    pub(super) fn collect_scope_cleanup_vars_above_depth(&self, target_depth: usize) -> Vec<(String, Value)> {
+        let func = self.func();
+        let mut all_cleanups = Vec::new();
+        // Walk scopes from innermost to outermost, stopping at target_depth
+        for frame in func.scope_stack[target_depth..].iter().rev() {
+            for (func_name, alloca_val) in frame.cleanup_vars.iter().rev() {
+                all_cleanups.push((func_name.clone(), *alloca_val));
+            }
+        }
+        all_cleanups
     }
 
     /// Remove a local variable, tracking the removal in the current scope frame.
@@ -983,7 +1025,7 @@ impl Lowerer {
         let name = orig_param.name.clone().unwrap_or_default();
         self.insert_local_scoped(name, LocalInfo {
             var: VarInfo { ty, elem_size, is_array: false, pointee_type, struct_layout, is_struct: false, array_dim_strides, c_type, is_ptr_to_func_ptr, address_space: AddressSpace::Default },
-            alloca, alloc_size: param_size, is_bool, static_global_name: None, vla_strides: vec![], vla_size: None, asm_register: None,
+            alloca, alloc_size: param_size, is_bool, static_global_name: None, vla_strides: vec![], vla_size: None, asm_register: None, cleanup_fn: None,
         });
 
         // Register function pointer parameter signatures for indirect calls
@@ -1009,7 +1051,7 @@ impl Lowerer {
         let name = orig_param.name.clone().unwrap_or_default();
         self.insert_local_scoped(name, LocalInfo {
             var: VarInfo { ty: IrType::Ptr, elem_size: 0, is_array: false, pointee_type: None, struct_layout: layout, is_struct: true, array_dim_strides: vec![], c_type, is_ptr_to_func_ptr: false, address_space: AddressSpace::Default },
-            alloca, alloc_size: size, is_bool: false, static_global_name: None, vla_strides: vec![], vla_size: None, asm_register: None,
+            alloca, alloc_size: size, is_bool: false, static_global_name: None, vla_strides: vec![], vla_size: None, asm_register: None, cleanup_fn: None,
         });
     }
 
@@ -1019,7 +1061,7 @@ impl Lowerer {
         let name = orig_param.name.clone().unwrap_or_default();
         self.insert_local_scoped(name, LocalInfo {
             var: VarInfo { ty: IrType::Ptr, elem_size: 0, is_array: false, pointee_type: None, struct_layout: None, is_struct: true, array_dim_strides: vec![], c_type: Some(ct), is_ptr_to_func_ptr: false, address_space: AddressSpace::Default },
-            alloca, alloc_size: 8, is_bool: false, static_global_name: None, vla_strides: vec![], vla_size: None, asm_register: None,
+            alloca, alloc_size: 8, is_bool: false, static_global_name: None, vla_strides: vec![], vla_size: None, asm_register: None, cleanup_fn: None,
         });
     }
 
@@ -1046,7 +1088,7 @@ impl Lowerer {
         let name = orig_param.name.clone().unwrap_or_default();
         self.func_mut().locals.insert(name, LocalInfo {
             var: VarInfo { ty: IrType::Ptr, elem_size: 0, is_array: false, pointee_type: None, struct_layout: None, is_struct: true, array_dim_strides: vec![], c_type: Some(ct), is_ptr_to_func_ptr: false, address_space: AddressSpace::Default },
-            alloca: complex_alloca, alloc_size: complex_size, is_bool: false, static_global_name: None, vla_strides: vec![], vla_size: None, asm_register: None,
+            alloca: complex_alloca, alloc_size: complex_size, is_bool: false, static_global_name: None, vla_strides: vec![], vla_size: None, asm_register: None, cleanup_fn: None,
         });
     }
 

@@ -242,6 +242,13 @@ impl Lowerer {
                 }
             }
             local_info.asm_register = declarator.asm_register.clone();
+            local_info.cleanup_fn = declarator.cleanup_fn.clone();
+            // Register cleanup variable in the current scope frame for scope-exit cleanup
+            if let Some(ref cleanup_fn_name) = declarator.cleanup_fn {
+                if let Some(frame) = self.func_mut().scope_stack.last_mut() {
+                    frame.cleanup_vars.push((cleanup_fn_name.clone(), alloca));
+                }
+            }
             self.insert_local_scoped(declarator.name.clone(), local_info);
 
             // Track function pointer return and param types
@@ -876,6 +883,9 @@ impl Lowerer {
         match stmt {
             Stmt::Return(expr, _span) => {
                 let op = expr.as_ref().map(|e| self.lower_return_expr(e));
+                // Emit cleanup calls for all active scopes before returning
+                let all_cleanups = self.collect_all_scope_cleanup_vars();
+                self.emit_cleanup_calls(&all_cleanups);
                 self.terminate(Terminator::Return(op));
                 let label = self.fresh_label();
                 self.start_block(label);
@@ -933,8 +943,9 @@ impl Lowerer {
         let body_label = self.fresh_label();
         let end_label = self.fresh_label();
 
-        self.func_mut().break_labels.push(end_label);
-        self.func_mut().continue_labels.push(cond_label);
+        let scope_depth = self.func().scope_stack.len();
+        self.func_mut().break_labels.push((end_label, scope_depth));
+        self.func_mut().continue_labels.push((cond_label, scope_depth));
 
         self.terminate(Terminator::Branch(cond_label));
 
@@ -948,7 +959,7 @@ impl Lowerer {
 
         self.start_block(body_label);
         self.lower_stmt(body);
-        let continue_target = *self.func().continue_labels.last().unwrap();
+        let continue_target = self.func().continue_labels.last().unwrap().0;
         self.terminate(Terminator::Branch(continue_target));
 
         self.func_mut().break_labels.pop();
@@ -985,8 +996,9 @@ impl Lowerer {
         let inc_label = self.fresh_label();
         let end_label = self.fresh_label();
 
-        self.func_mut().break_labels.push(end_label);
-        self.func_mut().continue_labels.push(inc_label);
+        let scope_depth = self.func().scope_stack.len();
+        self.func_mut().break_labels.push((end_label, scope_depth));
+        self.func_mut().continue_labels.push((inc_label, scope_depth));
 
         self.terminate(Terminator::Branch(cond_label));
 
@@ -1029,8 +1041,9 @@ impl Lowerer {
         let cond_label = self.fresh_label();
         let end_label = self.fresh_label();
 
-        self.func_mut().break_labels.push(end_label);
-        self.func_mut().continue_labels.push(cond_label);
+        let scope_depth = self.func().scope_stack.len();
+        self.func_mut().break_labels.push((end_label, scope_depth));
+        self.func_mut().continue_labels.push((cond_label, scope_depth));
 
         self.terminate(Terminator::Branch(body_label));
 
@@ -1052,7 +1065,10 @@ impl Lowerer {
     }
 
     fn lower_break_stmt(&mut self) {
-        if let Some(&label) = self.func_mut().break_labels.last() {
+        if let Some(&(label, scope_depth)) = self.func().break_labels.last() {
+            // Emit cleanup calls for all scopes being exited by break
+            let cleanups = self.collect_scope_cleanup_vars_above_depth(scope_depth);
+            self.emit_cleanup_calls(&cleanups);
             self.terminate(Terminator::Branch(label));
             let dead = self.fresh_label();
             self.start_block(dead);
@@ -1060,7 +1076,10 @@ impl Lowerer {
     }
 
     fn lower_continue_stmt(&mut self) {
-        if let Some(&label) = self.func_mut().continue_labels.last() {
+        if let Some(&(label, scope_depth)) = self.func().continue_labels.last() {
+            // Emit cleanup calls for all scopes being exited by continue
+            let cleanups = self.collect_scope_cleanup_vars_above_depth(scope_depth);
+            self.emit_cleanup_calls(&cleanups);
             self.terminate(Terminator::Branch(label));
             let dead = self.fresh_label();
             self.start_block(dead);
@@ -1100,7 +1119,8 @@ impl Lowerer {
             default_label: None,
             expr_type: switch_expr_ty,
         });
-        self.func_mut().break_labels.push(end_label);
+        let scope_depth = self.func().scope_stack.len();
+        self.func_mut().break_labels.push((end_label, scope_depth));
 
         self.terminate(Terminator::Branch(dispatch_label));
 
@@ -1263,6 +1283,13 @@ impl Lowerer {
     }
 
     fn lower_goto_stmt(&mut self, label: &str) {
+        // Emit cleanup calls for all active scopes before jumping.
+        // TODO: This is conservative — it cleans up ALL active scopes, which is correct
+        // when goto exits scopes but over-cleans when jumping within the same scope or
+        // to a label in an enclosing scope. Proper handling would require tracking the
+        // target label's scope depth, which is complex since labels can be forward refs.
+        let all_cleanups = self.collect_all_scope_cleanup_vars();
+        self.emit_cleanup_calls(&all_cleanups);
         // If the function has VLA declarations, restore the saved stack pointer before
         // jumping. This ensures VLA stack space is reclaimed on backward jumps (e.g.,
         // goto to a label before a VLA declaration in a loop).
@@ -1276,6 +1303,9 @@ impl Lowerer {
     }
 
     fn lower_goto_indirect_stmt(&mut self, expr: &Expr) {
+        // Emit cleanup calls for all active scopes before indirect jump (same as goto).
+        let all_cleanups = self.collect_all_scope_cleanup_vars();
+        self.emit_cleanup_calls(&all_cleanups);
         // If the function has VLA declarations, restore the saved stack pointer before
         // indirect jumps too (computed gotos).
         if let Some(save_val) = self.func().vla_stack_save {
