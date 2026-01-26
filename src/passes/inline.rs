@@ -33,8 +33,14 @@ const MAX_INLINE_BLOCKS: usize = 6;
 const MAX_INLINE_BUDGET_PER_CALLER: usize = 800;
 
 /// Maximum instructions for __attribute__((always_inline)) functions.
-/// These must be inlined regardless of size, so we use a very generous limit.
-const MAX_ALWAYS_INLINE_INSTRUCTIONS: usize = 2000;
+/// GCC silently refuses to inline always_inline functions that are too large
+/// or complex. We match this behavior by capping at 150 IR instructions.
+/// This allows most always_inline helpers (spin_lock, find_va_links, __link_va,
+/// __unlink_va, __merge_or_add_vmap_area, etc.) while blocking pathologically
+/// large always_inline functions like __rb_erase_augmented (182 IR instructions).
+/// Without this cap, deep always_inline chains create functions with hundreds of
+/// inlined values, causing stack frames to exceed the kernel's 16KB stack limit.
+const MAX_ALWAYS_INLINE_INSTRUCTIONS: usize = 150;
 
 /// Maximum blocks for __attribute__((always_inline)) functions.
 const MAX_ALWAYS_INLINE_BLOCKS: usize = 200;

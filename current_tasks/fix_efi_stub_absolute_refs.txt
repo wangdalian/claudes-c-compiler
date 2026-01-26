@@ -1,0 +1,16 @@
+Task: Fix EFI stub absolute symbol references causing link failure
+Status: in_progress
+
+Problem:
+When compiling drivers/firmware/efi/libstub/gop.c with ccc, the resulting object
+file contains absolute symbol references that are not allowed in the EFI stub.
+The EFI stub requires position-independent code (compiled with -mcmodel=small or
+equivalent), but our compiler emits absolute movabs/mov instructions or R_X86_64_64
+relocations instead of RIP-relative addressing.
+
+Error: "drivers/firmware/efi/libstub/gop.stub.o: absolute symbol references not allowed in the EFI stub"
+
+Approach:
+1. Compare gcc and ccc object files for gop.c to identify the specific absolute references
+2. Fix the code generation to use RIP-relative addressing where needed
+3. Verify fix by re-running the bisect test

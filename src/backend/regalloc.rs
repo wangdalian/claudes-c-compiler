@@ -53,21 +53,24 @@ pub fn allocate_registers(
         };
     }
 
-    // Disable register allocation for functions with inline assembly or atomics.
-    // Inline asm can clobber callee-saved registers without the allocator knowing,
-    // and the inline asm scratch register pool includes callee-saved registers
-    // (e.g., ARM x19-x21) that conflict with the allocator's register assignments.
-    // Atomic operations use complex multi-instruction sequences that may conflict.
-    let has_unsafe = func.blocks.iter().any(|block| {
+    // Disable register allocation for functions with atomics.
+    // Atomic operations use complex multi-instruction sequences that may conflict
+    // with register allocator assumptions.
+    //
+    // Note: functions with inline asm are no longer disabled here. Instead, each
+    // backend filters out callee-saved registers clobbered by inline asm from the
+    // available_regs list before calling this function. This allows register
+    // allocation for the many kernel functions that contain inline asm (e.g., from
+    // inlining spin_lock/spin_unlock) using the remaining non-clobbered registers.
+    let has_atomics = func.blocks.iter().any(|block| {
         block.instructions.iter().any(|inst| matches!(inst,
-            Instruction::InlineAsm { .. } |
             Instruction::AtomicRmw { .. } |
             Instruction::AtomicCmpxchg { .. } |
             Instruction::AtomicLoad { .. } |
             Instruction::AtomicStore { .. }
         ))
     });
-    if has_unsafe {
+    if has_atomics {
         return RegAllocResult {
             assignments: FxHashMap::default(),
             used_regs: Vec::new(),
@@ -205,6 +208,18 @@ pub fn allocate_registers(
                 }
                 Instruction::StackRestore { ptr } => {
                     eligible.remove(&ptr.0);
+                }
+                Instruction::InlineAsm { outputs, inputs, .. } => {
+                    // Inline asm operands are accessed via resolve_slot_addr()
+                    // in codegen, which requires a valid stack slot.
+                    for (_, val, _) in outputs {
+                        eligible.remove(&val.0);
+                    }
+                    for (_, op, _) in inputs {
+                        if let Operand::Value(v) = op {
+                            eligible.remove(&v.0);
+                        }
+                    }
                 }
                 _ => {}
             }

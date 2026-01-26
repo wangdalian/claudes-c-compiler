@@ -154,7 +154,7 @@ fn try_fold_with_map(inst: &Instruction, const_map: &[Option<ConstMapEntry>]) ->
             // to upper bits, so we must normalize first.
             let lhs_trunc = truncate_to_type(lhs_const, *ty);
             let rhs_trunc = truncate_to_type(rhs_const, *ty);
-            let result = fold_binop(*op, lhs_trunc, rhs_trunc)?;
+            let result = fold_binop(*op, lhs_trunc, rhs_trunc, *ty)?;
             Some(Instruction::Copy {
                 dest: *dest,
                 src: Operand::Const(IrConst::from_i64(result, *ty)),
@@ -602,7 +602,13 @@ fn fold_cast_i128(src: &IrConst, from_ty: IrType, to_ty: IrType) -> Option<IrCon
 }
 
 /// Evaluate a binary operation on two constant integers.
-fn fold_binop(op: IrBinOp, lhs: i64, rhs: i64) -> Option<i64> {
+/// `ty` is needed for width-sensitive unsigned operations (LShr, UDiv, URem)
+/// where operands stored as sign-extended i64 must be masked to the correct
+/// bit width to get the proper unsigned representation.
+fn fold_binop(op: IrBinOp, lhs: i64, rhs: i64, ty: IrType) -> Option<i64> {
+    let is_32bit = ty == IrType::I32 || ty == IrType::U32
+        || ty == IrType::I16 || ty == IrType::U16
+        || ty == IrType::I8 || ty == IrType::U8;
     Some(match op {
         IrBinOp::Add => lhs.wrapping_add(rhs),
         IrBinOp::Sub => lhs.wrapping_sub(rhs),
@@ -613,7 +619,12 @@ fn fold_binop(op: IrBinOp, lhs: i64, rhs: i64) -> Option<i64> {
         }
         IrBinOp::UDiv => {
             if rhs == 0 { return None; }
-            (lhs as u64).wrapping_div(rhs as u64) as i64
+            if is_32bit {
+                // For 32-bit types, mask to u32 to get correct unsigned value
+                (lhs as u32).wrapping_div(rhs as u32) as i64
+            } else {
+                (lhs as u64).wrapping_div(rhs as u64) as i64
+            }
         }
         IrBinOp::SRem => {
             if rhs == 0 { return None; }
@@ -621,14 +632,32 @@ fn fold_binop(op: IrBinOp, lhs: i64, rhs: i64) -> Option<i64> {
         }
         IrBinOp::URem => {
             if rhs == 0 { return None; }
-            (lhs as u64).wrapping_rem(rhs as u64) as i64
+            if is_32bit {
+                (lhs as u32).wrapping_rem(rhs as u32) as i64
+            } else {
+                (lhs as u64).wrapping_rem(rhs as u64) as i64
+            }
         }
         IrBinOp::And => lhs & rhs,
         IrBinOp::Or => lhs | rhs,
         IrBinOp::Xor => lhs ^ rhs,
         IrBinOp::Shl => lhs.wrapping_shl(rhs as u32),
-        IrBinOp::AShr => lhs.wrapping_shr(rhs as u32),
-        IrBinOp::LShr => (lhs as u64).wrapping_shr(rhs as u32) as i64,
+        IrBinOp::AShr => {
+            if is_32bit {
+                // For 32-bit types, use i32 arithmetic shift to stay in 32-bit range
+                (lhs as i32).wrapping_shr(rhs as u32) as i64
+            } else {
+                lhs.wrapping_shr(rhs as u32)
+            }
+        }
+        IrBinOp::LShr => {
+            if is_32bit {
+                // For 32-bit types, mask to u32 to get correct unsigned bit pattern
+                (lhs as u32).wrapping_shr(rhs as u32) as i64
+            } else {
+                (lhs as u64).wrapping_shr(rhs as u32) as i64
+            }
+        }
     })
 }
 
@@ -756,44 +785,57 @@ mod tests {
 
     #[test]
     fn test_fold_binop_add() {
-        assert_eq!(fold_binop(IrBinOp::Add, 3, 4), Some(7));
+        assert_eq!(fold_binop(IrBinOp::Add, 3, 4, IrType::I64), Some(7));
     }
 
     #[test]
     fn test_fold_binop_sub() {
-        assert_eq!(fold_binop(IrBinOp::Sub, 10, 3), Some(7));
+        assert_eq!(fold_binop(IrBinOp::Sub, 10, 3, IrType::I64), Some(7));
     }
 
     #[test]
     fn test_fold_binop_mul() {
-        assert_eq!(fold_binop(IrBinOp::Mul, 6, 7), Some(42));
+        assert_eq!(fold_binop(IrBinOp::Mul, 6, 7, IrType::I64), Some(42));
     }
 
     #[test]
     fn test_fold_binop_div() {
-        assert_eq!(fold_binop(IrBinOp::SDiv, 10, 3), Some(3));
-        assert_eq!(fold_binop(IrBinOp::SDiv, -10, 3), Some(-3));
+        assert_eq!(fold_binop(IrBinOp::SDiv, 10, 3, IrType::I64), Some(3));
+        assert_eq!(fold_binop(IrBinOp::SDiv, -10, 3, IrType::I64), Some(-3));
     }
 
     #[test]
     fn test_fold_binop_div_by_zero() {
-        assert_eq!(fold_binop(IrBinOp::SDiv, 10, 0), None);
-        assert_eq!(fold_binop(IrBinOp::UDiv, 10, 0), None);
-        assert_eq!(fold_binop(IrBinOp::SRem, 10, 0), None);
+        assert_eq!(fold_binop(IrBinOp::SDiv, 10, 0, IrType::I64), None);
+        assert_eq!(fold_binop(IrBinOp::UDiv, 10, 0, IrType::I64), None);
+        assert_eq!(fold_binop(IrBinOp::SRem, 10, 0, IrType::I64), None);
     }
 
     #[test]
     fn test_fold_binop_bitwise() {
-        assert_eq!(fold_binop(IrBinOp::And, 0xFF, 0x0F), Some(0x0F));
-        assert_eq!(fold_binop(IrBinOp::Or, 0xF0, 0x0F), Some(0xFF));
-        assert_eq!(fold_binop(IrBinOp::Xor, 0xFF, 0xFF), Some(0));
+        assert_eq!(fold_binop(IrBinOp::And, 0xFF, 0x0F, IrType::I64), Some(0x0F));
+        assert_eq!(fold_binop(IrBinOp::Or, 0xF0, 0x0F, IrType::I64), Some(0xFF));
+        assert_eq!(fold_binop(IrBinOp::Xor, 0xFF, 0xFF, IrType::I64), Some(0));
     }
 
     #[test]
     fn test_fold_binop_shift() {
-        assert_eq!(fold_binop(IrBinOp::Shl, 1, 3), Some(8));
-        assert_eq!(fold_binop(IrBinOp::AShr, -8, 2), Some(-2));
-        assert_eq!(fold_binop(IrBinOp::LShr, -1i64, 32), Some(0xFFFFFFFF));
+        assert_eq!(fold_binop(IrBinOp::Shl, 1, 3, IrType::I64), Some(8));
+        assert_eq!(fold_binop(IrBinOp::AShr, -8, 2, IrType::I64), Some(-2));
+        // 64-bit LShr: -1 >> 32 = 0x00000000FFFFFFFF
+        assert_eq!(fold_binop(IrBinOp::LShr, -1i64, 32, IrType::I64), Some(0xFFFFFFFF));
+        // 32-bit LShr: -1 (as u32 = 0xFFFFFFFF) >> 31 = 1
+        assert_eq!(fold_binop(IrBinOp::LShr, -1i64, 31, IrType::I32), Some(1));
+        // 32-bit AShr: -1 >> 31 = -1 (sign bit propagates)
+        assert_eq!(fold_binop(IrBinOp::AShr, -1i64, 31, IrType::I32), Some(-1));
+    }
+
+    #[test]
+    fn test_fold_binop_udiv_32bit() {
+        // 32-bit UDiv: -1 (as u32 = 0xFFFFFFFF = 4294967295) / 2 = 2147483647
+        assert_eq!(fold_binop(IrBinOp::UDiv, -1i64, 2, IrType::I32), Some(2147483647));
+        // 32-bit URem: -1 (as u32 = 4294967295) % 2 = 1
+        assert_eq!(fold_binop(IrBinOp::URem, -1i64, 2, IrType::I32), Some(1));
     }
 
     #[test]

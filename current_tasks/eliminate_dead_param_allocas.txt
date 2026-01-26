@@ -1,9 +1,0 @@
-Task: Eliminate dead parameter allocas to reduce stack frame sizes
-Status: completed
-
-Solution:
-Track parameter alloca Values in IrFunction (param_alloca_values field). In the backend's
-calculate_stack_space_common, scan all instructions/terminators to find which param alloca
-Values are never referenced. Skip stack slot allocation for those dead param allocas.
-emit_store_params already handles get_slot() returning None with continue, so no backend
-codegen changes needed. This reduces frame size for functions with unused parameters.

@@ -1208,7 +1208,6 @@ pub fn calculate_stack_space_common(
     assign_slot: impl Fn(i64, i64, i64) -> (i64, i64),
     reg_assigned: &FxHashSet<u32>,
 ) -> i64 {
-    let total_instructions: usize = func.blocks.iter().map(|b| b.instructions.len()).sum();
     let num_blocks = func.blocks.len();
 
     // Enable block-local coalescing (Tier 3) for all multi-block functions.
@@ -1223,11 +1222,9 @@ pub fn calculate_stack_space_common(
     // functions benefit: a 3-block function with 20 intermediates can save
     // 100+ bytes of frame space by sharing slots. This is critical for
     // recursive functions where per-frame savings compound (e.g., PostgreSQL
-    // plpgsql recursion triggers stack depth limit with large frames).
-    //
-    // The liveness analysis uses backward dataflow iteration which correctly
-    // handles loops (values live across back-edges have intervals extended).
-    // This is safe for all multi-block functions regardless of size.
+    // plpgsql recursion triggers stack depth limit with large frames) and for
+    // kernel functions that expand macros creating many short-lived multi-block
+    // intermediates (e.g., list_for_each_entry_safe, spin_lock).
     let coalesce = num_blocks >= 2;
     let enable_tier2 = num_blocks >= 2;
 

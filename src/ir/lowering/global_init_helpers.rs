@@ -107,6 +107,11 @@ fn expr_might_be_addr(expr: &Expr, enum_constants: &FxHashMap<String, i64>) -> b
     match expr {
         Expr::AddressOf(_, _) => true,
         Expr::LabelAddr(_, _) => true,
+        // String literals produce addresses (pointers to .rodata entries), so they
+        // require relocations in global initializers (e.g., "foo" + 1 in a static array).
+        Expr::StringLiteral(_, _)
+        | Expr::WideStringLiteral(_, _)
+        | Expr::Char16StringLiteral(_, _) => true,
         // Identifiers that are enum constants are compile-time integer values, not addresses.
         // Only treat non-enum identifiers as potential addresses (array/function names).
         Expr::Identifier(name, _) => !enum_constants.contains_key(name),

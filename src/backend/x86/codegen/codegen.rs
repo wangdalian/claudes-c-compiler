@@ -1713,18 +1713,36 @@ impl ArchCodegen for X86Codegen {
         // This significantly reduces frame sizes (e.g., 160 -> 16 bytes for
         // simple recursive functions), which fixes postgres plpgsql stack
         // depth tests and improves overall performance.
+        //
+        // For functions with inline asm, filter out callee-saved registers that are
+        // clobbered or used as explicit constraints by any inline asm instruction.
+        // This allows register allocation to proceed using the remaining registers,
+        // rather than disabling it entirely. Many kernel functions contain inline asm
+        // from inlined spin_lock/spin_unlock; without this, they get no register
+        // allocation and enormous stack frames (4KB+), causing kernel stack overflows.
+        let mut available_regs = X86_CALLEE_SAVED.to_vec();
+        let mut asm_clobbered_regs: Vec<PhysReg> = Vec::new();
+        collect_inline_asm_callee_saved_x86(func, &mut asm_clobbered_regs);
+        if !asm_clobbered_regs.is_empty() {
+            let clobbered_set: FxHashSet<u8> = asm_clobbered_regs.iter().map(|r| r.0).collect();
+            available_regs.retain(|r| !clobbered_set.contains(&r.0));
+        }
         let config = RegAllocConfig {
-            available_regs: X86_CALLEE_SAVED.to_vec(),
+            available_regs,
         };
         let alloc_result = regalloc::allocate_registers(func, &config);
         self.reg_assignments = alloc_result.assignments;
         self.used_callee_saved = alloc_result.used_regs;
 
-        // Scan inline asm instructions for callee-saved register usage.
-        // When inline asm uses specific register constraints (e.g., "b" for rbx)
-        // or lists callee-saved registers in clobbers, those registers must be
-        // saved/restored in the function prologue/epilogue to preserve the ABI.
-        collect_inline_asm_callee_saved_x86(func, &mut self.used_callee_saved);
+        // Also add inline asm clobbered callee-saved registers to the save/restore
+        // list (they need to be preserved per the ABI even though we don't allocate
+        // values to them).
+        for phys in &asm_clobbered_regs {
+            if !self.used_callee_saved.iter().any(|r| r.0 == phys.0) {
+                self.used_callee_saved.push(*phys);
+            }
+        }
+        self.used_callee_saved.sort_by_key(|r| r.0);
 
         // Build set of register-assigned value IDs to skip stack slot allocation.
         let reg_assigned: FxHashSet<u32> = self.reg_assignments.keys().copied().collect();

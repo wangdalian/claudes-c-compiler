@@ -1409,16 +1409,39 @@ impl ArchCodegen for RiscvCodegen {
 
         // Run register allocator BEFORE stack space computation so we can
         // skip allocating stack slots for values assigned to registers.
+        //
+        // For functions with inline asm, collect callee-saved registers that are
+        // clobbered or used as explicit constraints, then filter them from the
+        // allocation pool. This allows register allocation to proceed using the
+        // remaining registers, rather than disabling it entirely. Many kernel
+        // functions contain inline asm from inlined spin_lock/spin_unlock; without
+        // this, they get no register allocation and enormous stack frames (4KB+),
+        // causing kernel stack overflows.
+        let mut asm_clobbered_regs: Vec<PhysReg> = Vec::new();
+        collect_inline_asm_callee_saved_riscv(func, &mut asm_clobbered_regs);
+
+        let mut available_regs = RISCV_CALLEE_SAVED.to_vec();
+        if !asm_clobbered_regs.is_empty() {
+            let clobbered_set: FxHashSet<u8> = asm_clobbered_regs.iter().map(|r| r.0).collect();
+            available_regs.retain(|r| !clobbered_set.contains(&r.0));
+        }
         let config = RegAllocConfig {
-            available_regs: RISCV_CALLEE_SAVED.to_vec(),
+            available_regs,
         };
         let alloc_result = regalloc::allocate_registers(func, &config);
         self.reg_assignments = alloc_result.assignments;
         self.used_callee_saved = alloc_result.used_regs;
         self.f128_load_sources.clear();
 
-        // Scan inline asm instructions for callee-saved register usage.
-        collect_inline_asm_callee_saved_riscv(func, &mut self.used_callee_saved);
+        // Add inline asm clobbered callee-saved registers to the save/restore list
+        // (they need to be preserved per the ABI even though we don't allocate
+        // values to them).
+        for phys in &asm_clobbered_regs {
+            if !self.used_callee_saved.iter().any(|r| r.0 == phys.0) {
+                self.used_callee_saved.push(*phys);
+            }
+        }
+        self.used_callee_saved.sort_by_key(|r| r.0);
 
         // Build set of register-assigned value IDs to skip stack slot allocation.
         let reg_assigned: FxHashSet<u32> = self.reg_assignments.keys().copied().collect();

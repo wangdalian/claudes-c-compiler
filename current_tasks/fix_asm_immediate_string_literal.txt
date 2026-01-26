@@ -1,6 +1,0 @@
-Task: fix_asm_immediate_string_literal
-Status: completed
-Description: Add peel_to_string_literal to handle cast-wrapped string literals in inline asm 'i' constraint
-operands. Previously, string literals wrapped in casts (e.g., "i" (__FILE__)) were not recognized as
-assembly-time constants, causing has_unsatisfiable_imm to skip the asm body including .pushsection data.
-This caused NULL pointer crashes in the kernel PM trace subsystem (drivers/base/power/main.c).

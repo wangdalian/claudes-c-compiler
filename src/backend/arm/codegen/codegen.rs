@@ -1624,18 +1624,37 @@ impl ArchCodegen for ArmCodegen {
         // Run register allocator BEFORE stack space computation so we can
         // skip allocating stack slots for values assigned to registers.
         // Skip variadic functions to avoid callee-save area conflicting with VA save areas.
+        //
+        // For functions with inline asm, pre-scan to find which callee-saved registers
+        // are clobbered or used as scratch, then filter them from the allocation pool.
+        // This allows register allocation to proceed using the remaining registers,
+        // rather than disabling it entirely. Many kernel functions contain inline asm
+        // from inlined spin_lock/spin_unlock; without this, they get no register
+        // allocation and enormous stack frames (4KB+), causing kernel stack overflows.
+        let mut asm_clobbered_regs: Vec<PhysReg> = Vec::new();
+        Self::prescan_inline_asm_callee_saved(func, &mut asm_clobbered_regs);
+
+        let mut available_regs = if func.is_variadic { Vec::new() } else { ARM_CALLEE_SAVED.to_vec() };
+        if !asm_clobbered_regs.is_empty() {
+            let clobbered_set: FxHashSet<u8> = asm_clobbered_regs.iter().map(|r| r.0).collect();
+            available_regs.retain(|r| !clobbered_set.contains(&r.0));
+        }
         let config = RegAllocConfig {
-            available_regs: if func.is_variadic { Vec::new() } else { ARM_CALLEE_SAVED.to_vec() },
+            available_regs,
         };
         let alloc_result = regalloc::allocate_registers(func, &config);
         self.reg_assignments = alloc_result.assignments;
         self.used_callee_saved = alloc_result.used_regs;
 
-        // Pre-scan inline asm instructions to predict which callee-saved registers
-        // will be needed as scratch registers. This must happen BEFORE stack layout
-        // computation because the prologue (which saves callee-saved regs) is emitted
-        // before inline asm codegen runs assign_scratch_reg.
-        Self::prescan_inline_asm_callee_saved(func, &mut self.used_callee_saved);
+        // Add inline asm clobbered callee-saved registers to the save/restore list
+        // (they need to be preserved per the ABI even though we don't allocate
+        // values to them).
+        for phys in &asm_clobbered_regs {
+            if !self.used_callee_saved.iter().any(|r| r.0 == phys.0) {
+                self.used_callee_saved.push(*phys);
+            }
+        }
+        self.used_callee_saved.sort_by_key(|r| r.0);
 
         // Build set of register-assigned value IDs to skip stack slot allocation.
         let reg_assigned: FxHashSet<u32> = self.reg_assignments.keys().copied().collect();
