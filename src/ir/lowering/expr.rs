@@ -1492,6 +1492,16 @@ impl Lowerer {
             self.local_label_scopes.push(scope);
         }
 
+        // Push a scope so that variables declared inside the statement expression
+        // don't leak into the enclosing scope.  Without this, nested statement
+        // expressions that re-declare the same variable name (extremely common in
+        // kernel macros like READ_ONCE, per-CPU accessors, container_of) permanently
+        // overwrite the outer binding, producing wrong code.
+        let has_declarations = compound.items.iter().any(|item| matches!(item, BlockItem::Declaration(_)));
+        if has_declarations {
+            self.push_scope();
+        }
+
         let mut last_val = Operand::Const(IrConst::I64(0));
         for item in &compound.items {
             match item {
@@ -1529,9 +1539,14 @@ impl Lowerer {
                     }
                 }
                 BlockItem::Declaration(decl) => {
+                    self.collect_enum_constants_scoped(&decl.type_spec);
                     self.lower_local_decl(decl);
                 }
             }
+        }
+
+        if has_declarations {
+            self.pop_scope();
         }
 
         if has_local_labels {
