@@ -1,0 +1,12 @@
+Fix ARM codegen crash in oniguruma regexec.c (jq regex test on ARM)
+
+Problem: jq's regex test crashes on ARM when using character class matching.
+The crash is in oniguruma's match_at function in regexec.c.
+Works on x86 and RISC-V, ARM-specific codegen bug.
+
+Plan:
+1. Reproduce the crash by running jq ARM tests
+2. Bisect to isolate which function/code path causes the crash
+3. Debug with GDB under qemu-aarch64 to find exact crash location
+4. Fix the ARM codegen bug
+5. Add regression test

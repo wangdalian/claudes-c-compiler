@@ -26,10 +26,31 @@ impl Lowerer {
     }
 
     /// Check if an identifier is a function pointer variable rather than a direct function.
+    /// A local variable always shadows a known function of the same name (e.g., a parameter
+    /// named `free` that is a function pointer should produce an indirect call, not a direct
+    /// call to the libc `free` symbol).
     pub(super) fn is_func_ptr_variable(&self, name: &str) -> bool {
-        (self.func().locals.contains_key(name) && !self.known_functions.contains(name))
-            || (!self.func().locals.contains_key(name) && self.globals.contains_key(name)
-                && !self.known_functions.contains(name))
+        if self.func().locals.contains_key(name) {
+            // Local variable exists with this name. Check if it's a function pointer
+            // via ptr_sigs (set for function pointer params and locals) or c_type.
+            if self.func_meta.ptr_sigs.contains_key(name) {
+                return true;
+            }
+            // Also check the local's CType for function pointer types not in ptr_sigs
+            if let Some(local_info) = self.func().locals.get(name) {
+                if let Some(ref cty) = local_info.c_type {
+                    if cty.is_function_pointer() {
+                        return true;
+                    }
+                }
+            }
+            // Local exists but is not a function pointer - it's a regular variable
+            // that happens to shadow a known function name. Not a func ptr variable.
+            false
+        } else {
+            // No local with this name. Check globals, excluding known functions.
+            self.globals.contains_key(name) && !self.known_functions.contains(name)
+        }
     }
 
     pub(super) fn lower_function_call(&mut self, func: &Expr, args: &[Expr]) -> Operand {
