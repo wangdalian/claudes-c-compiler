@@ -299,7 +299,7 @@ fn as_f64_const_mapped(op: &Operand, const_map: &[Option<ConstMapEntry>]) -> Opt
     match resolve_const(op, const_map)? {
         IrConst::F32(v) => Some(v as f64),
         IrConst::F64(v) => Some(v),
-        IrConst::LongDouble(v) => Some(v),
+        IrConst::LongDouble(v, _) => Some(v),
         _ => None,
     }
 }
@@ -309,7 +309,7 @@ fn make_float_const(val: f64, ty: IrType) -> IrConst {
     match ty {
         IrType::F32 => IrConst::F32(val as f32),
         IrType::F64 => IrConst::F64(val),
-        IrType::F128 => IrConst::LongDouble(val),
+        IrType::F128 => IrConst::long_double(val),
         _ => unreachable!("make_float_const called with non-float type"),
     }
 }
@@ -364,6 +364,12 @@ fn try_fold_float_cast_mapped(dest: Value, src: &Operand, from_ty: IrType, to_ty
         }
         (true, false) => {
             // float-to-int conversion
+            // For LongDouble, use full x87 precision to avoid mantissa loss
+            if let Some(IrConst::LongDouble(fv, bytes)) = resolve_const(src, const_map) {
+                return IrConst::cast_long_double_to_target(fv, &bytes, to_ty).map(|c| {
+                    Instruction::Copy { dest, src: Operand::Const(c) }
+                });
+            }
             let val = as_f64_const_mapped(src, const_map)?;
             // Don't fold if value can't be represented as i64
             if !val.is_finite() || val < i64::MIN as f64 || val > i64::MAX as f64 {

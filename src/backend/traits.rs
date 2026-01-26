@@ -1050,3 +1050,65 @@ pub fn emit_load_default(cg: &mut (impl ArchCodegen + ?Sized), dest: &Value, ptr
         cg.emit_store_result(dest);
     }
 }
+
+/// Default cast implementation: handles i128 widening/narrowing/copy,
+/// and delegates non-i128 casts to emit_cast_instrs.
+/// Backends that override `emit_cast` should call this for types they don't handle specially.
+pub fn emit_cast_default(cg: &mut (impl ArchCodegen + ?Sized), dest: &Value, src: &Operand, from_ty: IrType, to_ty: IrType) {
+    if is_i128_type(to_ty) && !is_i128_type(from_ty) {
+        cg.emit_load_operand(src);
+        if from_ty.size() < 8 {
+            let widen_to = if from_ty.is_signed() { IrType::I64 } else { IrType::U64 };
+            cg.emit_cast_instrs(from_ty, widen_to);
+        }
+        if from_ty.is_signed() {
+            cg.emit_sign_extend_acc_high();
+        } else {
+            cg.emit_zero_acc_high();
+        }
+        cg.emit_store_acc_pair(dest);
+        return;
+    }
+    if is_i128_type(from_ty) && !is_i128_type(to_ty) {
+        cg.emit_load_acc_pair(src);
+        if to_ty.size() < 8 {
+            cg.emit_cast_instrs(IrType::I64, to_ty);
+        }
+        cg.emit_store_result(dest);
+        return;
+    }
+    if is_i128_type(from_ty) && is_i128_type(to_ty) {
+        cg.emit_load_acc_pair(src);
+        cg.emit_store_acc_pair(dest);
+        return;
+    }
+    cg.emit_load_operand(src);
+    cg.emit_cast_instrs(from_ty, to_ty);
+    cg.emit_store_result(dest);
+}
+
+/// Default return implementation: loads value, moves to appropriate return register,
+/// and emits epilogue. Backends that override `emit_return` should call this for
+/// cases they don't handle specially.
+pub fn emit_return_default(cg: &mut (impl ArchCodegen + ?Sized), val: Option<&Operand>, frame_size: i64) {
+    if let Some(val) = val {
+        let ret_ty = cg.current_return_type();
+        if is_i128_type(ret_ty) {
+            cg.emit_load_acc_pair(val);
+            cg.emit_return_i128_to_regs();
+            cg.emit_epilogue_and_ret(frame_size);
+            return;
+        }
+        cg.emit_load_operand(val);
+        if ret_ty.is_long_double() {
+            cg.emit_return_f128_to_reg();
+        } else if ret_ty == IrType::F32 {
+            cg.emit_return_f32_to_reg();
+        } else if ret_ty.is_float() {
+            cg.emit_return_f64_to_reg();
+        } else {
+            cg.emit_return_int_to_reg();
+        }
+    }
+    cg.emit_epilogue_and_ret(frame_size);
+}

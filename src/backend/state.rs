@@ -114,6 +114,16 @@ pub struct CodegenState {
     pub patchable_function_entry: Option<(u32, u32)>,
     /// Whether to emit endbr64 at function entry points (-fcf-protection=branch).
     pub cf_protection_branch: bool,
+    /// For x86 F128 (long double) precision: maps a value ID (result of an F128 load)
+    /// to the pointer value ID it was loaded from. This allows emit_cast to use `fldt`
+    /// directly from the original memory location instead of going through the f64
+    /// intermediate in %rax, preserving full 80-bit precision for casts like
+    /// `(unsigned long long)long_double_var`.
+    pub f128_load_sources: FxHashMap<u32, u32>,
+    /// Values whose 16-byte slots contain full x87 80-bit data (via fstpt),
+    /// not a pointer. These are F128 call results or other values where
+    /// full precision was preserved directly in the slot.
+    pub f128_direct_slots: FxHashSet<u32>,
 }
 
 impl CodegenState {
@@ -135,6 +145,8 @@ impl CodegenState {
             indirect_branch_thunk: false,
             patchable_function_entry: None,
             cf_protection_branch: false,
+            f128_load_sources: FxHashMap::default(),
+            f128_direct_slots: FxHashSet::default(),
         }
     }
 

@@ -52,7 +52,7 @@ impl Lowerer {
     pub(super) fn complex_zero(comp_ty: IrType) -> Operand {
         match comp_ty {
             IrType::F32 => Operand::Const(IrConst::F32(0.0)),
-            IrType::F128 => Operand::Const(IrConst::LongDouble(0.0)),
+            IrType::F128 => Operand::Const(IrConst::long_double(0.0)),
             _ => Operand::Const(IrConst::F64(0.0)),
         }
     }
@@ -137,12 +137,12 @@ impl Lowerer {
         let comp_ty = Self::complex_component_ir_type(ctype);
         let zero = match comp_ty {
             IrType::F32 => Operand::Const(IrConst::F32(0.0)),
-            IrType::F128 => Operand::Const(IrConst::LongDouble(0.0)),
+            IrType::F128 => Operand::Const(IrConst::long_double(0.0)),
             _ => Operand::Const(IrConst::F64(0.0)),
         };
         let imag_val = match comp_ty {
             IrType::F32 => Operand::Const(IrConst::F32(val as f32)),
-            IrType::F128 => Operand::Const(IrConst::LongDouble(val)),
+            IrType::F128 => Operand::Const(IrConst::long_double(val)),
             _ => Operand::Const(IrConst::F64(val)),
         };
         self.store_complex_parts(alloca, zero, imag_val, ctype);
@@ -175,7 +175,7 @@ impl Lowerer {
             if ir_ty.is_float() {
                 match ir_ty {
                     IrType::F32 => Operand::Const(IrConst::F32(0.0)),
-                    IrType::F128 => Operand::Const(IrConst::LongDouble(0.0)),
+                    IrType::F128 => Operand::Const(IrConst::long_double(0.0)),
                     _ => Operand::Const(IrConst::F64(0.0)),
                 }
             } else {
@@ -357,7 +357,7 @@ impl Lowerer {
         let comp_ty = Self::complex_component_ir_type(complex_type);
         let zero = match comp_ty {
             IrType::F32 => Operand::Const(IrConst::F32(0.0)),
-            IrType::F128 => Operand::Const(IrConst::LongDouble(0.0)),
+            IrType::F128 => Operand::Const(IrConst::long_double(0.0)),
             _ => Operand::Const(IrConst::F64(0.0)),
         };
 
@@ -406,10 +406,10 @@ impl Lowerer {
         match expr {
             Expr::ImaginaryLiteral(_, _) => CType::ComplexDouble,
             Expr::ImaginaryLiteralF32(_, _) => CType::ComplexFloat,
-            Expr::ImaginaryLiteralLongDouble(_, _) => CType::ComplexLongDouble,
+            Expr::ImaginaryLiteralLongDouble(_, _, _) => CType::ComplexLongDouble,
             Expr::FloatLiteral(_, _) => CType::Double,
             Expr::FloatLiteralF32(_, _) => CType::Float,
-            Expr::FloatLiteralLongDouble(_, _) => CType::LongDouble,
+            Expr::FloatLiteralLongDouble(_, _, _) => CType::LongDouble,
             Expr::IntLiteral(_, _) | Expr::CharLiteral(_, _) => CType::Int,
             Expr::UIntLiteral(_, _) => CType::UInt,
             Expr::LongLiteral(_, _) => CType::Long,
@@ -881,8 +881,8 @@ impl Lowerer {
                 IrConst::F32(imag as f32),
             ])),
             CType::ComplexLongDouble => Some(GlobalInit::Array(vec![
-                IrConst::LongDouble(real),
-                IrConst::LongDouble(imag),
+                IrConst::long_double(real),
+                IrConst::long_double(imag),
             ])),
             _ => Some(GlobalInit::Array(vec![
                 IrConst::F64(real),
@@ -902,7 +902,7 @@ impl Lowerer {
             // Imaginary literals: 4.0i -> (0, 4.0)
             Expr::ImaginaryLiteral(val, _) => Some((0.0, *val)),
             Expr::ImaginaryLiteralF32(val, _) => Some((0.0, *val)),
-            Expr::ImaginaryLiteralLongDouble(val, _) => Some((0.0, *val)),
+            Expr::ImaginaryLiteralLongDouble(val, _, _) => Some((0.0, *val)),
             // Binary add: real + imag, or complex + complex
             Expr::BinaryOp(BinOp::Add, lhs, rhs, _) => {
                 let l = self.eval_complex_const(lhs)?;

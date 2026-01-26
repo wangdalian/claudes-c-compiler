@@ -264,10 +264,10 @@ fn fold_const_cast(c: &IrConst, from_ty: IrType, to_ty: IrType) -> Option<IrCons
             IrType::F64 | IrType::F128 => {
                 if from_ty.is_unsigned() {
                     let fv = (*v128 as u128) as f64;
-                    if to_ty == IrType::F128 { IrConst::LongDouble(fv) } else { IrConst::F64(fv) }
+                    if to_ty == IrType::F128 { IrConst::long_double(fv) } else { IrConst::F64(fv) }
                 } else {
                     let fv = *v128 as f64;
-                    if to_ty == IrType::F128 { IrConst::LongDouble(fv) } else { IrConst::F64(fv) }
+                    if to_ty == IrType::F128 { IrConst::long_double(fv) } else { IrConst::F64(fv) }
                 }
             }
             _ => return None,
@@ -322,9 +322,9 @@ fn fold_const_cast(c: &IrConst, from_ty: IrType, to_ty: IrType) -> Option<IrCons
             }
             IrType::F128 => {
                 if from_ty.is_unsigned() {
-                    IrConst::LongDouble(val as u64 as f64)
+                    IrConst::long_double(val as u64 as f64)
                 } else {
-                    IrConst::LongDouble(val as f64)
+                    IrConst::long_double(val as f64)
                 }
             }
             _ => return None,
@@ -332,6 +332,10 @@ fn fold_const_cast(c: &IrConst, from_ty: IrType, to_ty: IrType) -> Option<IrCons
     }
 
     // Float-to-other constant cast
+    // For LongDouble, use full x87 precision for integer targets
+    if let IrConst::LongDouble(fv, bytes) = c {
+        return IrConst::cast_long_double_to_target(*fv, bytes, to_ty);
+    }
     if let Some(fval) = c.to_f64() {
         return IrConst::cast_float_to_target(fval, to_ty);
     }
@@ -635,7 +639,7 @@ fn is_positive_zero(op: &Operand) -> bool {
     match op {
         Operand::Const(IrConst::F32(v)) => *v == 0.0 && !v.is_sign_negative(),
         Operand::Const(IrConst::F64(v)) => *v == 0.0 && !v.is_sign_negative(),
-        Operand::Const(IrConst::LongDouble(v)) => *v == 0.0 && !v.is_sign_negative(),
+        Operand::Const(IrConst::LongDouble(v, _)) => *v == 0.0 && !v.is_sign_negative(),
         _ => false,
     }
 }
@@ -684,7 +688,7 @@ fn simplify_math_call(
             let exp = match &args[1] {
                 Operand::Const(IrConst::F64(v)) => *v,
                 Operand::Const(IrConst::F32(v)) => *v as f64,
-                Operand::Const(IrConst::LongDouble(v)) => *v,
+                Operand::Const(IrConst::LongDouble(v, _)) => *v,
                 _ => return None,
             };
             let base = args[0];

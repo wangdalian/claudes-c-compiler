@@ -49,13 +49,13 @@ impl Lowerer {
             Expr::ULongLiteral(val, _) => Operand::Const(IrConst::I64(*val as i64)),
             Expr::FloatLiteral(val, _) => Operand::Const(IrConst::F64(*val)),
             Expr::FloatLiteralF32(val, _) => Operand::Const(IrConst::F32(*val as f32)),
-            Expr::FloatLiteralLongDouble(val, _) => Operand::Const(IrConst::LongDouble(*val)),
+            Expr::FloatLiteralLongDouble(val, bytes, _) => Operand::Const(IrConst::long_double_with_bytes(*val, *bytes)),
             Expr::CharLiteral(ch, _) => Operand::Const(IrConst::I32(*ch as i32)),
 
             // Imaginary literals
             Expr::ImaginaryLiteral(val, _) => self.lower_imaginary_literal(*val, &CType::ComplexDouble),
             Expr::ImaginaryLiteralF32(val, _) => self.lower_imaginary_literal(*val, &CType::ComplexFloat),
-            Expr::ImaginaryLiteralLongDouble(val, _) => self.lower_imaginary_literal(*val, &CType::ComplexLongDouble),
+            Expr::ImaginaryLiteralLongDouble(val, _, _) => self.lower_imaginary_literal(*val, &CType::ComplexLongDouble),
 
             Expr::StringLiteral(s, _) => self.lower_string_literal(s, false),
             Expr::WideStringLiteral(s, _) => self.lower_string_literal(s, true),
@@ -1616,7 +1616,7 @@ impl Lowerer {
         } else if ty == IrType::F32 {
             (Operand::Const(IrConst::F32(1.0)), IrType::F32)
         } else if ty == IrType::F128 {
-            (Operand::Const(IrConst::LongDouble(1.0)), IrType::F128)
+            (Operand::Const(IrConst::long_double(1.0)), IrType::F128)
         } else if ty == IrType::I128 || ty == IrType::U128 {
             (Operand::Const(IrConst::I128(1)), ty)
         } else {

@@ -52,16 +52,16 @@ impl Lowerer {
                     // If target is long double, promote F64 to LongDouble for proper encoding
                     let val = if is_long_double_target {
                         match val {
-                            IrConst::F64(v) => IrConst::LongDouble(v),
-                            IrConst::F32(v) => IrConst::LongDouble(v as f64),
+                            IrConst::F64(v) => IrConst::long_double(v),
+                            IrConst::F32(v) => IrConst::long_double(v as f64),
                             IrConst::I64(v) => {
                                 if src_ty.is_unsigned() {
-                                    IrConst::LongDouble((v as u64) as f64)
+                                    IrConst::long_double((v as u64) as f64)
                                 } else {
-                                    IrConst::LongDouble(v as f64)
+                                    IrConst::long_double(v as f64)
                                 }
                             }
-                            IrConst::I32(v) => IrConst::LongDouble(v as f64),
+                            IrConst::I32(v) => IrConst::long_double(v as f64),
                             other => other, // LongDouble already, or other type
                         }
                     } else {
@@ -210,7 +210,7 @@ impl Lowerer {
                     let total_scalars = num_elems * 2;
                     let zero_pair: Vec<IrConst> = match &complex_ctype {
                         CType::ComplexFloat => vec![IrConst::F32(0.0), IrConst::F32(0.0)],
-                        CType::ComplexLongDouble => vec![IrConst::LongDouble(0.0), IrConst::LongDouble(0.0)],
+                        CType::ComplexLongDouble => vec![IrConst::long_double(0.0), IrConst::long_double(0.0)],
                         _ => vec![IrConst::F64(0.0), IrConst::F64(0.0)],
                     };
                     let mut values: Vec<IrConst> = Vec::with_capacity(total_scalars);
@@ -240,8 +240,8 @@ impl Lowerer {
                                             values[base_offset + 1] = IrConst::F32(imag as f32);
                                         }
                                         CType::ComplexLongDouble => {
-                                            values[base_offset] = IrConst::LongDouble(real);
-                                            values[base_offset + 1] = IrConst::LongDouble(imag);
+                                            values[base_offset] = IrConst::long_double(real);
+                                            values[base_offset + 1] = IrConst::long_double(imag);
                                         }
                                         _ => {
                                             values[base_offset] = IrConst::F64(real);
@@ -621,12 +621,12 @@ impl Lowerer {
     /// Promote an IrConst value to LongDouble (16 bytes) for long double array elements.
     fn promote_to_long_double(val: IrConst) -> IrConst {
         match val {
-            IrConst::F64(v) => IrConst::LongDouble(v),
-            IrConst::F32(v) => IrConst::LongDouble(v as f64),
-            IrConst::I64(v) => IrConst::LongDouble(v as f64),
-            IrConst::I32(v) => IrConst::LongDouble(v as f64),
-            IrConst::I16(v) => IrConst::LongDouble(v as f64),
-            IrConst::I8(v) => IrConst::LongDouble(v as f64),
+            IrConst::F64(v) => IrConst::long_double(v),
+            IrConst::F32(v) => IrConst::long_double(v as f64),
+            IrConst::I64(v) => IrConst::long_double(v as f64),
+            IrConst::I32(v) => IrConst::long_double(v as f64),
+            IrConst::I16(v) => IrConst::long_double(v as f64),
+            IrConst::I8(v) => IrConst::long_double(v as f64),
             other => other, // LongDouble already or Zero
         }
     }
@@ -638,7 +638,7 @@ impl Lowerer {
 
     /// Get the appropriate zero constant for a type, considering long double.
     fn typed_zero_const(&self, base_ty: IrType, is_long_double: bool) -> IrConst {
-        if is_long_double { IrConst::LongDouble(0.0) } else { self.zero_const(base_ty) }
+        if is_long_double { IrConst::long_double(0.0) } else { self.zero_const(base_ty) }
     }
 
     /// Check if an initializer (possibly nested) contains expressions that require

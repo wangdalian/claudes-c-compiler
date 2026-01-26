@@ -299,13 +299,14 @@ pub enum Expr {
     ULongLiteral(u64, Span),
     FloatLiteral(f64, Span),            // double literal (no suffix)
     FloatLiteralF32(f64, Span),         // float literal (f/F suffix)
-    FloatLiteralLongDouble(f64, Span),  // long double literal (l/L suffix)
+    /// Long double literal (l/L suffix). Stores (f64_approx, x87_bytes, span).
+    FloatLiteralLongDouble(f64, [u8; 16], Span),
     /// Imaginary literal: value * I (double imaginary, e.g. 1.0i)
     ImaginaryLiteral(f64, Span),
     /// Float imaginary literal (e.g. 1.0fi)
     ImaginaryLiteralF32(f64, Span),
-    /// Long double imaginary literal (e.g. 1.0Li)
-    ImaginaryLiteralLongDouble(f64, Span),
+    /// Long double imaginary literal (e.g. 1.0Li). Stores (f64_approx, x87_bytes, span).
+    ImaginaryLiteralLongDouble(f64, [u8; 16], Span),
     StringLiteral(String, Span),
     /// Wide string literal (L"...") - each char is a wchar_t (32-bit int)
     WideStringLiteral(String, Span),
@@ -419,8 +420,8 @@ impl Expr {
         match self {
             Expr::IntLiteral(_, s) | Expr::UIntLiteral(_, s)
             | Expr::LongLiteral(_, s) | Expr::ULongLiteral(_, s)
-            | Expr::FloatLiteral(_, s) | Expr::FloatLiteralF32(_, s) | Expr::FloatLiteralLongDouble(_, s)
-            | Expr::ImaginaryLiteral(_, s) | Expr::ImaginaryLiteralF32(_, s) | Expr::ImaginaryLiteralLongDouble(_, s)
+            | Expr::FloatLiteral(_, s) | Expr::FloatLiteralF32(_, s) | Expr::FloatLiteralLongDouble(_, _, s)
+            | Expr::ImaginaryLiteral(_, s) | Expr::ImaginaryLiteralF32(_, s) | Expr::ImaginaryLiteralLongDouble(_, _, s)
             | Expr::StringLiteral(_, s) | Expr::WideStringLiteral(_, s)
             | Expr::Char16StringLiteral(_, s)
             | Expr::CharLiteral(_, s) | Expr::Identifier(_, s)

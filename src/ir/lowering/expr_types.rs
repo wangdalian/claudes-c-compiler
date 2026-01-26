@@ -490,9 +490,9 @@ impl Lowerer {
             Expr::UIntLiteral(_, _) | Expr::ULongLiteral(_, _) => IrType::U64,
             Expr::FloatLiteral(_, _) => IrType::F64,
             Expr::FloatLiteralF32(_, _) => IrType::F32,
-            Expr::FloatLiteralLongDouble(_, _) => IrType::F128,
+            Expr::FloatLiteralLongDouble(_, _, _) => IrType::F128,
             Expr::ImaginaryLiteral(_, _) | Expr::ImaginaryLiteralF32(_, _)
-            | Expr::ImaginaryLiteralLongDouble(_, _) => IrType::Ptr,
+            | Expr::ImaginaryLiteralLongDouble(_, _, _) => IrType::Ptr,
             Expr::StringLiteral(_, _) | Expr::WideStringLiteral(_, _)
             | Expr::Char16StringLiteral(_, _) => IrType::Ptr,
             Expr::Cast(ref target_type, _, _) => self.type_spec_to_ir(target_type),
@@ -844,7 +844,7 @@ impl Lowerer {
             // Float literal with f suffix: type float (4 bytes)
             Expr::FloatLiteralF32(_, _) => 4,
             // Float literal with L suffix: type long double (16 bytes)
-            Expr::FloatLiteralLongDouble(_, _) => 16,
+            Expr::FloatLiteralLongDouble(_, _, _) => 16,
             // Char literal: type int in C (4 bytes)
             Expr::CharLiteral(_, _) => 4,
             // String literal: array of char, size = length + 1 (null terminator)
@@ -1257,7 +1257,7 @@ impl Lowerer {
             Expr::CharLiteral(_, _) => Some(CType::Int), // char literals have type int in C
             Expr::FloatLiteral(_, _) => Some(CType::Double),
             Expr::FloatLiteralF32(_, _) => Some(CType::Float),
-            Expr::FloatLiteralLongDouble(_, _) => Some(CType::LongDouble),
+            Expr::FloatLiteralLongDouble(_, _, _) => Some(CType::LongDouble),
             // Wide string literal L"..." has type wchar_t* (which is int* on all targets)
             Expr::WideStringLiteral(_, _) => Some(CType::Pointer(Box::new(CType::Int), AddressSpace::Default)),
             // char16_t string literal u"..." has type char16_t* (which is unsigned short*)

@@ -182,22 +182,28 @@ impl Lexer {
                 };
                 let value = (int_val + frac_val) * (2.0_f64).powi(exp as i32);
 
-                // Check float suffix
-                let is_f32 = if self.pos < self.input.len() && (self.input[self.pos] == b'f' || self.input[self.pos] == b'F') {
+                // Check float suffix: f/F = float, l/L = long double
+                // 0 = double, 1 = float, 2 = long double
+                let hex_float_kind = if self.pos < self.input.len() && (self.input[self.pos] == b'f' || self.input[self.pos] == b'F') {
                     self.pos += 1;
-                    true
+                    1 // float
                 } else if self.pos < self.input.len() && (self.input[self.pos] == b'l' || self.input[self.pos] == b'L') {
                     self.pos += 1;
-                    false
+                    2 // long double
                 } else {
-                    false
+                    0 // double
                 };
 
                 let span = Span::new(start as u32, self.pos as u32, self.file_id);
-                return if is_f32 {
-                    Token::new(TokenKind::FloatLiteralF32(value), span)
-                } else {
-                    Token::new(TokenKind::FloatLiteral(value), span)
+                return match hex_float_kind {
+                    1 => Token::new(TokenKind::FloatLiteralF32(value), span),
+                    2 => {
+                        // Parse hex float with full x87 80-bit precision for long double
+                        let hex_text = std::str::from_utf8(&self.input[start..self.pos]).unwrap_or("0x0p0");
+                        let x87_bytes = crate::common::long_double::parse_long_double_to_x87_bytes(hex_text);
+                        Token::new(TokenKind::FloatLiteralLongDouble(value, x87_bytes), span)
+                    }
+                    _ => Token::new(TokenKind::FloatLiteral(value), span),
                 };
             }
 
@@ -340,13 +346,21 @@ impl Lexer {
             if is_imaginary {
                 match float_kind {
                     1 => Token::new(TokenKind::ImaginaryLiteralF32(value), span),
-                    2 => Token::new(TokenKind::ImaginaryLiteralLongDouble(value), span),
+                    2 => {
+                        // Parse with full x87 80-bit precision for long double imaginary
+                        let x87_bytes = crate::common::long_double::parse_long_double_to_x87_bytes(&text);
+                        Token::new(TokenKind::ImaginaryLiteralLongDouble(value, x87_bytes), span)
+                    }
                     _ => Token::new(TokenKind::ImaginaryLiteral(value), span),
                 }
             } else {
                 match float_kind {
                     1 => Token::new(TokenKind::FloatLiteralF32(value as f64), span),
-                    2 => Token::new(TokenKind::FloatLiteralLongDouble(value), span),
+                    2 => {
+                        // Parse with full x87 80-bit precision for long double
+                        let x87_bytes = crate::common::long_double::parse_long_double_to_x87_bytes(&text);
+                        Token::new(TokenKind::FloatLiteralLongDouble(value, x87_bytes), span)
+                    }
                     _ => Token::new(TokenKind::FloatLiteral(value), span),
                 }
             }

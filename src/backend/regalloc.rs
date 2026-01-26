@@ -123,7 +123,7 @@ pub fn allocate_registers(
                     // (these use different register paths).
                     let is_ineligible = matches!(src,
                         Operand::Const(IrConst::F32(_)) | Operand::Const(IrConst::F64(_)) |
-                        Operand::Const(IrConst::LongDouble(_)) | Operand::Const(IrConst::I128(_))
+                        Operand::Const(IrConst::LongDouble(..)) | Operand::Const(IrConst::I128(_))
                     );
                     if !is_ineligible {
                         eligible.insert(dest.0);

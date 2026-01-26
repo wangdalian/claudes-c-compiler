@@ -101,8 +101,8 @@ impl Lowerer {
             Expr::FloatLiteralF32(val, _) => {
                 Some(IrConst::F32(*val as f32))
             }
-            Expr::FloatLiteralLongDouble(val, _) => {
-                Some(IrConst::LongDouble(*val))
+            Expr::FloatLiteralLongDouble(val, bytes, _) => {
+                Some(IrConst::long_double_with_bytes(*val, *bytes))
             }
             Expr::UnaryOp(UnaryOp::Plus, inner, _) => {
                 self.eval_const_expr(inner)
@@ -137,8 +137,12 @@ impl Lowerer {
                 let src_val = self.eval_const_expr(inner)?;
 
                 // Handle float source types: use value-based conversion, not bit manipulation
+                // For LongDouble, use full x87 precision to avoid losing mantissa bits
+                if let IrConst::LongDouble(fv, bytes) = &src_val {
+                    return IrConst::cast_long_double_to_target(*fv, bytes, target_ir_ty);
+                }
                 if let Some(fv) = src_val.to_f64() {
-                    if matches!(&src_val, IrConst::F32(_) | IrConst::F64(_) | IrConst::LongDouble(_)) {
+                    if matches!(&src_val, IrConst::F32(_) | IrConst::F64(_)) {
                         return IrConst::cast_float_to_target(fv, target_ir_ty);
                     }
                 }
@@ -492,7 +496,7 @@ impl Lowerer {
             }
             IrType::F128 => {
                 let fv = if src_unsigned { (v128 as u128) as f64 } else { v128 as f64 };
-                IrConst::LongDouble(fv)
+                IrConst::long_double(fv)
             }
             _ => IrConst::I128(v128), // fallback: preserve value
         }

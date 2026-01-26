@@ -408,11 +408,12 @@ impl Parser {
                 self.advance();
                 Expr::FloatLiteralF32(val, span)
             }
-            TokenKind::FloatLiteralLongDouble(val) => {
+            TokenKind::FloatLiteralLongDouble(val, bytes) => {
                 let val = *val;
+                let bytes = *bytes;
                 let span = self.peek_span();
                 self.advance();
-                Expr::FloatLiteralLongDouble(val, span)
+                Expr::FloatLiteralLongDouble(val, bytes, span)
             }
             TokenKind::ImaginaryLiteral(val) => {
                 let val = *val;
@@ -426,11 +427,12 @@ impl Parser {
                 self.advance();
                 Expr::ImaginaryLiteralF32(val, span)
             }
-            TokenKind::ImaginaryLiteralLongDouble(val) => {
+            TokenKind::ImaginaryLiteralLongDouble(val, bytes) => {
                 let val = *val;
+                let bytes = *bytes;
                 let span = self.peek_span();
                 self.advance();
-                Expr::ImaginaryLiteralLongDouble(val, span)
+                Expr::ImaginaryLiteralLongDouble(val, bytes, span)
             }
             TokenKind::StringLiteral(s) => {
                 let mut result = s.clone();

@@ -110,8 +110,8 @@ impl<'a> SemaConstEval<'a> {
             Expr::FloatLiteralF32(val, _) => {
                 Some(IrConst::F32(*val as f32))
             }
-            Expr::FloatLiteralLongDouble(val, _) => {
-                Some(IrConst::LongDouble(*val))
+            Expr::FloatLiteralLongDouble(val, bytes, _) => {
+                Some(IrConst::long_double_with_bytes(*val, *bytes))
             }
 
             Expr::UnaryOp(UnaryOp::Plus, inner, _) => {
@@ -166,8 +166,12 @@ impl<'a> SemaConstEval<'a> {
                 let src_val = self.eval_const_expr(inner)?;
 
                 // Handle float source types: use value-based conversion
+                // For LongDouble, use full x87 precision for integer conversions
+                if let IrConst::LongDouble(fv, bytes) = &src_val {
+                    return self.cast_long_double_to_ctype(*fv, bytes, &target_ctype);
+                }
                 if let Some(fv) = src_val.to_f64() {
-                    if matches!(&src_val, IrConst::F32(_) | IrConst::F64(_) | IrConst::LongDouble(_)) {
+                    if matches!(&src_val, IrConst::F32(_) | IrConst::F64(_)) {
                         return self.cast_float_to_ctype(fv, &target_ctype);
                     }
                 }
@@ -482,7 +486,7 @@ impl<'a> SemaConstEval<'a> {
             IrConst::I128(_) => Some(CType::Int128),
             IrConst::F32(_) => Some(CType::Float),
             IrConst::F64(_) => Some(CType::Double),
-            IrConst::LongDouble(_) => Some(CType::LongDouble),
+            IrConst::LongDouble(..) => Some(CType::LongDouble),
             IrConst::Zero => Some(CType::Int),
         }
     }
@@ -563,12 +567,35 @@ impl<'a> SemaConstEval<'a> {
         false
     }
 
+    /// Cast a long double value (with raw x87 bytes) to a target CType.
+    /// Uses full 80-bit precision for integer conversions.
+    fn cast_long_double_to_ctype(&self, fv: f64, bytes: &[u8; 16], target: &CType) -> Option<IrConst> {
+        use crate::common::long_double::{x87_bytes_to_i64, x87_bytes_to_u64, x87_bytes_to_i128, x87_bytes_to_u128};
+        Some(match target {
+            CType::Float => IrConst::F32(fv as f32),
+            CType::Double => IrConst::F64(fv),
+            CType::LongDouble => IrConst::long_double_with_bytes(fv, *bytes),
+            CType::Char => IrConst::I8(x87_bytes_to_i64(bytes)? as i8),
+            CType::UChar => IrConst::I32(x87_bytes_to_u64(bytes)? as u8 as i32),
+            CType::Short => IrConst::I16(x87_bytes_to_i64(bytes)? as i16),
+            CType::UShort => IrConst::I32(x87_bytes_to_u64(bytes)? as u16 as i32),
+            CType::Int => IrConst::I32(x87_bytes_to_i64(bytes)? as i32),
+            CType::UInt => IrConst::I32(x87_bytes_to_u64(bytes)? as u32 as i32),
+            CType::Long | CType::LongLong => IrConst::I64(x87_bytes_to_i64(bytes)?),
+            CType::ULong | CType::ULongLong => IrConst::I64(x87_bytes_to_u64(bytes)? as i64),
+            CType::Bool => IrConst::I8(if fv != 0.0 { 1 } else { 0 }),
+            CType::Int128 => IrConst::I128(x87_bytes_to_i128(bytes)?),
+            CType::UInt128 => IrConst::I128(x87_bytes_to_u128(bytes)? as i128),
+            _ => return None,
+        })
+    }
+
     /// Cast a float value to a target CType.
     fn cast_float_to_ctype(&self, fv: f64, target: &CType) -> Option<IrConst> {
         Some(match target {
             CType::Float => IrConst::F32(fv as f32),
             CType::Double => IrConst::F64(fv),
-            CType::LongDouble => IrConst::LongDouble(fv),
+            CType::LongDouble => IrConst::long_double(fv),
             CType::Char => IrConst::I8(fv as i8),
             CType::UChar => IrConst::I32(fv as u8 as i32),
             CType::Short => IrConst::I16(fv as i16),
@@ -635,7 +662,7 @@ impl<'a> SemaConstEval<'a> {
             16 => {
                 if matches!(target, CType::LongDouble) {
                     let int_val = if target_signed { bits as i64 as f64 } else { bits as u64 as f64 };
-                    IrConst::LongDouble(int_val)
+                    IrConst::long_double(int_val)
                 } else {
                     IrConst::I128(bits as i128) // __int128 / unsigned __int128
                 }
@@ -698,7 +725,7 @@ impl<'a> SemaConstEval<'a> {
             16 => {
                 if matches!(target, CType::LongDouble) {
                     let fv = if src_unsigned { (v128 as u128) as f64 } else { v128 as f64 };
-                    IrConst::LongDouble(fv)
+                    IrConst::long_double(fv)
                 } else {
                     // __int128 / unsigned __int128: preserve full 128-bit value
                     IrConst::I128(v128)

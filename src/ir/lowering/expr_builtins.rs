@@ -200,7 +200,7 @@ impl Lowerer {
                 if is_float_variant {
                     Some(Operand::Const(IrConst::F32(*val as f32)))
                 } else if is_long_double_variant {
-                    Some(Operand::Const(IrConst::LongDouble(*val)))
+                    Some(Operand::Const(IrConst::long_double(*val)))
                 } else {
                     Some(Operand::Const(IrConst::F64(*val)))
                 }
@@ -320,7 +320,7 @@ impl Lowerer {
                     } else {
                         Some(match target_ty {
                             IrType::F32 => Operand::Const(IrConst::F32(0.0)),
-                            IrType::F128 => Operand::Const(IrConst::LongDouble(0.0)),
+                            IrType::F128 => Operand::Const(IrConst::long_double(0.0)),
                             _ => Operand::Const(IrConst::F64(0.0)),
                         })
                     }

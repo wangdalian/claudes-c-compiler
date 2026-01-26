@@ -942,7 +942,8 @@ pub fn calculate_stack_space_common(
                 non_local_space = new_space;
             } else if let Some(dest) = inst.dest() {
                 let is_i128 = matches!(inst.result_type(), Some(IrType::I128) | Some(IrType::U128));
-                let slot_size: i64 = if is_i128 { 16 } else { 8 };
+                let is_f128 = matches!(inst.result_type(), Some(IrType::F128));
+                let slot_size: i64 = if is_i128 || is_f128 { 16 } else { 8 };
 
                 if is_i128 {
                     state.i128_values.insert(dest.0);
@@ -1001,7 +1002,8 @@ pub fn calculate_stack_space_common(
                     alloca_sizes.push((dest.0, if *size == 0 { 8 } else { *size as i64 }));
                 } else if let Some(dest) = inst.dest() {
                     let is_i128 = matches!(inst.result_type(), Some(IrType::I128) | Some(IrType::U128));
-                    let slot_size: i64 = if is_i128 { 16 } else { 8 };
+                    let is_f128 = matches!(inst.result_type(), Some(IrType::F128));
+                    let slot_size: i64 = if is_i128 || is_f128 { 16 } else { 8 };
                     if single_use_block(dest.0).is_some() {
                         total_coal_count += 1;
                     } else {

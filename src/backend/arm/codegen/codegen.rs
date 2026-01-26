@@ -506,7 +506,7 @@ impl ArmCodegen {
                     }
                     IrConst::F32(v) => self.emit_load_imm64("x0", v.to_bits() as i64),
                     IrConst::F64(v) => self.emit_load_imm64("x0", v.to_bits() as i64),
-                    IrConst::LongDouble(v) => self.emit_load_imm64("x0", v.to_bits() as i64),
+                    IrConst::LongDouble(v, _) => self.emit_load_imm64("x0", v.to_bits() as i64),
                     IrConst::I128(v) => self.emit_load_imm64("x0", *v as i64), // truncate to 64-bit
                     IrConst::Zero => self.state.emit("    mov x0, #0"),
                 }
@@ -2015,7 +2015,7 @@ impl ArchCodegen for ArmCodegen {
                         match arg {
                             Operand::Const(c) => {
                                 let f64_val = match c {
-                                    IrConst::LongDouble(v) => *v,
+                                    IrConst::LongDouble(v, _) => *v,
                                     IrConst::F64(v) => *v,
                                     _ => c.to_f64().unwrap_or(0.0),
                                 };
@@ -2172,7 +2172,7 @@ impl ArchCodegen for ArmCodegen {
             if !matches!(arg_classes[arg_i], CallArgClass::F128Reg { .. }) { continue; }
             if let Operand::Const(c) = &args[arg_i] {
                 let f64_val = match c {
-                    IrConst::LongDouble(v) => *v,
+                    IrConst::LongDouble(v, _) => *v,
                     IrConst::F64(v) => *v,
                     _ => c.to_f64().unwrap_or(0.0),
                 };

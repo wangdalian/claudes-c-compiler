@@ -347,7 +347,7 @@ impl RiscvCodegen {
                         self.state.emit_fmt(format_args!("    li t0, {}", bits as i64));
                     }
                     // LongDouble at computation level is treated as F64
-                    IrConst::LongDouble(v) => {
+                    IrConst::LongDouble(v, _) => {
                         let bits = v.to_bits();
                         self.state.emit_fmt(format_args!("    li t0, {}", bits as i64));
                     }
@@ -1915,7 +1915,7 @@ impl ArchCodegen for RiscvCodegen {
                         match arg {
                             Operand::Const(ref c) => {
                                 let f64_val = match c {
-                                    IrConst::LongDouble(v) => *v,
+                                    IrConst::LongDouble(v, _) => *v,
                                     IrConst::F64(v) => *v,
                                     _ => c.to_f64().unwrap_or(0.0),
                                 };
@@ -1994,7 +1994,7 @@ impl ArchCodegen for RiscvCodegen {
                 match arg {
                     Operand::Const(ref c) => {
                         let f64_val = match c {
-                            IrConst::LongDouble(v) => *v,
+                            IrConst::LongDouble(v, _) => *v,
                             IrConst::F64(v) => *v,
                             _ => c.to_f64().unwrap_or(0.0),
                         };

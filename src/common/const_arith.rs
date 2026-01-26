@@ -147,7 +147,7 @@ pub fn eval_const_binop_int(op: &BinOp, l: i64, r: i64, is_32bit: bool, is_unsig
 ///
 /// Comparison and logical operations always return `IrConst::I64`.
 pub fn eval_const_binop_float(op: &BinOp, lhs: &IrConst, rhs: &IrConst) -> Option<IrConst> {
-    let use_long_double = matches!(lhs, IrConst::LongDouble(_)) || matches!(rhs, IrConst::LongDouble(_));
+    let use_long_double = matches!(lhs, IrConst::LongDouble(..)) || matches!(rhs, IrConst::LongDouble(..));
     let use_f32 = matches!(lhs, IrConst::F32(_)) && matches!(rhs, IrConst::F32(_));
 
     let l = lhs.to_f64()?;
@@ -155,7 +155,7 @@ pub fn eval_const_binop_float(op: &BinOp, lhs: &IrConst, rhs: &IrConst) -> Optio
 
     let make_float = |v: f64| -> IrConst {
         if use_long_double {
-            IrConst::LongDouble(v)
+            IrConst::long_double(v)
         } else if use_f32 {
             IrConst::F32(v as f32)
         } else {
@@ -251,8 +251,8 @@ pub fn eval_const_binop_i128(op: &BinOp, lhs: &IrConst, rhs: &IrConst, is_unsign
 /// This is the top-level entry point for constant binary evaluation.
 /// The caller provides `is_32bit` and `is_unsigned` for the integer path.
 pub fn eval_const_binop(op: &BinOp, lhs: &IrConst, rhs: &IrConst, is_32bit: bool, is_unsigned: bool) -> Option<IrConst> {
-    let lhs_is_float = matches!(lhs, IrConst::F32(_) | IrConst::F64(_) | IrConst::LongDouble(_));
-    let rhs_is_float = matches!(rhs, IrConst::F32(_) | IrConst::F64(_) | IrConst::LongDouble(_));
+    let lhs_is_float = matches!(lhs, IrConst::F32(_) | IrConst::F64(_) | IrConst::LongDouble(..));
+    let rhs_is_float = matches!(rhs, IrConst::F32(_) | IrConst::F64(_) | IrConst::LongDouble(..));
 
     if lhs_is_float || rhs_is_float {
         return eval_const_binop_float(op, lhs, rhs);
@@ -280,7 +280,7 @@ pub fn negate_const(val: IrConst) -> Option<IrConst> {
         IrConst::I16(v) => Some(IrConst::I32((v as i32).wrapping_neg())),
         IrConst::F64(v) => Some(IrConst::F64(-v)),
         IrConst::F32(v) => Some(IrConst::F32(-v)),
-        IrConst::LongDouble(v) => Some(IrConst::LongDouble(-v)),
+        IrConst::LongDouble(v, _) => Some(IrConst::long_double(-v)),
         _ => None,
     }
 }

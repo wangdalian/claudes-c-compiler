@@ -410,9 +410,11 @@ pub enum IrConst {
     I128(i128),
     F32(f32),
     F64(f64),
-    /// Long double: stored as f64 value, emitted as x87 80-bit extended precision (16 bytes with padding).
-    /// On ARM64/RISC-V, emitted as IEEE 754 quad precision approximation (16 bytes).
-    LongDouble(f64),
+    /// Long double constant with full precision.
+    /// - `f64`: approximate value for computations (lossy, 52-bit mantissa)
+    /// - `[u8; 16]`: raw x87 80-bit extended precision bytes (first 10 bytes used, 6 padding).
+    ///   For ARM64/RISC-V emission, these are converted to IEEE f128 via `x87_bytes_to_f128_bytes`.
+    LongDouble(f64, [u8; 16]),
     Zero,
 }
 
@@ -427,6 +429,7 @@ pub enum ConstHashKey {
     I128(i128),
     F32(u32),
     F64(u64),
+    LongDouble([u8; 16]),
     Zero,
 }
 
@@ -545,9 +548,28 @@ impl IrConst {
             IrConst::I8(0) | IrConst::I16(0) | IrConst::I32(0) | IrConst::I64(0) | IrConst::I128(0) => true,
             IrConst::F32(v) => *v == 0.0,
             IrConst::F64(v) => *v == 0.0,
-            IrConst::LongDouble(v) => *v == 0.0,
+            IrConst::LongDouble(v, _) => *v == 0.0,
             IrConst::Zero => true,
             _ => false,
+        }
+    }
+
+    /// Create a LongDouble constant from an f64 value (low precision - bytes derived from f64).
+    /// Use this when no full-precision source text is available.
+    pub fn long_double(v: f64) -> IrConst {
+        IrConst::LongDouble(v, crate::common::long_double::f64_to_x87_bytes_simple(v))
+    }
+
+    /// Create a LongDouble constant with full-precision x87 bytes.
+    pub fn long_double_with_bytes(v: f64, bytes: [u8; 16]) -> IrConst {
+        IrConst::LongDouble(v, bytes)
+    }
+
+    /// Get the raw x87 bytes from a LongDouble constant.
+    pub fn long_double_bytes(&self) -> Option<&[u8; 16]> {
+        match self {
+            IrConst::LongDouble(_, bytes) => Some(bytes),
+            _ => None,
         }
     }
 
@@ -571,7 +593,7 @@ impl IrConst {
             IrConst::I128(v) => ConstHashKey::I128(*v),
             IrConst::F32(v) => ConstHashKey::F32(v.to_bits()),
             IrConst::F64(v) => ConstHashKey::F64(v.to_bits()),
-            IrConst::LongDouble(v) => ConstHashKey::F64(v.to_bits()),
+            IrConst::LongDouble(_, bytes) => ConstHashKey::LongDouble(*bytes),
             IrConst::Zero => ConstHashKey::Zero,
         }
     }
@@ -586,7 +608,7 @@ impl IrConst {
             IrConst::I128(v) => Some(*v as f64),
             IrConst::F32(v) => Some(*v as f64),
             IrConst::F64(v) => Some(*v),
-            IrConst::LongDouble(v) => Some(*v),
+            IrConst::LongDouble(v, _) => Some(*v),
             IrConst::Zero => Some(0.0),
         }
     }
@@ -597,7 +619,7 @@ impl IrConst {
     pub fn cast_float_to_target(fv: f64, target: IrType) -> Option<IrConst> {
         Some(match target {
             IrType::F64 => IrConst::F64(fv),
-            IrType::F128 => IrConst::LongDouble(fv),
+            IrType::F128 => IrConst::long_double(fv),
             IrType::F32 => IrConst::F32(fv as f32),
             IrType::I8 => IrConst::I8(fv as i8),
             IrType::U8 => IrConst::I8(fv as u8 as i8),
@@ -613,6 +635,30 @@ impl IrConst {
         })
     }
 
+    /// Cast a long double (with raw x87 bytes) to the target IR type.
+    /// Uses full 80-bit precision for integer conversions, unlike cast_float_to_target
+    /// which only uses the f64 approximation (52-bit mantissa).
+    pub fn cast_long_double_to_target(fv: f64, bytes: &[u8; 16], target: IrType) -> Option<IrConst> {
+        use crate::common::long_double::{x87_bytes_to_i64, x87_bytes_to_u64, x87_bytes_to_i128, x87_bytes_to_u128};
+        Some(match target {
+            IrType::F64 => IrConst::F64(fv),
+            IrType::F128 => IrConst::long_double_with_bytes(fv, *bytes),
+            IrType::F32 => IrConst::F32(fv as f32),
+            // For integer targets, use full x87 precision
+            IrType::I8 => IrConst::I8(x87_bytes_to_i64(bytes)? as i8),
+            IrType::U8 => IrConst::I8(x87_bytes_to_u64(bytes)? as u8 as i8),
+            IrType::I16 => IrConst::I16(x87_bytes_to_i64(bytes)? as i16),
+            IrType::U16 => IrConst::I16(x87_bytes_to_u64(bytes)? as u16 as i16),
+            IrType::I32 => IrConst::I32(x87_bytes_to_i64(bytes)? as i32),
+            IrType::U32 => IrConst::I64(x87_bytes_to_u64(bytes)? as u32 as i64),
+            IrType::I64 | IrType::Ptr => IrConst::I64(x87_bytes_to_i64(bytes)?),
+            IrType::U64 => IrConst::I64(x87_bytes_to_u64(bytes)? as i64),
+            IrType::I128 => IrConst::I128(x87_bytes_to_i128(bytes)?),
+            IrType::U128 => IrConst::I128(x87_bytes_to_u128(bytes)? as i128),
+            _ => return None,
+        })
+    }
+
     /// Extract as i64 (integer constants only; floats return None).
     pub fn to_i64(&self) -> Option<i64> {
         match self {
@@ -622,7 +668,7 @@ impl IrConst {
             IrConst::I64(v) => Some(*v),
             IrConst::I128(v) => Some(*v as i64),
             IrConst::Zero => Some(0),
-            IrConst::F32(_) | IrConst::F64(_) | IrConst::LongDouble(_) => None,
+            IrConst::F32(_) | IrConst::F64(_) | IrConst::LongDouble(..) => None,
         }
     }
 
@@ -636,7 +682,7 @@ impl IrConst {
             IrConst::I64(v) => Some(*v as i128),
             IrConst::I128(v) => Some(*v),
             IrConst::Zero => Some(0),
-            IrConst::F32(_) | IrConst::F64(_) | IrConst::LongDouble(_) => None,
+            IrConst::F32(_) | IrConst::F64(_) | IrConst::LongDouble(..) => None,
         }
     }
 
@@ -649,7 +695,7 @@ impl IrConst {
             IrConst::I64(v) => Some(*v as u64),
             IrConst::I128(v) => Some(*v as u64),
             IrConst::Zero => Some(0),
-            IrConst::F32(_) | IrConst::F64(_) | IrConst::LongDouble(_) => None,
+            IrConst::F32(_) | IrConst::F64(_) | IrConst::LongDouble(..) => None,
         }
     }
 
@@ -675,12 +721,10 @@ impl IrConst {
             IrConst::F64(v) => {
                 out.extend_from_slice(&v.to_bits().to_le_bytes());
             }
-            IrConst::LongDouble(v) => {
-                // Default: store as f64 bits in low 8 bytes + 8 zero padding bytes.
-                // This is correct for ARM64/RISC-V where long double is IEEE quad
-                // (computation done at f64 precision, ABI conversion via __extenddftf2).
-                out.extend_from_slice(&v.to_bits().to_le_bytes());
-                out.extend_from_slice(&[0u8; 8]);
+            IrConst::LongDouble(_, bytes) => {
+                // ARM64/RISC-V: convert x87 bytes to IEEE f128 format
+                let f128_bytes = crate::common::long_double::x87_bytes_to_f128_bytes(bytes);
+                out.extend_from_slice(&f128_bytes);
             }
             IrConst::I128(v) => {
                 let le_bytes = v.to_le_bytes();
@@ -704,11 +748,9 @@ impl IrConst {
     /// type-puns long doubles through unions or integer arrays (e.g., TCC's CValue).
     pub fn push_le_bytes_x86(&self, out: &mut Vec<u8>, size: usize) {
         match self {
-            IrConst::LongDouble(v) => {
-                // x86-64: emit x87 80-bit extended precision (10 bytes) + 6 zero padding bytes.
-                // This is the correct memory format for long double on x86-64.
-                let x87_bytes = f64_to_x87_bytes(*v);
-                out.extend_from_slice(&x87_bytes);
+            IrConst::LongDouble(_, bytes) => {
+                // x86-64: emit stored x87 80-bit bytes (10 bytes) + 6 zero padding bytes.
+                out.extend_from_slice(&bytes[..10]);
                 out.extend_from_slice(&[0u8; 6]); // pad to 16 bytes
             }
             _ => self.push_le_bytes(out, size),
@@ -734,7 +776,7 @@ impl IrConst {
             IrType::I128 | IrType::U128 => IrConst::I128(val as i128),
             IrType::F32 => IrConst::F32(val as f32),
             IrType::F64 => IrConst::F64(val as f64),
-            IrType::F128 => IrConst::LongDouble(val as f64),
+            IrType::F128 => IrConst::long_double(val as f64),
             _ => IrConst::I64(val),
         }
     }
@@ -752,7 +794,7 @@ impl IrConst {
             (IrConst::I128(_), IrType::I128 | IrType::U128) => return self.clone(),
             (IrConst::F32(_), IrType::F32) => return self.clone(),
             (IrConst::F64(_), IrType::F64) => return self.clone(),
-            (IrConst::LongDouble(_), IrType::F64 | IrType::F128) => return self.clone(),
+            (IrConst::LongDouble(..), IrType::F64 | IrType::F128) => return self.clone(),
             _ => {}
         }
         // Convert integer types via from_i64, with unsigned-aware paths
@@ -774,7 +816,7 @@ impl IrConst {
                     return match target_ty {
                         IrType::F32 => IrConst::F32(uint_val as f32),
                         IrType::F64 => IrConst::F64(uint_val as f64),
-                        IrType::F128 => IrConst::LongDouble(uint_val as f64),
+                        IrType::F128 => IrConst::long_double(uint_val as f64),
                         _ => IrConst::I64(uint_val as i64),
                     };
                 }
@@ -813,7 +855,7 @@ impl IrConst {
             IrType::U32 => IrConst::I64(0),
             IrType::F32 => IrConst::F32(0.0),
             IrType::F64 => IrConst::F64(0.0),
-            IrType::F128 => IrConst::LongDouble(0.0),
+            IrType::F128 => IrConst::long_double(0.0),
             _ => IrConst::I64(0),
         }
     }
@@ -827,7 +869,7 @@ impl IrConst {
             IrType::U32 => IrConst::I64(1),
             IrType::F32 => IrConst::F32(1.0),
             IrType::F64 => IrConst::F64(1.0),
-            IrType::F128 => IrConst::LongDouble(1.0),
+            IrType::F128 => IrConst::long_double(1.0),
             _ => IrConst::I64(1),
         }
     }

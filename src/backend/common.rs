@@ -632,7 +632,7 @@ fn emit_global_def(out: &mut AsmOutput, g: &IrGlobal, ptr_dir: PtrDirective) {
                     IrConst::I32(_) => IrType::I32,
                     IrConst::F32(_) => IrType::F32,
                     IrConst::F64(_) => IrType::F64,
-                    IrConst::LongDouble(_) => IrType::F128,
+                    IrConst::LongDouble(..) => IrType::F128,
                     _ => g.ty,
                 };
                 let elem_ty = if g.ty.size() > const_ty.size() {
@@ -794,27 +794,23 @@ pub fn emit_const_data(out: &mut AsmOutput, c: &IrConst, ty: IrType, ptr_dir: Pt
         IrConst::F64(v) => {
             out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), v.to_bits()));
         }
-        IrConst::LongDouble(v) => {
+        IrConst::LongDouble(_v, bytes) => {
             if ptr_dir.is_x86() {
-                // x86-64: emit x87 80-bit extended precision format (10 bytes + 6 padding).
-                // This ensures correct memory representation when code reads the bytes
-                // through unions or integer arrays (e.g., TCC's CValue.tab[]).
-                let x87_bytes = crate::ir::ir::f64_to_x87_bytes(*v);
-                // Emit as two .quad values (16 bytes total, little-endian)
-                let lo = u64::from_le_bytes([
-                    x87_bytes[0], x87_bytes[1], x87_bytes[2], x87_bytes[3],
-                    x87_bytes[4], x87_bytes[5], x87_bytes[6], x87_bytes[7],
-                ]);
+                // x86-64: emit stored x87 80-bit extended precision bytes (full precision).
+                // The raw bytes are in bytes[0..10], with bytes[10..16] = 0 padding.
+                let lo = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
                 let hi = u64::from_le_bytes([
-                    x87_bytes[8], x87_bytes[9], 0, 0, 0, 0, 0, 0,
+                    bytes[8], bytes[9], 0, 0, 0, 0, 0, 0,
                 ]);
                 out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), lo as i64));
                 out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), hi as i64));
             } else {
-                // ARM64/RISC-V: store as f64 bit pattern in the lower 8 bytes + 8 zero padding.
-                // Codegen loads long doubles as f64 values; ABI conversion via __extenddftf2.
-                out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), v.to_bits()));
-                out.emit_fmt(format_args!("    {} 0", ptr_dir.as_str()));
+                // ARM64/RISC-V: convert x87 bytes to IEEE f128 format for proper quad precision.
+                let f128_bytes = crate::common::long_double::x87_bytes_to_f128_bytes(bytes);
+                let lo = u64::from_le_bytes(f128_bytes[0..8].try_into().unwrap());
+                let hi = u64::from_le_bytes(f128_bytes[8..16].try_into().unwrap());
+                out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), lo as i64));
+                out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), hi as i64));
             }
         }
         IrConst::I128(v) => {

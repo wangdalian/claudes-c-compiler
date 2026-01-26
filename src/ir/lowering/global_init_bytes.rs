@@ -1251,7 +1251,7 @@ impl Lowerer {
                             IrConst::F32(v) => Some(v as f64),
                             IrConst::I64(v) => Some(v as f64),
                             IrConst::I32(v) => Some(v as f64),
-                            IrConst::LongDouble(v) => Some(v),
+                            IrConst::LongDouble(v, _) => Some(v),
                             _ => None,
                         })
                     } else {
@@ -1265,7 +1265,7 @@ impl Lowerer {
                             IrConst::F32(v) => Some(v as f64),
                             IrConst::I64(v) => Some(v as f64),
                             IrConst::I32(v) => Some(v as f64),
-                            IrConst::LongDouble(v) => Some(v),
+                            IrConst::LongDouble(v, _) => Some(v),
                             _ => None,
                         })
                     } else {
@@ -1285,8 +1285,8 @@ impl Lowerer {
                 self.write_const_to_bytes(bytes, field_offset + comp_size, &imag_const, IrType::F32);
             }
             CType::ComplexLongDouble => {
-                let real_const = IrConst::LongDouble(real);
-                let imag_const = IrConst::LongDouble(imag);
+                let real_const = IrConst::long_double(real);
+                let imag_const = IrConst::long_double(imag);
                 self.write_const_to_bytes(bytes, field_offset, &real_const, IrType::F128);
                 self.write_const_to_bytes(bytes, field_offset + comp_size, &imag_const, IrType::F128);
             }
