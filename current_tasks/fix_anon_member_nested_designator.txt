@@ -1,0 +1,15 @@
+Fix anonymous member nested designator initialization in global/static struct init.
+
+Bug: When a flattened designator like `.base.cra_name = "val"` targets a field inside
+an anonymous struct/union member, the compiler dropped the remaining designator chain
+(e.g., `.cra_name`) when creating the synthetic init item for the anonymous member.
+This caused values to be written at wrong offsets within the sub-struct.
+
+Affected: crypto/crypto_null.c, drivers/acpi/acpi_processor.c,
+arch/x86/boot/compressed/ident_map_64.c (all fail kernel bisect)
+
+Fix: Preserve all remaining designators when creating synthetic init items for
+anonymous member resolution in global_init_compound.rs, global_init_bytes.rs,
+global_init_helpers.rs, and stmt.rs.
+
+Status: completed
