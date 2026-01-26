@@ -1,0 +1,14 @@
+Task: Fix oversized store for small struct/union function return assignment
+Status: in_progress
+Agent: claude
+
+Problem: When assigning a function return value to a small struct/union (4 bytes),
+the compiler generates a movq (8-byte store) instead of movl (4-byte store). This
+corrupts adjacent memory locations. The bug is visible when un (4-byte union) and
+en (4-byte enum) are adjacent globals - assigning to un overwrites en.
+
+Root cause: The `un = fncun(st)` assignment stores the full 64-bit rax register
+instead of just the lower 32 bits matching the union's actual size.
+
+Failing tests: compiler_suite_0048_0124, compiler_suite_0139_0075 (both SIGSEGV from
+accessing corrupted pointers after memory corruption)
