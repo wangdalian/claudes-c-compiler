@@ -970,16 +970,16 @@ impl ArchCodegen for RiscvCodegen {
     fn trap_instruction(&self) -> &'static str { "ebreak" }
 
     /// Override emit_branch to use `jump <label>, t6` instead of `j <label>`.
-    /// The `j` pseudo (JAL with rd=x0) has only ±1MB range. For large functions
+    /// The `j` pseudo (JAL with rd=x0) has only +-1MB range. For large functions
     /// (e.g., Lua's luaV_execute, oniguruma's match_at), intra-function branches
     /// can exceed this. The `jump` pseudo generates `auipc t6, ... ; jr t6`
-    /// with ±2GB range. t6 is safe to clobber here because emit_branch is only
+    /// with +-2GB range. t6 is safe to clobber here because emit_branch is only
     /// called at block terminators where all scratch registers are dead.
     fn emit_branch(&mut self, label: &str) {
         self.state.emit_fmt(format_args!("    jump {}, t6", label));
     }
 
-    /// Override emit_branch_to_block to use `jump` pseudo for ±2GB range,
+    /// Override emit_branch_to_block to use `jump` pseudo for +-2GB range,
     /// matching emit_branch. Without this, the default trait implementation
     /// uses `j` which can't reach labels >1MB away.
     fn emit_branch_to_block(&mut self, block: BlockId) {
@@ -990,8 +990,15 @@ impl ArchCodegen for RiscvCodegen {
         out.newline();
     }
 
+    /// Emit branch-if-nonzero using a relaxed sequence.
+    /// `bnez` has +-4KB range which is easily exceeded in large functions.
+    /// We use `beqz t0, .Lskip; jump target, t6; .Lskip:` instead,
+    /// where `jump` has +-2GB range.
     fn emit_branch_nonzero(&mut self, label: &str) {
-        self.state.emit_fmt(format_args!("    bnez t0, {}", label));
+        let skip = self.state.fresh_label("skip");
+        self.state.emit_fmt(format_args!("    beqz t0, {}", skip));
+        self.state.emit_fmt(format_args!("    jump {}, t6", label));
+        self.state.emit_fmt(format_args!("{}:", skip));
     }
 
     fn emit_jump_indirect(&mut self) {
@@ -1663,7 +1670,9 @@ impl ArchCodegen for RiscvCodegen {
     }
 
     /// Fused compare-and-branch for RISC-V: emit branch instructions directly.
-    /// RISC-V has native compare-and-branch instructions: beq, bne, blt, bge, bltu, bgeu.
+    /// RISC-V B-type branches (beq/bne/blt/bge/bltu/bgeu) have +-4KB range,
+    /// which is easily exceeded in large functions (e.g., oniguruma's match_at).
+    /// We invert the condition to skip over a long-range `jump` pseudo.
     fn emit_fused_cmp_branch(
         &mut self,
         op: IrCmpOp,
@@ -1676,27 +1685,29 @@ impl ArchCodegen for RiscvCodegen {
         // Load operands into t1, t2 (with sign/zero-extension for sub-64-bit types)
         self.emit_cmp_operand_load(lhs, rhs, ty);
 
-        // RISC-V has 6 compare-and-branch instructions:
-        //   beq, bne, blt, bge, bltu, bgeu
-        // For >, <=, we swap operands to use blt/bge.
-        let (branch_instr, r1, r2) = match op {
-            IrCmpOp::Eq  => ("beq",  "t1", "t2"),
-            IrCmpOp::Ne  => ("bne",  "t1", "t2"),
-            IrCmpOp::Slt => ("blt",  "t1", "t2"),
-            IrCmpOp::Sge => ("bge",  "t1", "t2"),
-            IrCmpOp::Ult => ("bltu", "t1", "t2"),
-            IrCmpOp::Uge => ("bgeu", "t1", "t2"),
-            // Swap operands for > and <=
-            IrCmpOp::Sgt => ("blt",  "t2", "t1"),  // a > b  ≡  b < a
-            IrCmpOp::Sle => ("bge",  "t2", "t1"),  // a <= b ≡  b >= a
-            IrCmpOp::Ugt => ("bltu", "t2", "t1"),  // a > b  ≡  b < a (unsigned)
-            IrCmpOp::Ule => ("bgeu", "t2", "t1"),  // a <= b ≡  b >= a (unsigned)
+        // Emit inverted branch to skip over the true-path jump.
+        // Original: beq t1, t2, true_label  (+-4KB range, can fail)
+        // Relaxed:  bne t1, t2, .Lskip      (short forward skip)
+        //           jump true_label, t6      (+-2GB range)
+        //           .Lskip:
+        //           jump false_label, t6     (+-2GB range)
+        let (inv_branch, r1, r2) = match op {
+            IrCmpOp::Eq  => ("bne",  "t1", "t2"),
+            IrCmpOp::Ne  => ("beq",  "t1", "t2"),
+            IrCmpOp::Slt => ("bge",  "t1", "t2"),
+            IrCmpOp::Sge => ("blt",  "t1", "t2"),
+            IrCmpOp::Ult => ("bgeu", "t1", "t2"),
+            IrCmpOp::Uge => ("bltu", "t1", "t2"),
+            // Swap operands for > and <=, and invert
+            IrCmpOp::Sgt => ("bge",  "t2", "t1"),  // NOT(a > b)  ≡  b >= a
+            IrCmpOp::Sle => ("blt",  "t2", "t1"),  // NOT(a <= b) ≡  b < a
+            IrCmpOp::Ugt => ("bgeu", "t2", "t1"),  // NOT(a > b)  ≡  b >= a (unsigned)
+            IrCmpOp::Ule => ("bltu", "t2", "t1"),  // NOT(a <= b) ≡  b < a (unsigned)
         };
-        // TODO: The conditional branch (beq/bne/etc.) has ±4KB range. For very
-        // large functions, we may need to relax to: inverted-cond .Lskip; jump target, t6; .Lskip:
-        self.state.emit_fmt(format_args!("    {} {}, {}, {}", branch_instr, r1, r2, true_label));
-        // Use `jump` pseudo for ±2GB range instead of `j` (±1MB) to handle
-        // large functions where the false branch target may be far away.
+        let skip = self.state.fresh_label("skip");
+        self.state.emit_fmt(format_args!("    {} {}, {}, {}", inv_branch, r1, r2, skip));
+        self.state.emit_fmt(format_args!("    jump {}, t6", true_label));
+        self.state.emit_fmt(format_args!("{}:", skip));
         self.state.emit_fmt(format_args!("    jump {}, t6", false_label));
         self.state.reg_cache.invalidate_all();
     }

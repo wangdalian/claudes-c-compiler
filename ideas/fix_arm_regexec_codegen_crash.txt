@@ -1,0 +1,26 @@
+Fix ARM codegen crash in oniguruma's regexec.c (blocks jq regex tests on ARM)
+
+Problem:
+- jq's regex test() crashes on ARM when patterns use character class matching
+  (e.g., ".", "[a-z]", ".*") but works for literal patterns ("hello", "h").
+- The crash is in oniguruma's match_at function in regexec.c (~6700 lines).
+- The same code works correctly on x86 and RISC-V, so it's ARM-specific.
+- Building with -O0 still crashes, so it's not an optimization bug.
+- Compiling regexec.c with GCC and linking with our compiler works fine.
+
+Root cause:
+- Unknown. Not the struct-by-value bug (that was fixed separately).
+- Likely a code generation bug triggered by the huge match_at function,
+  possibly in switch statement handling, jump table generation, or another
+  ABI/register usage issue specific to very large functions.
+
+Debugging approach:
+1. Bisect regexec.c by compiling half with gcc, half with ccc-arm
+2. Look at the match_at function's switch statement (95 cases)
+3. Check if computed gotos or large switch tables trigger a bug
+4. Compare generated assembly for the OP_ANYCHAR case (line 707)
+5. Use qemu-aarch64 -g for GDB debugging to find exact crash location
+
+Impact:
+- jq passes 11/12 tests on ARM, only regex test() fails
+- All 12 tests pass on x86 and RISC-V

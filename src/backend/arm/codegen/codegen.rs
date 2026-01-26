@@ -63,6 +63,27 @@ fn arm_int_cond_code(op: IrCmpOp) -> &'static str {
     }
 }
 
+/// Return the inverted AArch64 condition code suffix.
+fn arm_invert_cond_code(cc: &str) -> &'static str {
+    match cc {
+        "eq" => "ne",
+        "ne" => "eq",
+        "lt" => "ge",
+        "ge" => "lt",
+        "gt" => "le",
+        "le" => "gt",
+        "lo" => "hs",
+        "hs" => "lo",
+        "hi" => "ls",
+        "ls" => "hi",
+        "mi" => "pl",
+        "pl" => "mi",
+        "vs" => "vc",
+        "vc" => "vs",
+        _ => unreachable!("unknown ARM condition code: {}", cc),
+    }
+}
+
 /// AArch64 code generator. Implements the ArchCodegen trait for the shared framework.
 /// Uses AAPCS64 calling convention with stack-based allocation.
 pub struct ArmCodegen {
@@ -898,8 +919,15 @@ impl ArchCodegen for ArmCodegen {
     fn jump_mnemonic(&self) -> &'static str { "b" }
     fn trap_instruction(&self) -> &'static str { "brk #0" }
 
+    /// Emit a branch-if-nonzero using a relaxed sequence.
+    /// `cbnz` has +-1MB range which can be exceeded in large functions.
+    /// We use `cbz x0, .Lskip; b target; .Lskip:` instead, where
+    /// the unconditional `b` has +-128MB range.
     fn emit_branch_nonzero(&mut self, label: &str) {
-        self.state.emit_fmt(format_args!("    cbnz x0, {}", label));
+        let skip = self.state.fresh_label("skip");
+        self.state.emit_fmt(format_args!("    cbz x0, {}", skip));
+        self.state.emit_fmt(format_args!("    b {}", label));
+        self.state.emit_fmt(format_args!("{}:", skip));
     }
 
     fn emit_jump_indirect(&mut self) {
@@ -1720,7 +1748,9 @@ impl ArchCodegen for ArmCodegen {
         self.store_x0_to(dest);
     }
 
-    /// Fused compare-and-branch for ARM: emit cmp + b.CC directly.
+    /// Fused compare-and-branch for ARM: emit cmp + relaxed conditional branch.
+    /// Uses inverted condition to skip over the true-branch jump, giving the
+    /// true-branch target +-128MB range instead of the +-1MB limit of b.cond.
     fn emit_fused_cmp_branch(
         &mut self,
         op: IrCmpOp,
@@ -1733,7 +1763,15 @@ impl ArchCodegen for ArmCodegen {
         self.emit_int_cmp_insn(lhs, rhs, ty);
 
         let cc = arm_int_cond_code(op);
-        self.state.emit_fmt(format_args!("    b.{} {}", cc, true_label));
+        let inv_cc = arm_invert_cond_code(cc);
+        // b.inv_cc .Lskip  (short forward skip, always in range)
+        // b true_label      (+-128MB range)
+        // .Lskip:
+        // b false_label     (+-128MB range)
+        let skip = self.state.fresh_label("skip");
+        self.state.emit_fmt(format_args!("    b.{} {}", inv_cc, skip));
+        self.state.emit_fmt(format_args!("    b {}", true_label));
+        self.state.emit_fmt(format_args!("{}:", skip));
         self.state.emit_fmt(format_args!("    b {}", false_label));
         self.state.reg_cache.invalidate_all();
     }
@@ -2169,6 +2207,8 @@ impl ArchCodegen for ArmCodegen {
         // Phase 3c: Load struct-by-value register args.
         // The struct arg operand is a pointer to the struct data. We need to get
         // that pointer into x17, then load struct data from [x17] into arg regs.
+        // The pointer may live in a callee-saved register (via reg_assignments)
+        // or on the stack. We must check reg_assignments first, matching Phase 2a.
         for (i, arg) in args.iter().enumerate() {
             if let CallArgClass::StructByValReg { base_reg_idx, size } = arg_classes[i] {
                 let regs_needed = if size <= 8 { 1 } else { 2 };
