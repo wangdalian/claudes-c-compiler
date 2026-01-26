@@ -1,0 +1,11 @@
+Task: Cache liveness analysis between regalloc and stack space computation
+
+Problem: compute_live_intervals() is called twice per function in codegen:
+1. Once in allocate_registers() (regalloc.rs:70)
+2. Again in calculate_stack_space_common() for Tier 2 packing (generation.rs:1619)
+
+For large functions (e.g., luaV_execute with 922 blocks, 99K instructions),
+this duplicated liveness computation dominates compile time (0.94s per call).
+
+Fix: Have allocate_registers return the liveness result, and pass it into
+calculate_stack_space_common to avoid recomputation.
