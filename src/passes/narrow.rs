@@ -240,10 +240,13 @@ fn narrow_function(func: &mut IrFunction) -> usize {
                 if dest_id >= use_counts.len() || use_counts[dest_id] != 1 {
                     continue;
                 }
+                // Shl is NOT safe to narrow: signed bitfield extraction uses
+                // Shl+AShr at I64 with shift amounts > 31. Narrowing the Shl to
+                // I32 truncates the shift amount (x86 shll masks to &31), breaking
+                // the sign-extension when the subsequent AShr stays at I64.
                 let is_safe_op = matches!(op,
                     IrBinOp::Add | IrBinOp::Sub | IrBinOp::Mul |
-                    IrBinOp::And | IrBinOp::Or | IrBinOp::Xor |
-                    IrBinOp::Shl
+                    IrBinOp::And | IrBinOp::Or | IrBinOp::Xor
                 );
                 if !is_safe_op {
                     continue;
