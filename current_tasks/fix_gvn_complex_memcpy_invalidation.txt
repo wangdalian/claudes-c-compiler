@@ -1,0 +1,21 @@
+Fix: GVN incorrectly optimizes loads after Memcpy for complex types
+
+Problem: The GVN (Global Value Numbering) pass does not properly invalidate
+stored values when a Memcpy instruction writes to a memory location. This causes
+incorrect results for complex compound assignment (+=, -=) where:
+
+1. Complex values are stored component-wise (real at offset 0, imag at offset 8)
+2. The compound assign result is Memcpy'd back to the LHS alloca
+3. GVN incorrectly reuses the OLD imaginary part value from before the Memcpy
+
+Test case: double _Complex x = 1.0 + 2.0i; double _Complex y = 3.0 + 4.0i; x += y;
+Expected: (4.0, 6.0), Got: (4.0, 2.0) -- imaginary part not updated
+
+Root cause: GVN's load-store forwarding treats Memcpy as not affecting the
+value table for specific allocas, so subsequent loads from the alloca return
+stale values from before the Memcpy overwrote the memory.
+
+Fix: Ensure GVN properly invalidates all cached values for alloca destinations
+when a Memcpy instruction writes to them.
+
+Affects all architectures (frontend/IR issue).
