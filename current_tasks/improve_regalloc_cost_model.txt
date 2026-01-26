@@ -1,0 +1,17 @@
+Improve register allocator cost model to reduce stack frame sizes.
+
+Problem: The register allocator assigns callee-saved registers to values with very
+short live intervals (used once, 1-2 instructions apart). Each callee-saved register
+costs 8 bytes of frame space for save/restore, but short-lived values gain no benefit
+from being in a register since they're consumed immediately.
+
+This causes unnecessarily large stack frames, which triggers PostgreSQL's plpgsql
+stack depth check to fail during recursion tests.
+
+Fix:
+1. Add minimum interval length threshold - only assign registers to values spanning
+   more than a few instructions
+2. Add cost awareness - the benefit of register assignment must exceed the 8-byte
+   save/restore cost when introducing a NEW callee-saved register
+3. Skip callee-saved register allocation entirely for functions with very few
+   instructions where the overhead cannot possibly pay off

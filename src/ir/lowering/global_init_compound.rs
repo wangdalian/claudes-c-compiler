@@ -471,10 +471,26 @@ impl Lowerer {
                 self.emit_compound_field_init(elements, &item.init, &field.ty, field_size, field_is_pointer);
             }
         } else {
-            // Multiple items: anonymous struct or flat array init
-            let is_anon_multi = field.name.is_empty()
-                && matches!(&field.ty, CType::Struct(_) | CType::Union(_));
-            if is_anon_multi {
+            // Multiple items targeting the same outer struct field.
+            // Check if they all have nested field designators (e.g., .mmu.f1, .mmu.f2, .mmu.f3)
+            // targeting sub-fields of a struct/union field.
+            let all_have_nested_desig = inits.iter().all(|item| h::has_nested_field_designator(item));
+            let field_is_struct = matches!(&field.ty, CType::Struct(_) | CType::Union(_));
+
+            let is_anon_multi = field.name.is_empty() && field_is_struct;
+            if all_have_nested_desig && field_is_struct {
+                // Strip the outer field designator from each item and delegate
+                // to sub-struct compound init with the inner designators.
+                let sub_items: Vec<InitializerItem> = inits.iter().map(|item| {
+                    InitializerItem {
+                        designators: item.designators[1..].to_vec(),
+                        init: item.init.clone(),
+                    }
+                }).collect();
+                let sub_layout = self.get_struct_layout_for_ctype(&field.ty)
+                    .unwrap_or_else(StructLayout::empty_rc);
+                self.emit_sub_struct_to_compound(elements, &sub_items, &sub_layout, field_size);
+            } else if is_anon_multi {
                 let sub_items: Vec<InitializerItem> = inits.iter().map(|item| {
                     InitializerItem {
                         designators: item.designators.clone(),
