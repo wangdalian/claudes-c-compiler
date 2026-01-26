@@ -210,6 +210,10 @@ impl Parser {
                 if self.pos + 1 < self.tokens.len() && matches!(self.tokens[self.pos + 1].kind, TokenKind::Colon) {
                     self.advance(); // identifier
                     self.advance(); // colon
+                    // Skip optional label attributes: `label: __attribute__((unused));`
+                    // In GNU C, labels can have attributes (e.g., unused, hot, cold).
+                    // We consume and discard them since they only affect diagnostics.
+                    self.skip_label_attributes();
                     let stmt = self.parse_stmt();
                     Stmt::Label(name_clone, Box::new(stmt), span)
                 } else {

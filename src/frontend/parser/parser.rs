@@ -819,6 +819,19 @@ impl Parser {
         }
     }
 
+    /// Skip optional GNU label attributes after a label colon.
+    /// GNU C allows `label: __attribute__((unused));` to suppress unused-label warnings.
+    /// We consume the entire `__attribute__((...))` token sequence and discard it.
+    pub(super) fn skip_label_attributes(&mut self) {
+        while matches!(self.peek(), TokenKind::Attribute) {
+            self.advance(); // consume __attribute__
+            // Expect __attribute__((...)) — two levels of parens
+            if matches!(self.peek(), TokenKind::LParen) {
+                self.skip_balanced_parens();
+            }
+        }
+    }
+
     /// Parse the parenthesized argument of `aligned(expr)` in __attribute__.
     /// Expects the opening `(` to be the current token (not yet consumed).
     /// Parses and evaluates a constant expression, consuming through the closing `)`.
