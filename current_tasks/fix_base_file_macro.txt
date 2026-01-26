@@ -1,0 +1,15 @@
+Implement __BASE_FILE__ predefined preprocessor macro
+
+Bug: The __BASE_FILE__ macro (a GCC/Clang extension) was not implemented.
+It should always expand to the name of the main input source file, unlike
+__FILE__ which changes to the current file during #include processing.
+
+This caused kernel files like sound/core/seq/seq_ports.c to fail linking
+because __BASE_FILE__ was passed through as an identifier, resulting in
+undefined symbol references.
+
+Fix: Define __BASE_FILE__ in set_filename() alongside __FILE__, using the
+same filename string. Unlike __FILE__, it is never updated during #include
+processing, so it always refers to the base compilation unit.
+
+Status: in_progress
