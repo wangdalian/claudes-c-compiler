@@ -2332,12 +2332,17 @@ impl ArchCodegen for ArmCodegen {
         let is_f128 = result_ty.is_long_double();
 
         // x1 = pointer to va_list struct
-        if let Some(slot) = self.state.get_slot(va_list_ptr.0) {
-            if self.state.is_alloca(va_list_ptr.0) {
+        // Must check register allocation first: store_x0_to skips the stack
+        // for register-allocated values, so the slot would be stale.
+        if self.state.is_alloca(va_list_ptr.0) {
+            if let Some(slot) = self.state.get_slot(va_list_ptr.0) {
                 self.emit_add_fp_offset("x1", slot.0);
-            } else {
-                self.emit_load_from_sp("x1", slot.0, "ldr");
             }
+        } else if let Some(&reg) = self.reg_assignments.get(&va_list_ptr.0) {
+            let reg_name = callee_saved_name(reg);
+            self.state.emit_fmt(format_args!("    mov x1, {}", reg_name));
+        } else if let Some(slot) = self.state.get_slot(va_list_ptr.0) {
+            self.emit_load_from_sp("x1", slot.0, "ldr");
         }
 
         if is_f128 {
@@ -2458,12 +2463,17 @@ impl ArchCodegen for ArmCodegen {
         //   offset 28: int __vr_offs     - offset from __vr_top to next FP reg arg (negative)
 
         // x0 = pointer to va_list struct
-        if let Some(slot) = self.state.get_slot(va_list_ptr.0) {
-            if self.state.is_alloca(va_list_ptr.0) {
+        // Must check register allocation first: store_x0_to skips the stack
+        // for register-allocated values, so the slot would be stale.
+        if self.state.is_alloca(va_list_ptr.0) {
+            if let Some(slot) = self.state.get_slot(va_list_ptr.0) {
                 self.emit_add_fp_offset("x0", slot.0);
-            } else {
-                self.emit_load_from_sp("x0", slot.0, "ldr");
             }
+        } else if let Some(&reg) = self.reg_assignments.get(&va_list_ptr.0) {
+            let reg_name = callee_saved_name(reg);
+            self.state.emit_fmt(format_args!("    mov x0, {}", reg_name));
+        } else if let Some(slot) = self.state.get_slot(va_list_ptr.0) {
+            self.emit_load_from_sp("x0", slot.0, "ldr");
         }
 
         // __stack: pointer to the first variadic stack argument.
@@ -2509,19 +2519,27 @@ impl ArchCodegen for ArmCodegen {
 
     fn emit_va_copy(&mut self, dest_ptr: &Value, src_ptr: &Value) {
         // Copy va_list struct (32 bytes on AArch64)
-        if let Some(src_slot) = self.state.get_slot(src_ptr.0) {
-            if self.state.is_alloca(src_ptr.0) {
+        // Must check register allocation first: store_x0_to skips the stack
+        // for register-allocated values, so the slot would be stale.
+        if self.state.is_alloca(src_ptr.0) {
+            if let Some(src_slot) = self.state.get_slot(src_ptr.0) {
                 self.emit_add_fp_offset("x1", src_slot.0);
-            } else {
-                self.emit_load_from_sp("x1", src_slot.0, "ldr");
             }
+        } else if let Some(&reg) = self.reg_assignments.get(&src_ptr.0) {
+            let reg_name = callee_saved_name(reg);
+            self.state.emit_fmt(format_args!("    mov x1, {}", reg_name));
+        } else if let Some(src_slot) = self.state.get_slot(src_ptr.0) {
+            self.emit_load_from_sp("x1", src_slot.0, "ldr");
         }
-        if let Some(dest_slot) = self.state.get_slot(dest_ptr.0) {
-            if self.state.is_alloca(dest_ptr.0) {
+        if self.state.is_alloca(dest_ptr.0) {
+            if let Some(dest_slot) = self.state.get_slot(dest_ptr.0) {
                 self.emit_add_fp_offset("x0", dest_slot.0);
-            } else {
-                self.emit_load_from_sp("x0", dest_slot.0, "ldr");
             }
+        } else if let Some(&reg) = self.reg_assignments.get(&dest_ptr.0) {
+            let reg_name = callee_saved_name(reg);
+            self.state.emit_fmt(format_args!("    mov x0, {}", reg_name));
+        } else if let Some(dest_slot) = self.state.get_slot(dest_ptr.0) {
+            self.emit_load_from_sp("x0", dest_slot.0, "ldr");
         }
         // Copy 32 bytes
         self.state.emit("    ldp x2, x3, [x1]");
