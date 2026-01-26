@@ -154,6 +154,11 @@ impl Lowerer {
                 self.collect_refs_from_expr(expr, refs);
                 self.collect_refs_from_stmt(stmt, refs);
             }
+            Stmt::CaseRange(low_expr, high_expr, stmt, _) => {
+                self.collect_refs_from_expr(low_expr, refs);
+                self.collect_refs_from_expr(high_expr, refs);
+                self.collect_refs_from_stmt(stmt, refs);
+            }
             Stmt::Default(stmt, _) | Stmt::Label(_, stmt, _) => {
                 self.collect_refs_from_stmt(stmt, refs);
             }
