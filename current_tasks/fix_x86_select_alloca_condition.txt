@@ -1,0 +1,16 @@
+Fix x86 emit_select not using LEA for alloca conditions
+
+Bug: In the x86 backend's emit_select function, when loading the condition
+operand into %rdx, the code always uses movq (load value) regardless of
+whether the value is an alloca. For alloca values (like array addresses),
+it should use leaq (load effective address) instead.
+
+This causes arrays used in boolean/logical contexts (e.g., `arr && x`) to
+read uninitialized stack contents instead of computing the array's address,
+leading to nondeterministic behavior.
+
+Fix: Add is_alloca check in emit_select's condition loading path, matching
+the pattern used in value_to_reg and other operand loading functions.
+
+Affected test: compiler_suite_0053_0032 (tests -09, -10)
+Status: in_progress
