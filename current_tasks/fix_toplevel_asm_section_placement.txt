@@ -1,0 +1,16 @@
+Bug: Top-level asm() directives emitted in .bss section instead of .text
+
+Status: in_progress
+
+Problem:
+Top-level asm("...") statements (file-scope asm) are emitted after the data sections
+in generation.rs, but without first switching back to the .text section. This means
+the asm content inherits the .bss section from the last data section emission.
+
+This causes kernel boot failures when files like arch/x86/kernel/static_call.c
+define functions via top-level asm (e.g. __static_call_return) - the function body
+ends up in .bss (zero-filled) instead of .text (executable code).
+
+Fix:
+Emit ".text" before the top-level asm directives in generation.rs, so they default
+to the .text section (matching GCC behavior).
