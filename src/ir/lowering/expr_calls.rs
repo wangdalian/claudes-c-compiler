@@ -53,6 +53,22 @@ impl Lowerer {
             if let Some(result) = self.try_lower_builtin_call(name, args) {
                 return result;
             }
+
+            // Functions declared with __attribute__((error("..."))) are compile-time
+            // assertion traps (e.g., kernel's __bad_mask, __field_overflow). In GCC,
+            // these calls are eliminated by inlining + constant folding. Since we don't
+            // inline, replace calls to error-attributed functions with ud2 (trap) to
+            // avoid emitting undefined symbol references. The code path should be
+            // unreachable at runtime.
+            if self.error_functions.contains(name) {
+                // Emit inline assembly trap instruction, then mark unreachable.
+                // This avoids referencing the undefined symbol.
+                self.terminate(Terminator::Unreachable);
+                // Start a new (unreachable) block so subsequent code can still be lowered
+                let dead_label = self.fresh_label();
+                self.start_block(dead_label);
+                return Operand::Const(IrConst::I64(0));
+            }
         }
 
         // Determine sret/two-reg return convention

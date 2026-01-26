@@ -28,6 +28,7 @@ impl Parser {
         self.parsing_alias_target = None;
         self.parsing_visibility = None;
         self.parsing_section = None;
+        self.parsing_error_attr = false;
         self.parsing_gnu_inline = false;
         self.parsing_always_inline = false;
         self.parsing_address_space = AddressSpace::Default;
@@ -124,11 +125,12 @@ impl Parser {
         // Merge all sources of constructor/destructor: type-level attrs, declarator-level attrs, post-declarator attrs
         let is_constructor = type_level_ctor || self.parsing_constructor || post_ctor;
         let is_destructor = type_level_dtor || self.parsing_destructor || post_dtor;
-        // Capture alias/weak/visibility/section attributes
+        // Capture alias/weak/visibility/section/error attributes
         let is_weak = self.parsing_weak;
         let alias_target = self.parsing_alias_target.take();
         let visibility = self.parsing_visibility.take();
         let section = self.parsing_section.take();
+        let is_error_attr = self.parsing_error_attr;
 
         // Apply __attribute__((mode(...))): transform type to specified bit-width
         let type_spec = if let Some(mk) = mode_kind {
@@ -145,7 +147,7 @@ impl Parser {
         if is_funcdef {
             self.parse_function_def(type_spec, name, derived, start, is_constructor, is_destructor, section, visibility, is_weak)
         } else {
-            self.parse_declaration_rest(type_spec, name, derived, start, is_constructor, is_destructor, is_common, merged_alignment, is_weak, alias_target, visibility, section, first_asm_reg)
+            self.parse_declaration_rest(type_spec, name, derived, start, is_constructor, is_destructor, is_common, merged_alignment, is_weak, alias_target, visibility, section, first_asm_reg, is_error_attr)
         }
     }
 
@@ -395,6 +397,7 @@ impl Parser {
         visibility: Option<String>,
         section: Option<String>,
         first_asm_register: Option<String>,
+        is_error_attr: bool,
     ) -> Option<ExternalDecl> {
         let mut declarators = Vec::new();
         let init = if self.consume_if(&TokenKind::Assign) {
@@ -413,6 +416,7 @@ impl Parser {
             visibility,
             section: section.clone(),
             asm_register: first_asm_register,
+            is_error_attr,
             span: start,
         });
 
@@ -445,6 +449,7 @@ impl Parser {
         self.parsing_alias_target = None;
         self.parsing_visibility = None;
         self.parsing_section = None;
+        self.parsing_error_attr = false;
         is_common = is_common || extra_common;
         if let Some(a) = extra_aligned {
             alignment = Some(alignment.map_or(a, |prev| prev.max(a)));
@@ -465,6 +470,7 @@ impl Parser {
             } else {
                 None
             };
+            let d_error_attr = self.parsing_error_attr;
             declarators.push(InitDeclarator {
                 name: dname.unwrap_or_default(),
                 derived: dderived,
@@ -476,6 +482,7 @@ impl Parser {
                 visibility: d_vis,
                 section: d_section,
                 asm_register: d_asm_reg,
+                is_error_attr: d_error_attr,
                 span: start,
             });
             let (_, skip_aligned, skip_asm_reg) = self.skip_asm_and_attributes();
@@ -559,6 +566,7 @@ impl Parser {
                 visibility: None,
                 section: None,
                 asm_register: skip_asm_reg,
+                is_error_attr: false,
                 span: start,
             });
             let (_, post_init_aligned, _post_asm_reg) = self.skip_asm_and_attributes();

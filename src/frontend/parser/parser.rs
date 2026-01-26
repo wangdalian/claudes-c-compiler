@@ -77,6 +77,10 @@ pub struct Parser {
     pub(super) parsing_visibility: Option<String>,
     /// Set when __attribute__((section("..."))) is encountered; holds the section name.
     pub(super) parsing_section: Option<String>,
+    /// Set to true when __attribute__((error("..."))) is encountered.
+    /// Functions with this attribute are compile-time error traps: calls to them
+    /// should be treated as unreachable (they're linker error assertions).
+    pub(super) parsing_error_attr: bool,
     /// Set to true when __attribute__((gnu_inline)) is encountered.
     /// Forces GNU89 inline semantics: extern inline = no external definition emitted.
     pub(super) parsing_gnu_inline: bool,
@@ -119,6 +123,7 @@ impl Parser {
             parsing_alias_target: None,
             parsing_visibility: None,
             parsing_section: None,
+            parsing_error_attr: false,
             parsing_gnu_inline: false,
             parsing_always_inline: false,
             parsed_alignas: None,
@@ -447,6 +452,25 @@ impl Parser {
                                             }
                                             if !result.is_empty() {
                                                 self.parsing_section = Some(result);
+                                            }
+                                            if matches!(self.peek(), TokenKind::RParen) {
+                                                self.advance();
+                                            }
+                                        }
+                                    }
+                                    TokenKind::Identifier(name) if name == "error" || name == "__error__"
+                                        || name == "warning" || name == "__warning__" => {
+                                        // __attribute__((error("msg"))) / __attribute__((warning("msg")))
+                                        // These are GCC compile-time assertion mechanisms: if a call to
+                                        // such a function survives to codegen, GCC emits a compile error.
+                                        // The Linux kernel uses this for __compiletime_error() traps.
+                                        self.parsing_error_attr = true;
+                                        self.advance();
+                                        // Skip the ("message") argument
+                                        if matches!(self.peek(), TokenKind::LParen) {
+                                            self.advance();
+                                            while !matches!(self.peek(), TokenKind::RParen | TokenKind::Eof) {
+                                                self.advance();
                                             }
                                             if matches!(self.peek(), TokenKind::RParen) {
                                                 self.advance();

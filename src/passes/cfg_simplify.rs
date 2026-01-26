@@ -37,6 +37,7 @@ fn simplify_cfg(func: &mut IrFunction) -> usize {
         changed += simplify_redundant_cond_branches(func);
         changed += thread_jump_chains(func);
         changed += remove_dead_blocks(func);
+        changed += simplify_trivial_phis(func);
         if changed == 0 {
             break;
         }
@@ -511,6 +512,49 @@ fn remove_dead_blocks(func: &mut IrFunction) -> usize {
     let original_len = func.blocks.len();
     func.blocks.retain(|b| reachable.contains(&b.label));
     original_len - func.blocks.len()
+}
+
+/// Simplify trivial phi nodes: phi nodes with exactly one incoming edge,
+/// or where all incoming values are identical, are replaced with Copy
+/// instructions. This enables copy propagation to propagate the value
+/// to all uses, and subsequent constant branch folding can then eliminate
+/// dead branches.
+///
+/// This is critical for patterns like `if (1 || expr)` where the `||`
+/// short-circuit generates a phi that merges two paths, but after constant
+/// branch folding removes the dead path, the phi has only one incoming
+/// edge remaining. Without this simplification, the phi result stays as
+/// a non-constant Value, preventing the outer `if` from being folded.
+fn simplify_trivial_phis(func: &mut IrFunction) -> usize {
+    let mut count = 0;
+
+    for block in &mut func.blocks {
+        for inst in &mut block.instructions {
+            if let Instruction::Phi { dest, incoming, .. } = inst {
+                let replacement = if incoming.len() == 1 {
+                    // Single incoming edge: replace with Copy
+                    Some(incoming[0].0)
+                } else if incoming.len() > 1 {
+                    // Check if all incoming values are identical
+                    let first = &incoming[0].0;
+                    if incoming.iter().all(|(val, _)| operands_equal(val, first)) {
+                        Some(*first)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(src) = replacement {
+                    *inst = Instruction::Copy { dest: *dest, src };
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    count
 }
 
 /// Get the branch targets of a terminator.

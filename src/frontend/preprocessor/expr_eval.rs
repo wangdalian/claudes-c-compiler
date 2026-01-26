@@ -336,7 +336,9 @@ impl Preprocessor {
             "malloc" | "__malloc__" |
             "sentinel" | "__sentinel__" |
             "may_alias" | "__may_alias__" |
-            "transparent_union" | "__transparent_union__"
+            "transparent_union" | "__transparent_union__" |
+            "error" | "__error__" |
+            "warning" | "__warning__"
         )
     }
 }

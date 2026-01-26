@@ -18,7 +18,8 @@ pub mod if_convert;
 pub mod licm;
 pub mod simplify;
 
-use crate::ir::ir::IrModule;
+use crate::common::fx_hash::FxHashSet;
+use crate::ir::ir::{Instruction, IrModule, GlobalInit};
 
 /// Run all optimization passes on the module.
 ///
@@ -34,6 +35,7 @@ use crate::ir::ir::IrModule;
 /// 8. Copy propagation (clean up copies from GVN/simplify/LICM)
 /// 9. Dead code elimination (remove dead instructions)
 /// 10. CFG simplification (clean up after DCE may have made blocks dead)
+/// 11. Dead static function elimination (remove unreferenced internal-linkage functions)
 ///
 /// All optimization levels run the same pipeline with the same number of
 /// iterations. The `opt_level` parameter is accepted for API compatibility
@@ -95,5 +97,104 @@ pub fn run_passes(module: &mut IrModule, _opt_level: u32) {
         if changes == 0 {
             break;
         }
+    }
+
+    // Phase 11: Dead static function elimination.
+    // After all optimizations, remove internal-linkage (static) functions that are
+    // never referenced by any other function or global initializer. This is critical
+    // for `static inline` functions from headers: after intra-procedural optimizations
+    // eliminate dead code paths (e.g., `if (1 || expr)` removes the else branch),
+    // some static inline callees may become completely unreferenced and can be removed.
+    // Without this, the dead functions may reference undefined external symbols
+    // (e.g., kernel's `___siphash_aligned` calling `__siphash_aligned` which doesn't
+    // exist on x86 where CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS is set).
+    eliminate_dead_static_functions(module);
+}
+
+/// Remove internal-linkage (static) functions that have no callers in the module.
+///
+/// After optimization passes eliminate dead code paths, some static inline functions
+/// from headers may no longer be called. Keeping them would waste code size and may
+/// cause linker errors if they reference symbols that don't exist (because the
+/// calling path was dead code that GCC would have inlined away).
+fn eliminate_dead_static_functions(module: &mut IrModule) {
+    // Collect all function names referenced from any function body or global initializer.
+    let mut referenced: FxHashSet<String> = FxHashSet::default();
+
+    for func in &module.functions {
+        if func.is_declaration {
+            continue;
+        }
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                match inst {
+                    Instruction::Call { func: callee, .. } => {
+                        referenced.insert(callee.clone());
+                    }
+                    Instruction::GlobalAddr { name, .. } => {
+                        // Function pointer taken
+                        referenced.insert(name.clone());
+                    }
+                    Instruction::InlineAsm { .. } => {
+                        // Inline asm may reference symbols we can't analyze,
+                        // but function references in inline asm use GlobalAddr
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Also check global initializers for function references
+    for global in &module.globals {
+        collect_global_init_refs(&global.init, &mut referenced);
+    }
+
+    // Also check aliases (alias targets must be kept)
+    for (_, target, _) in &module.aliases {
+        referenced.insert(target.clone());
+    }
+
+    // Also check constructors and destructors
+    for ctor in &module.constructors {
+        referenced.insert(ctor.clone());
+    }
+    for dtor in &module.destructors {
+        referenced.insert(dtor.clone());
+    }
+
+    // Remove static (internal linkage) functions that are unreferenced.
+    // Non-static functions must be kept because they have external linkage
+    // and may be called from other translation units.
+    module.functions.retain(|func| {
+        // Keep declarations (extern prototypes)
+        if func.is_declaration {
+            return true;
+        }
+        // Keep non-static functions (external linkage)
+        if !func.is_static {
+            return true;
+        }
+        // Keep referenced static functions
+        if referenced.contains(&func.name) {
+            return true;
+        }
+        // This is an unreferenced static function - remove it
+        false
+    });
+}
+
+/// Collect function name references from a global initializer.
+fn collect_global_init_refs(init: &GlobalInit, refs: &mut FxHashSet<String>) {
+    match init {
+        GlobalInit::GlobalAddr(name) | GlobalInit::GlobalAddrOffset(name, _) => {
+            refs.insert(name.clone());
+        }
+        GlobalInit::Compound(fields) => {
+            for field in fields {
+                collect_global_init_refs(field, refs);
+            }
+        }
+        _ => {}
     }
 }

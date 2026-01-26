@@ -111,6 +111,10 @@ pub struct InitDeclarator {
     pub section: Option<String>,
     /// register var __asm__("regname") - pin to specific register for inline asm
     pub asm_register: Option<String>,
+    /// __attribute__((error("msg"))) or __attribute__((warning("msg")))
+    /// Functions with this attribute are compile-time assertion traps.
+    /// Calls to them should be treated as unreachable.
+    pub is_error_attr: bool,
     pub span: Span,
 }
 

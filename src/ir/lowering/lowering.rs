@@ -41,6 +41,9 @@ pub struct Lowerer {
     pub(super) defined_functions: FxHashSet<String>,
     // Set of function names declared with static linkage
     pub(super) static_functions: FxHashSet<String>,
+    /// Set of function names declared with __attribute__((error("..."))) or __attribute__((warning("..."))).
+    /// Calls to these functions should be treated as unreachable (they are compile-time assertion traps).
+    pub(super) error_functions: FxHashSet<String>,
     /// Type-system state (struct layouts, typedefs, enum constants, type caches)
     pub(super) types: TypeContext,
     /// Metadata about known functions (consolidated FuncSig)
@@ -117,6 +120,7 @@ impl Lowerer {
             known_functions,
             defined_functions: FxHashSet::default(),
             static_functions: FxHashSet::default(),
+            error_functions: FxHashSet::default(),
             types: type_context,
             func_meta: FunctionMeta::default(),
             emitted_global_names: FxHashSet::default(),
@@ -361,6 +365,10 @@ impl Lowerer {
                                     declarator.is_weak,
                                 ));
                             }
+                        }
+                        // Collect __attribute__((error("..."))) / __attribute__((warning("...")))
+                        if declarator.is_error_attr && !declarator.name.is_empty() {
+                            self.error_functions.insert(declarator.name.clone());
                         }
                         // Collect weak/visibility attributes on extern declarations (not aliases)
                         if declarator.alias_target.is_none()
