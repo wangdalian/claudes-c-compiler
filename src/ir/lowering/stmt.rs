@@ -1236,21 +1236,44 @@ impl Lowerer {
             let out_ty = IrType::from_ctype(&self.expr_ctype(&out.expr));
             // Detect address space for memory operands (e.g., __seg_gs pointer dereferences)
             let out_seg = self.get_asm_operand_addr_space(&out.expr);
-            if let Some(lv) = self.lower_lvalue(&out.expr) {
-                let ptr = match lv {
+            let ptr = if let Some(lv) = self.lower_lvalue(&out.expr) {
+                match lv {
                     LValue::Variable(v) | LValue::Address(v) => v,
-                };
-                if constraint.contains('+') {
-                    let cur_val = self.fresh_value();
-                    self.emit(Instruction::Load { dest: cur_val, ptr, ty: out_ty, seg_override: out_seg });
-                    ir_inputs.push((constraint.replace('+', "").to_string(), Operand::Value(cur_val), name.clone()));
-                    plus_input_types.push(out_ty);
-                    plus_input_segs.push(out_seg);
                 }
-                ir_outputs.push((constraint, ptr, name));
-                operand_types.push(out_ty);
-                seg_overrides.push(out_seg);
+            } else if let Expr::Identifier(ref var_name, _) = out.expr {
+                // Global register variables are pinned to specific hardware registers
+                // via constraint rewriting above (e.g., "+r" → "+{rsp}"). They have no
+                // backing storage, so lower_lvalue returns None. Create a temporary alloca
+                // to preserve GCC operand numbering — without this, subsequent operand
+                // references (e.g., %P4) would be off-by-one and unresolvable.
+                // TODO: The alloca is a placeholder for operand numbering only.
+                // The output value stored here is discarded; proper write-back to global
+                // register variables is not yet implemented. For "+" constraints, the
+                // Load below reads uninitialized memory, but the backend's constraint
+                // rewriting to {regname} makes it read from the actual hardware register.
+                if self.get_asm_register(var_name).is_some() {
+                    let tmp = self.fresh_value();
+                    self.emit(Instruction::Alloca {
+                        dest: tmp, ty: out_ty, size: out_ty.size(),
+                        align: out_ty.align(), volatile: false,
+                    });
+                    tmp
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            };
+            if constraint.contains('+') {
+                let cur_val = self.fresh_value();
+                self.emit(Instruction::Load { dest: cur_val, ptr, ty: out_ty, seg_override: out_seg });
+                ir_inputs.push((constraint.replace('+', "").to_string(), Operand::Value(cur_val), name.clone()));
+                plus_input_types.push(out_ty);
+                plus_input_segs.push(out_seg);
             }
+            ir_outputs.push((constraint, ptr, name));
+            operand_types.push(out_ty);
+            seg_overrides.push(out_seg);
         }
         for ty in plus_input_types {
             operand_types.push(ty);
