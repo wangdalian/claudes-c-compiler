@@ -219,8 +219,12 @@ impl Lowerer {
         }
 
         // Note: implicit declaration warnings are emitted during sema, not here.
+        // Apply __asm__("label") linker symbol redirect if present.
+        let resolved_name = self.asm_label_map.get(name)
+            .cloned()
+            .unwrap_or_else(|| name.to_string());
         let dest = self.fresh_value();
-        self.emit(Instruction::GlobalAddr { dest, name: name.to_string() });
+        self.emit(Instruction::GlobalAddr { dest, name: resolved_name });
         Operand::Value(dest)
     }
 

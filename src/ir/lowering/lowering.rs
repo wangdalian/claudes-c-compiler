@@ -69,6 +69,10 @@ pub struct Lowerer {
     pub(super) local_label_scopes: Vec<FxHashMap<String, String>>,
     /// Counter for generating unique local label scope IDs.
     pub(super) next_local_label_scope: u32,
+    /// Maps C function/variable names to linker symbol overrides from __asm__("label").
+    /// E.g., `extern int strerror_r(...) __asm__("__xpg_strerror_r")` maps
+    /// "strerror_r" -> "__xpg_strerror_r". Used to redirect calls/references at IR emission.
+    pub(super) asm_label_map: FxHashMap<String, String>,
 }
 
 impl Lowerer {
@@ -121,6 +125,7 @@ impl Lowerer {
             sema_const_values,
             local_label_scopes: Vec::new(),
             next_local_label_scope: 0,
+            asm_label_map: FxHashMap::default(),
         }
     }
 
@@ -269,6 +274,25 @@ impl Lowerer {
             }
             if let ExternalDecl::Declaration(decl) = decl {
                 for declarator in &decl.declarators {
+                    // Collect __asm__("label") linker symbol redirects on function declarations.
+                    // When a function declaration has __asm__("symbol"), calls to that function
+                    // should emit the asm label as the linker symbol instead of the C name.
+                    // E.g.: extern int strerror_r(...) __asm__("__xpg_strerror_r");
+                    // Note: register variables also use asm_register for register pinning
+                    // (e.g., `register int x __asm__("rbx")`), which is handled separately
+                    // in lower_global_decl. We only redirect function declarations here.
+                    if let Some(ref asm_label) = declarator.asm_register {
+                        let is_function_decl = declarator.derived.iter().any(|d|
+                            matches!(d, DerivedDeclarator::Function(_, _))
+                        );
+                        if is_function_decl {
+                            self.asm_label_map.insert(
+                                declarator.name.clone(),
+                                asm_label.clone(),
+                            );
+                        }
+                    }
+
                     // Find the Function derived declarator and count preceding Pointer derivations
                     let mut ptr_count = 0;
                     let mut func_info = None;

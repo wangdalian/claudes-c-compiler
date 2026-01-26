@@ -418,14 +418,17 @@ impl Lowerer {
                     });
                     indirect_ret_ty
                 } else {
-                    // Direct call
+                    // Direct call - apply __asm__("label") linker symbol redirect if present
+                    let call_name = self.asm_label_map.get(name.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| name.clone());
                     let sig = self.func_meta.sigs.get(name.as_str());
                     let mut ret_ty = sig.map(|s| s.return_type).unwrap_or(IrType::I64);
                     if sig.and_then(|s| s.two_reg_ret_size).is_some() {
                         ret_ty = IrType::I128;
                     }
                     self.emit(Instruction::Call {
-                        dest: Some(dest), func: name.clone(),
+                        dest: Some(dest), func: call_name,
                         args: arg_vals, arg_types, return_type: ret_ty, is_variadic, num_fixed_args,
                         struct_arg_sizes,
                     });

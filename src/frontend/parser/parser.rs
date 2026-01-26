@@ -575,27 +575,33 @@ impl Parser {
         (is_constructor, is_destructor, mode_kind, has_common, aligned, asm_register)
     }
 
-    /// Try to extract a register name from __asm__("regname") on a variable declaration.
-    /// Called when the current token is LParen after __asm__. If the content is a simple
-    /// string literal (register name), returns Some("regname"). Otherwise falls back to
-    /// skip_balanced_parens and returns None.
+    /// Try to extract a label/register name from __asm__("name") on a declaration.
+    /// Called when the current token is LParen after __asm__. Handles both:
+    /// - Register pinning: `register int x __asm__("rbx")`
+    /// - Linker symbol redirect: `extern int foo(...) __asm__("" "__xpg_strerror_r")`
+    ///
+    /// Supports concatenation of adjacent string literals (e.g., `__asm__("" "name")`).
+    /// Returns Some("name") if a non-empty label was found, None otherwise.
     fn try_parse_asm_register_name(&mut self) -> Option<String> {
         // Save position so we can fall back
         let saved_pos = self.pos;
         self.advance(); // consume '('
-        // Check for a string literal
-        if let TokenKind::StringLiteral(s) = self.peek() {
-            let reg_name = s.clone();
-            self.advance(); // consume string
-            if matches!(self.peek(), TokenKind::RParen) {
-                self.advance(); // consume ')'
-                if !reg_name.is_empty() {
-                    return Some(reg_name);
-                }
-                return None;
-            }
+        // Concatenate adjacent string literals: __asm__("" "name") -> "name"
+        let mut combined = String::new();
+        let mut found_string = false;
+        while let TokenKind::StringLiteral(s) = self.peek() {
+            combined.push_str(&s);
+            found_string = true;
+            self.advance();
         }
-        // Not a simple register name, restore and skip
+        if found_string && matches!(self.peek(), TokenKind::RParen) {
+            self.advance(); // consume ')'
+            if !combined.is_empty() {
+                return Some(combined);
+            }
+            return None;
+        }
+        // Not a simple string literal sequence, restore and skip
         self.pos = saved_pos;
         self.skip_balanced_parens();
         None

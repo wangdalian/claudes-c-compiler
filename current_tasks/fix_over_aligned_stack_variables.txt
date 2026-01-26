@@ -1,0 +1,29 @@
+Fix stack alignment for over-aligned local variables
+=====================================================
+
+Bug: When local variables have alignment > 16 (e.g., via __attribute__((aligned(32)))
+or _Alignas(32)), the compiler allocates them at fixed %rbp offsets without
+dynamically aligning the stack pointer. This means the actual runtime address
+may not satisfy the requested alignment.
+
+Example:
+  void foo(void) {
+    int x __attribute__((aligned(32)));
+    // &x may not be 32-byte aligned at runtime
+  }
+
+The compiler currently:
+1. Correctly tracks the alignment in alloca_alignments
+2. Emits code to compute aligned addresses (leaq + addq + andq)
+3. BUT does NOT align %rsp in the function prologue for alignments > 16
+
+Fix needed:
+- In function prologue, when any local has alignment > 16, emit:
+    andq $-alignment, %rsp
+  after the initial RSP adjustment
+- Use a frame pointer (%rbp) to access parameters and track the original SP
+- This affects x86, ARM, and RISC-V backends
+
+Impact: Fixes aligned-local-var-attribute test and ~8 external tests
+(compiler_suite_0057_0008, 0057_0037, 0057_0048, 0057_0049, 0057_0080-0083,
+0076_0009, gcc_torture_stkalign)
