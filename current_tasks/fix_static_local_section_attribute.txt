@@ -1,0 +1,13 @@
+Fix: section attribute (__attribute__((section(...)))) ignored on static local variables
+
+Bug: Static local variables with __attribute__((section("..."))) (e.g., __initdata in the kernel)
+are always placed in .data instead of the specified section.
+
+Root cause: Two places need fixing:
+1. Parser (declarations.rs): parse_local_declaration hardcodes section: None
+2. IR lowering (stmt.rs): lower_local_static_decl hardcodes section: None
+
+Impact: Causes kernel boot failures (section mismatch errors from objtool/modpost)
+when CCC-compiled .o files contain static locals with section attributes.
+
+Status: in_progress
