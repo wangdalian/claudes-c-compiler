@@ -93,6 +93,8 @@ pub struct SemanticAnalyzer {
     /// Counter for generating unique anonymous struct/union keys.
     /// Uses Cell for interior mutability so type_spec_to_ctype can take &self.
     anon_struct_counter: Cell<usize>,
+    /// Collected semantic errors (e.g., type errors).
+    errors: Vec<String>,
 }
 
 impl SemanticAnalyzer {
@@ -102,6 +104,7 @@ impl SemanticAnalyzer {
             result: SemaResult::default(),
             enum_counter: 0,
             anon_struct_counter: Cell::new(0),
+            errors: Vec::new(),
         };
         // Pre-populate with common implicit declarations
         analyzer.declare_implicit_functions();
@@ -124,9 +127,11 @@ impl SemanticAnalyzer {
                 }
             }
         }
-        // For now, we don't produce fatal errors - we collect info for the lowerer.
-        // TODO: return errors for truly invalid programs
-        Ok(())
+        if self.errors.is_empty() {
+            Ok(())
+        } else {
+            Err(self.errors.clone())
+        }
     }
 
     /// Get the analysis results (consumed after analysis).
@@ -632,6 +637,16 @@ impl SemanticAnalyzer {
             }
             Stmt::Switch(expr, body, _) => {
                 self.analyze_expr(expr);
+                // C11 6.8.4.2: The controlling expression of a switch statement
+                // shall have integer type.
+                let key = expr as *const Expr as usize;
+                if let Some(ctype) = self.result.expr_types.get(&key) {
+                    if !ctype.is_integer() {
+                        self.errors.push(
+                            "switch quantity is not an integer".to_string()
+                        );
+                    }
+                }
                 self.analyze_stmt(body);
             }
             Stmt::Case(expr, body, _) => {

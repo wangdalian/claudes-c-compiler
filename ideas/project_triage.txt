@@ -9,7 +9,7 @@ PASSING (14):
   - lua:           PASS (all backends)
   - libsodium:     PASS (all backends — fixed GEP fold i128 bug)
   - mquickjs:      PASS (all backends)
-  - libpng:        PASS (all backends)
+  - libpng:        PASS (all backends — fixed ARM build by not defining __ARM_NEON)
   - libjpeg-turbo: PASS (all backends)
   - sqlite:        PASS (all backends, 622/622 sqllogictest)
   - libuv:         PASS (all backends)

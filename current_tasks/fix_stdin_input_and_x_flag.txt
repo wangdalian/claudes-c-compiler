@@ -1,0 +1,24 @@
+Fix stdin input reading and -x language flag for kernel build
+
+Problem: The kernel build system's cc-version.sh uses:
+  cat <<EOF | "$CC" -E -P -x c - 2>/dev/null
+  ...
+  EOF
+This pipes C source code through stdin using "-" as the filename and
+"-x c" to specify the language.
+
+Our compiler fails because:
+1. "-" as a filename is treated as an unknown flag (silently ignored)
+2. "-x" flag is parsed but its value is discarded (marked TODO)
+3. No code reads from stdin anywhere in the driver
+
+Impact: Linux kernel build fails at configuration stage on ALL architectures
+with "unknown C compiler" error because cc-version.sh can't probe our compiler.
+
+Fix:
+1. Handle "-" as a special filename meaning "read from stdin" in main.rs
+2. Implement the -x flag to track the current language setting
+3. When reading from stdin, use the -x language to determine file type
+4. In driver.rs, detect stdin filenames and read from std::io::stdin()
+
+Status: IN PROGRESS

@@ -107,6 +107,7 @@ See `ideas/project_triage.txt` for detailed failure analysis and fix priorities.
 - Long double: partial support (x86 80-bit semantics not fully covered)
 - Full register allocator (linear scan with callee-saved registers on x86 and RISC-V; further optimization possible)
 - Native ELF writer (currently shells out to gcc for assembly + linking)
+- ARM NEON intrinsics (arm_neon.h) - `__ARM_NEON` not defined to avoid parse failures
 - Some edge cases in complex number arithmetic
 
 ## Building

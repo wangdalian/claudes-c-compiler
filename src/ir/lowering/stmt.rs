@@ -996,9 +996,12 @@ impl Lowerer {
 
     fn lower_switch_stmt(&mut self, expr: &Expr, body: &Stmt) {
         // C99 6.8.4.2: Integer promotions are performed on the controlling expression.
+        // Non-integer types (pointers, floats, etc.) are rejected by sema; this Ptr
+        // arm is a defensive fallback to avoid crashes if sema is bypassed.
         let raw_expr_ty = self.get_expr_type(expr);
         let switch_expr_ty = match raw_expr_ty {
             IrType::I8 | IrType::U8 | IrType::I16 | IrType::U16 => IrType::I32,
+            IrType::Ptr => IrType::I64,
             _ => raw_expr_ty,
         };
         let val = self.lower_expr(expr);

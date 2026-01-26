@@ -626,7 +626,9 @@ impl Preprocessor {
                 self.define_simple_macro("__ARM_ARCH_PROFILE", "65"); // 'A'
                 // Floating-point and SIMD
                 self.define_simple_macro("__ARM_FP", "14"); // 0b1110: half+single+double precision
-                self.define_simple_macro("__ARM_NEON", "1");
+                // TODO: Define __ARM_NEON once we support NEON intrinsics (arm_neon.h)
+                // Not defining it causes code (e.g., libpng) to use generic C fallback paths
+                // instead of trying to use NEON vector types we can't parse yet.
                 self.define_simple_macro("__ARM_FP16_ARGS", "1");
                 self.define_simple_macro("__ARM_FP16_FORMAT_IEEE", "1");
                 // ABI
