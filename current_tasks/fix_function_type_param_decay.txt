@@ -1,0 +1,17 @@
+Fix function-type parameter decay to function pointer
+
+When a function parameter has function type (e.g., `int f(union U f(void))`),
+C requires it to decay to a function pointer type (`int f(union U (*f)(void))`).
+
+BUG: The parser's parse_param_declarator_full() in declarators.rs skips trailing
+function parameter lists with skip_balanced_parens(), losing the function-type
+information. This causes the parameter to be treated as the return type (e.g.,
+`union U`) instead of a function pointer, which cascades into IR lowering
+treating it as a by-value struct parameter and dereferencing the function address.
+
+FIX: Set is_func_ptr = true when a trailing function parameter list is found
+in parse_param_declarator_full(), so the existing decay logic at line 350-352
+wraps the type with a Pointer.
+
+Failing tests: compiler_suite_0169_0004, compiler_suite_0139_0074,
+compiler_suite_0139_0075 (segfaults on all architectures)
