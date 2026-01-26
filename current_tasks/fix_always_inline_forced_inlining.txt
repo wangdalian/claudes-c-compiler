@@ -1,0 +1,15 @@
+Fix __always_inline forced inlining for kernel section safety
+
+Problem: Functions marked __attribute__((always_inline)) are parsed but never force-inlined.
+The current inlining pass only inlines small (<=20 instructions, 1 block) static inline functions.
+This causes kernel boot failures when always_inline functions (like try_get_desc in
+arch/x86/kernel/alternative.c) are called from functions in special sections (.noinstr.text).
+GCC force-inlines these regardless of size, keeping them in the caller's section. Our compiler
+emits them as separate functions in .text, causing objtool to reject the build or causing
+boot hangs.
+
+Fix: Extend the inlining pass to force-inline __always_inline functions:
+1. Propagate is_always_inline from AST through IR
+2. In the inlining pass, treat always_inline callees with much higher size limits
+3. Allow multi-block always_inline functions to be inlined
+4. Skip only truly impossible cases (recursive, variadic, etc.)
