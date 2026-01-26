@@ -1,0 +1,11 @@
+Implement native x86-64 assembler and ELF linker for --my-asm and --my-link flags.
+
+This replaces the GCC-based assembler and linker with custom implementations:
+1. x86-64 instruction encoder that parses AT&T assembly text and emits machine code
+2. ELF object file writer that produces .o files with proper sections and relocations
+3. Native ELF linker that resolves relocations and links with system libc
+4. --my-asm flag to use native assembler instead of gcc
+5. --my-link flag to use native linker instead of gcc
+
+Starting with x86-64 backend only. The linker infrastructure will be shared
+across backends, with arch-specific relocation handling.
