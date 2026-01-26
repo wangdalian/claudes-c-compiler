@@ -461,7 +461,17 @@ fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective
         let is_zero_init = matches!(g.init, GlobalInit::Zero);
         // Determine section flags: "aw" for writable, "a" for read-only
         let flags = if sect.contains("rodata") { "a" } else { "aw" };
-        out.emit_fmt(format_args!(".section {},\"{}\",@progbits", sect, flags));
+        // Sections with names starting with ".bss" should be NOBITS (like GCC),
+        // so they don't occupy file space and get proper BSS semantics.
+        let section_type = if sect.starts_with(".bss") {
+            "@nobits"
+        } else {
+            "@progbits"
+        };
+        out.emit_fmt(format_args!(
+            ".section {},\"{}\",{}",
+            sect, flags, section_type
+        ));
         if is_zero_init || g.size == 0 {
             if !g.is_static {
                 if g.is_weak {

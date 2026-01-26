@@ -1,5 +1,5 @@
 Task: fix_goto_in_stmt_expr
-Status: in_progress
+Status: completed
 Description: Fix goto inside GNU statement expressions to correctly capture the value of the
 expression after the label target.
 

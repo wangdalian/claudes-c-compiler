@@ -1429,7 +1429,33 @@ impl Lowerer {
         for item in &compound.items {
             match item {
                 BlockItem::Statement(stmt) => {
-                    if let Stmt::Expr(Some(expr)) = stmt {
+                    // Peel through Label wrappers to find the innermost statement.
+                    // A label like `out: sz;` parses as Label("out", Expr(Some(sz))).
+                    // We need to lower the labels (creating branch targets) and then
+                    // capture the final expression value, rather than discarding it
+                    // via lower_stmt.  This is critical for goto inside statement
+                    // expressions: the goto jumps to the label, and the expression
+                    // after the label is the statement expression's value.
+                    let mut inner = stmt;
+                    let mut labels = Vec::new();
+                    while let Stmt::Label(name, sub_stmt, _span) = inner {
+                        labels.push(name.as_str());
+                        inner = sub_stmt;
+                    }
+                    if !labels.is_empty() {
+                        // Lower each label: terminate current block, start label block
+                        for label_name in &labels {
+                            let label = self.get_or_create_user_label(label_name);
+                            self.terminate(Terminator::Branch(label));
+                            self.start_block(label);
+                        }
+                        // Now lower the innermost statement
+                        if let Stmt::Expr(Some(expr)) = inner {
+                            last_val = self.lower_expr(expr);
+                        } else {
+                            self.lower_stmt(inner);
+                        }
+                    } else if let Stmt::Expr(Some(expr)) = stmt {
                         last_val = self.lower_expr(expr);
                     } else {
                         self.lower_stmt(stmt);
