@@ -1,0 +1,21 @@
+Fix function pointer parameter shadowing known function name
+
+Bug: When a function pointer parameter has the same name as a known function
+(e.g., `free`, `printf`), the compiler generates a direct call to the known
+function instead of an indirect call through the parameter.
+
+Example:
+  void free_ipcs(..., void (*free)(struct ipc_namespace *, struct kern_ipc_perm *)) {
+      free(ns, perm);  // Should be indirect call through parameter, not call to libc free
+  }
+
+Root cause: is_func_ptr_variable() in expr_calls.rs returns false when a local
+variable name matches a known function, because it checks
+`locals.contains_key(name) && !known_functions.contains(name)`. The
+known_functions check should NOT apply to locals since locals always shadow
+function names in C.
+
+Affected: kernel ipc/namespace.c (free_ipcs function), and potentially any kernel
+code using function pointer parameters named after standard library functions.
+
+Status: in_progress
