@@ -1,0 +1,21 @@
+Task: reduce_stack_frame_sizes
+Status: in_progress
+Description: Implement liveness-based stack slot reuse to reduce stack frame sizes.
+
+Problem: Our compiler generates stack frames 2-6x larger than GCC for many functions.
+This causes postgres plpgsql stack depth test to fail (recursive functions exhaust the
+2048kB stack limit). For example, exec_stmt_block uses 1128 bytes (CCC) vs 344 bytes (GCC),
+and exec_stmt_fori uses 728 bytes (CCC) vs 120 bytes (GCC).
+
+Root cause: Every IR value that spans multiple basic blocks gets its own permanent 8-byte
+stack slot. The existing block-level coalescing only handles values defined and used within
+a single block. Values that cross block boundaries never share stack space, even when their
+live ranges don't overlap.
+
+Fix: Use the existing liveness analysis (LiveInterval from liveness.rs) to identify
+non-overlapping live intervals for non-alloca values. Values whose live ranges don't
+overlap can share the same stack slot. This is an interval graph coloring problem,
+similar to register allocation but for stack slots.
+
+Expected impact: Should significantly reduce frame sizes for medium-to-large functions,
+fixing the postgres plpgsql test and generally improving stack usage across all programs.
