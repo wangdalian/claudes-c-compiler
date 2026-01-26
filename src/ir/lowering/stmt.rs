@@ -306,6 +306,20 @@ impl Lowerer {
         // emits a fresh GlobalAddr in its own basic block, avoiding unreachable-block issues).
         self.insert_local_scoped(declarator.name.clone(), LocalInfo::for_static(da, static_name));
         self.next_static_local += 1;
+
+        // Track function pointer return and param types for static locals too,
+        // so that calls through static function pointers apply correct argument
+        // promotions (e.g. float->double for unprototyped `float (*sfp)()`).
+        for d in &declarator.derived {
+            if let DerivedDeclarator::FunctionPointer(params, _) = d {
+                let ret_ty = self.type_spec_to_ir(&decl.type_spec);
+                let param_tys: Vec<IrType> = params.iter().map(|p| {
+                    self.type_spec_to_ir(&p.type_spec)
+                }).collect();
+                self.func_meta.ptr_sigs.insert(declarator.name.clone(), FuncSig::for_ptr(ret_ty, param_tys));
+                break;
+            }
+        }
     }
 
     /// Lower a {real, imag} list initializer for a complex field.

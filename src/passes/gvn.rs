@@ -165,7 +165,7 @@ fn process_block(
     let mut new_instructions = Vec::with_capacity(func.blocks[block_idx].instructions.len());
 
     for inst in func.blocks[block_idx].instructions.drain(..) {
-        match make_expr_key(&inst, value_numbers) {
+        match make_expr_key(&inst, value_numbers, next_vn, vn_log) {
             Some((expr_key, dest)) => {
                 if let Some(&existing_value) = expr_to_value.get(&expr_key) {
                     // This expression was already computed in a dominating block/instruction
@@ -173,7 +173,11 @@ fn process_block(
                     let existing_vn = if idx < value_numbers.len() && value_numbers[idx] != u32::MAX {
                         value_numbers[idx]
                     } else {
-                        existing_value.0
+                        // Existing value has no VN -- should not happen since we
+                        // assigned one when we first recorded it, but be safe.
+                        let vn = *next_vn;
+                        *next_vn += 1;
+                        vn
                     };
                     let dest_idx = dest.0 as usize;
                     if dest_idx < value_numbers.len() {
@@ -226,11 +230,16 @@ fn process_block(
 /// Try to create an ExprKey for an instruction (for value numbering).
 /// Returns the expression key and the destination value, or None if
 /// the instruction is not eligible for value numbering.
-fn make_expr_key(inst: &Instruction, value_numbers: &[u32]) -> Option<(ExprKey, Value)> {
+fn make_expr_key(
+    inst: &Instruction,
+    value_numbers: &mut Vec<u32>,
+    next_vn: &mut u32,
+    vn_log: &mut Vec<(usize, u32)>,
+) -> Option<(ExprKey, Value)> {
     match inst {
         Instruction::BinOp { dest, op, lhs, rhs, .. } => {
-            let lhs_vn = operand_to_vn(lhs, value_numbers);
-            let rhs_vn = operand_to_vn(rhs, value_numbers);
+            let lhs_vn = operand_to_vn(lhs, value_numbers, next_vn, vn_log);
+            let rhs_vn = operand_to_vn(rhs, value_numbers, next_vn, vn_log);
 
             // For commutative operations, canonicalize operand order
             let (lhs_vn, rhs_vn) = if op.is_commutative() {
@@ -242,12 +251,12 @@ fn make_expr_key(inst: &Instruction, value_numbers: &[u32]) -> Option<(ExprKey, 
             Some((ExprKey::BinOp { op: *op, lhs: lhs_vn, rhs: rhs_vn }, *dest))
         }
         Instruction::UnaryOp { dest, op, src, .. } => {
-            let src_vn = operand_to_vn(src, value_numbers);
+            let src_vn = operand_to_vn(src, value_numbers, next_vn, vn_log);
             Some((ExprKey::UnaryOp { op: *op, src: src_vn }, *dest))
         }
         Instruction::Cmp { dest, op, lhs, rhs, .. } => {
-            let lhs_vn = operand_to_vn(lhs, value_numbers);
-            let rhs_vn = operand_to_vn(rhs, value_numbers);
+            let lhs_vn = operand_to_vn(lhs, value_numbers, next_vn, vn_log);
+            let rhs_vn = operand_to_vn(rhs, value_numbers, next_vn, vn_log);
             Some((ExprKey::Cmp { op: *op, lhs: lhs_vn, rhs: rhs_vn }, *dest))
         }
         Instruction::Cast { dest, src, from_ty, to_ty } => {
@@ -255,12 +264,12 @@ fn make_expr_key(inst: &Instruction, value_numbers: &[u32]) -> Option<(ExprKey, 
             if from_ty.is_128bit() || to_ty.is_128bit() {
                 return None;
             }
-            let src_vn = operand_to_vn(src, value_numbers);
+            let src_vn = operand_to_vn(src, value_numbers, next_vn, vn_log);
             Some((ExprKey::Cast { src: src_vn, from_ty: *from_ty, to_ty: *to_ty }, *dest))
         }
         Instruction::GetElementPtr { dest, base, offset, .. } => {
-            let base_vn = operand_to_vn(&Operand::Value(*base), value_numbers);
-            let offset_vn = operand_to_vn(offset, value_numbers);
+            let base_vn = operand_to_vn(&Operand::Value(*base), value_numbers, next_vn, vn_log);
+            let offset_vn = operand_to_vn(offset, value_numbers, next_vn, vn_log);
             Some((ExprKey::Gep { base: base_vn, offset: offset_vn }, *dest))
         }
         // Other instructions are not eligible for value numbering
@@ -269,17 +278,35 @@ fn make_expr_key(inst: &Instruction, value_numbers: &[u32]) -> Option<(ExprKey, 
 }
 
 /// Convert an Operand to a VNOperand for hashing.
-fn operand_to_vn(op: &Operand, value_numbers: &[u32]) -> VNOperand {
+/// If the value hasn't been assigned a value number yet (e.g. a function
+/// parameter or an alloca whose definition appears later in the block),
+/// assign it a fresh unique VN on the spot to avoid collisions between
+/// different un-numbered values and already-assigned VNs.
+fn operand_to_vn(
+    op: &Operand,
+    value_numbers: &mut Vec<u32>,
+    next_vn: &mut u32,
+    vn_log: &mut Vec<(usize, u32)>,
+) -> VNOperand {
     match op {
         Operand::Const(c) => VNOperand::Const(c.to_hash_key()),
         Operand::Value(v) => {
             let idx = v.0 as usize;
-            let vn = if idx < value_numbers.len() && value_numbers[idx] != u32::MAX {
-                value_numbers[idx]
+            // Ensure the table is large enough
+            if idx >= value_numbers.len() {
+                value_numbers.resize(idx + 1, u32::MAX);
+            }
+            if value_numbers[idx] != u32::MAX {
+                VNOperand::ValueNum(value_numbers[idx])
             } else {
-                v.0
-            };
-            VNOperand::ValueNum(vn)
+                // Assign a fresh VN to this previously un-numbered value
+                let vn = *next_vn;
+                *next_vn += 1;
+                let old_vn = value_numbers[idx];
+                vn_log.push((idx, old_vn));
+                value_numbers[idx] = vn;
+                VNOperand::ValueNum(vn)
+            }
         }
     }
 }
