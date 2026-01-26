@@ -3040,6 +3040,8 @@ impl InlineAsmEmitter for RiscvCodegen {
             // TODO: RISC-V =@cc not fully implemented — needs SLTU/SEQZ/etc. instead of SETcc.
             // Currently maps to GpReg which will store incorrect results.
             AsmOperandKind::ConditionCode(_) => RvConstraintKind::GpReg,
+            // x87 constraints are x86-only; map to GpReg as fallback (should never occur on RISC-V)
+            AsmOperandKind::X87St0 | AsmOperandKind::X87St1 => RvConstraintKind::GpReg,
         }).collect();
 
         let mut result = Self::substitute_riscv_asm_operands(line, &op_regs, &op_names, &op_kinds, &op_mem_offsets, &op_mem_addrs, &op_imm_values, gcc_to_internal);

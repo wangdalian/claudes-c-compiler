@@ -38,6 +38,10 @@ pub enum AsmOperandKind {
     /// Condition code output (GCC =@cc<cond>, e.g. =@cce, =@ccne).
     /// The string is the condition suffix (e.g. "e", "ne", "s", "ns").
     ConditionCode(String),
+    /// x87 FPU stack top register st(0), selected by "t" constraint.
+    X87St0,
+    /// x87 FPU stack second register st(1), selected by "u" constraint.
+    X87St1,
 }
 
 /// Per-operand state tracked by the shared inline asm framework.
@@ -83,6 +87,10 @@ impl AsmOperand {
             self.kind = AsmOperandKind::Address;
         } else if matches!(source.kind, AsmOperandKind::FpReg) {
             self.kind = AsmOperandKind::FpReg;
+        } else if matches!(source.kind, AsmOperandKind::X87St0) {
+            self.kind = AsmOperandKind::X87St0;
+        } else if matches!(source.kind, AsmOperandKind::X87St1) {
+            self.kind = AsmOperandKind::X87St1;
         }
     }
 }
@@ -410,6 +418,8 @@ pub fn emit_inline_asm_common_impl(
         match &operands[i].kind {
             AsmOperandKind::Memory | AsmOperandKind::Immediate => continue,
             AsmOperandKind::Tied(_) => continue,
+            AsmOperandKind::X87St0 => { operands[i].reg = "st(0)".to_string(); continue; }
+            AsmOperandKind::X87St1 => { operands[i].reg = "st(1)".to_string(); continue; }
             kind => {
                 let is_tied = if i >= outputs.len() {
                     input_tied_to[i - outputs.len()].is_some()
@@ -509,10 +519,12 @@ pub fn emit_inline_asm_common_impl(
     }
 
     // Phase 2: Load input values into their assigned registers
+    // First pass: load non-x87 inputs
     for (i, (constraint, val, _)) in inputs.iter().enumerate() {
         let op_idx = outputs.len() + i;
         match &operands[op_idx].kind {
             AsmOperandKind::Memory | AsmOperandKind::Immediate => continue,
+            AsmOperandKind::X87St0 | AsmOperandKind::X87St1 => continue, // handled below
             _ => {}
         }
         if operands[op_idx].reg.is_empty() {
@@ -521,12 +533,49 @@ pub fn emit_inline_asm_common_impl(
         emitter.load_input_to_reg(&operands[op_idx], val, constraint);
     }
 
-    // Pre-load read-write output values
+    // Pre-load read-write output values (non-x87)
     for (i, (constraint, ptr, _)) in outputs.iter().enumerate() {
         if constraint.contains('+') {
-            if !matches!(operands[i].kind, AsmOperandKind::Memory) {
+            if !matches!(operands[i].kind, AsmOperandKind::Memory | AsmOperandKind::X87St0 | AsmOperandKind::X87St1) {
                 emitter.preload_readwrite_output(&operands[i], ptr);
             }
+        }
+    }
+
+    // x87 FPU stack inputs must be loaded in reverse stack order: st(1) first, then st(0),
+    // because each fld pushes onto the stack (LIFO). Collect x87 inputs, sort by stack
+    // position descending, then load them.
+    {
+        let mut x87_inputs: Vec<(usize, usize)> = Vec::new(); // (input_index, stack_position: 0=st0, 1=st1)
+        for (i, (_, _, _)) in inputs.iter().enumerate() {
+            let op_idx = outputs.len() + i;
+            match &operands[op_idx].kind {
+                AsmOperandKind::X87St0 => x87_inputs.push((i, 0)),
+                AsmOperandKind::X87St1 => x87_inputs.push((i, 1)),
+                _ => {}
+            }
+        }
+        // Also collect x87 read-write outputs that need preloading
+        let mut x87_rw_outputs: Vec<(usize, usize)> = Vec::new(); // (output_index, stack_position)
+        for (i, (constraint, _, _)) in outputs.iter().enumerate() {
+            if constraint.contains('+') {
+                match &operands[i].kind {
+                    AsmOperandKind::X87St0 => x87_rw_outputs.push((i, 0)),
+                    AsmOperandKind::X87St1 => x87_rw_outputs.push((i, 1)),
+                    _ => {}
+                }
+            }
+        }
+        // Sort by stack position descending (st(1) loaded first, then st(0))
+        x87_inputs.sort_by(|a, b| b.1.cmp(&a.1));
+        x87_rw_outputs.sort_by(|a, b| b.1.cmp(&a.1));
+        // Load x87 read-write outputs first (preload), then regular x87 inputs
+        for (out_idx, _) in &x87_rw_outputs {
+            emitter.preload_readwrite_output(&operands[*out_idx], &outputs[*out_idx].1);
+        }
+        for (inp_idx, _) in &x87_inputs {
+            let op_idx = outputs.len() + inp_idx;
+            emitter.load_input_to_reg(&operands[op_idx], &inputs[*inp_idx].1, &inputs[*inp_idx].0);
         }
     }
 

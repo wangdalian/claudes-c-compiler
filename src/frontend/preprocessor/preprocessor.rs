@@ -935,23 +935,26 @@ impl Preprocessor {
     }
 
     /// Join lines that end with backslash (line continuation).
+    /// Also handles backslash followed by trailing whitespace before newline,
+    /// matching GCC/Clang behavior (GCC warns: "backslash and newline separated by space").
     fn join_continued_lines(&self, source: &str) -> String {
         let mut result = String::with_capacity(source.len());
         let mut continuation = false;
 
         for line in source.lines() {
+            let bs_pos = Self::find_continuation_backslash(line);
             if continuation {
                 // This line continues from the previous
-                if line.ends_with('\\') {
-                    result.push_str(&line[..line.len() - 1]);
+                if let Some(pos) = bs_pos {
+                    result.push_str(&line[..pos]);
                     // Still continuing
                 } else {
                     result.push_str(line);
                     result.push('\n');
                     continuation = false;
                 }
-            } else if line.ends_with('\\') {
-                result.push_str(&line[..line.len() - 1]);
+            } else if let Some(pos) = bs_pos {
+                result.push_str(&line[..pos]);
                 continuation = true;
             } else {
                 result.push_str(line);
@@ -960,6 +963,17 @@ impl Preprocessor {
         }
 
         result
+    }
+
+    /// Check if a line ends with a continuation backslash (optionally followed by whitespace).
+    /// Returns the byte position of the backslash if found, None otherwise.
+    fn find_continuation_backslash(line: &str) -> Option<usize> {
+        let trimmed = line.trim_end();
+        if trimmed.ends_with('\\') {
+            Some(trimmed.len() - 1)
+        } else {
+            None
+        }
     }
 
     /// Process a preprocessor directive line.

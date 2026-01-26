@@ -251,6 +251,10 @@ impl X86Codegen {
         if reg.starts_with("xmm") {
             return reg.to_string();
         }
+        // x87 FPU stack registers don't have size variants
+        if reg.starts_with("st(") || reg == "st" {
+            return reg.to_string();
+        }
         match modifier {
             Some('k') | Some('l') => {
                 // 32-bit version

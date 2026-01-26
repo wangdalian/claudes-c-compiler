@@ -3599,6 +3599,15 @@ impl InlineAsmEmitter for X86Codegen {
                 return AsmOperandKind::Tied(n);
             }
         }
+        // x87 FPU stack constraints: "t" = st(0), "u" = st(1)
+        // These are always single-character constraints, so check before multi-alt parsing.
+        if c == "t" {
+            return AsmOperandKind::X87St0;
+        }
+        if c == "u" {
+            return AsmOperandKind::X87St1;
+        }
+
         // GCC allows multi-alternative constraints like "Ir" (immediate or register),
         // "rm" (register or memory), "qm" (byte register or memory), etc.
         // Parse each character as a constraint alternative and pick the best one.
@@ -3729,6 +3738,50 @@ impl InlineAsmEmitter for X86Codegen {
     fn load_input_to_reg(&mut self, op: &AsmOperand, val: &Operand, _constraint: &str) {
         let reg = &op.reg;
         let ty = op.operand_type;
+
+        // x87 FPU stack: load value from memory onto the x87 stack with fld
+        if matches!(op.kind, AsmOperandKind::X87St0 | AsmOperandKind::X87St1) {
+            match val {
+                Operand::Value(v) => {
+                    if let Some(slot) = self.state.get_slot(v.0) {
+                        let fld_instr = match ty {
+                            IrType::F32 => "flds",
+                            IrType::F128 => "fldt",
+                            _ => "fldl", // F64 and default
+                        };
+                        self.state.emit_fmt(format_args!("    {} {}(%rbp)", fld_instr, slot.0));
+                    }
+                }
+                Operand::Const(c) => {
+                    // x87 can't load immediates directly; materialize via GP reg + stack scratch.
+                    // Use the bits of the float constant as an integer, store to a scratch
+                    // location on the stack, then fld from it. We use subq/addq to allocate
+                    // scratch space instead of push/pop to avoid the peephole optimizer
+                    // incorrectly eliminating the stack adjustment as a dead push/pop pair.
+                    let bits = match ty {
+                        IrType::F32 => {
+                            let f = c.to_f64().unwrap_or(0.0) as f32;
+                            f.to_bits() as u64
+                        }
+                        _ => {
+                            let f = c.to_f64().unwrap_or(0.0);
+                            f.to_bits()
+                        }
+                    };
+                    self.state.emit("    subq $8, %rsp");
+                    self.state.emit_fmt(format_args!("    movabsq ${}, %rax", bits as i64));
+                    self.state.emit("    movq %rax, (%rsp)");
+                    let fld_instr = match ty {
+                        IrType::F32 => "flds",
+                        _ => "fldl",
+                    };
+                    self.state.emit_fmt(format_args!("    {} (%rsp)", fld_instr));
+                    self.state.emit("    addq $8, %rsp");
+                }
+            }
+            return;
+        }
+
         let is_xmm = reg.starts_with("xmm");
 
         if is_xmm {
@@ -3787,6 +3840,27 @@ impl InlineAsmEmitter for X86Codegen {
     }
 
     fn preload_readwrite_output(&mut self, op: &AsmOperand, ptr: &Value) {
+        // x87 FPU stack: preload with fld (same as input loading)
+        if matches!(op.kind, AsmOperandKind::X87St0 | AsmOperandKind::X87St1) {
+            let ty = op.operand_type;
+            if let Some(slot) = self.state.get_slot(ptr.0) {
+                let fld_instr = match ty {
+                    IrType::F32 => "flds",
+                    IrType::F128 => "fldt",
+                    _ => "fldl",
+                };
+                if self.state.is_alloca(ptr.0) {
+                    self.state.emit_fmt(format_args!("    {} {}(%rbp)", fld_instr, slot.0));
+                } else {
+                    let scratch = "rcx";
+                    self.state.emit_fmt(format_args!("    pushq %{}", scratch));
+                    self.state.emit_fmt(format_args!("    movq {}(%rbp), %{}", slot.0, scratch));
+                    self.state.emit_fmt(format_args!("    {} (%{})", fld_instr, scratch));
+                    self.state.emit_fmt(format_args!("    popq %{}", scratch));
+                }
+            }
+            return;
+        }
         let reg = &op.reg;
         let ty = op.operand_type;
         let is_xmm = reg.starts_with("xmm");
@@ -3863,6 +3937,31 @@ impl InlineAsmEmitter for X86Codegen {
 
     fn store_output_from_reg(&mut self, op: &AsmOperand, ptr: &Value, _constraint: &str) {
         if matches!(op.kind, AsmOperandKind::Memory) {
+            return;
+        }
+        // x87 FPU stack outputs: store using fstp (store and pop)
+        // The shared framework calls store_output_from_reg for outputs in order (index 0 first).
+        // For "=t" (st(0)), fstp pops the top. For "=u" (st(1)), after st(0) was popped,
+        // the old st(1) is now st(0), so another fstp stores it correctly.
+        if matches!(op.kind, AsmOperandKind::X87St0 | AsmOperandKind::X87St1) {
+            if let Some(slot) = self.state.get_slot(ptr.0) {
+                let ty = op.operand_type;
+                let fstp_instr = match ty {
+                    IrType::F32 => "fstps",
+                    IrType::F128 => "fstpt",
+                    _ => "fstpl", // F64 and default
+                };
+                if self.state.is_alloca(ptr.0) {
+                    self.state.emit_fmt(format_args!("    {} {}(%rbp)", fstp_instr, slot.0));
+                } else {
+                    // Non-alloca: slot holds a pointer, store through it
+                    let scratch = "rcx";
+                    self.state.emit_fmt(format_args!("    pushq %{}", scratch));
+                    self.state.emit_fmt(format_args!("    movq {}(%rbp), %{}", slot.0, scratch));
+                    self.state.emit_fmt(format_args!("    {} (%{})", fstp_instr, scratch));
+                    self.state.emit_fmt(format_args!("    popq %{}", scratch));
+                }
+            }
             return;
         }
         // Handle =@cc<cond> condition code outputs: emit SETcc + movzbl
