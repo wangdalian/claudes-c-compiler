@@ -265,7 +265,11 @@ impl Lowerer {
         while ai < arr_size && *item_idx < items.len() {
             let next_item = &items[*item_idx];
             if !next_item.designators.is_empty() { break; }
-            if let Initializer::Expr(e) = &next_item.init {
+            let expr_opt = match &next_item.init {
+                Initializer::Expr(e) => Some(e),
+                Initializer::List(sub_items) => Self::unwrap_nested_init_expr(sub_items),
+            };
+            if let Some(e) = expr_opt {
                 let elem_offset = field_offset + ai * elem_size;
                 self.emit_init_expr_to_offset_bool(e, base_alloca, elem_offset, elem_ir_ty, elem_is_bool);
             } else {
@@ -682,7 +686,11 @@ impl Lowerer {
             while ai < arr_size && (*item_idx + consumed) < items.len() {
                 let cur_item = &items[*item_idx + consumed];
                 if !cur_item.designators.is_empty() && consumed > 0 { break; }
-                if let Initializer::Expr(expr) = &cur_item.init {
+                let expr_opt = match &cur_item.init {
+                    Initializer::Expr(expr) => Some(expr),
+                    Initializer::List(sub_items) => Self::unwrap_nested_init_expr(sub_items),
+                };
+                if let Some(expr) = expr_opt {
                     let elem_offset = field_offset + ai * elem_size;
                     self.emit_init_expr_to_offset_bool(expr, base_alloca, elem_offset, elem_ir_ty, elem_is_bool);
                     consumed += 1;

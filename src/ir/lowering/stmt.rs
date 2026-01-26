@@ -511,8 +511,30 @@ impl Lowerer {
                                 let field_addr = self.emit_gep_offset(base, field_offset, field_ty);
                                 self.emit(Instruction::Store { val, ptr: field_addr, ty: field_ty , seg_override: AddressSpace::Default });
                             }
+                        } else if let CType::Struct(ref key) | CType::Union(ref key) = **elem_ty {
+                            // Array-of-structs field with flat expression initializer:
+                            // delegate to emit_struct_init which knows how to consume
+                            // the right number of flat items for each struct element.
+                            let elem_size = self.resolve_ctype_size(elem_ty);
+                            if let Some(sub_layout) = self.types.struct_layouts.get(&**key).cloned() {
+                                let mut ai = 0usize;
+                                let mut consumed_total = 0usize;
+                                while ai < arr_size {
+                                    let elem_offset = field_offset + ai * elem_size;
+                                    let remaining = &items[item_idx + consumed_total..];
+                                    if remaining.is_empty() { break; }
+                                    let consumed = self.emit_struct_init(remaining, base, &sub_layout, elem_offset);
+                                    consumed_total += consumed.max(1);
+                                    ai += 1;
+                                }
+                                // We consumed the first item already (counted by the outer loop),
+                                // so subtract 1 from consumed_total.
+                                if consumed_total > 0 {
+                                    item_idx += consumed_total - 1;
+                                }
+                            }
                         } else {
-                            // Non-char array field with flat expression initializer:
+                            // Non-char, non-struct array field with flat expression initializer:
                             // consume up to arr_size items from the init list to fill array elements
                             let elem_ir_ty = IrType::from_ctype(elem_ty);
                             let elem_size = elem_ir_ty.size().max(1);
@@ -530,7 +552,11 @@ impl Lowerer {
                                     item_idx -= 1; // put it back
                                     break;
                                 }
-                                if let Initializer::Expr(next_e) = &next_item.init {
+                                let expr_opt = match &next_item.init {
+                                    Initializer::Expr(next_e) => Some(next_e),
+                                    Initializer::List(sub_items) => Self::unwrap_nested_init_expr(sub_items),
+                                };
+                                if let Some(next_e) = expr_opt {
                                     let next_val = self.lower_init_expr_bool_aware(next_e, elem_ir_ty, elem_is_bool);
                                     let offset = field_offset + arr_idx * elem_size;
                                     let elem_addr = self.emit_gep_offset(base, offset, elem_ir_ty);
