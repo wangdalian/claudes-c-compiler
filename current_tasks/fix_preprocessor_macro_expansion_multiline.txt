@@ -1,0 +1,31 @@
+Fix preprocessor macro expansion during multi-line accumulation
+
+Bug: When parentheses are unbalanced (e.g., inside a function call spanning
+multiple lines), the preprocessor accumulates text and defers macro expansion
+until parentheses balance. However, #define and #undef directives are processed
+eagerly during accumulation. This means a #undef that appears while text is
+accumulated will remove the macro definition BEFORE the accumulated text gets
+expanded, causing macros in that text to not be expanded.
+
+Minimal repro:
+  #define D(N) int x;
+  D(0)
+  #undef D
+  foo(4                     // <- starts multi-line accumulation
+  #define D(N) , a##N       // <- D is re-defined (eager)
+  D(0) D(1) D(2)           // <- accumulated but NOT yet expanded
+  #undef D                  // <- D is removed (eager) before expansion happens
+  );                        // <- parens balance, expand_line called, D undefined!
+
+Expected: D(0) D(1) D(2) should expand to , a0 , a1 , a2
+Actual: D(0) D(1) D(2) appear literally in output
+
+Root cause: preprocess_source() in preprocessor.rs accumulates multi-line text
+in pending_line and only calls expand_line() when parens balance, but directives
+are processed immediately. The fix is to expand macros on each accumulated line
+incrementally before appending to pending_line, so directives affect only
+subsequent lines.
+
+Fix location: src/frontend/preprocessor/preprocessor.rs (accumulate_and_expand)
+
+Failing test: gcc_torture_va_arg_22 (all architectures)
