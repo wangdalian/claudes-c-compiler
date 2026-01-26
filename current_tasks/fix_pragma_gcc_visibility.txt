@@ -1,0 +1,17 @@
+Task: Implement #pragma GCC visibility push/pop
+
+Problem: The kernel's EFI stub code includes hidden.h which uses
+  #pragma GCC visibility push(hidden)
+to mark all symbols as hidden visibility. Our compiler ignores this
+pragma, so with -fPIC, symbols get DEFAULT visibility and generate
+GOT/PLT-based accesses. In the EFI stub context there's no dynamic
+loader, so GOT entries contain garbage -> boot failure.
+
+Fix:
+1. Parse #pragma GCC visibility push(hidden|default|protected|internal) / pop
+   in the preprocessor, injecting synthetic tokens for the parser
+2. Parser tracks a default visibility stack, applies it to all declarations
+   that don't have an explicit __attribute__((visibility(...)))
+3. Backend: hidden visibility symbols treated as local for GOT/PLT decisions
+
+Status: in_progress
