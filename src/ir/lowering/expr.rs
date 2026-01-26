@@ -661,8 +661,12 @@ impl Lowerer {
         then_fn: impl FnOnce(&mut Self) -> Operand,
         else_fn: impl FnOnce(&mut Self) -> Operand,
     ) -> Operand {
-        let result_alloca = self.fresh_value();
-        self.emit(Instruction::Alloca { dest: result_alloca, ty: IrType::I64, size: 8, align: 0, volatile: false });
+        // Use emit_entry_alloca so the alloca is in the entry block, ensuring
+        // mem2reg can promote it to SSA/Phi form. Previously this used self.emit()
+        // which placed the alloca in the current block — if the expression was inside
+        // nested control flow (e.g., inside a loop or if body), the alloca would
+        // be in a non-entry block and mem2reg would refuse to promote it.
+        let result_alloca = self.emit_entry_alloca(IrType::I64, 8, 0, false);
 
         let then_label = self.fresh_label();
         let else_label = self.fresh_label();
@@ -1517,8 +1521,12 @@ impl Lowerer {
             }
         }
 
-        let result_alloca = self.fresh_value();
-        self.emit(Instruction::Alloca { dest: result_alloca, ty: IrType::I64, size: 8, align: 0, volatile: false });
+        // Use emit_entry_alloca so the alloca is in the entry block, ensuring
+        // mem2reg can promote it to SSA/Phi form. Previously this used self.emit()
+        // which placed the alloca in the current block — if the expression was inside
+        // nested control flow (e.g., inside a loop or if body), the alloca would
+        // be in a non-entry block and mem2reg would refuse to promote it.
+        let result_alloca = self.emit_entry_alloca(IrType::I64, 8, 0, false);
 
         let rhs_label = self.fresh_label();
         let end_label = self.fresh_label();

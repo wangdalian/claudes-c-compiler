@@ -47,6 +47,13 @@ fn promote_function(func: &mut IrFunction) {
 
     // Step 1: Identify promotable allocas
     let mut alloca_infos = find_promotable_allocas(func);
+    if std::env::var("CCC_DEBUG_MEM2REG").is_ok() {
+        let total_allocas: usize = func.blocks[0].instructions.iter()
+            .filter(|i| matches!(i, Instruction::Alloca { .. }))
+            .count();
+        eprintln!("[mem2reg] func '{}': {} total allocas, {} promotable, {} params",
+            func.name, total_allocas, alloca_infos.len(), func.params.len());
+    }
     if alloca_infos.is_empty() {
         return;
     }
@@ -159,9 +166,13 @@ fn find_promotable_allocas(func: &IrFunction) -> Vec<AllocaInfo> {
                     return None;
                 }
                 // Only promote scalar allocas (size <= 8 bytes)
-                // Larger allocas are for arrays/structs passed by value
+                // Larger allocas are for arrays/structs passed by value.
+                // Note: the alloca size may be larger than the IR type size
+                // (e.g., int has type I32 = 4 bytes but alloc size 8 for alignment).
+                // We allow promotion as long as the alloca is at most 8 bytes and
+                // the type itself is scalar (at most 8 bytes).
                 let type_size = ir_type_size(*ty);
-                if *size <= type_size && type_size <= 8 {
+                if *size <= 8 && type_size <= 8 {
                     Some((*dest, *ty, *size))
                 } else {
                     None

@@ -230,7 +230,24 @@ fn would_create_phi_conflict(
 fn operands_equal(a: &Operand, b: &Operand) -> bool {
     match (a, b) {
         (Operand::Value(v1), Operand::Value(v2)) => v1.0 == v2.0,
-        (Operand::Const(c1), Operand::Const(c2)) => c1.to_hash_key() == c2.to_hash_key(),
+        (Operand::Const(c1), Operand::Const(c2)) => consts_equal_for_phi(c1, c2),
+        _ => false,
+    }
+}
+
+/// Compare two IR constants for phi simplification.
+/// Integer constants of different widths but same numeric value are considered equal
+/// (e.g., I32(0) == I64(0)). This is important because different IR paths may produce
+/// the same semantic value at different IR type widths (e.g., a Cmp returns I32 while
+/// the short-circuit && default uses I64).
+fn consts_equal_for_phi(a: &IrConst, b: &IrConst) -> bool {
+    // Fast path: same variant
+    if a.to_hash_key() == b.to_hash_key() {
+        return true;
+    }
+    // Cross-width integer comparison: extract as i64 and compare
+    match (a.to_i64(), b.to_i64()) {
+        (Some(va), Some(vb)) => va == vb,
         _ => false,
     }
 }
