@@ -1,0 +1,19 @@
+Task: Fix ARM i128 operand loading for register-allocated values
+Status: in_progress
+
+Problem:
+ARM backend's operand_to_x0_x1() does not check reg_assignments when a value
+has no stack slot. This causes i128 operations (shifts, binops) to silently use
+zero instead of the actual register-allocated value.
+
+The x86 (operand_to_rax_rdx) and RISC-V (operand_to_t0_t1) backends already
+have this check, but ARM was never updated.
+
+Fix:
+1. Add reg_assignments check in operand_to_x0_x1's Value branch when get_slot returns None
+2. Also add the check in the non-i128 path within get_slot (like RISC-V does at line 462)
+3. Fix store_x0_x1_to to handle register-assigned values
+4. Fix broken Rust unit tests (missing struct_arg_classes and char16_string_literals fields)
+5. Add regression test
+
+Impact: Fixes i128-basic-ops, i128-binop-non-i128-operand, and i128-shift-by-zero-arm tests on ARM.
