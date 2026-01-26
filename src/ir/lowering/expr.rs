@@ -522,7 +522,7 @@ impl Lowerer {
                 }
                 let ty = self.get_expr_type(inner);
                 let inner_ty = self.infer_expr_type(inner);
-                let neg_ty = if ty.is_float() { ty } else { IrType::I64 };
+                let neg_ty = if ty.is_float() || ty.is_128bit() { ty } else { IrType::I64 };
                 let val = self.lower_expr(inner);
                 let dest = self.fresh_value();
                 self.emit(Instruction::UnaryOp { dest, op: IrUnaryOp::Neg, src: val, ty: neg_ty });
@@ -539,9 +539,11 @@ impl Lowerer {
                     return self.lower_complex_conj(inner);
                 }
                 let inner_ty = self.infer_expr_type(inner);
+                let ty = self.get_expr_type(inner);
+                let not_ty = if ty.is_128bit() { ty } else { IrType::I64 };
                 let val = self.lower_expr(inner);
                 let dest = self.fresh_value();
-                self.emit(Instruction::UnaryOp { dest, op: IrUnaryOp::Not, src: val, ty: IrType::I64 });
+                self.emit(Instruction::UnaryOp { dest, op: IrUnaryOp::Not, src: val, ty: not_ty });
                 let promoted_ty = Self::integer_promote(inner_ty);
                 self.maybe_narrow(dest, promoted_ty)
             }
@@ -1511,6 +1513,8 @@ impl Lowerer {
             (Operand::Const(IrConst::F32(1.0)), IrType::F32)
         } else if ty == IrType::F128 {
             (Operand::Const(IrConst::LongDouble(1.0)), IrType::F128)
+        } else if ty == IrType::I128 || ty == IrType::U128 {
+            (Operand::Const(IrConst::I128(1)), ty)
         } else {
             (Operand::Const(IrConst::I64(1)), IrType::I64)
         }

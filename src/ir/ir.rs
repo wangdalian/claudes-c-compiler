@@ -408,6 +408,7 @@ pub enum ConstHashKey {
     I16(i16),
     I32(i32),
     I64(i64),
+    I128(i128),
     F32(u32),
     F64(u64),
     Zero,
@@ -551,7 +552,7 @@ impl IrConst {
             IrConst::I16(v) => ConstHashKey::I16(*v),
             IrConst::I32(v) => ConstHashKey::I32(*v),
             IrConst::I64(v) => ConstHashKey::I64(*v),
-            IrConst::I128(v) => ConstHashKey::I64(*v as i64), // hash key truncates to i64
+            IrConst::I128(v) => ConstHashKey::I128(*v),
             IrConst::F32(v) => ConstHashKey::F32(v.to_bits()),
             IrConst::F64(v) => ConstHashKey::F64(v.to_bits()),
             IrConst::LongDouble(v) => ConstHashKey::F64(v.to_bits()),
