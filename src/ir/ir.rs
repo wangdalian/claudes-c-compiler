@@ -61,6 +61,8 @@ pub struct IrGlobal {
     pub section: Option<String>,
     /// __attribute__((weak)) - emit as a weak symbol (STB_WEAK).
     pub is_weak: bool,
+    /// __attribute__((visibility("hidden"|"default"|...))) or #pragma GCC visibility.
+    pub visibility: Option<String>,
 }
 
 /// Initializer for a global variable.

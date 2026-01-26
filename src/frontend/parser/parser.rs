@@ -99,6 +99,12 @@ pub struct Parser {
     pub(super) pragma_pack_stack: Vec<Option<usize>>,
     /// Current #pragma pack alignment. None means default (natural) alignment.
     pub(super) pragma_pack_align: Option<usize>,
+    /// Stack for #pragma GCC visibility push/pop.
+    /// Each entry is the visibility string (e.g., "hidden", "default").
+    pub(super) pragma_visibility_stack: Vec<String>,
+    /// Current default visibility from #pragma GCC visibility push(...).
+    /// None means default visibility (no pragma active).
+    pub(super) pragma_default_visibility: Option<String>,
     /// Count of parse errors encountered (invalid tokens at top level, etc.)
     pub error_count: usize,
     /// Set to the address space when __seg_gs or __seg_fs qualifier is encountered.
@@ -133,6 +139,8 @@ impl Parser {
             parsed_alignas_type: None,
             pragma_pack_stack: Vec::new(),
             pragma_pack_align: None,
+            pragma_visibility_stack: Vec::new(),
+            pragma_default_visibility: None,
             error_count: 0,
             parsing_address_space: AddressSpace::Default,
         }
@@ -689,6 +697,47 @@ impl Parser {
             TokenKind::PragmaPackReset => {
                 self.advance();
                 self.pragma_pack_align = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Handle #pragma GCC visibility push/pop synthetic tokens.
+    /// Returns true if a token was consumed.
+    pub(super) fn handle_pragma_visibility_token(&mut self) -> bool {
+        match self.peek() {
+            TokenKind::PragmaVisibilityPush(vis) => {
+                let vis = vis.clone();
+                self.advance();
+                // Push current visibility and set new default
+                if let Some(ref current) = self.pragma_default_visibility {
+                    self.pragma_visibility_stack.push(current.clone());
+                } else {
+                    // Push a sentinel for "no pragma active"
+                    self.pragma_visibility_stack.push(String::new());
+                }
+                if vis == "default" {
+                    // "default" means no special visibility
+                    self.pragma_default_visibility = None;
+                } else {
+                    self.pragma_default_visibility = Some(vis);
+                }
+                true
+            }
+            TokenKind::PragmaVisibilityPop => {
+                self.advance();
+                // Pop previous visibility
+                if let Some(prev) = self.pragma_visibility_stack.pop() {
+                    if prev.is_empty() {
+                        self.pragma_default_visibility = None;
+                    } else {
+                        self.pragma_default_visibility = Some(prev);
+                    }
+                } else {
+                    // Stack underflow: reset to no pragma
+                    self.pragma_default_visibility = None;
+                }
                 true
             }
             _ => false,

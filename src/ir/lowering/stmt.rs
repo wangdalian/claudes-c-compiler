@@ -327,6 +327,7 @@ impl Lowerer {
             is_common: false,
             section: None,
             is_weak: false,
+            visibility: None,
         });
 
         // Track as a global for access via GlobalAddr

@@ -1,0 +1,27 @@
+Task: fix_asm_multiple_memory_outputs
+Status: in_progress
+Description: Fix inline assembly with multiple "=m" memory output operands.
+
+Bug: When inline assembly has multiple "=m" (memory output) operands, all
+operands get their address loaded into the same hardcoded register:
+  x86: r11, ARM: x9, RISC-V: t0
+The second load overwrites the first, so both memory references point to
+the same (last) address. This causes writes to the wrong memory location.
+
+Example failing test: asm-mem-output-x86-006-run2
+  asm volatile (
+      "mov %[ina], %[outa]\n\t"
+      "mov %[inb], %[outb]\n\t"
+      : [outa] "=m" (s.a), [outb] "=m" (s.b)
+      : [ina] "r" (va), [inb] "r" (vb)
+  );
+  // s.a is never written because both %[outa] and %[outb] resolve to (%r11)
+
+Fix: Use assign_scratch_reg() in resolve_memory_operand() instead of
+hardcoding a single register. Each memory operand gets its own unique
+temporary register for the address.
+
+Files to modify:
+  - src/backend/x86/codegen/codegen.rs (resolve_memory_operand)
+  - src/backend/arm/codegen/codegen.rs (resolve_memory_operand)
+  - src/backend/riscv/codegen/codegen.rs (resolve_memory_operand)

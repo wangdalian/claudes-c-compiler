@@ -229,16 +229,25 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule) -> String {
     }
 
     // Build the set of locally-defined symbols for PIC mode.
+    // Symbols with hidden/internal/protected visibility are resolved at link time
+    // (not load time), so they don't need GOT/PLT indirection.
     {
         let state = cg.state();
         for func in &module.functions {
-            if func.is_static {
+            if func.is_static || matches!(func.visibility.as_deref(), Some("hidden" | "internal" | "protected")) {
                 state.local_symbols.insert(func.name.clone());
             }
         }
         for global in &module.globals {
-            if global.is_static {
+            if global.is_static || matches!(global.visibility.as_deref(), Some("hidden" | "internal" | "protected")) {
                 state.local_symbols.insert(global.name.clone());
+            }
+        }
+        // Also mark symbols from extern declarations with hidden/internal/protected
+        // visibility as local — they're guaranteed to be resolved within the link unit.
+        for (name, _is_weak, visibility) in &module.symbol_attrs {
+            if matches!(visibility.as_deref(), Some("hidden" | "internal" | "protected")) {
+                state.local_symbols.insert(name.clone());
             }
         }
         for (label, _) in &module.string_literals {
@@ -256,6 +265,21 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule) -> String {
     // Emit top-level asm("...") directives verbatim (e.g., musl's _start definition)
     for asm_str in &module.toplevel_asm {
         cg.state().emit(asm_str);
+    }
+
+    // Emit visibility directives for declaration-only (extern) functions with non-default
+    // visibility. This ensures the assembler marks undefined symbols correctly for PIC.
+    for func in &module.functions {
+        if func.is_declaration {
+            if let Some(ref vis) = func.visibility {
+                match vis.as_str() {
+                    "hidden" => cg.state().emit_fmt(format_args!(".hidden {}", func.name)),
+                    "protected" => cg.state().emit_fmt(format_args!(".protected {}", func.name)),
+                    "internal" => cg.state().emit_fmt(format_args!(".internal {}", func.name)),
+                    _ => {}
+                }
+            }
+        }
     }
 
     // Text section
@@ -286,36 +310,20 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule) -> String {
     }
 
     // Emit symbol attribute directives (.weak, .hidden) for declarations.
-    // Only emit visibility directives for symbols that are actually defined in this module,
-    // since hidden/protected visibility on extern-only declarations would cause linker errors.
-    let defined_funcs: FxHashSet<&str> = module.functions.iter()
-        .filter(|f| !f.is_declaration)
-        .map(|f| f.name.as_str())
-        .collect();
-    let defined_globals: FxHashSet<&str> = module.globals.iter()
-        .filter(|g| !g.is_extern)
-        .map(|g| g.name.as_str())
-        .collect();
-    // Also collect alias names as "defined" since .set creates a definition
-    let alias_names: FxHashSet<&str> = module.aliases.iter()
-        .map(|(name, _, _)| name.as_str())
-        .collect();
+    // Visibility directives like .hidden are emitted for both defined and undefined symbols.
+    // For undefined (extern) symbols, .hidden tells the linker that the symbol will be
+    // resolved within the same link unit, which is critical for PIC code to avoid
+    // unnecessary GOT/PLT indirection (e.g., in the Linux kernel EFI stub).
     for (name, is_weak, visibility) in &module.symbol_attrs {
-        let is_defined = defined_funcs.contains(name.as_str())
-            || defined_globals.contains(name.as_str())
-            || alias_names.contains(name.as_str());
         if *is_weak {
             cg.state().emit_fmt(format_args!(".weak {}", name));
         }
-        // Only emit visibility for defined symbols
-        if is_defined {
-            if let Some(ref vis) = visibility {
-                match vis.as_str() {
-                    "hidden" => cg.state().emit_fmt(format_args!(".hidden {}", name)),
-                    "protected" => cg.state().emit_fmt(format_args!(".protected {}", name)),
-                    "internal" => cg.state().emit_fmt(format_args!(".internal {}", name)),
-                    _ => {}
-                }
+        if let Some(ref vis) = visibility {
+            match vis.as_str() {
+                "hidden" => cg.state().emit_fmt(format_args!(".hidden {}", name)),
+                "protected" => cg.state().emit_fmt(format_args!(".protected {}", name)),
+                "internal" => cg.state().emit_fmt(format_args!(".internal {}", name)),
+                _ => {}
             }
         }
     }

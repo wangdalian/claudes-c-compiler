@@ -41,6 +41,11 @@ impl Parser {
             self.consume_if(&TokenKind::Semicolon);
         }
 
+        // Handle #pragma GCC visibility push/pop directives
+        while self.handle_pragma_visibility_token() {
+            self.consume_if(&TokenKind::Semicolon);
+        }
+
         if self.at_eof() {
             return None;
         }
@@ -130,7 +135,10 @@ impl Parser {
         // Capture alias/weak/visibility/section/error attributes
         let is_weak = self.parsing_weak;
         let alias_target = self.parsing_alias_target.take();
-        let visibility = self.parsing_visibility.take();
+        // Use explicit __attribute__((visibility(...))) if present, otherwise fall back
+        // to the current #pragma GCC visibility default (if any).
+        let visibility = self.parsing_visibility.take()
+            .or_else(|| self.pragma_default_visibility.clone());
         let section = self.parsing_section.take();
         let is_error_attr = self.parsing_error_attr;
 
@@ -465,7 +473,8 @@ impl Parser {
             is_common = is_common || d_common;
             let d_weak = self.parsing_weak;
             let d_alias = self.parsing_alias_target.take();
-            let d_vis = self.parsing_visibility.take();
+            let d_vis = self.parsing_visibility.take()
+                .or_else(|| self.pragma_default_visibility.clone());
             let d_section = self.parsing_section.take();
             self.parsing_weak = false;
             let dinit = if self.consume_if(&TokenKind::Assign) {

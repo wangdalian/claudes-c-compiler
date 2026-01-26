@@ -440,6 +440,15 @@ fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective
     let mut has_data = false;
     let mut has_bss = false;
 
+    // Emit visibility directives for extern (undefined) globals that have non-default
+    // visibility. This is needed for PIC code so the assembler/linker knows these symbols
+    // are resolved within the link unit (e.g., #pragma GCC visibility push(hidden)).
+    for g in globals {
+        if g.is_extern {
+            emit_visibility_directive(out, &g.name, &g.visibility);
+        }
+    }
+
     // Globals with custom section attributes -> emit in their custom section first
     for g in globals {
         if g.is_extern || g.section.is_none() {
@@ -458,6 +467,7 @@ fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective
                     out.emit_fmt(format_args!(".globl {}", g.name));
                 }
             }
+            emit_visibility_directive(out, &g.name, &g.visibility);
             out.emit_fmt(format_args!(".align {}", effective_align(g)));
             out.emit_fmt(format_args!(".type {}, @object", g.name));
             out.emit_fmt(format_args!(".size {}, {}", g.name, g.size));
@@ -539,6 +549,7 @@ fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective
                 out.emit_fmt(format_args!(".globl {}", g.name));
             }
         }
+        emit_visibility_directive(out, &g.name, &g.visibility);
         out.emit_fmt(format_args!(".align {}", ptr_dir.align_arg(effective_align(g))));
         out.emit_fmt(format_args!(".type {}, @object", g.name));
         out.emit_fmt(format_args!(".size {}, {}", g.name, g.size));
@@ -547,6 +558,18 @@ fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective
     }
     if has_bss {
         out.emit("");
+    }
+}
+
+/// Emit a visibility directive (.hidden, .protected, .internal) for a symbol if applicable.
+fn emit_visibility_directive(out: &mut AsmOutput, name: &str, visibility: &Option<String>) {
+    if let Some(ref vis) = visibility {
+        match vis.as_str() {
+            "hidden" => out.emit_fmt(format_args!(".hidden {}", name)),
+            "protected" => out.emit_fmt(format_args!(".protected {}", name)),
+            "internal" => out.emit_fmt(format_args!(".internal {}", name)),
+            _ => {} // "default" or unknown: no directive needed
+        }
     }
 }
 
@@ -559,6 +582,7 @@ fn emit_global_def(out: &mut AsmOutput, g: &IrGlobal, ptr_dir: PtrDirective) {
             out.emit_fmt(format_args!(".globl {}", g.name));
         }
     }
+    emit_visibility_directive(out, &g.name, &g.visibility);
     out.emit_fmt(format_args!(".align {}", ptr_dir.align_arg(effective_align(g))));
     out.emit_fmt(format_args!(".type {}, @object", g.name));
     out.emit_fmt(format_args!(".size {}, {}", g.name, g.size));

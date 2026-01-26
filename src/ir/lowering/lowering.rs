@@ -1424,6 +1424,7 @@ impl Lowerer {
                 is_common: decl.is_common,
                 section: declarator.section.clone(),
                 is_weak: declarator.is_weak,
+                visibility: declarator.visibility.clone(),
             });
         }
     }

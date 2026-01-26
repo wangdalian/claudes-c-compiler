@@ -742,6 +742,11 @@ impl Lexer {
             return Token::new(pack_tok, span);
         }
 
+        // Check for synthetic pragma visibility directives emitted by preprocessor
+        if let Some(vis_tok) = Self::try_pragma_visibility_token(text) {
+            return Token::new(vis_tok, span);
+        }
+
         if let Some(kw) = TokenKind::from_keyword(text) {
             Token::new(kw, span)
         } else {
@@ -771,6 +776,27 @@ impl Lexer {
                     Some(TokenKind::PragmaPackPush(n))
                 } else {
                     None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Recognize synthetic pragma visibility identifiers emitted by the preprocessor.
+    /// Format: __ccc_visibility_push_VISIBILITY, __ccc_visibility_pop
+    fn try_pragma_visibility_token(text: &str) -> Option<TokenKind> {
+        if let Some(rest) = text.strip_prefix("__ccc_visibility_") {
+            if rest == "pop" {
+                Some(TokenKind::PragmaVisibilityPop)
+            } else if let Some(vis) = rest.strip_prefix("push_") {
+                match vis {
+                    "hidden" | "default" | "protected" | "internal" => {
+                        Some(TokenKind::PragmaVisibilityPush(vis.to_string()))
+                    }
+                    _ => None,
                 }
             } else {
                 None

@@ -42,6 +42,10 @@ impl Parser {
             while self.handle_pragma_pack_token() {
                 self.consume_if(&TokenKind::Semicolon);
             }
+            // Handle #pragma GCC visibility push/pop within function bodies
+            while self.handle_pragma_visibility_token() {
+                self.consume_if(&TokenKind::Semicolon);
+            }
             if matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
                 break;
             }

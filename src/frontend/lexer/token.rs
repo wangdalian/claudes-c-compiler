@@ -106,6 +106,11 @@ pub enum TokenKind {
     PragmaPackPop,
     PragmaPackReset,
 
+    /// #pragma GCC visibility push(hidden|default|protected|internal), emitted by preprocessor.
+    PragmaVisibilityPush(String),
+    /// #pragma GCC visibility pop
+    PragmaVisibilityPop,
+
     // Punctuation
     LParen,     // (
     RParen,     // )

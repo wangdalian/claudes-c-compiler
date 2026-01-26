@@ -48,6 +48,10 @@ pub struct Preprocessor {
     pub weak_pragmas: Vec<(String, Option<String>)>,
     /// #pragma redefine_extname directives: (old_name, new_name)
     pub redefine_extname_pragmas: Vec<(String, String)>,
+    /// Accumulated output from force-included files (-include).
+    /// Prepended to the main source's preprocessed output so that pragma
+    /// synthetic tokens (e.g., visibility push/pop) take effect.
+    force_include_output: String,
 }
 
 impl Preprocessor {
@@ -68,6 +72,7 @@ impl Preprocessor {
             line_override: None,
             weak_pragmas: Vec::new(),
             redefine_extname_pragmas: Vec::new(),
+            force_include_output: String::new(),
         };
         pp.define_predefined_macros();
         define_builtin_macros(&mut pp.macros);
@@ -328,7 +333,15 @@ impl Preprocessor {
     /// Process source code, expanding macros and handling conditionals.
     /// Returns the preprocessed source.
     pub fn preprocess(&mut self, source: &str) -> String {
-        self.preprocess_source(source, false)
+        let main_output = self.preprocess_source(source, false);
+        // Prepend any output from force-included files (e.g., pragma synthetic tokens)
+        if self.force_include_output.is_empty() {
+            main_output
+        } else {
+            let mut result = std::mem::take(&mut self.force_include_output);
+            result.push_str(&main_output);
+            result
+        }
     }
 
     /// Process source code from an included file. Same pipeline as preprocess()
@@ -809,8 +822,17 @@ impl Preprocessor {
             is_predefined: true,
         });
 
-        // Preprocess the included content (output is discarded, but macros persist)
-        let _output = self.preprocess_included(content);
+        // Preprocess the included content (macros persist; any pragma synthetic tokens
+        // like __ccc_visibility_push_hidden are collected and prepended to main output)
+        let output = self.preprocess_included(content);
+        // Collect any non-whitespace output (e.g., pragma synthetic tokens) for prepending
+        // to the main source's preprocessed output. This ensures that pragmas like
+        // #pragma GCC visibility push(hidden) in force-included files take effect.
+        let trimmed = output.trim();
+        if !trimmed.is_empty() {
+            self.force_include_output.push_str(trimmed);
+            self.force_include_output.push('\n');
+        }
 
         // Restore __FILE__
         if let Some(old) = old_file {
@@ -1185,7 +1207,37 @@ impl Preprocessor {
             return None;
         }
 
+        // Handle #pragma GCC visibility push(hidden|default|protected|internal) / pop
+        if let Some(gcc_content) = rest.strip_prefix("GCC") {
+            let gcc_content = gcc_content.trim();
+            if let Some(vis_content) = gcc_content.strip_prefix("visibility") {
+                return self.handle_pragma_gcc_visibility(vis_content.trim());
+            }
+        }
+
         // Other pragmas (GCC, diagnostic, etc.) are silently ignored
+        None
+    }
+
+    /// Handle #pragma GCC visibility push(hidden|default|protected|internal) / pop.
+    /// Emits synthetic tokens for the parser to track default visibility.
+    fn handle_pragma_gcc_visibility(&mut self, content: &str) -> Option<String> {
+        let content = content.trim();
+        if content == "pop" {
+            return Some("__ccc_visibility_pop ;\n".to_string());
+        }
+        if let Some(rest) = content.strip_prefix("push") {
+            let rest = rest.trim();
+            if rest.starts_with('(') {
+                let inner = rest.trim_start_matches('(').trim_end_matches(')').trim();
+                match inner {
+                    "hidden" | "default" | "protected" | "internal" => {
+                        return Some(format!("__ccc_visibility_push_{} ;\n", inner));
+                    }
+                    _ => {}
+                }
+            }
+        }
         None
     }
 
