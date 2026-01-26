@@ -1,0 +1,34 @@
+Task: Fix anonymous union designated initializer in struct arrays with pointer fields
+
+Problem: When initializing an array of structs where the struct contains an anonymous
+union with an anonymous struct inside it, designated initializers targeting fields
+inside the anonymous struct (e.g., .name = "skbaddr") were silently dropped in the
+compound initialization path. This caused pointer fields to be zero-initialized instead
+of getting proper relocations.
+
+Root cause: fill_struct_fields_from_items() in global_init_compound.rs used
+resolve_init_field_idx() which collapsed the AnonymousMember resolution to just the
+field index, losing the information needed to recursively initialize the anonymous
+member's sub-layout. The same issue existed in fill_array_field_designator_items().
+
+The fix changes both functions to use resolve_init_field() instead, which returns the
+full InitFieldResolution::AnonymousMember variant with the inner field name, allowing
+proper recursive initialization via resolve_anonymous_member() and
+fill_struct_fields_from_items().
+
+Also fixed the union emission path in lower_struct_global_init_compound() to check
+anon_synth_items when no direct field_inits exist for the union, handling the case
+where a single (non-array) struct with an anonymous union is initialized.
+
+Impact: This bug caused the Linux kernel to crash during boot when net/core/net-traces.c
+was compiled with ccc. The tracepoint infrastructure uses arrays of structs with anonymous
+unions containing pointer fields for field descriptors, and the NULL pointers caused a
+crash in trace_event_raw_init() -> strncmp().
+
+Files modified:
+- src/ir/lowering/global_init_compound.rs: Three fixes to anonymous member handling
+- src/backend/common.rs: ptr_dir.align_arg() fix for .align directive (secondary fix)
+
+Test: tests/anon-union-ptr-array-init/main.c
+
+Status: in_progress
