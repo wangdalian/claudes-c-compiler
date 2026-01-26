@@ -414,13 +414,12 @@ impl StructLayout {
             max_size = max_size.max(field_size);
 
             // For union bitfield members, set bit_offset to 0 (all fields start at byte 0)
-            // and propagate bit_width so extraction is performed on read
+            // and propagate bit_width so extraction is performed on read.
+            // Zero-width bitfields get Some(0) for both bit_offset and bit_width so that
+            // resolve_init_field() correctly identifies them as unnamed bitfields to skip
+            // during positional initialization (the skip check tests bit_width.is_some()).
             let (bf_offset, bf_width) = if let Some(bw) = field.bit_width {
-                if bw > 0 {
-                    (Some(0u32), Some(bw))
-                } else {
-                    (None, None) // zero-width bitfield
-                }
+                (Some(0u32), Some(bw))
             } else {
                 (None, None)
             };
