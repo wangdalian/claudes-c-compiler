@@ -1,0 +1,21 @@
+Task: Fix i128 cast sign-extension bug in constant evaluation
+Status: in_progress
+
+Problem:
+When casting a negative signed integer to unsigned __int128 at compile time,
+the constant evaluator produces the wrong result. For example:
+  (unsigned __int128)(-1) << 63
+produces hi=0x7FFFFFFFFFFFFFFF instead of hi=0xFFFFFFFFFFFFFFFF.
+
+Root cause: The cast handler in both sema/const_eval.rs and lowering/const_eval.rs
+uses a u64 intermediate. When converting to IrConst::I128, it does `bits as i128`
+which zero-extends the u64 instead of sign-extending. The fix is to sign-extend
+based on the source expression's signedness: `(bits as i64) as i128` for signed
+sources, `bits as i128` for unsigned sources.
+
+Affected tests: gcc_torture_pr85582_3 and potentially other i128 constant fold tests.
+
+Fix plan:
+1. Fix sema/const_eval.rs bits_to_irconst for i128 target
+2. Fix lowering/const_eval.rs cast handler for i128 target
+3. Verify with test suite

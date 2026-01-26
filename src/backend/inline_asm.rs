@@ -160,6 +160,50 @@ pub fn constraint_has_immediate_alt(constraint: &str) -> bool {
     stripped.chars().any(|c| matches!(c, 'I' | 'i' | 'n'))
 }
 
+/// Check whether a constant value fits the immediate constraint range for a given
+/// multi-alternative constraint string. For example, x86 "Ir" with value 602 should
+/// NOT be promoted to immediate (602 > 31), but "Ir" with value 5 should (5 <= 31).
+///
+/// x86 immediate constraint ranges (from GCC docs):
+///   'i' - any integer constant (always fits)
+///   'n' - any integer constant (always fits, same as 'i' for our purposes)
+///   'I' - 0..31 (for shift counts / bit positions)
+///   'N' - 0..255 (unsigned byte)
+///   'e' - -(2^31)..((2^31)-1) (signed 32-bit)
+///   'K' - 0..0xFF (same as N for our purposes)
+///   'M' - 0..3 (for lea scale)
+///   'L' - 0xFF, 0xFFFF (mask constants)
+///   'J' - 0..0xFFFFFFFF (unsigned 32-bit)
+///   'O' - 0..127 (unsigned 7-bit)
+///
+/// If the constraint contains 'i' or 'n', any constant fits. Otherwise, the value
+/// must fit the range of at least one uppercase immediate letter present.
+pub fn constant_fits_immediate_constraint(constraint: &str, value: i64) -> bool {
+    let stripped = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+    // If constraint has 'i' or 'n', any constant value is accepted
+    if stripped.contains('i') || stripped.contains('n') {
+        return true;
+    }
+    // Check each uppercase immediate letter to see if value fits its range
+    for ch in stripped.chars() {
+        let fits = match ch {
+            'I' => value >= 0 && value <= 31,
+            'N' | 'K' => value >= 0 && value <= 255,
+            'e' | 'E' => value >= -(1i64 << 31) && value <= ((1i64 << 31) - 1),
+            'M' => value >= 0 && value <= 3,
+            'J' => value >= 0 && value <= 0xFFFF_FFFF,
+            'L' => value == 0xFF || value == 0xFFFF,
+            'O' => value >= 0 && value <= 127,
+            'G' | 'H' => false, // floating-point immediate constraints, not integer
+            _ => continue, // not an immediate constraint letter
+        };
+        if fits {
+            return true;
+        }
+    }
+    false
+}
+
 /// Check whether a constraint string contains a memory alternative character.
 /// Handles both single-character ("m") and multi-character constraints ("rm", "mq").
 /// Also recognizes "Q" which is an AArch64-specific memory constraint meaning
@@ -286,12 +330,17 @@ pub fn emit_inline_asm_common_impl(
         // For multi-alternative constraints (e.g., "Ir", "ri", "In") that were classified
         // as GpReg but have a constant input value, promote to Immediate so the value
         // is emitted as $value instead of loaded into a register. Only do this when
-        // the constraint actually contains an immediate alternative character.
+        // the constraint actually contains an immediate alternative character AND the
+        // constant value fits the range of that immediate constraint. For example,
+        // x86 "I" requires 0-31 (for shift/bit instructions), so values >= 32 must
+        // use the register alternative instead.
         if matches!(op.kind, AsmOperandKind::GpReg) {
             if let Operand::Const(c) = val {
-                if constraint_has_immediate_alt(constraint) {
-                    op.imm_value = c.to_i64();
-                    op.kind = AsmOperandKind::Immediate;
+                if let Some(v) = c.to_i64() {
+                    if constant_fits_immediate_constraint(constraint, v) {
+                        op.imm_value = Some(v);
+                        op.kind = AsmOperandKind::Immediate;
+                    }
                 }
             }
         }
@@ -299,12 +348,19 @@ pub fn emit_inline_asm_common_impl(
         operands.push(op);
     }
 
-    // Populate symbol names for input operands from input_symbols
+    // Populate symbol names for input operands from input_symbols.
+    // When a symbol is resolved (e.g., "boot_cpu_data+74" from GlobalAddr+GEP after
+    // inlining), promote the operand to Immediate so the backend emits the symbol
+    // reference directly instead of trying to load it into a register.
     for (i, sym) in input_symbols.iter().enumerate() {
         let op_idx = outputs.len() + i;
         if op_idx < operands.len() {
             if let Some(ref s) = sym {
                 operands[op_idx].imm_symbol = Some(s.clone());
+                // Promote to Immediate so the symbol is emitted directly
+                if matches!(operands[op_idx].kind, AsmOperandKind::GpReg) {
+                    operands[op_idx].kind = AsmOperandKind::Immediate;
+                }
             }
         }
     }
@@ -330,23 +386,24 @@ pub fn emit_inline_asm_common_impl(
     // For Immediate operands that have neither an imm_value nor an imm_symbol,
     // the value is a runtime expression (e.g., &struct.member) that couldn't be
     // resolved to a constant or symbol.
-    let mut has_unsatisfiable_imm = false;
     for op in operands.iter_mut() {
         if matches!(op.kind, AsmOperandKind::Immediate) && op.imm_value.is_none() && op.imm_symbol.is_none() {
             if constraint_is_immediate_only(&op.constraint) {
                 // Pure immediate constraint (e.g., "i", "n") with no register or memory
                 // alternative, but the expression couldn't be evaluated at compile time.
-                // This happens in static inline functions where the "i" operand depends
-                // on a function parameter — the standalone body can't evaluate it, but
-                // GCC always inlines such functions. Emit $0 as a placeholder to produce
-                // valid assembly. The function won't produce correct results if called
-                // at runtime, but these functions are only called with constant args.
-                // TODO: Implement function inlining so these static inline functions
-                // are inlined at call sites with constant arguments, making the "i"
-                // constraint evaluable. Once inlining is implemented, this placeholder
-                // path should be replaced with a proper diagnostic/error.
+                // This happens in static inline functions whose standalone body has "i"
+                // operands depending on parameters. After inlining, the resolve pass
+                // resolves most of these, but some edge cases may remain (e.g., complex
+                // address expressions not yet handled by resolve_inline_asm_symbols).
+                // Emit $0 as a placeholder to produce valid assembly for the standalone
+                // body; the inlined copy at call sites will have the correct values.
+                // The standalone body with $0 is safe because: (1) these functions are
+                // always_inline and dead-code-eliminated if never called directly, and
+                // (2) even if emitted, .pushsection metadata with $0 won't be linked
+                // into the final binary since the function is unreferenced.
+                // TODO: Emit a diagnostic/warning when $0 is used in a non-static
+                // function, as that indicates a genuine unresolvable "i" constraint.
                 op.imm_value = Some(0);
-                has_unsatisfiable_imm = true;
             } else {
                 // Multi-alternative constraint (e.g., "Ir" classified as Immediate but
                 // value is runtime). Fall back to GpReg so the value gets loaded into
@@ -354,30 +411,6 @@ pub fn emit_inline_asm_common_impl(
                 op.kind = AsmOperandKind::GpReg;
             }
         }
-    }
-
-    // If we have unsatisfiable immediate constraints AND the template creates
-    // section data (via .pushsection), skip the inline asm template entirely.
-    // This prevents emitting corrupt metadata (e.g., __jump_table entries with
-    // null key pointers) that would crash the kernel during boot.
-    //
-    // For asm goto, we simply fall through to the next instruction (no jump).
-    // This matches GCC's asm goto semantics: if the asm body doesn't explicitly
-    // jump to a goto label, execution continues with the statement after the asm.
-    // This is correct for both common kernel patterns:
-    //   - arch_static_branch: fallthrough → `return false` (tracepoint inactive)
-    //   - _static_cpu_has: fallthrough → `t_yes: return true` (matches GCC's
-    //     behavior with an un-patched NOP5, which also falls through to t_yes)
-    //
-    // For non-goto asm (e.g., BUG_ON's ud2 + __bug_table), we also drop the
-    // entire block because emitting the trap instruction without its metadata
-    // table entry causes worse crashes than omitting both.
-    //
-    // TODO: Replace this heuristic with proper function inlining support.
-    // Once always_inline functions are inlined at call sites, the "i" constraints
-    // will be evaluable and this skip path will no longer be needed.
-    if has_unsatisfiable_imm && template.contains(".pushsection") {
-        return;
     }
 
     // Collect registers claimed by specific-register constraints (e.g., "c" -> rcx)

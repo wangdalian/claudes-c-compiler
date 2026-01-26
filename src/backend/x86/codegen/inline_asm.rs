@@ -215,6 +215,10 @@ impl X86Codegen {
                 // Register: emit as indirect (%reg)
                 result.push_str(&format!("(%{})", op_regs[idx]));
             }
+        } else if let Some(sym) = has_symbol {
+            // Symbol immediate (e.g., "i" constraint with &global_var+offset)
+            // Emit as $symbol for AT&T syntax
+            result.push_str(&format!("${}", sym));
         } else if let Some(imm) = has_imm {
             // Normal immediate — emit as $value
             result.push_str(&format!("${}", imm));

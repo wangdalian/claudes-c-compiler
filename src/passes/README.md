@@ -20,6 +20,17 @@ SSA-based optimization passes that improve the IR before code generation.
 All optimization levels (`-O0` through `-O3`, `-Os`, `-Oz`) run the same full pipeline.
 While the compiler is maturing, this maximizes test coverage and avoids tier-specific bugs.
 
+### Phase 0: Inlining (pre-loop)
+
+Before the main optimization loop:
+
+1. **Inline** small static/always_inline functions
+2. **mem2reg** re-run to promote allocas from inlined callee entry blocks (now non-entry blocks in caller)
+3. **constant_fold + copy_prop + simplify + constant_fold + copy_prop** to resolve arithmetic on inlined constants
+4. **resolve_inline_asm_symbols** traces GlobalAddr+GEP/Add/Cast def chains to resolve "i" constraint symbol+offset strings (e.g., `boot_cpu_data+74`) for inline asm inputs that became resolvable after inlining
+
+### Main loop (up to 3 iterations)
+
 The pipeline runs up to 3 iterations, early-exiting if no changes are made:
 
 CFG simplify -> copy prop -> narrow -> simplify -> constant fold -> GVN/CSE -> LICM -> if-convert -> copy prop -> DCE -> CFG simplify -> [IPCP after iter 0]

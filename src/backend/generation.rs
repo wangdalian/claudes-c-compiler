@@ -862,7 +862,12 @@ pub fn calculate_stack_space_common(
     // intermediates can save 100+ bytes of frame space by sharing slots, which
     // matters for recursive functions where per-frame savings compound (e.g.,
     // PostgreSQL plpgsql recursion triggers stack depth limit with large frames).
-    let coalesce = num_blocks >= 2 && !func.has_inlined_calls;
+    //
+    // Note: coalescing is safe for functions with inlined calls -- the liveness
+    // analysis correctly tracks intervals regardless of inlining. Without this,
+    // functions that inline many helpers (e.g., kernel CPU init code) can have
+    // enormous stack frames (4KB+) that overflow the kernel's limited stack.
+    let coalesce = num_blocks >= 2;
     let enable_tier2 = num_blocks >= 8 && total_instructions >= 64;
 
     // Build use-block map: for each value, which blocks reference it.

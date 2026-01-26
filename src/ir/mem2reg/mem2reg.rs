@@ -148,7 +148,7 @@ fn find_promotable_allocas(func: &IrFunction) -> Vec<AllocaInfo> {
     // Parameter allocas receive their initial values from the backend (register stores)
     // which are not visible in the IR, so they must not be promoted.
     let mut alloca_index = 0;
-    let entry_allocas: Vec<(Value, IrType, usize)> = func.blocks[0]
+    let mut all_allocas: Vec<(Value, IrType, usize)> = func.blocks[0]
         .instructions
         .iter()
         .filter_map(|inst| {
@@ -183,12 +183,31 @@ fn find_promotable_allocas(func: &IrFunction) -> Vec<AllocaInfo> {
         })
         .collect();
 
-    if entry_allocas.is_empty() {
+    // Also collect allocas from non-entry blocks. These come from inlined functions
+    // whose entry blocks (containing their local variable allocas) are appended as
+    // non-entry blocks in the caller. Without promoting these, inlined parameters
+    // remain as store/load pairs through stack slots, preventing constant propagation
+    // into inline asm "i" constraints and other optimizations.
+    for block in &func.blocks[1..] {
+        for inst in &block.instructions {
+            if let Instruction::Alloca { dest, ty, size, volatile, .. } = inst {
+                if *volatile {
+                    continue;
+                }
+                let type_size = ir_type_size(*ty);
+                if *size <= 8 && type_size <= 8 {
+                    all_allocas.push((*dest, *ty, *size));
+                }
+            }
+        }
+    }
+
+    if all_allocas.is_empty() {
         return Vec::new();
     }
 
     // Build set of candidate alloca values
-    let candidate_set: FxHashSet<u32> = entry_allocas.iter().map(|(v, _, _)| v.0).collect();
+    let candidate_set: FxHashSet<u32> = all_allocas.iter().map(|(v, _, _)| v.0).collect();
 
     // Check all uses: only Load and Store targeting the alloca pointer are allowed
     let mut disqualified: FxHashSet<u32> = FxHashSet::default();
@@ -237,7 +256,7 @@ fn find_promotable_allocas(func: &IrFunction) -> Vec<AllocaInfo> {
     }
 
     // Build final list of promotable allocas
-    entry_allocas
+    all_allocas
         .into_iter()
         .filter(|(v, _, _)| !disqualified.contains(&v.0))
         .map(|(alloca_value, ty, _)| {

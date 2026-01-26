@@ -159,9 +159,8 @@ pub struct IrFunction {
     /// __attribute__((weak)) - emit as a weak symbol (STB_WEAK).
     pub is_weak: bool,
     /// Set by the inlining pass when call sites were inlined into this function.
-    /// Used by the backend to disable stack slot coalescing, which is unsafe
-    /// for functions with inlined code (blocks may execute sequentially, not
-    /// mutually exclusively).
+    /// Used by post-inlining passes (mem2reg re-run, symbol resolution) to know
+    /// that non-entry blocks may contain allocas from inlined callees.
     pub has_inlined_calls: bool,
 }
 
