@@ -214,6 +214,35 @@ impl Lowerer {
         self.lower_complex_componentwise_binop(IrBinOp::Sub, lhs_ptr, rhs_ptr, ctype)
     }
 
+    /// Lower real - complex: real - (c+di) = (real-c) + (-d)i
+    /// Uses negation for the imaginary part instead of 0.0-d to preserve
+    /// IEEE 754 negative zero: -(+0.0) = -0.0, but +0.0 - (+0.0) = +0.0.
+    pub(super) fn lower_real_minus_complex(&mut self, real_val: Operand, real_type: &CType, rhs_ptr: Value, ctype: &CType) -> Operand {
+        let comp_ty = Self::complex_component_ir_type(ctype);
+
+        // Cast the real scalar to the component type
+        let real_ir = IrType::from_ctype(real_type);
+        let converted_real = if real_ir != comp_ty {
+            let dest = self.emit_cast_val(real_val, real_ir, comp_ty);
+            Operand::Value(dest)
+        } else {
+            real_val
+        };
+
+        let rr = self.load_complex_real(rhs_ptr, ctype);
+        let ri = self.load_complex_imag(rhs_ptr, ctype);
+
+        // real_part = real - rhs_real
+        let real_result = self.emit_binop_val(IrBinOp::Sub, converted_real, rr, comp_ty);
+        // imag_part = -rhs_imag (not 0.0 - rhs_imag)
+        let neg_i = self.fresh_value();
+        self.emit(Instruction::UnaryOp { dest: neg_i, op: IrUnaryOp::Neg, src: ri, ty: comp_ty });
+
+        let result = self.alloca_complex(ctype);
+        self.store_complex_parts(result, Operand::Value(real_result), Operand::Value(neg_i), ctype);
+        Operand::Value(result)
+    }
+
     /// Lower complex multiplication: (a+bi)(c+di) = (ac-bd) + (ad+bc)i
     pub(super) fn lower_complex_mul(&mut self, lhs_ptr: Value, rhs_ptr: Value, ctype: &CType) -> Operand {
         let comp_ty = Self::complex_component_ir_type(ctype);
@@ -458,9 +487,17 @@ impl Lowerer {
                             }
                         }
                     }
-                    self.get_function_return_ctype(name)
+                    // Check if this is a function pointer variable rather than a direct function
+                    if self.is_func_ptr_variable(name) {
+                        self.get_func_ptr_return_ctype(callee.as_ref())
+                            .unwrap_or_else(|| self.get_function_return_ctype(name))
+                    } else {
+                        self.get_function_return_ctype(name)
+                    }
                 } else {
-                    CType::Int
+                    // For indirect calls through non-identifier function pointers
+                    self.get_func_ptr_return_ctype(callee.as_ref())
+                        .unwrap_or(CType::Int)
                 }
             }
             Expr::Assign(lhs, _, _) | Expr::CompoundAssign(_, lhs, _, _) => {

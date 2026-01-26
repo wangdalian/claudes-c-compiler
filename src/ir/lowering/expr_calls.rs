@@ -174,11 +174,18 @@ impl Lowerer {
 
         // For complex returns (non-sret), store into complex alloca
         if sret_size.is_none() {
-            if let Expr::Identifier(name, _) = stripped_func {
-                if let Some(ret_ct) = self.types.func_return_ctypes.get(name).cloned() {
-                    if let Some(result) = self.handle_complex_return(dest, &ret_ct) {
-                        return result;
-                    }
+            // First try the function name lookup (for direct calls)
+            let ret_ct = if let Expr::Identifier(name, _) = stripped_func {
+                self.types.func_return_ctypes.get(name).cloned()
+            } else {
+                None
+            };
+            // Fall back to extracting return CType from the expression's type
+            // (handles indirect calls through function pointers)
+            let ret_ct = ret_ct.or_else(|| self.get_func_ptr_return_ctype(stripped_func));
+            if let Some(ret_ct) = ret_ct {
+                if let Some(result) = self.handle_complex_return(dest, &ret_ct) {
+                    return result;
                 }
             }
         }
@@ -555,6 +562,34 @@ impl Lowerer {
             | "open" | "fcntl" | "ioctl" | "execl" | "execlp" | "execle")
     }
 
+    /// Extract the return CType from a function pointer expression.
+    /// Used to detect complex return types for indirect calls.
+    pub(super) fn get_func_ptr_return_ctype(&self, func_expr: &Expr) -> Option<CType> {
+        let mut expr = func_expr;
+        loop {
+            if let Some(ctype) = self.get_expr_ctype(expr) {
+                return Self::extract_return_ctype_from_func_type(&ctype);
+            }
+            if let Expr::Deref(inner, _) = expr {
+                expr = inner;
+            } else {
+                return None;
+            }
+        }
+    }
+
+    /// Extract the return CType from a function or function pointer CType.
+    fn extract_return_ctype_from_func_type(ctype: &CType) -> Option<CType> {
+        match ctype {
+            CType::Pointer(inner, _) => match inner.as_ref() {
+                CType::Function(ft) => Some(ft.return_type.clone()),
+                _ => None,
+            },
+            CType::Function(ft) => Some(ft.return_type.clone()),
+            _ => None,
+        }
+    }
+
     /// Determine the return type of a function pointer expression for indirect calls.
     /// Strips Deref layers since dereferencing a function pointer is a no-op in C.
     fn get_func_ptr_return_ir_type(&self, func_expr: &Expr) -> IrType {
@@ -576,7 +611,7 @@ impl Lowerer {
         match ctype {
             CType::Pointer(inner, _) => {
                 match inner.as_ref() {
-                    CType::Function(ft) => IrType::from_ctype(&ft.return_type),
+                    CType::Function(ft) => Self::func_return_ir_type(&ft.return_type),
                     CType::Pointer(ret, _) => {
                         match ret.as_ref() {
                             CType::Float => IrType::F32,
@@ -589,8 +624,24 @@ impl Lowerer {
                     _ => IrType::I64,
                 }
             }
-            CType::Function(ft) => IrType::from_ctype(&ft.return_type),
+            CType::Function(ft) => Self::func_return_ir_type(&ft.return_type),
             _ => IrType::I64,
+        }
+    }
+
+    /// Map a function's return CType to the IR type used for the call instruction.
+    /// Complex types return in FP registers (F64 for both ComplexFloat and ComplexDouble),
+    /// not as Ptr which is what IrType::from_ctype gives.
+    fn func_return_ir_type(ret_ctype: &CType) -> IrType {
+        match ret_ctype {
+            // Complex float: on x86-64, both F32 parts packed into xmm0 as F64
+            // On ARM/RISC-V, real part in first FP reg as F32
+            CType::ComplexFloat => IrType::F64,
+            // Complex double: real part in xmm0 as F64
+            CType::ComplexDouble => IrType::F64,
+            // Complex long double uses sret (passed via pointer), not registers
+            CType::ComplexLongDouble => IrType::Ptr,
+            other => IrType::from_ctype(other),
         }
     }
 }

@@ -309,6 +309,16 @@ impl Lowerer {
 
     fn lower_complex_binary_op(&mut self, op: &BinOp, lhs: &Expr, rhs: &Expr, lhs_ct: &CType, rhs_ct: &CType) -> Operand {
         let result_ct = self.common_complex_type(lhs_ct, rhs_ct);
+
+        // Special case: real - complex uses negation for imag part to preserve -0.0
+        if *op == BinOp::Sub && !lhs_ct.is_complex() && rhs_ct.is_complex() {
+            let lhs_val = self.lower_expr(lhs);
+            let rhs_val = self.lower_expr(rhs);
+            let rhs_complex = self.convert_to_complex(rhs_val, rhs_ct, &result_ct);
+            let rhs_ptr = self.operand_to_value(rhs_complex);
+            return self.lower_real_minus_complex(lhs_val, lhs_ct, rhs_ptr, &result_ct);
+        }
+
         let lhs_val = self.lower_expr(lhs);
         let rhs_val = self.lower_expr(rhs);
         let lhs_complex = self.convert_to_complex(lhs_val, lhs_ct, &result_ct);
