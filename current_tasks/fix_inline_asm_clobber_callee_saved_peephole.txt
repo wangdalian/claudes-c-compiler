@@ -13,4 +13,4 @@ Fix: Emit comment annotations (e.g., "# asm clobber %rbx") after inline asm for 
 callee-saved register in the clobber list. The peephole pass's line_references_reg check
 finds these annotations and preserves the save/restore.
 
-Status: in_progress
+Status: completed

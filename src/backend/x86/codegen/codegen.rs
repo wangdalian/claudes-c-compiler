@@ -1507,6 +1507,29 @@ impl X86Codegen {
             }
         }
     }
+
+    /// Emit comment annotations for callee-saved registers listed in inline asm
+    /// clobber lists. The peephole pass's `eliminate_unused_callee_saves` scans
+    /// function bodies for textual register references (e.g., "%rbx") to decide
+    /// whether a callee-saved register save/restore can be eliminated. Without
+    /// these annotations, an inline asm that clobbers a callee-saved register
+    /// (but doesn't mention it in the emitted assembly text) would have its
+    /// save/restore incorrectly removed.
+    fn emit_callee_saved_clobber_annotations(&mut self, clobbers: &[String]) {
+        for clobber in clobbers {
+            let reg_name = match clobber.as_str() {
+                "rbx" | "ebx" | "bx" | "bl" | "bh" => Some("%rbx"),
+                "r12" | "r12d" | "r12w" | "r12b" => Some("%r12"),
+                "r13" | "r13d" | "r13w" | "r13b" => Some("%r13"),
+                "r14" | "r14d" | "r14w" | "r14b" => Some("%r14"),
+                "r15" | "r15d" | "r15w" | "r15b" => Some("%r15"),
+                _ => None,
+            };
+            if let Some(reg) = reg_name {
+                self.state.emit_fmt(format_args!("    # asm clobber {}", reg));
+            }
+        }
+    }
 }
 
 const X86_ARG_REGS: [&str; 6] = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
@@ -4160,11 +4183,13 @@ impl ArchCodegen for X86Codegen {
 
     fn emit_inline_asm(&mut self, template: &str, outputs: &[(String, Value, Option<String>)], inputs: &[(String, Operand, Option<String>)], clobbers: &[String], operand_types: &[IrType], goto_labels: &[(String, BlockId)], input_symbols: &[Option<String>]) {
         emit_inline_asm_common(self, template, outputs, inputs, clobbers, operand_types, goto_labels, input_symbols);
+        self.emit_callee_saved_clobber_annotations(clobbers);
         self.state.reg_cache.invalidate_all(); // inline asm may clobber rax
     }
 
     fn emit_inline_asm_with_segs(&mut self, template: &str, outputs: &[(String, Value, Option<String>)], inputs: &[(String, Operand, Option<String>)], clobbers: &[String], operand_types: &[IrType], goto_labels: &[(String, BlockId)], input_symbols: &[Option<String>], seg_overrides: &[AddressSpace]) {
         crate::backend::inline_asm::emit_inline_asm_common_impl(self, template, outputs, inputs, clobbers, operand_types, goto_labels, input_symbols, seg_overrides);
+        self.emit_callee_saved_clobber_annotations(clobbers);
         self.state.reg_cache.invalidate_all();
     }
 
