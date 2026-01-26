@@ -1,0 +1,12 @@
+Task: Unify global_init_bytes.rs and global_init_compound.rs
+
+The lowering module has two parallel paths for struct/union global initialization:
+1. global_init_bytes.rs (1,330 lines) - byte-buffer serialization for simple cases
+2. global_init_compound.rs (1,681 lines) - relocation-aware compound path for pointer cases
+
+Both implement the same algorithm (iterate items, resolve fields, handle designators,
+recurse into nested structs/arrays, handle bitfields) but produce different output formats.
+
+Plan: Introduce an InitOutput trait that abstracts the output target, then merge the two
+implementations into a single generic algorithm. This should eliminate ~800-1000 lines of
+duplicated code.
