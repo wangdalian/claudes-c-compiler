@@ -894,6 +894,10 @@ impl Lowerer {
     /// Fill struct fields from an initializer item list into the byte buffer and ptr_ranges.
     /// Used both for braced init lists `{ field1, field2, ... }` and for unwrapped compound
     /// literals `((struct S) { field1, field2, ... })` in struct array initializers.
+    ///
+    /// Handles brace elision for array fields: when an expression item (not a braced list)
+    /// targets an array field, consecutive items are consumed to fill the array elements
+    /// (C11 6.7.9p17-21).
     fn fill_struct_fields_from_items(
         &mut self,
         sub_items: &[InitializerItem],
@@ -903,7 +907,9 @@ impl Lowerer {
         ptr_ranges: &mut Vec<(usize, GlobalInit)>,
     ) {
         let mut current_field_idx = 0usize;
-        for sub_item in sub_items {
+        let mut item_idx = 0usize;
+        while item_idx < sub_items.len() {
+            let sub_item = &sub_items[item_idx];
             let desig_name = h::first_field_designator(sub_item);
             let field_idx = match layout.resolve_init_field_idx(desig_name, current_field_idx, &self.types) {
                 Some(idx) => idx,
@@ -918,7 +924,27 @@ impl Lowerer {
                     bytes, ptr_ranges,
                 );
                 current_field_idx = field_idx + 1;
+                item_idx += 1;
                 continue;
+            }
+
+            // Brace elision for array fields: when an expression (not a braced list) targets
+            // an array field, consume consecutive items to fill the array elements.
+            if matches!(&sub_item.init, Initializer::Expr(_)) {
+                if let CType::Array(ref elem_ty, Some(arr_size)) = field.ty {
+                    // Don't apply flat consumption for string literals initializing char arrays
+                    let is_char_array_str = matches!(elem_ty.as_ref(), CType::Char | CType::UChar)
+                        && matches!(&sub_item.init, Initializer::Expr(Expr::StringLiteral(..)));
+                    if !is_char_array_str {
+                        let consumed = self.fill_flat_array_field_with_ptrs(
+                            &sub_items[item_idx..], elem_ty, arr_size,
+                            field_offset, bytes, ptr_ranges,
+                        );
+                        item_idx += consumed;
+                        current_field_idx = field_idx + 1;
+                        continue;
+                    }
+                }
             }
 
             self.emit_struct_field_init_compound(
@@ -926,6 +952,7 @@ impl Lowerer {
                 bytes, ptr_ranges,
             );
             current_field_idx = field_idx + 1;
+            item_idx += 1;
         }
     }
 
@@ -1183,7 +1210,9 @@ impl Lowerer {
         ptr_ranges: &mut Vec<(usize, GlobalInit)>,
     ) {
         let mut current_field_idx = 0usize;
-        for inner_item in inner_items {
+        let mut item_idx = 0usize;
+        while item_idx < inner_items.len() {
+            let inner_item = &inner_items[item_idx];
             let desig_name = h::first_field_designator(inner_item);
             let resolution = sub_layout.resolve_init_field(desig_name, current_field_idx, &self.types);
             let field_idx = match &resolution {
@@ -1201,6 +1230,7 @@ impl Lowerer {
                             &[sub_item], &anon_layout, anon_offset, bytes, ptr_ranges);
                     }
                     current_field_idx = *anon_field_idx + 1;
+                    item_idx += 1;
                     continue;
                 }
                 None => break,
@@ -1222,12 +1252,31 @@ impl Lowerer {
                         }
                     }
                     current_field_idx = field_idx + 1;
+                    item_idx += 1;
                     continue;
                 }
             }
 
             let field = &sub_layout.fields[field_idx];
             let field_abs_offset = base_offset + field.offset;
+
+            // Brace elision for array fields: when an expression (not a braced list) targets
+            // an array field, consume consecutive items to fill the array elements.
+            if matches!(&inner_item.init, Initializer::Expr(_)) {
+                if let CType::Array(ref elem_ty, Some(arr_size)) = field.ty {
+                    let is_char_array_str = matches!(elem_ty.as_ref(), CType::Char | CType::UChar)
+                        && matches!(&inner_item.init, Initializer::Expr(Expr::StringLiteral(..)));
+                    if !is_char_array_str {
+                        let consumed = self.fill_flat_array_field_with_ptrs(
+                            &inner_items[item_idx..], elem_ty, arr_size,
+                            field_abs_offset, bytes, ptr_ranges,
+                        );
+                        item_idx += consumed;
+                        current_field_idx = field_idx + 1;
+                        continue;
+                    }
+                }
+            }
 
             if let Initializer::Expr(ref expr) = inner_item.init {
                 self.write_expr_to_bytes_or_ptrs(
@@ -1241,6 +1290,7 @@ impl Lowerer {
                 );
             }
             current_field_idx = field_idx + 1;
+            item_idx += 1;
         }
     }
 
@@ -1281,6 +1331,60 @@ impl Lowerer {
             let ir_ty = IrType::from_ctype(ty);
             self.write_const_to_bytes(bytes, offset, &val, ir_ty);
         }
+    }
+
+    /// Consume consecutive expression items from `items` to flat-initialize an array field.
+    /// This implements brace elision (C11 6.7.9p17-21) for the bytes+ptrs global init path:
+    /// when an expression item targets an array field, subsequent items fill later array elements.
+    /// Returns the number of items consumed.
+    fn fill_flat_array_field_with_ptrs(
+        &mut self,
+        items: &[InitializerItem],
+        elem_ty: &CType,
+        arr_size: usize,
+        field_offset: usize,
+        bytes: &mut [u8],
+        ptr_ranges: &mut Vec<(usize, GlobalInit)>,
+    ) -> usize {
+        let elem_size = self.resolve_ctype_size(elem_ty);
+        let mut consumed = 0usize;
+        while consumed < arr_size && consumed < items.len() {
+            let item = &items[consumed];
+            // Stop if we hit a designator (it targets a different field)
+            if !item.designators.is_empty() && consumed > 0 {
+                break;
+            }
+            // Stop if we hit a braced list (it's a new sub-aggregate)
+            if matches!(&item.init, Initializer::List(_)) && consumed > 0 {
+                break;
+            }
+            let elem_offset = field_offset + consumed * elem_size;
+            if let Initializer::Expr(ref expr) = item.init {
+                // For struct elements within the array, handle recursively
+                if let Some(elem_layout) = self.get_struct_layout_for_ctype(elem_ty) {
+                    // A single expression initializes the first field of a struct element
+                    if !elem_layout.fields.is_empty() {
+                        let f = &elem_layout.fields[0];
+                        self.write_expr_to_bytes_or_ptrs(
+                            expr, &f.ty, elem_offset + f.offset,
+                            f.bit_offset, f.bit_width,
+                            bytes, ptr_ranges,
+                        );
+                    }
+                } else {
+                    self.write_expr_to_bytes_or_ptrs(
+                        expr, elem_ty, elem_offset, None, None, bytes, ptr_ranges,
+                    );
+                }
+            } else if let Initializer::List(ref sub_items) = item.init {
+                // Braced sub-list for first element
+                self.fill_composite_or_array_with_ptrs(
+                    sub_items, elem_ty, elem_offset, bytes, ptr_ranges,
+                );
+            }
+            consumed += 1;
+        }
+        consumed.max(1) // Always consume at least one item
     }
 
     /// Fill an array of scalar/pointer elements into byte buffer + ptr_ranges.
