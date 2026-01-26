@@ -1124,6 +1124,7 @@ impl Lowerer {
             section: func.section.clone(),
             visibility: func.visibility.clone(),
             is_weak: func.is_weak,
+            has_inlined_calls: false,
         };
         self.module.functions.push(ir_func);
         self.pop_scope();

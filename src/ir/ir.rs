@@ -134,6 +134,11 @@ pub struct IrFunction {
     pub visibility: Option<String>,
     /// __attribute__((weak)) - emit as a weak symbol (STB_WEAK).
     pub is_weak: bool,
+    /// Set by the inlining pass when call sites were inlined into this function.
+    /// Used by the backend to disable stack slot coalescing, which is unsafe
+    /// for functions with inlined code (blocks may execute sequentially, not
+    /// mutually exclusively).
+    pub has_inlined_calls: bool,
 }
 
 /// A function parameter.
@@ -146,7 +151,7 @@ pub struct IrParam {
 }
 
 /// A basic block in the CFG.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BasicBlock {
     pub label: BlockId,
     pub instructions: Vec<Instruction>,
@@ -1093,6 +1098,7 @@ impl IrFunction {
             section: None,
             visibility: None,
             is_weak: false,
+            has_inlined_calls: false,
         }
     }
 

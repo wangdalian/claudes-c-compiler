@@ -1,0 +1,26 @@
+Task: fix_goto_in_stmt_expr
+Status: in_progress
+Description: Fix goto inside GNU statement expressions to correctly capture the value of the
+expression after the label target.
+
+Bug: When a goto inside a statement expression jumps to a label also inside the same statement
+expression, the value of the statement expression was taken from dead code (after the goto)
+rather than from the expression following the label target. This caused FIND_NEXT_BIT and similar
+Linux kernel macros to return wrong values.
+
+Root cause: lower_stmt_expr() only captured expression values from Stmt::Expr nodes. When the
+final expression was wrapped in Stmt::Label (e.g., `out: sz;` parsed as Label("out", Expr(sz))),
+the whole thing was dispatched to lower_stmt() which discarded the expression value.
+
+Fix: In lower_stmt_expr(), peel through Stmt::Label wrappers to find the innermost statement.
+Lower each label (creating branch targets) and then capture the final expression value.
+
+Also fixed: .bss-prefixed sections (like .bss..brk) now emit @nobits instead of @progbits.
+
+Files modified:
+  - src/ir/lowering/expr.rs: Handle Stmt::Label wrapping expressions in lower_stmt_expr
+  - src/backend/common.rs: Emit @nobits for .bss-prefixed sections
+
+Test: tests/stmt-expr-goto-label/main.c
+
+Kernel bisect: lib/find_bit.c now passes (was failing due to FIND_NEXT_BIT macro miscompilation).

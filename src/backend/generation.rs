@@ -848,7 +848,7 @@ pub fn calculate_stack_space_common(
     // where coalescing overhead (use-block analysis) isn't worthwhile, while
     // still catching medium-sized switch statements. Bison parsers typically have
     // thousands of blocks and millions of instructions.
-    let coalesce = num_blocks >= 8 && total_instructions >= 64;
+    let coalesce = num_blocks >= 8 && total_instructions >= 64 && !func.has_inlined_calls;
 
     // Build use-block map: for each value, which blocks reference it.
     let use_blocks_map = if coalesce {

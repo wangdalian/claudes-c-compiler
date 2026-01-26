@@ -374,6 +374,7 @@ mod tests {
             section: None,
             visibility: None,
             is_weak: false,
+            has_inlined_calls: false,
         };
 
         let mut module = IrModule {
@@ -437,6 +438,7 @@ mod tests {
             section: None,
             visibility: None,
             is_weak: false,
+            has_inlined_calls: false,
         };
 
         let mut module = IrModule {
@@ -491,6 +493,7 @@ mod tests {
             section: None,
             visibility: None,
             is_weak: false,
+            has_inlined_calls: false,
         };
 
         let mut module = IrModule {
@@ -551,6 +554,7 @@ mod tests {
             section: None,
             visibility: None,
             is_weak: false,
+            has_inlined_calls: false,
         };
 
         let mut module = IrModule {
@@ -611,6 +615,7 @@ mod tests {
             section: None,
             visibility: None,
             is_weak: false,
+            has_inlined_calls: false,
         };
 
         let mut module = IrModule {
@@ -675,6 +680,7 @@ mod tests {
             section: None,
             visibility: None,
             is_weak: false,
+            has_inlined_calls: false,
         };
 
         let mut module = IrModule {
@@ -766,6 +772,7 @@ mod tests {
             section: None,
             visibility: None,
             is_weak: false,
+            has_inlined_calls: false,
         };
 
         let mut module = IrModule {

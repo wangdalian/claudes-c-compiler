@@ -15,6 +15,7 @@ pub mod copy_prop;
 pub mod dce;
 pub mod gvn;
 pub mod if_convert;
+pub mod inline;
 pub mod ipcp;
 pub mod licm;
 pub mod narrow;
@@ -54,6 +55,14 @@ pub fn run_passes(module: &mut IrModule, _opt_level: u32) {
     let disabled = std::env::var("CCC_DISABLE_PASSES").unwrap_or_default();
     if disabled.contains("all") {
         return;
+    }
+
+    // Phase 0: Function inlining (before the optimization loop).
+    // Inline small static/static-inline functions so that subsequent passes
+    // can see through constant-returning helpers and eliminate dead branches.
+    // This is critical for kernel code patterns like IS_ENABLED() guards.
+    if !disabled.contains("inline") {
+        inline::run(module);
     }
 
     // Always run 3 iterations of the full pipeline. The early-exit check below
