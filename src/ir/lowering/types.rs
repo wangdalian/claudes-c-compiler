@@ -174,7 +174,28 @@ impl Lowerer {
             CType::ComplexFloat => TypeSpecifier::ComplexFloat,
             CType::ComplexDouble => TypeSpecifier::ComplexDouble,
             CType::ComplexLongDouble => TypeSpecifier::ComplexLongDouble,
-            CType::Pointer(inner, _) => TypeSpecifier::Pointer(Box::new(Self::ctype_to_type_spec(inner)), AddressSpace::Default),
+            CType::Pointer(inner, _) => {
+                // Special case: Pointer(Function(...)) -> FunctionPointer TypeSpecifier
+                // This preserves function pointer type info through the CType -> TypeSpecifier
+                // roundtrip, which is critical for typeof on function pointer variables.
+                // Without this, typeof(func_ptr_var) would lose the function type and produce
+                // Pointer(Int), causing local variables to be misidentified as extern symbols.
+                if let CType::Function(ft) = inner.as_ref() {
+                    let ret_ts = Self::ctype_to_type_spec(&ft.return_type);
+                    let param_decls: Vec<ParamDecl> = ft.params.iter().map(|(cty, name)| {
+                        ParamDecl {
+                            type_spec: Self::ctype_to_type_spec(cty),
+                            name: name.clone(),
+                            span: crate::common::source::Span::dummy(),
+                            fptr_params: None,
+                            is_const: false,
+                        }
+                    }).collect();
+                    TypeSpecifier::FunctionPointer(Box::new(ret_ts), param_decls, ft.variadic)
+                } else {
+                    TypeSpecifier::Pointer(Box::new(Self::ctype_to_type_spec(inner)), AddressSpace::Default)
+                }
+            }
             CType::Array(elem, size) => TypeSpecifier::Array(
                 Box::new(Self::ctype_to_type_spec(elem)),
                 size.map(|s| Box::new(Expr::IntLiteral(s as i64, crate::common::source::Span::dummy()))),
@@ -202,7 +223,21 @@ impl Lowerer {
             CType::Enum(et) => {
                 TypeSpecifier::Enum(et.name.clone(), None, et.is_packed)
             }
-            CType::Function { .. } => TypeSpecifier::Int, // function type fallback
+            CType::Function(ft) => {
+                // Bare function type decays to function pointer in most contexts.
+                // Convert to FunctionPointer TypeSpecifier to preserve type info.
+                let ret_ts = Self::ctype_to_type_spec(&ft.return_type);
+                let param_decls: Vec<ParamDecl> = ft.params.iter().map(|(cty, name)| {
+                    ParamDecl {
+                        type_spec: Self::ctype_to_type_spec(cty),
+                        name: name.clone(),
+                        span: crate::common::source::Span::dummy(),
+                        fptr_params: None,
+                        is_const: false,
+                    }
+                }).collect();
+                TypeSpecifier::FunctionPointer(Box::new(ret_ts), param_decls, ft.variadic)
+            }
         }
     }
 
