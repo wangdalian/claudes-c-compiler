@@ -157,6 +157,13 @@ impl Lowerer {
         self.target == Target::X86_64
     }
 
+    /// Returns true if the target is RISC-V 64.
+    /// RISC-V stores full IEEE binary128 long doubles in memory, unlike ARM which
+    /// uses f64 approximations in 16-byte slots.
+    pub(super) fn is_riscv(&self) -> bool {
+        self.target == Target::Riscv64
+    }
+
     /// Returns true if the target uses x86-64 style packed _Complex float ABI
     /// (two F32s packed into a single F64/xmm register).
     /// Returns false for ARM/RISC-V which pass _Complex float as two separate F32 registers.

@@ -381,6 +381,12 @@ impl PtrDirective {
         matches!(self, PtrDirective::Quad)
     }
 
+    /// Returns true if this is the RISC-V target directive.
+    /// RISC-V stores full IEEE binary128 long doubles in memory (allocas and globals).
+    pub fn is_riscv(self) -> bool {
+        matches!(self, PtrDirective::Dword)
+    }
+
     /// Convert a byte alignment value to the correct `.align` argument for this target.
     /// On x86-64, `.align N` means N bytes. On ARM and RISC-V, `.align N` means 2^N bytes,
     /// so we must emit log2(N) instead.
@@ -836,11 +842,20 @@ pub fn emit_const_data(out: &mut AsmOutput, c: &IrConst, ty: IrType, ptr_dir: Pt
                 ]);
                 out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), lo as i64));
                 out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), hi as i64));
+            } else if ptr_dir.is_riscv() {
+                // RISC-V: convert x87 80-bit bytes to IEEE 754 binary128 format.
+                // The RISC-V backend stores full 16-byte f128 in allocas/memory,
+                // so global data must also be proper binary128.
+                let f128_bytes = crate::common::long_double::x87_bytes_to_f128_bytes(bytes);
+                let lo = u64::from_le_bytes(f128_bytes[0..8].try_into().unwrap());
+                let hi = u64::from_le_bytes(f128_bytes[8..16].try_into().unwrap());
+                out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), lo as i64));
+                out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), hi as i64));
             } else {
-                // ARM64/RISC-V: store f64 approximation in the low 8 bytes of the
-                // 16-byte slot. Codegen carries f128 values as f64 internally, so
-                // static data must match for consistent load/store behavior.
-                // TODO: store full f128 precision when codegen supports it natively.
+                // ARM64: store f64 approximation in the low 8 bytes of the 16-byte slot.
+                // The ARM64 backend carries f128 values as f64 internally, converting
+                // to/from full f128 only at ABI boundaries via __extenddftf2/__trunctfdf2.
+                // Static data must match the f64 format used by the codegen's ldr/str.
                 let f64_bits = f64_val.to_bits();
                 out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), f64_bits as i64));
                 out.emit_fmt(format_args!("    {} 0", ptr_dir.as_str()));

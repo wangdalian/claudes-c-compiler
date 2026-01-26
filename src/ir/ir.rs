@@ -796,7 +796,9 @@ impl IrConst {
 
     /// Convert to bytes in little-endian format, pushing onto a byte buffer.
     /// Writes `size` bytes for integer types, or full float representation for floats.
-    /// For long double, emits f64 bit pattern + zero padding (ARM64/RISC-V format).
+    /// For long double on ARM64, emits f64 approximation + zero padding (matching the
+    /// ARM64 codegen's f64-based internal representation). For RISC-V, use
+    /// `push_le_bytes_riscv` which emits full IEEE binary128.
     /// Use `push_le_bytes_x86` for x86 targets that need x87 80-bit extended precision.
     pub fn push_le_bytes(&self, out: &mut Vec<u8>, size: usize) {
         match self {
@@ -807,10 +809,9 @@ impl IrConst {
                 out.extend_from_slice(&v.to_bits().to_le_bytes());
             }
             IrConst::LongDouble(f64_val, _) => {
-                // ARM64/RISC-V: store f64 approximation in the low 8 bytes of the
-                // 16-byte slot. Codegen carries f128 values as f64 internally, so
-                // static data must match for consistent load/store behavior.
-                // TODO: store full f128 precision when codegen supports it natively.
+                // ARM64: store f64 approximation in the low 8 bytes of the 16-byte slot.
+                // The ARM64 codegen carries f128 values as f64 internally, converting
+                // to/from full f128 only at ABI boundaries via __extenddftf2/__trunctfdf2.
                 out.extend_from_slice(&f64_val.to_bits().to_le_bytes());
                 out.extend_from_slice(&[0u8; 8]);
             }
@@ -840,6 +841,20 @@ impl IrConst {
                 // x86-64: emit stored x87 80-bit bytes (10 bytes) + 6 zero padding bytes.
                 out.extend_from_slice(&bytes[..10]);
                 out.extend_from_slice(&[0u8; 6]); // pad to 16 bytes
+            }
+            _ => self.push_le_bytes(out, size),
+        }
+    }
+
+    /// Convert to bytes for RISC-V targets, using IEEE 754 binary128 format for
+    /// long doubles. The RISC-V backend stores full 16-byte f128 in allocas/memory,
+    /// so global data must also be proper binary128.
+    pub fn push_le_bytes_riscv(&self, out: &mut Vec<u8>, size: usize) {
+        match self {
+            IrConst::LongDouble(_, bytes) => {
+                // RISC-V: convert x87 80-bit bytes to IEEE 754 binary128 format.
+                let f128_bytes = crate::common::long_double::x87_bytes_to_f128_bytes(bytes);
+                out.extend_from_slice(&f128_bytes);
             }
             _ => self.push_le_bytes(out, size),
         }
