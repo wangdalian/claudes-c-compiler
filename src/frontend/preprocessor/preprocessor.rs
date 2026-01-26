@@ -603,11 +603,22 @@ impl Preprocessor {
         }
     }
 
-    /// Set the filename for __FILE__ macro and set as the base include directory.
+    /// Set the filename for __FILE__ and __BASE_FILE__ macros and set as the base include directory.
     pub fn set_filename(&mut self, filename: &str) {
         self.filename = filename.to_string();
         self.macros.define(MacroDef {
             name: "__FILE__".to_string(),
+            is_function_like: false,
+            params: Vec::new(),
+            is_variadic: false,
+            has_named_variadic: false,
+            body: format!("\"{}\"", filename),
+            is_predefined: true,
+        });
+        // __BASE_FILE__ always expands to the main input file name,
+        // unlike __FILE__ which changes during #include processing.
+        self.macros.define(MacroDef {
+            name: "__BASE_FILE__".to_string(),
             is_function_like: false,
             params: Vec::new(),
             is_variadic: false,

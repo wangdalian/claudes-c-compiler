@@ -344,28 +344,24 @@ impl Lowerer {
                 }
             }
 
-            // Spill non-sret struct return values to a temporary alloca
-            if let Expr::FunctionCall(func_expr, _, _) = a {
+            // Spill packed struct data to a temporary alloca so that the call
+            // argument is a pointer (address) rather than raw data.  This is
+            // needed for any expression that produces packed struct data:
+            // direct function calls, statement expressions wrapping calls,
+            // ternaries, comma expressions, etc.
+            {
                 let is_struct_ret = matches!(
                     self.get_expr_ctype(a),
                     Some(CType::Struct(_)) | Some(CType::Union(_))
                 );
-                if is_struct_ret {
-                    let returns_address = if let Expr::Identifier(name, _) = func_expr.as_ref() {
-                        self.func_meta.sigs.get(name.as_str()).map_or(false, |s| s.sret_size.is_some() || s.two_reg_ret_size.is_some())
-                    } else {
-                        let struct_size = self.struct_value_size(a).unwrap_or(8);
-                        struct_size > 8
-                    };
-                    if !returns_address {
-                        let struct_size = self.struct_value_size(a).unwrap_or(8);
-                        let alloc_size = if struct_size > 0 { struct_size } else { 8 };
-                        let alloca = self.fresh_value();
-                        let store_ty = Self::packed_store_type(alloc_size);
-                        self.emit(Instruction::Alloca { dest: alloca, size: alloc_size, ty: store_ty, align: 0, volatile: false });
-                        self.emit(Instruction::Store { val, ptr: alloca, ty: store_ty , seg_override: AddressSpace::Default });
-                        val = Operand::Value(alloca);
-                    }
+                if is_struct_ret && self.expr_produces_packed_struct_data(a) {
+                    let struct_size = self.struct_value_size(a).unwrap_or(8);
+                    let alloc_size = if struct_size > 0 { struct_size } else { 8 };
+                    let alloca = self.fresh_value();
+                    let store_ty = Self::packed_store_type(alloc_size);
+                    self.emit(Instruction::Alloca { dest: alloca, size: alloc_size, ty: store_ty, align: 0, volatile: false });
+                    self.emit(Instruction::Store { val, ptr: alloca, ty: store_ty , seg_override: AddressSpace::Default });
+                    val = Operand::Value(alloca);
                 }
             }
 

@@ -1681,8 +1681,12 @@ impl Lowerer {
             return None; // All dimensions are compile-time constants
         }
 
-        // Compute element size (the base type size)
-        let base_elem_size = self.sizeof_type(type_spec);
+        // Compute element size, accounting for pointer/function-pointer derivations.
+        // For `int *ap[n]`, derived = [Pointer, Array(n)] and type_spec = int.
+        // The element type is actually `int*` (8 bytes), not `int` (4 bytes).
+        // We detect this by checking if any Pointer/FunctionPointer derivation
+        // appears before (or among) the array dimensions.
+        let base_elem_size = self.vla_base_element_size(type_spec, derived);
 
         // Build runtime product: dim0 * dim1 * ... * base_elem_size
         let mut result: Option<Value> = None;
@@ -1772,7 +1776,8 @@ impl Lowerer {
             return vec![];
         }
 
-        let base_elem_size = self.sizeof_type(type_spec);
+        // Account for pointer derivations in element size (same as compute_vla_runtime_size)
+        let base_elem_size = self.vla_base_element_size(type_spec, derived);
         let num_dims = array_dims.len();
         let num_strides = num_dims + 1; // +1 for base element size level
         let mut vla_strides: Vec<Option<Value>> = vec![None; num_strides];
@@ -1844,6 +1849,32 @@ impl Lowerer {
         }
 
         vla_strides
+    }
+
+    /// Compute the base element size for a VLA declaration, accounting for
+    /// pointer/function-pointer derivations in the declarator.
+    ///
+    /// For `int *ap[n]`, derived = [Pointer, Array(n)] and type_spec = int.
+    /// The element type is `int*` (pointer, 8 bytes), not `int` (4 bytes).
+    /// We detect this by checking whether any Pointer or FunctionPointer
+    /// derivation appears in the derived list alongside Array entries.
+    /// If the outermost (last) derivation is an Array and there's a Pointer
+    /// before it, the array elements are pointers (8 bytes on 64-bit).
+    fn vla_base_element_size(&self, type_spec: &TypeSpecifier, derived: &[DerivedDeclarator]) -> usize {
+        let has_pointer = derived.iter().any(|d| matches!(d, DerivedDeclarator::Pointer));
+        let has_func_ptr = derived.iter().any(|d| matches!(d,
+            DerivedDeclarator::FunctionPointer(_, _) | DerivedDeclarator::Function(_, _)));
+        let has_array = derived.iter().any(|d| matches!(d, DerivedDeclarator::Array(_)));
+        let last_is_array = matches!(derived.last(), Some(DerivedDeclarator::Array(_)));
+
+        if has_array && (has_pointer || has_func_ptr) && last_is_array {
+            // Array of pointers (e.g., int *ap[n], void (*fns[n])(int))
+            // Each element is a pointer: 8 bytes on 64-bit targets.
+            8
+        } else {
+            // Plain array of the base type (e.g., int a[n], double b[n][m])
+            self.sizeof_type(type_spec)
+        }
     }
 
     /// Compute VLA size from a typedef'd array type (e.g., typedef char buf[n]).

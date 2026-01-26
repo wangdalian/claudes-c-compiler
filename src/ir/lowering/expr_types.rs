@@ -136,6 +136,17 @@ impl Lowerer {
                     None
                 }
             }
+            Expr::StmtExpr(compound, _) => {
+                // Statement expression: recurse into the last expression statement
+                if let Some(last) = compound.items.last() {
+                    if let crate::frontend::parser::ast::BlockItem::Statement(
+                        crate::frontend::parser::ast::Stmt::Expr(Some(inner_expr))
+                    ) = last {
+                        return self.struct_value_size(inner_expr);
+                    }
+                }
+                None
+            }
             _ => None,
         }
     }

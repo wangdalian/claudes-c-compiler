@@ -488,7 +488,9 @@ impl Parser {
             let d_alias = self.parsing_alias_target.take();
             let d_vis = self.parsing_visibility.take()
                 .or_else(|| self.pragma_default_visibility.clone());
-            let d_section = self.parsing_section.take();
+            // Per-declarator section attribute overrides, otherwise inherit from
+            // the declaration-level attribute (e.g. __attribute__((section(".x"))) int a, b;)
+            let d_section = self.parsing_section.take().or_else(|| section.clone());
             let d_cleanup_fn = self.parsing_cleanup_fn.take();
             self.parsing_weak = false;
             let dinit = if self.consume_if(&TokenKind::Assign) {

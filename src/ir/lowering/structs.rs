@@ -441,6 +441,18 @@ impl Lowerer {
             Expr::Comma(_, last, _) => {
                 self.expr_produces_packed_struct_data(last)
             }
+            Expr::StmtExpr(compound, _) => {
+                // Statement expression: check if the last expression statement
+                // produces packed struct data (e.g., ({ pfn_pte(...); }))
+                if let Some(last) = compound.items.last() {
+                    if let crate::frontend::parser::ast::BlockItem::Statement(
+                        crate::frontend::parser::ast::Stmt::Expr(Some(inner_expr))
+                    ) = last {
+                        return self.expr_produces_packed_struct_data(inner_expr);
+                    }
+                }
+                false
+            }
             _ => false,
         }
     }
