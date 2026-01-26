@@ -1,5 +1,0 @@
-Task: fix_static_local_ptr_array_null_init
-Status: completed
-Description: Fix NULL pointer entries in static local pointer arrays being emitted
-as 1-byte .byte 0 instead of 8-byte .quad 0, causing array layout corruption
-and segfaults (postgres psql crash in pg_strcasecmp via map_typename_pattern).
