@@ -1,0 +1,18 @@
+Fix: _Generic selection CType resolution for typeof()
+
+Problem: When typeof() wraps a _Generic expression, get_expr_ctype_lowerer() has no
+handler for Expr::GenericSelection. This causes it to return None, the sema fallback
+also fails (pointer-identity lookup misses for typeof-embedded exprs), and
+resolve_typeof() falls back to TypeSpecifier::Int. This means pointer types get
+resolved as int (4 bytes instead of 8), truncating 64-bit pointers.
+
+Impact: Linux kernel READ_ONCE() macro uses typeof(_Generic(x, ..., default: (x)))
+to determine the volatile load type. When x is a pointer (e.g. struct list_head*),
+the compiler generates a 32-bit movslq instead of a 64-bit mov, truncating the
+pointer and causing kernel page faults.
+
+Fix: Add Expr::GenericSelection arm to get_expr_ctype_lowerer() in expr_types.rs,
+mirroring the existing resolve_generic_selection_type() logic but returning
+Option<CType> via get_expr_ctype() on the selected expression.
+
+Status: IN PROGRESS
