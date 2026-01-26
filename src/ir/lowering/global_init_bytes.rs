@@ -24,6 +24,10 @@ pub(super) struct DesignatorDrillResult {
     pub target_ty: CType,
     /// The byte offset from the outer field's start to the target
     pub byte_offset: usize,
+    /// For bitfields: bit offset within the storage unit at `byte_offset`.
+    pub bit_offset: Option<u32>,
+    /// For bitfields: width in bits.
+    pub bit_width: Option<u32>,
 }
 
 impl Lowerer {
@@ -194,8 +198,15 @@ impl Lowerer {
     ) -> Option<DesignatorDrillResult> {
         let mut current_ty = start_ty.clone();
         let mut byte_offset = 0usize;
+        // Track bitfield info from the last resolved field
+        let mut bit_offset: Option<u32> = None;
+        let mut bit_width: Option<u32> = None;
 
         for desig in designators {
+            // Reset bitfield info on each step (only the final field matters)
+            bit_offset = None;
+            bit_width = None;
+
             match desig {
                 Designator::Field(name) => {
                     let sub_layout = self.get_struct_layout_for_ctype(&current_ty)?;
@@ -204,6 +215,8 @@ impl Lowerer {
                         crate::common::types::InitFieldResolution::Direct(fi) => {
                             byte_offset += sub_layout.fields[fi].offset;
                             current_ty = sub_layout.fields[fi].ty.clone();
+                            bit_offset = sub_layout.fields[fi].bit_offset;
+                            bit_width = sub_layout.fields[fi].bit_width;
                         }
                         crate::common::types::InitFieldResolution::AnonymousMember { anon_field_idx, inner_name } => {
                             // Add anonymous member's offset, then resolve inner field
@@ -213,6 +226,8 @@ impl Lowerer {
                             let inner_fi = anon_layout.resolve_init_field_idx(Some(inner_name.as_str()), 0, &self.types)?;
                             byte_offset += anon_layout.fields[inner_fi].offset;
                             current_ty = anon_layout.fields[inner_fi].ty.clone();
+                            bit_offset = anon_layout.fields[inner_fi].bit_offset;
+                            bit_width = anon_layout.fields[inner_fi].bit_width;
                         }
                     }
                 }
@@ -234,7 +249,7 @@ impl Lowerer {
             }
         }
 
-        Some(DesignatorDrillResult { target_ty: current_ty, byte_offset })
+        Some(DesignatorDrillResult { target_ty: current_ty, byte_offset, bit_offset, bit_width })
     }
 
     // --- fill_struct_global_bytes helpers ---
@@ -998,7 +1013,9 @@ impl Lowerer {
                                     if let Some(field) = layout.fields.iter().find(|f| &f.name == fname) {
                                         let field_ir_ty = IrType::from_ctype(&field.ty);
                                         let write_offset = elem_offset + sub_byte_offset + field.offset;
-                                        if write_offset + field_ir_ty.size() <= bytes.len() {
+                                        if let (Some(bo), Some(bw)) = (field.bit_offset, field.bit_width) {
+                                            self.write_bitfield_to_bytes(bytes, write_offset, &val, field_ir_ty, bo, bw);
+                                        } else if write_offset + field_ir_ty.size() <= bytes.len() {
                                             self.write_const_to_bytes(bytes, write_offset, &val, field_ir_ty);
                                         }
                                     }
@@ -1070,7 +1087,11 @@ impl Lowerer {
                         if let Some(val) = self.eval_const_expr(expr) {
                             if let Some(field) = layout.fields.iter().find(|f| &f.name == fname) {
                                 let field_ir_ty = IrType::from_ctype(&field.ty);
-                                self.write_const_to_bytes(bytes, elem_offset + field.offset, &val, field_ir_ty);
+                                if let (Some(bo), Some(bw)) = (field.bit_offset, field.bit_width) {
+                                    self.write_bitfield_to_bytes(bytes, elem_offset + field.offset, &val, field_ir_ty, bo, bw);
+                                } else {
+                                    self.write_const_to_bytes(bytes, elem_offset + field.offset, &val, field_ir_ty);
+                                }
                             }
                         }
                         item_idx += 1;

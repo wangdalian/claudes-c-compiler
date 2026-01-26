@@ -516,6 +516,23 @@ impl Lowerer {
         let sub_size = self.resolve_ctype_size(&current_ty);
         let sub_is_pointer = matches!(current_ty, CType::Pointer(_, _) | CType::Function(_));
 
+        // Handle bitfield targets: pack the value into the storage unit bytes
+        if let (Some(bo), Some(bw)) = (drill.bit_offset, drill.bit_width) {
+            let ir_ty = IrType::from_ctype(&current_ty);
+            let val = self.eval_init_scalar(&item.init);
+            // Emit zero bytes before the storage unit
+            push_zero_bytes(elements, sub_offset);
+            // Create a small buffer for the storage unit, write bitfield, emit as bytes
+            let storage_size = ir_ty.size();
+            let mut buf = vec![0u8; storage_size];
+            self.write_bitfield_to_bytes(&mut buf, 0, &val, ir_ty, bo, bw);
+            push_bytes_as_elements(elements, &buf);
+            // Zero-fill remaining
+            let remaining = outer_size.saturating_sub(sub_offset + storage_size);
+            push_zero_bytes(elements, remaining);
+            return;
+        }
+
         // Emit zero bytes before the sub-field
         push_zero_bytes(elements, sub_offset);
 
@@ -1240,7 +1257,9 @@ impl Lowerer {
         match &item.init {
             Initializer::Expr(expr) => {
                 self.write_expr_to_bytes_or_ptrs(
-                    expr, &current_ty, sub_offset, None, None, bytes, ptr_ranges,
+                    expr, &current_ty, sub_offset,
+                    drill.bit_offset, drill.bit_width,
+                    bytes, ptr_ranges,
                 );
             }
             Initializer::List(inner_items) => {
@@ -1301,7 +1320,8 @@ impl Lowerer {
                         if let Initializer::Expr(ref expr) = inner_item.init {
                             self.write_expr_to_bytes_or_ptrs(
                                 expr, &drill.target_ty, sub_offset,
-                                None, None, bytes, ptr_ranges,
+                                drill.bit_offset, drill.bit_width,
+                                bytes, ptr_ranges,
                             );
                         }
                     }
