@@ -2167,13 +2167,19 @@ impl ArchCodegen for ArmCodegen {
         }
 
         // Phase 3c: Load struct-by-value register args.
+        // The struct arg operand is a pointer to the struct data. We need to get
+        // that pointer into x17, then load struct data from [x17] into arg regs.
         for (i, arg) in args.iter().enumerate() {
             if let CallArgClass::StructByValReg { base_reg_idx, size } = arg_classes[i] {
                 let regs_needed = if size <= 8 { 1 } else { 2 };
                 if total_sp_adjust > 0 {
                     match arg {
                         Operand::Value(v) => {
-                            if let Some(slot) = self.state.get_slot(v.0) {
+                            if let Some(&reg) = self.reg_assignments.get(&v.0) {
+                                // Value is register-allocated (e.g., GEP result in callee-saved reg)
+                                let reg_name = callee_saved_name(reg);
+                                self.state.emit_fmt(format_args!("    mov x17, {}", reg_name));
+                            } else if let Some(slot) = self.state.get_slot(v.0) {
                                 let adjusted = slot.0 + total_sp_adjust;
                                 if self.state.is_alloca(v.0) {
                                     self.emit_add_sp_offset("x17", adjusted);
@@ -2192,7 +2198,11 @@ impl ArchCodegen for ArmCodegen {
                 } else {
                     match arg {
                         Operand::Value(v) => {
-                            if let Some(slot) = self.state.get_slot(v.0) {
+                            if let Some(&reg) = self.reg_assignments.get(&v.0) {
+                                // Value is register-allocated (e.g., GEP result in callee-saved reg)
+                                let reg_name = callee_saved_name(reg);
+                                self.state.emit_fmt(format_args!("    mov x17, {}", reg_name));
+                            } else if let Some(slot) = self.state.get_slot(v.0) {
                                 if self.state.is_alloca(v.0) {
                                     self.emit_add_sp_offset("x17", slot.0);
                                 } else {

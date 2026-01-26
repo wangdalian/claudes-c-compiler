@@ -1,0 +1,15 @@
+Fix: Compound global initializer emits wrong element width
+
+Problem:
+When a global array (e.g., uint64_t[]) contains address expressions (like &arr[N] + 1),
+the compiler uses GlobalInit::Compound for the initializer. However, the backend's Compound
+emission code determines each element's width from the IrConst variant (e.g., I32 -> 4 bytes)
+instead of the global's declared element type (e.g., I64 -> 8 bytes).
+
+This causes uint64_t array elements to be emitted as .long (4 bytes) instead of .quad (8 bytes),
+producing a truncated data section where later data overlaps. This breaks mquickjs because its
+js_stdlib_table[] is a uint64_t array with self-referencing address expressions.
+
+Fix:
+In backend/common.rs emit_global_def(), apply the same upsize safeguard used by the Array path
+to the Compound/Scalar path: when g.ty.size() > const_ty.size(), use g.ty instead.
