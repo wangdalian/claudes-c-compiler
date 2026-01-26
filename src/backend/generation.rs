@@ -698,6 +698,13 @@ pub fn is_i128_type(ty: IrType) -> bool {
 /// This is used to determine:
 /// - For entry-block allocas: which blocks reference the alloca pointer
 /// - For non-alloca values: whether the value is used outside its defining block
+///
+/// Phi node operands are attributed to their SOURCE block (not the Phi's block).
+/// This is critical for coalescing in dispatch-style code (switch/computed goto):
+/// a value defined in block A that flows through a Phi to block B is semantically
+/// "used at the end of block A" (where the branch resolves the Phi). Attributing
+/// Phi uses to the source block allows such values to be considered block-local
+/// to A, enabling stack slot coalescing across case handlers.
 fn compute_value_use_blocks(func: &IrFunction) -> FxHashMap<u32, Vec<usize>> {
     let mut uses: FxHashMap<u32, Vec<usize>> = FxHashMap::default();
 
@@ -708,13 +715,35 @@ fn compute_value_use_blocks(func: &IrFunction) -> FxHashMap<u32, Vec<usize>> {
         }
     };
 
+    // Build BlockId -> block_index map for Phi source block resolution.
+    let block_id_to_idx: FxHashMap<u32, usize> = func.blocks.iter().enumerate()
+        .map(|(idx, b)| (b.label.0, idx))
+        .collect();
+
     for (block_idx, block) in func.blocks.iter().enumerate() {
         for inst in &block.instructions {
-            for_each_operand_in_instruction(inst, |op| {
-                if let Operand::Value(v) = op {
-                    record_use(v.0, block_idx, &mut uses);
+            // Handle Phi nodes specially: attribute each operand's use to its
+            // source block rather than the block containing the Phi. This reflects
+            // SSA semantics where Phi inputs are "evaluated" at the end of the
+            // predecessor block, not at the start of the Phi's block.
+            if let Instruction::Phi { incoming, .. } = inst {
+                for (op, src_block_id) in incoming {
+                    if let Operand::Value(v) = op {
+                        if let Some(&src_idx) = block_id_to_idx.get(&src_block_id.0) {
+                            record_use(v.0, src_idx, &mut uses);
+                        } else {
+                            // Fallback: if source block not found, attribute to Phi's block
+                            record_use(v.0, block_idx, &mut uses);
+                        }
+                    }
                 }
-            });
+            } else {
+                for_each_operand_in_instruction(inst, |op| {
+                    if let Operand::Value(v) = op {
+                        record_use(v.0, block_idx, &mut uses);
+                    }
+                });
+            }
             for_each_value_use_in_instruction(inst, |v| {
                 record_use(v.0, block_idx, &mut uses);
             });

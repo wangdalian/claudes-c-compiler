@@ -234,23 +234,51 @@ pub fn allocate_registers(
     let mut assignments: FxHashMap<u32, PhysReg> = FxHashMap::default();
     let mut used_regs_set: FxHashSet<u8> = FxHashSet::default();
 
+    // Register reuse preference: prefer already-saved registers over new ones.
+    //
+    // Each distinct callee-saved register used costs 8 bytes of stack space
+    // in the prologue (save) and epilogue (restore). Reusing a register that's
+    // already being saved has zero additional frame cost.
+    //
+    // By preferring already-used registers, we pack values into fewer callee-saved
+    // registers when possible. This reduces the number of save/restore entries in
+    // the prologue/epilogue, shrinking the stack frame. This is especially impactful
+    // for functions with many short-lived intermediate values (e.g., from I32->I64
+    // promotion) where sequential values can reuse the same register.
+
     for interval in &candidates {
         // Find a register that is free at this interval's start.
-        let mut best_reg: Option<usize> = None;
-        let mut best_free_time: u32 = u32::MAX;
+        // Prefer reusing a register that's already being saved/restored (zero
+        // additional frame cost) over introducing a new callee-saved register.
+        let mut best_already_used: Option<usize> = None;
+        let mut best_already_used_free_time: u32 = u32::MAX;
+        let mut best_new: Option<usize> = None;
+        let mut best_new_free_time: u32 = u32::MAX;
 
         for (i, &free_until) in reg_free_until.iter().enumerate() {
             if free_until <= interval.start {
-                // This register is free — pick the one that's been free longest
-                // (earliest free_until) to leave recently-freed regs available.
-                if best_reg.is_none() || free_until < best_free_time {
-                    best_reg = Some(i);
-                    best_free_time = free_until;
+                let reg_id = config.available_regs[i].0;
+                if used_regs_set.contains(&reg_id) {
+                    // Already saved/restored — reusing costs nothing extra.
+                    if best_already_used.is_none() || free_until < best_already_used_free_time {
+                        best_already_used = Some(i);
+                        best_already_used_free_time = free_until;
+                    }
+                } else {
+                    // Would introduce a new callee-saved register.
+                    if best_new.is_none() || free_until < best_new_free_time {
+                        best_new = Some(i);
+                        best_new_free_time = free_until;
+                    }
                 }
             }
         }
 
-        if let Some(reg_idx) = best_reg {
+        // Choose: always prefer an already-saved register (free to reuse).
+        // Fall back to a new callee-saved register if none is available.
+        let chosen = best_already_used.or(best_new);
+
+        if let Some(reg_idx) = chosen {
             // Assign this register.
             reg_free_until[reg_idx] = interval.end + 1;
             assignments.insert(interval.value_id, config.available_regs[reg_idx]);
