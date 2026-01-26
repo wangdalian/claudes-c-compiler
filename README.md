@@ -136,6 +136,9 @@ target/release/ccc-riscv -o output input.c # RISC-V 64
 # Read from stdin: echo 'int main(){}' | ccc -E -x c -
 ```
 
+### Recent Bug Fixes
+- **Pointer-to-array struct member access**: Fixed miscompilation where accessing a struct member (e.g., `->bits`) through a dereferenced pointer-to-array-of-struct produced a 32-bit load instead of returning the field address. This caused kernel boot failures in `arch/x86/kernel/process.c` where the `cpumask_var_t` typedef (`struct cpumask[1]`) is used with the per-CPU `ACCESS_PRIVATE` macro pattern involving `typeof`/inline-asm pointer casts. The fix adds array-of-struct handling in `get_pointed_struct_layout` so the struct layout is correctly resolved for member access after array decay.
+
 ## Architecture
 
 ```

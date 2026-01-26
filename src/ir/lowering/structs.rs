@@ -599,10 +599,18 @@ impl Lowerer {
             }
             Expr::Deref(inner, _) => {
                 // *pp where pp is a pointer to pointer to struct
+                // or *pa where pa is a pointer to array of struct (array decays to struct pointer)
                 if let Some(ctype) = self.get_expr_ctype(inner) {
                     if let CType::Pointer(inner_ct, _) = &ctype {
                         if let CType::Pointer(pointee, _) = inner_ct.as_ref() {
                             return self.struct_layout_from_ctype(pointee);
+                        }
+                        // Pointer to array of struct: *pa dereferences to the array,
+                        // which decays to a pointer to the element struct type.
+                        // This handles patterns like cpumask_var_t (typedef struct cpumask[1])
+                        // where &var is pointer-to-array and *&var decays to struct pointer.
+                        if let CType::Array(elem, _) = inner_ct.as_ref() {
+                            return self.struct_layout_from_ctype(elem);
                         }
                     }
                 }
@@ -648,6 +656,11 @@ impl Lowerer {
                 if let Some(ctype) = self.get_expr_ctype(expr) {
                     if let CType::Pointer(pointee, _) = &ctype {
                         return self.struct_layout_from_ctype(pointee);
+                    }
+                    // Array of struct decays to struct pointer (e.g., after deref of
+                    // pointer-to-array-of-struct, as in typedef struct S arr_t[1] patterns).
+                    if let CType::Array(elem, _) = &ctype {
+                        return self.struct_layout_from_ctype(elem);
                     }
                 }
                 None

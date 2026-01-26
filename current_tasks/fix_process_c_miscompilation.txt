@@ -11,4 +11,4 @@ Plan:
 4. Fix the compiler bug
 5. Verify the fix with the bisect tool
 
-Status: in_progress
+Status: completed

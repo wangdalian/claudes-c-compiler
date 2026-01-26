@@ -215,6 +215,14 @@ impl X86Codegen {
                 // Register: emit as indirect (%reg)
                 result.push_str(&format!("(%{})", op_regs[idx]));
             }
+        } else if op_is_memory[idx] {
+            // Memory operand — emit the pre-computed mem_addr string.
+            // This must be checked BEFORE symbol/immediate checks because
+            // memory operands with "+m" constraints may also have imm_symbol
+            // set (from extract_mem_operand_symbol), but should be emitted as
+            // a memory reference (e.g., "symbol(%rip)"), not as an immediate
+            // (e.g., "$symbol").
+            result.push_str(&op_mem_addrs[idx]);
         } else if let Some(sym) = has_symbol {
             // Symbol immediate (e.g., "i" constraint with &global_var+offset)
             // Emit as $symbol for AT&T syntax
@@ -222,8 +230,6 @@ impl X86Codegen {
         } else if let Some(imm) = has_imm {
             // Normal immediate — emit as $value
             result.push_str(&format!("${}", imm));
-        } else if op_is_memory[idx] {
-            result.push_str(&op_mem_addrs[idx]);
         } else {
             let effective_mod = modifier.or_else(|| Self::default_modifier_for_type(op_types.get(idx).copied()));
             result.push('%');

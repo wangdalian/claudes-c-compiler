@@ -1,0 +1,17 @@
+Status: in_progress
+
+Fix LICM pass hoisting division/remainder operations out of guarded conditionals.
+
+The LICM (Loop Invariant Code Motion) pass in src/passes/licm.rs treats all BinOp
+instructions as safe to hoist, including SDiv/UDiv/SRem/URem which can trap on
+divide-by-zero (SIGFPE). When a division is inside a loop body but guarded by a
+condition (e.g. `if (x != 0) { result = y / x; }`), and its operands are loop-invariant,
+LICM hoists it to the preheader where it executes unconditionally, causing a
+divide-by-zero crash.
+
+Discovered via kernel bisect: drivers/pci/probe.c fails to boot because
+`available_buses / hotplug_bridges` in pci_scan_child_bus_extend is hoisted
+above the `dev->is_hotplug_bridge` guard.
+
+Fix: Add `!op.can_trap()` guard to `is_hoistable()` in licm.rs, matching
+the existing guard in if_convert.rs.
