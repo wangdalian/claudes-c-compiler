@@ -107,7 +107,7 @@ See `git log` for full history. Key milestones:
 | musl | PASS | All 6 tests pass (hello, malloc, string_ops, math, io, environ) |
 | tcc | PASS | All 78 tests pass (version, hello world, tests2 suite) |
 | mbedtls | PASS | All 7 tests pass (md5, sha256, sha512, aes, rsa, ecp, selftest including ARIA) |
-| jq | PASS | All 12 tests pass on x86/RISC-V; ARM 11/12 (regex crash in oniguruma regexec.c) |
+| jq | PASS | All 12 tests pass on all architectures (x86, ARM, RISC-V) |
 | kernel | PASS (x86, ARM) | Linux 6.9 kernel builds and boots on x86 and ARM; RISC-V build fails (vDSO) |
 | mquickjs-clang | PASS | All architectures pass |
 | liburing | FAIL | Builds but all 5 runtime tests fail (io_uring init returns -1) |

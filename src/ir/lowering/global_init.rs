@@ -669,6 +669,10 @@ impl Lowerer {
     fn init_has_addr_exprs(&self, init: &Initializer) -> bool {
         match init {
             Initializer::Expr(expr) => {
+                // GCC &&label extension: label addresses need relocations
+                if Self::expr_contains_label_addr(expr) {
+                    return true;
+                }
                 // String literal or expression containing one (e.g., "str" + N)
                 if h::expr_contains_string_literal(expr) {
                     return true;
@@ -781,6 +785,10 @@ impl Lowerer {
 
             match &item.init {
                 Initializer::Expr(expr) => {
+                    // GCC &&label extension: label addresses need relocations
+                    if Self::expr_contains_label_addr(expr) {
+                        return true;
+                    }
                     if h::expr_contains_string_literal(expr) {
                         if h::type_has_pointer_elements(field_ty, &self.types) {
                             return true;

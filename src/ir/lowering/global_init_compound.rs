@@ -852,7 +852,11 @@ impl Lowerer {
             }
         }
         // For pointer/address contexts, try address resolution first
-        if let Expr::StringLiteral(s, _) = expr {
+        if let Expr::LabelAddr(label_name, _) = expr {
+            // GCC &&label extension: emit label address as GlobalAddr
+            let scoped_label = self.get_or_create_user_label(label_name);
+            elements.push(GlobalInit::GlobalAddr(scoped_label.as_label()));
+        } else if let Expr::StringLiteral(s, _) = expr {
             let label = self.intern_string_literal(s);
             elements.push(GlobalInit::GlobalAddr(label));
         } else if let Some(addr_init) = self.eval_string_literal_addr_expr(expr) {
@@ -874,6 +878,11 @@ impl Lowerer {
     /// Resolve a pointer field's initializer expression to a GlobalInit.
     /// Handles string literals, global addresses, function pointers, etc.
     pub(super) fn resolve_ptr_field_init(&mut self, expr: &Expr) -> Option<GlobalInit> {
+        // GCC &&label extension: label address in a pointer field
+        if let Expr::LabelAddr(label_name, _) = expr {
+            let scoped_label = self.get_or_create_user_label(label_name);
+            return Some(GlobalInit::GlobalAddr(scoped_label.as_label()));
+        }
         // String literal: create a .rodata entry and reference it
         if let Expr::StringLiteral(s, _) = expr {
             let label = self.intern_string_literal(s);
