@@ -1,0 +1,5 @@
+Task: Fix ata_piix.c kernel miscompilation
+Status: in_progress
+
+The file drivers/ata/ata_piix.c causes a boot failure when compiled with CCC instead of GCC.
+Working on identifying the root cause and fixing the compiler bug.
