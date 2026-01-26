@@ -489,8 +489,10 @@ impl ArmCodegen {
                         } else if *v < 0 && *v >= -65536 {
                             self.state.emit_fmt(format_args!("    mov x0, #{}", v));
                         } else {
-                            self.state.emit_fmt(format_args!("    mov x0, #{}", *v as u32 & 0xffff));
-                            self.state.emit_fmt(format_args!("    movk x0, #{}, lsl #16", (*v as u32 >> 16) & 0xffff));
+                            // Sign-extend to 64-bit before loading into x0.
+                            // Using the i64 path ensures negative I32 values get
+                            // proper sign extension (upper 32 bits = 0xFFFFFFFF).
+                            self.emit_load_imm64("x0", *v as i64);
                         }
                     }
                     IrConst::I64(v) => {

@@ -472,11 +472,13 @@ impl Lowerer {
     fn get_pointed_struct_layout(&self, expr: &Expr) -> Option<RcLayout> {
         match expr {
             Expr::Identifier(name, _) => {
-                // Check static locals first
-                if let Some(mangled) = self.func().static_local_names.get(name) {
-                    if let Some(ginfo) = self.globals.get(mangled) {
-                        if ginfo.struct_layout.is_some() {
-                            return ginfo.struct_layout.clone();
+                // Check static locals first (only in function context)
+                if let Some(ref fs) = self.func_state {
+                    if let Some(mangled) = fs.static_local_names.get(name) {
+                        if let Some(ginfo) = self.globals.get(mangled) {
+                            if ginfo.struct_layout.is_some() {
+                                return ginfo.struct_layout.clone();
+                            }
                         }
                     }
                 }
@@ -624,9 +626,12 @@ impl Lowerer {
         match expr {
             Expr::Identifier(name, _) => {
                 // Check static locals first (resolved via mangled name)
-                if let Some(mangled) = self.func().static_local_names.get(name) {
-                    if let Some(ginfo) = self.globals.get(mangled) {
-                        return ginfo.struct_layout.clone();
+                // Use func_state directly to avoid panic when called from global initializer context
+                if let Some(ref fs) = self.func_state {
+                    if let Some(mangled) = fs.static_local_names.get(name) {
+                        if let Some(ginfo) = self.globals.get(mangled) {
+                            return ginfo.struct_layout.clone();
+                        }
                     }
                 }
                 if let Some(vi) = self.lookup_var_info(name) {
