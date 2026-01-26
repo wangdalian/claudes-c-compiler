@@ -1521,7 +1521,13 @@ impl ArchCodegen for X86Codegen {
     }
 
     fn emit_switch_case_branch(&mut self, case_val: i64, label: &str) {
-        self.state.emit_fmt(format_args!("    cmpq ${}, %rax", case_val));
+        if case_val >= i32::MIN as i64 && case_val <= i32::MAX as i64 {
+            self.state.emit_fmt(format_args!("    cmpq ${}, %rax", case_val));
+        } else {
+            // Value doesn't fit in sign-extended 32-bit immediate; load into %rcx first
+            self.state.emit_fmt(format_args!("    movabsq ${}, %rcx", case_val));
+            self.state.emit("    cmpq %rcx, %rax");
+        }
         self.state.emit_fmt(format_args!("    je {}", label));
     }
 
@@ -1545,10 +1551,20 @@ impl ArchCodegen for X86Codegen {
 
         // Subtract min_val to normalize index
         if min_val != 0 {
-            self.state.emit_fmt(format_args!("    subq ${}, %rax", min_val));
+            if min_val >= i32::MIN as i64 && min_val <= i32::MAX as i64 {
+                self.state.emit_fmt(format_args!("    subq ${}, %rax", min_val));
+            } else {
+                self.state.emit_fmt(format_args!("    movabsq ${}, %rcx", min_val));
+                self.state.emit("    subq %rcx, %rax");
+            }
         }
         // Range check (unsigned): if index >= range, jump to default
-        self.state.emit_fmt(format_args!("    cmpq ${}, %rax", range));
+        if (range as i64) >= i32::MIN as i64 && (range as i64) <= i32::MAX as i64 {
+            self.state.emit_fmt(format_args!("    cmpq ${}, %rax", range));
+        } else {
+            self.state.emit_fmt(format_args!("    movabsq ${}, %rcx", range));
+            self.state.emit("    cmpq %rcx, %rax");
+        }
         self.state.emit_fmt(format_args!("    jae {}", default_label));
 
         // Jump through the table: jmp *table(,%rax,8)
