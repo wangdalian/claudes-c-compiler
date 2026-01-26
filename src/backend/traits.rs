@@ -833,8 +833,10 @@ pub trait ArchCodegen {
     ///
     /// For sparse cases, falls back to a linear chain of compare-and-branch.
     fn emit_switch(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId) {
-        // Check density for jump table eligibility
-        let use_jump_table = if cases.len() >= 4 {
+        // Check density for jump table eligibility (disabled by -fno-jump-tables)
+        let use_jump_table = if self.state_ref().no_jump_tables {
+            false
+        } else if cases.len() >= 4 {
             let min_val = cases.iter().map(|&(v, _)| v).min().unwrap();
             let max_val = cases.iter().map(|&(v, _)| v).max().unwrap();
             let range = (max_val - min_val + 1) as usize;

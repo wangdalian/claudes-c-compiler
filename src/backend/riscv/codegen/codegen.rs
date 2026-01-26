@@ -142,6 +142,11 @@ impl RiscvCodegen {
         }
     }
 
+    /// Disable jump table emission (-fno-jump-tables).
+    pub fn set_no_jump_tables(&mut self, enabled: bool) {
+        self.state.no_jump_tables = enabled;
+    }
+
     pub fn generate(mut self, module: &IrModule) -> String {
         generate_module(&mut self, module)
     }

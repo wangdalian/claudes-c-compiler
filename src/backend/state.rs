@@ -133,6 +133,8 @@ pub struct CodegenState {
     /// When true, global symbol addresses use absolute sign-extended 32-bit
     /// addressing instead of RIP-relative, producing R_X86_64_32S relocations.
     pub code_model_kernel: bool,
+    /// Whether to disable jump table emission for switch statements (-fno-jump-tables).
+    pub no_jump_tables: bool,
 }
 
 impl CodegenState {
@@ -158,6 +160,7 @@ impl CodegenState {
             f128_direct_slots: FxHashSet::default(),
             current_text_section: ".text".to_string(),
             code_model_kernel: false,
+            no_jump_tables: false,
         }
     }
 

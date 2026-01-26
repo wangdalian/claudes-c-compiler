@@ -1,0 +1,18 @@
+Task: Fix function pointer parameter shadowing known function names
+Status: in_progress
+
+Problem: When a function has a parameter that is a function pointer with a name
+that matches a known/implicit function (e.g., `void (*free)(void *)` as a parameter),
+the compiler incorrectly generates a direct call to the external symbol instead of
+an indirect call through the function pointer parameter.
+
+Root cause: is_func_ptr_variable() in expr_calls.rs checked
+`!self.known_functions.contains(name)` which always returned false for names like
+"free" or "malloc" that are pre-registered as implicit functions in sema. This
+prevented the local parameter from shadowing the known function.
+
+Fix: When a name exists in locals, check ptr_sigs and c_type to determine if it's
+a function pointer, ignoring known_functions. The known_functions check only applies
+when there's no local variable with that name.
+
+Affected: ipc/namespace.c (kernel boot failure due to undefined reference to `free`)

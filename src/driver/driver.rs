@@ -76,6 +76,10 @@ pub struct Driver {
     /// global symbol addresses use absolute 32-bit sign-extended addressing
     /// instead of RIP-relative. Required for the Linux kernel.
     pub code_model_kernel: bool,
+    /// Whether to disable jump table emission for switch statements (-fno-jump-tables).
+    /// The Linux kernel uses this with -mindirect-branch=thunk-extern (retpoline) to
+    /// prevent indirect jumps that objtool would reject.
+    pub no_jump_tables: bool,
     /// Explicit language override from -x flag.
     /// When set, overrides file extension detection for input language.
     /// Values: "c", "assembler", "assembler-with-cpp", "none" (reset).
@@ -127,6 +131,7 @@ impl Driver {
             cf_protection_branch: false,
             no_sse: false,
             code_model_kernel: false,
+            no_jump_tables: false,
             explicit_language: None,
             assembler_extra_args: Vec::new(),
             dep_file: None,
@@ -669,6 +674,7 @@ impl Driver {
             cf_protection_branch: self.cf_protection_branch,
             no_sse: self.no_sse,
             code_model_kernel: self.code_model_kernel,
+            no_jump_tables: self.no_jump_tables,
         };
         let asm = self.target.generate_assembly_with_opts(&module, &opts);
         if time_phases { eprintln!("[TIME] codegen: {:.3}s ({} bytes asm)", t8.elapsed().as_secs_f64(), asm.len()); }

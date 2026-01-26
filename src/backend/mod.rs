@@ -51,6 +51,12 @@ pub struct CodegenOptions {
     /// RIP-relative references resolve incorrectly. The kernel memory model assumes all
     /// kernel symbols reside in the negative 2GB of the virtual address space.
     pub code_model_kernel: bool,
+    /// Whether to disable jump table emission for switch statements (-fno-jump-tables).
+    /// When true, all switch statements use compare-and-branch chains instead of
+    /// indirect jumps through a jump table. Required by the Linux kernel when building
+    /// with retpoline (-mindirect-branch=thunk-extern) to avoid indirect jumps that
+    /// objtool would reject.
+    pub no_jump_tables: bool,
 }
 
 /// Target architecture.
@@ -131,10 +137,19 @@ impl Target {
                 cg.set_cf_protection_branch(opts.cf_protection_branch);
                 cg.set_no_sse(opts.no_sse);
                 cg.set_code_model_kernel(opts.code_model_kernel);
+                cg.set_no_jump_tables(opts.no_jump_tables);
                 cg.generate(module)
             }
-            Target::Aarch64 => arm::ArmCodegen::new().generate(module),
-            Target::Riscv64 => riscv::RiscvCodegen::new().generate(module),
+            Target::Aarch64 => {
+                let mut cg = arm::ArmCodegen::new();
+                cg.set_no_jump_tables(opts.no_jump_tables);
+                cg.generate(module)
+            }
+            Target::Riscv64 => {
+                let mut cg = riscv::RiscvCodegen::new();
+                cg.set_no_jump_tables(opts.no_jump_tables);
+                cg.generate(module)
+            }
         }
     }
 

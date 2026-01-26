@@ -276,6 +276,9 @@ fn real_main() {
                 let before: u32 = if parts.len() > 1 { parts[1].parse().unwrap_or(0) } else { 0 };
                 driver.patchable_function_entry = Some((total, before));
             }
+            "-fno-jump-tables" => {
+                driver.no_jump_tables = true;
+            }
             arg if arg.starts_with("-f") => {
                 // Other -f flags ignored for now
             }

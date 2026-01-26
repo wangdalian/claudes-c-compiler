@@ -220,6 +220,12 @@ impl X86Codegen {
         self.state.code_model_kernel = enabled;
     }
 
+    /// Disable jump table emission (-fno-jump-tables). All switch statements
+    /// use compare-and-branch chains instead of indirect jumps.
+    pub fn set_no_jump_tables(&mut self, enabled: bool) {
+        self.state.no_jump_tables = enabled;
+    }
+
     /// Disable SSE (-mno-sse). Prevents emission of any SSE/XMM instructions.
     pub fn set_no_sse(&mut self, enabled: bool) {
         self.no_sse = enabled;
