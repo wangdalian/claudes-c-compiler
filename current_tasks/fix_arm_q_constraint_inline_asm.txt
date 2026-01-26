@@ -1,0 +1,16 @@
+Fix ARM inline asm "Q" memory constraint for AArch64
+
+Problem: musl uses "Q" memory constraint in inline assembly for atomic operations
+(ldaxr/stlxr). On AArch64, "Q" means "a memory address which uses a single base
+register" and should produce [Xn] syntax. Our compiler doesn't recognize "Q" as a
+memory constraint, so it falls through to GpReg, producing bare register names
+without brackets.
+
+Error: ldaxr w9,x10 (should be ldaxr w9,[x10])
+
+Fix:
+1. Add "Q" to ARM classify_constraint as Memory
+2. Update ARM substitute_template_line to format memory operands with [reg] syntax
+3. Ensure Q constraint operand gets address loaded into a register properly
+
+This blocks musl on ARM (affects sigaction, siglongjmp, sigqueue, etc).
