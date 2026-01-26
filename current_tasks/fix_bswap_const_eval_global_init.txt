@@ -1,0 +1,18 @@
+Fix __builtin_bswap16/32/64 constant evaluation in global initializer context
+
+Problem: Global initializers using __builtin_bswap32() (and bswap16/64) silently
+produce zero instead of the correct byte-swapped value. This is because neither
+the sema nor lowerer constant expression evaluators handle these builtins in their
+FunctionCall arms, causing eval_const_expr to return None, which falls through to
+GlobalInit::Zero in global_init.rs.
+
+This causes kernel boot failures because:
+  static __be32 servaddr __initdata = htonl(INADDR_NONE);
+expands to __builtin_bswap32(0xffffffff), which gets initialized to 0 instead of
+0xffffffff.
+
+Files to fix:
+- src/frontend/sema/const_eval.rs: Add bswap16/32/64 to FunctionCall handler
+- src/ir/lowering/const_eval.rs: Add bswap16/32/64 to FunctionCall handler
+
+Test: __builtin_bswap32(0x12345678) in a global initializer should produce 0x78563412.
