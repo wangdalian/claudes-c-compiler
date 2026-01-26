@@ -422,8 +422,8 @@ pub fn emit_data_sections(out: &mut AsmOutput, module: &IrModule, ptr_dir: PtrDi
 /// Compute effective alignment for a global, promoting to 16 when size >= 16.
 /// This matches GCC/Clang behavior on x86-64 and aarch64, enabling aligned SSE/NEON access.
 /// Globals placed in custom sections are excluded from promotion because they may
-/// form contiguous arrays (e.g. the kernel's __param section) where the linker
-/// expects elements at their natural stride with no extra padding.
+/// form contiguous arrays (e.g. the kernel's __param or .init.setup sections) where
+/// the linker expects elements at their natural stride with no extra padding.
 fn effective_align(g: &IrGlobal) -> usize {
     if g.section.is_some() {
         return g.align;
@@ -468,7 +468,7 @@ fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective
                 }
             }
             emit_visibility_directive(out, &g.name, &g.visibility);
-            out.emit_fmt(format_args!(".align {}", effective_align(g)));
+            out.emit_fmt(format_args!(".align {}", ptr_dir.align_arg(effective_align(g))));
             out.emit_fmt(format_args!(".type {}, @object", g.name));
             out.emit_fmt(format_args!(".size {}, {}", g.name, g.size));
             out.emit_fmt(format_args!("{}:", g.name));
