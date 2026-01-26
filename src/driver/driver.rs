@@ -82,6 +82,14 @@ pub struct Driver {
     /// the input source as a dependency of the output object. Used by the Linux
     /// kernel build system (fixdep) to track header dependencies.
     pub dep_file: Option<String>,
+    /// When true, delegate compilation to the system GCC instead of compiling
+    /// ourselves. Set when -m16 or -m32 is passed, since we only support x86-64
+    /// code generation. The kernel uses -m16 for boot/realmode code that runs in
+    /// 16-bit real mode (with .code16gcc), which requires 32-bit ELF output.
+    pub gcc_fallback: bool,
+    /// The original command-line arguments (excluding argv[0]), saved so we can
+    /// forward them verbatim to GCC when gcc_fallback is true.
+    pub original_args: Vec<String>,
 }
 
 impl Driver {
@@ -112,6 +120,8 @@ impl Driver {
             explicit_language: None,
             assembler_extra_args: Vec::new(),
             dep_file: None,
+            gcc_fallback: false,
+            original_args: Vec::new(),
         }
     }
 
@@ -198,6 +208,13 @@ impl Driver {
     pub fn run(&self) -> Result<(), String> {
         if self.input_files.is_empty() {
             return Err("No input files".to_string());
+        }
+
+        // When -m16 or -m32 is passed, we don't support 32-bit/16-bit x86 codegen.
+        // Delegate the entire compilation to the system GCC, forwarding all original args.
+        // This is needed for the Linux kernel's boot/realmode code which uses -m16.
+        if self.gcc_fallback {
+            return self.run_gcc_fallback();
         }
 
         match self.mode {
@@ -481,6 +498,34 @@ impl Driver {
             let content = format!("{}: {}\n", output_file, input_name);
             let _ = std::fs::write(&dep_path, content);
         }
+    }
+
+    /// Delegate compilation to the system GCC when we can't handle the target mode
+    /// (e.g., -m16 or -m32 for 32-bit/16-bit x86 code).
+    /// Forwards all original command-line arguments to GCC verbatim.
+    fn run_gcc_fallback(&self) -> Result<(), String> {
+        let mut cmd = std::process::Command::new("gcc");
+        cmd.args(&self.original_args);
+
+        let result = cmd.output()
+            .map_err(|e| format!("Failed to run gcc fallback: {}", e))?;
+
+        // Forward stderr
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        if !stderr.is_empty() {
+            eprint!("{}", stderr);
+        }
+        // Forward stdout
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        if !stdout.is_empty() {
+            print!("{}", stdout);
+        }
+
+        if !result.status.success() {
+            return Err(format!("gcc fallback failed (exit code: {:?})", result.status.code()));
+        }
+
+        Ok(())
     }
 
     /// Core pipeline: preprocess, lex, parse, sema, lower, optimize, codegen.

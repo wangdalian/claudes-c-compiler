@@ -62,6 +62,8 @@ fn real_main() {
 
     let mut driver = Driver::new();
     driver.target = target;
+    // Save original args (excluding argv[0]) for gcc_fallback mode
+    driver.original_args = args[1..].to_vec();
 
     // Track -x language setting. When set, the next "-" argument is
     // treated as stdin input rather than as an unknown flag.
@@ -229,8 +231,14 @@ fn real_main() {
             "-mindirect-branch=thunk-extern" => {
                 driver.indirect_branch_thunk = true;
             }
+            "-m16" | "-m32" => {
+                // 16-bit and 32-bit x86 code generation is not supported.
+                // Delegate the entire compilation to the system GCC.
+                // The kernel uses -m16 for boot/realmode code (with .code16gcc).
+                driver.gcc_fallback = true;
+            }
             arg if arg.starts_with("-m") => {
-                // -m32, -m64, -march=, -mtune=, etc. (ignored for now)
+                // -m64, -march=, -mtune=, etc. (ignored for now)
             }
 
             // Feature flags
