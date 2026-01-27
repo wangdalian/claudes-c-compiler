@@ -1,0 +1,5 @@
+Task: Fix kernel/sched/core.c x86 miscompilation causing boot hang
+
+Delta debugging identified kernel/sched/core.c as a single file that causes
+x86 kernel boot failure when compiled with our compiler.
+Investigating the root cause and fixing the compiler bug.

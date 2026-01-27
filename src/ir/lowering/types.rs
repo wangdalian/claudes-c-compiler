@@ -199,6 +199,7 @@ impl Lowerer {
             }
             TypeSpecifier::TypeofType(inner) => self.type_spec_to_ir(inner),
             TypeSpecifier::FunctionPointer(_, _, _) => IrType::Ptr, // function pointer is a pointer
+            TypeSpecifier::BareFunction(_, _, _) => IrType::Ptr, // bare function type decays to pointer
             // AutoType should be resolved before reaching here (in lower_local_decl)
             TypeSpecifier::AutoType => IrType::I64,
         }

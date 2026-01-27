@@ -230,6 +230,11 @@ pub enum TypeSpecifier {
     /// Function pointer type from cast/sizeof: return_type, params, variadic
     /// E.g., `(jv (*)(void*, jv))` produces FunctionPointer(jv, [void*, jv], false)
     FunctionPointer(Box<TypeSpecifier>, Vec<ParamDecl>, bool),
+    /// Bare function type (not a pointer): return_type, params, variadic
+    /// This is produced by ctype_to_type_spec for CType::Function, used in typeof
+    /// resolution. Unlike FunctionPointer which represents Pointer(Function(...)),
+    /// this represents just Function(...) without the pointer wrapper.
+    BareFunction(Box<TypeSpecifier>, Vec<ParamDecl>, bool),
     /// typeof(expr) - GCC extension: type of an expression
     Typeof(Box<Expr>),
     /// typeof(type-name) - GCC extension: type from a type name

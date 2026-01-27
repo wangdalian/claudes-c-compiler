@@ -84,8 +84,9 @@ impl Lowerer {
                 TypeSpecifier::Enum(et.name.clone(), None, et.is_packed)
             }
             CType::Function(ft) => {
-                // Bare function type decays to function pointer in most contexts.
-                // Convert to FunctionPointer TypeSpecifier to preserve type info.
+                // Bare function type — NOT a pointer. Use BareFunction so that
+                // typeof(func_name) preserves the function type without adding a
+                // pointer level. FunctionPointer already includes a pointer wrapper.
                 let ret_ts = Self::ctype_to_type_spec(&ft.return_type);
                 let param_decls: Vec<ParamDecl> = ft.params.iter().map(|(cty, name)| {
                     ParamDecl {
@@ -97,7 +98,7 @@ impl Lowerer {
                         vla_size_exprs: Vec::new(),
                     }
                 }).collect();
-                TypeSpecifier::FunctionPointer(Box::new(ret_ts), param_decls, ft.variadic)
+                TypeSpecifier::BareFunction(Box::new(ret_ts), param_decls, ft.variadic)
             }
             // Vector types fall back to element type for type-spec conversion (used
             // by implicit cast logic). This is safe because vector operations are

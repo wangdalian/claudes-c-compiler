@@ -102,6 +102,20 @@ pub trait TypeConvertContext {
                     variadic: *variadic,
                 }))), AddressSpace::Default)
             }
+            TypeSpecifier::BareFunction(return_type, params, variadic) => {
+                // Bare function type (no pointer wrapper) — produced by typeof on
+                // function names. Resolves to CType::Function, NOT Pointer(Function).
+                let ret_ctype = self.resolve_type_spec_to_ctype(return_type);
+                let param_ctypes: Vec<(CType, Option<String>)> = params.iter().map(|p| {
+                    let ty = self.resolve_type_spec_to_ctype(&p.type_spec);
+                    (ty, p.name.clone())
+                }).collect();
+                CType::Function(Box::new(FunctionType {
+                    return_type: ret_ctype,
+                    params: param_ctypes,
+                    variadic: *variadic,
+                }))
+            }
             TypeSpecifier::TypeofType(inner) => self.resolve_type_spec_to_ctype(inner),
             TypeSpecifier::AutoType => CType::Int,
 
