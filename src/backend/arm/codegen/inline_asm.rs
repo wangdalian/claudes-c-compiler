@@ -31,12 +31,13 @@ impl ArmCodegen {
                     i += 1;
                     continue;
                 }
-                // Check for modifier: w, x, h, b, s, d, q, c
+                // Check for modifier: w, x, h, b, s, d, q, c, a
                 // 'c' = raw constant (no # prefix), used in ARM inline asm
+                // 'a' = memory address reference [reg], used for prfm/prefetch
                 let mut modifier = None;
                 if chars[i] == 'w' || chars[i] == 'x' || chars[i] == 'h' || chars[i] == 'b'
                     || chars[i] == 's' || chars[i] == 'd' || chars[i] == 'q'
-                    || chars[i] == 'c'
+                    || chars[i] == 'c' || chars[i] == 'a'
                 {
                     // Check if next char is digit or [, meaning this is a modifier
                     if i + 1 < chars.len() && (chars[i + 1].is_ascii_digit() || chars[i + 1] == '[') {
@@ -210,6 +211,17 @@ impl ArmCodegen {
                     }
                 }
                 reg.to_string()
+            }
+            Some('a') => {
+                // Memory address reference: wrap register in square brackets [reg]
+                // Used by prfm/prefetch instructions: "prfm pldl1keep, %a0"
+                // If the operand is already a memory reference (e.g., "[sp, #N]"),
+                // return it as-is. Otherwise, wrap the register in brackets.
+                if reg.starts_with('[') {
+                    reg.to_string()
+                } else {
+                    format!("[{}]", reg)
+                }
             }
             _ => reg.to_string(),
         }

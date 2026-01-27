@@ -507,10 +507,91 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule, source_mgr: 
         }
     }
 
+    // Collect the set of symbols actually referenced in this translation unit.
+    // We only emit .weak/.hidden directives for extern symbols that are referenced,
+    // matching GCC behavior. Emitting directives for unreferenced extern symbols
+    // (e.g., from `#pragma GCC visibility push(hidden)`) creates spurious undefined
+    // symbol references in the object file, breaking kernel compressed boot linking.
+    let referenced_symbols: FxHashSet<String> = {
+        let mut refs = FxHashSet::default();
+        // Symbols referenced in function bodies (calls and global address loads)
+        for func in &module.functions {
+            if func.is_declaration { continue; }
+            for block in &func.blocks {
+                for inst in &block.instructions {
+                    match inst {
+                        Instruction::Call { func: callee, .. } => {
+                            refs.insert(callee.clone());
+                        }
+                        Instruction::GlobalAddr { name, .. } => {
+                            refs.insert(name.clone());
+                        }
+                        Instruction::InlineAsm { input_symbols, .. } => {
+                            // Collect symbols referenced via "i" constraint inputs
+                            // (e.g., function names passed to inline asm).
+                            // Use the parsed input_symbols rather than substring matching
+                            // on the template to avoid false positives.
+                            for sym in input_symbols {
+                                if let Some(s) = sym {
+                                    let base = s.split('+').next().unwrap_or(s);
+                                    refs.insert(base.to_string());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // Symbols referenced in global initializers
+        for global in &module.globals {
+            fn collect_global_refs(init: &GlobalInit, refs: &mut FxHashSet<String>) {
+                match init {
+                    GlobalInit::GlobalAddr(name) | GlobalInit::GlobalAddrOffset(name, _) => {
+                        refs.insert(name.clone());
+                    }
+                    GlobalInit::GlobalLabelDiff(a, b, _) => {
+                        refs.insert(a.clone());
+                        refs.insert(b.clone());
+                    }
+                    GlobalInit::Compound(inits) => {
+                        for sub in inits {
+                            collect_global_refs(sub, refs);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            collect_global_refs(&global.init, &mut refs);
+        }
+        // Symbols referenced in toplevel asm (conservative substring match since
+        // toplevel asm is raw text without parsed symbol references)
+        for asm_str in &module.toplevel_asm {
+            for (sym_name, _, _) in &module.symbol_attrs {
+                if asm_str.contains(sym_name.as_str()) {
+                    refs.insert(sym_name.clone());
+                }
+            }
+        }
+        // Defined functions and globals are always considered referenced
+        // (for their own visibility directives)
+        for func in &module.functions {
+            if !func.is_declaration {
+                refs.insert(func.name.clone());
+            }
+        }
+        for global in &module.globals {
+            if !global.is_extern {
+                refs.insert(global.name.clone());
+            }
+        }
+        refs
+    };
+
     // Emit visibility directives for declaration-only (extern) functions with non-default
-    // visibility. This ensures the assembler marks undefined symbols correctly for PIC.
+    // visibility, but only if they are actually referenced in this translation unit.
     for func in &module.functions {
-        if func.is_declaration {
+        if func.is_declaration && referenced_symbols.contains(&func.name) {
             cg.state().emit_visibility(&func.name, &func.visibility);
         }
     }
@@ -546,12 +627,13 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule, source_mgr: 
         cg.state().emit_fmt(format_args!(".set {},{}", alias_name, target_name));
     }
 
-    // Emit symbol attribute directives (.weak, .hidden) for declarations.
-    // Visibility directives like .hidden are emitted for both defined and undefined symbols.
-    // For undefined (extern) symbols, .hidden tells the linker that the symbol will be
-    // resolved within the same link unit, which is critical for PIC code to avoid
-    // unnecessary GOT/PLT indirection (e.g., in the Linux kernel EFI stub).
+    // Emit symbol attribute directives (.weak, .hidden) for declarations, but only
+    // for symbols actually referenced in this translation unit. This matches GCC behavior:
+    // unreferenced extern declarations don't produce symbol directives in the object file.
     for (name, is_weak, visibility) in &module.symbol_attrs {
+        if !referenced_symbols.contains(name) {
+            continue;
+        }
         if *is_weak {
             cg.state().emit_fmt(format_args!(".weak {}", name));
         }
