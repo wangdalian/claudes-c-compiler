@@ -1,0 +1,24 @@
+Loop-Depth-Aware Register Allocation Scoring
+=============================================
+
+Problem:
+The register allocator scores values using interval_length * use_count, which
+doesn't account for loop nesting depth. Values used inside hot inner loops
+get the same use_count as values used in straight-line code, causing inner-loop
+temporaries to be spilled to the stack when they should get registers.
+
+Profiling zlib shows CCC-compiled code is 4.4x slower than GCC on zlib
+compression/decompression. The hottest functions (deflate_slow, longest_match,
+slide_hash, adler32_z) all have tight inner loops where temporaries are
+needlessly spilled to the stack.
+
+Fix:
+Add loop-depth awareness to the register allocator scoring heuristic.
+Compute loop nesting depth per block, then weight each use of a value by
+the loop depth of the block containing that use. This gives inner-loop
+values much higher effective use counts, causing them to be prioritized
+for register allocation.
+
+Key files:
+- src/backend/regalloc.rs (scoring heuristic)
+- src/backend/liveness.rs (add loop depth info)
