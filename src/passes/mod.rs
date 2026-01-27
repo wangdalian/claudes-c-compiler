@@ -153,23 +153,36 @@ pub fn run_passes(module: &mut IrModule, _opt_level: u32) {
     // `changed` accumulates which functions were modified during each iteration.
     let mut changed = vec![false; num_funcs];
 
+    let time_passes = std::env::var("CCC_TIME_PASSES").is_ok();
+
     for iter in 0..iterations {
         let mut total_changes = 0usize;
 
         // Clear the changed accumulator for this iteration
         changed.iter_mut().for_each(|c| *c = false);
 
-        // Phase 1: CFG simplification (remove dead blocks, thread jump chains,
-        // simplify redundant conditional branches). Running early eliminates
-        // dead code before other passes waste time analyzing it.
-        if !dis_cfg {
-            total_changes += run_on_visited(module, &dirty, &mut changed, cfg_simplify::run_function);
+        macro_rules! timed_pass {
+            ($name:expr, $body:expr) => {{
+                if time_passes {
+                    let t0 = std::time::Instant::now();
+                    let n = $body;
+                    let elapsed = t0.elapsed().as_secs_f64();
+                    eprintln!("[PASS] iter={} {}: {:.4}s ({} changes)", iter, $name, elapsed, n);
+                    n
+                } else {
+                    $body
+                }
+            }};
         }
 
-        // Phase 2: Copy propagation (early - propagate copies from phi elimination
-        // and lowering so subsequent passes see through them)
+        // Phase 1: CFG simplification
+        if !dis_cfg {
+            total_changes += timed_pass!("cfg_simplify1", run_on_visited(module, &dirty, &mut changed, cfg_simplify::run_function));
+        }
+
+        // Phase 2: Copy propagation
         if !dis_copyprop {
-            total_changes += run_on_visited(module, &dirty, &mut changed, copy_prop::propagate_copies);
+            total_changes += timed_pass!("copy_prop1", run_on_visited(module, &dirty, &mut changed, copy_prop::propagate_copies));
         }
 
         // Phase 2a: Division-by-constant strength reduction (first iteration only).
@@ -177,75 +190,57 @@ pub fn run_passes(module: &mut IrModule, _opt_level: u32) {
         // Run early so subsequent passes (narrowing, simplify, constant folding, DCE)
         // can optimize the expanded instruction sequences.
         if iter == 0 && !disabled.contains("divconst") {
-            total_changes += run_on_visited(module, &dirty, &mut changed, div_by_const::div_by_const_function);
+            total_changes += timed_pass!("div_by_const", run_on_visited(module, &dirty, &mut changed, div_by_const::div_by_const_function));
         }
 
-        // Phase 2b: Integer narrowing (widen-operate-narrow => direct narrow operation)
-        // Must run after copy propagation so widening casts are visible,
-        // and before other optimizations to reduce instruction count.
+        // Phase 2b: Integer narrowing
         if !dis_narrow {
-            total_changes += run_on_visited(module, &dirty, &mut changed, narrow::narrow_function);
+            total_changes += timed_pass!("narrow", run_on_visited(module, &dirty, &mut changed, narrow::narrow_function));
         }
 
-        // Phase 3: Algebraic simplification (x+0 => x, x*1 => x, etc.)
+        // Phase 3: Algebraic simplification
         if !dis_simplify {
-            total_changes += run_on_visited(module, &dirty, &mut changed, simplify::simplify_function);
+            total_changes += timed_pass!("simplify", run_on_visited(module, &dirty, &mut changed, simplify::simplify_function));
         }
 
-        // Phase 4: Constant folding (evaluate const exprs at compile time)
+        // Phase 4: Constant folding
         if !dis_constfold {
-            total_changes += run_on_visited(module, &dirty, &mut changed, constant_fold::fold_function);
+            total_changes += timed_pass!("constfold", run_on_visited(module, &dirty, &mut changed, constant_fold::fold_function));
         }
 
-        // Phase 5: GVN / Common Subexpression Elimination (dominator-based)
-        // Eliminates redundant computations both within and across basic blocks.
+        // Phase 5: GVN
         if !dis_gvn {
-            total_changes += run_on_visited(module, &dirty, &mut changed, gvn::run_gvn_function);
+            total_changes += timed_pass!("gvn", run_on_visited(module, &dirty, &mut changed, gvn::run_gvn_function));
         }
 
-        // Phase 6: LICM - hoist loop-invariant code to preheaders.
-        // Runs after scalar opts have simplified expressions, so we can
-        // identify more invariants. Particularly helps inner loops with
-        // redundant index computations (e.g., i*n in matrix multiply).
+        // Phase 6: LICM
         if !dis_licm {
-            total_changes += run_on_visited(module, &dirty, &mut changed, licm::licm_function);
+            total_changes += timed_pass!("licm", run_on_visited(module, &dirty, &mut changed, licm::licm_function));
         }
 
-        // Phase 7: If-conversion - convert simple branch+phi diamonds to Select
-        // instructions. Runs after scalar optimizations have simplified the CFG,
-        // enabling cmov/csel emission instead of branches for simple conditionals.
+        // Phase 7: If-conversion
         if !dis_ifconv {
-            total_changes += run_on_visited(module, &dirty, &mut changed, if_convert::if_convert_function);
+            total_changes += timed_pass!("if_convert", run_on_visited(module, &dirty, &mut changed, if_convert::if_convert_function));
         }
 
-        // Phase 8: Copy propagation again (clean up copies created by GVN/simplify)
+        // Phase 8: Copy propagation again
         if !dis_copyprop {
-            total_changes += run_on_visited(module, &dirty, &mut changed, copy_prop::propagate_copies);
+            total_changes += timed_pass!("copy_prop2", run_on_visited(module, &dirty, &mut changed, copy_prop::propagate_copies));
         }
 
-        // Phase 9: Dead code elimination (clean up dead instructions including dead copies)
+        // Phase 9: Dead code elimination
         if !dis_dce {
-            total_changes += run_on_visited(module, &dirty, &mut changed, dce::eliminate_dead_code);
+            total_changes += timed_pass!("dce", run_on_visited(module, &dirty, &mut changed, dce::eliminate_dead_code));
         }
 
-        // Phase 10: CFG simplification again (DCE + constant folding may have
-        // simplified conditions, creating dead blocks or redundant branches)
+        // Phase 10: CFG simplification again
         if !dis_cfg {
-            total_changes += run_on_visited(module, &dirty, &mut changed, cfg_simplify::run_function);
+            total_changes += timed_pass!("cfg_simplify2", run_on_visited(module, &dirty, &mut changed, cfg_simplify::run_function));
         }
 
         // Phase 10.5: Interprocedural constant return propagation (IPCP).
-        // After the first iteration of intra-procedural optimizations, static
-        // functions that always return a constant should have been simplified to
-        // `return const`. Now we can replace calls to those functions with the
-        // constant value, enabling subsequent DCE/CFG passes to eliminate dead
-        // branches that reference undefined symbols.
-        // Run after iteration 0 (first pass) so returns have been simplified,
-        // and the result feeds into iteration 1 for cleanup.
         if iter == 0 && !dis_ipcp {
-            // IPCP is interprocedural - it can change callers of constant-returning
-            // functions, so mark all functions as changed if it modifies any.
-            let ipcp_changes = ipcp::run(module);
+            let ipcp_changes = timed_pass!("ipcp", ipcp::run(module));
             if ipcp_changes > 0 {
                 changed.iter_mut().for_each(|c| *c = true);
             }

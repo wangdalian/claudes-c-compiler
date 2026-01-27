@@ -68,19 +68,26 @@ pub(crate) fn run_gvn_function(func: &mut IrFunction) -> usize {
     let mut value_numbers: Vec<u32> = vec![u32::MAX; max_id + 1];
     let mut next_vn: u32 = 0;
 
-    // Scoped expression-to-value map using a rollback log
+    // Scoped expression-to-value map using a rollback log.
+    // Pure expressions (BinOp, Cmp, etc.) map ExprKey -> Value.
+    // Load expressions also store a "load generation" tag: the load entry is
+    // only valid if its generation matches the current load_generation counter.
+    // On memory clobber, we simply bump load_generation (O(1)) instead of
+    // iterating all accumulated load keys to remove them (O(n)).
     let mut expr_to_value: FxHashMap<ExprKey, Value> = FxHashMap::default();
-    // Track Load CSE entries for cross-block propagation with invalidation.
-    let mut load_keys: Vec<ExprKey> = Vec::new();
+    let mut load_expr_to_value: FxHashMap<ExprKey, (Value, u32)> = FxHashMap::default();
+    let mut load_generation: u32 = 0;
 
     // Fast path for single-block functions: skip CFG/dominator computation
     // entirely. We only need to do CSE within the single block.
     if num_blocks == 1 {
         let mut rollback_log: Vec<(ExprKey, Option<Value>)> = Vec::new();
+        let mut load_rollback_log: Vec<(ExprKey, Option<(Value, u32)>)> = Vec::new();
         let mut vn_log: Vec<(usize, u32)> = Vec::new();
         return process_block(
             0, func, &mut value_numbers, &mut next_vn,
-            &mut expr_to_value, &mut rollback_log, &mut vn_log, &mut load_keys,
+            &mut expr_to_value, &mut load_expr_to_value, &mut load_generation,
+            &mut rollback_log, &mut load_rollback_log, &mut vn_log,
         );
     }
 
@@ -92,6 +99,7 @@ pub(crate) fn run_gvn_function(func: &mut IrFunction) -> usize {
 
     // Rollback log: tracks (key, old_value) pairs pushed at each scope
     let mut rollback_log: Vec<(ExprKey, Option<Value>)> = Vec::new();
+    let mut load_rollback_log: Vec<(ExprKey, Option<(Value, u32)>)> = Vec::new();
     // Track value_numbers slots assigned, for rollback
     let mut vn_log: Vec<(usize, u32)> = Vec::new();
 
@@ -106,9 +114,11 @@ pub(crate) fn run_gvn_function(func: &mut IrFunction) -> usize {
         &mut value_numbers,
         &mut next_vn,
         &mut expr_to_value,
+        &mut load_expr_to_value,
+        &mut load_generation,
         &mut rollback_log,
+        &mut load_rollback_log,
         &mut vn_log,
-        &mut load_keys,
         &mut total_eliminated,
     );
 
@@ -126,52 +136,29 @@ fn gvn_dfs(
     value_numbers: &mut Vec<u32>,
     next_vn: &mut u32,
     expr_to_value: &mut FxHashMap<ExprKey, Value>,
+    load_expr_to_value: &mut FxHashMap<ExprKey, (Value, u32)>,
+    load_generation: &mut u32,
     rollback_log: &mut Vec<(ExprKey, Option<Value>)>,
+    load_rollback_log: &mut Vec<(ExprKey, Option<(Value, u32)>)>,
     vn_log: &mut Vec<(usize, u32)>,
-    load_keys: &mut Vec<ExprKey>,
     total_eliminated: &mut usize,
 ) {
     // Save state for rollback
     let rollback_start = rollback_log.len();
+    let load_rollback_start = load_rollback_log.len();
     let vn_log_start = vn_log.len();
-    let load_keys_start = load_keys.len();
+    let saved_load_generation = *load_generation;
 
     // At block entry, decide whether to invalidate inherited Load CSE entries.
-    // Load CSE across blocks is safe when:
-    // 1. This block has exactly one CFG predecessor (straight-line code), OR
-    // 2. This block has multiple predecessors BUT all non-dominator predecessors
-    //    are free of memory-clobbering instructions.
+    // Load CSE across blocks is safe when this block has exactly one CFG
+    // predecessor (straight-line code). At merge points (multiple predecessors),
+    // conservatively invalidate all Load entries because a non-dominating
+    // predecessor may have stored to memory, making cached loads stale.
     //
-    // Conservative approach: invalidate all Load entries when entering a block
-    // that has any CFG predecessor containing memory-clobbering instructions
-    // (other than the immediate dominator path we came from). This handles
-    // diamond CFGs where one branch stores and the other doesn't.
-    //
-    // For the entry block (block_idx == 0), no inherited entries to worry about.
-    if block_idx != 0 {
-        let block_preds = &preds[block_idx];
-        let should_invalidate = if block_preds.len() <= 1 {
-            // Single predecessor: safe (all paths go through the dominator).
-            // But check if the dominator itself clobbered - that's handled by
-            // the within-block invalidation in process_block.
-            false
-        } else {
-            // Multiple predecessors (merge point): conservatively invalidate
-            // Load entries. A non-dominating predecessor may have stored to
-            // memory, making cached loads stale.
-            true
-        };
-
-        if should_invalidate {
-            // Remove all Load entries from expr_to_value.
-            // Don't clear load_keys - entries are a log for rollback. Stale
-            // entries (pointing to keys no longer in expr_to_value) are harmless.
-            for key in load_keys.iter() {
-                if let Some(old_val) = expr_to_value.remove(key) {
-                    rollback_log.push((key.clone(), Some(old_val)));
-                }
-            }
-        }
+    // Invalidation is O(1): just bump load_generation. Entries with older
+    // generations are ignored during lookup.
+    if block_idx != 0 && preds[block_idx].len() > 1 {
+        *load_generation += 1;
     }
 
     // Process instructions in this block
@@ -181,9 +168,11 @@ fn gvn_dfs(
         value_numbers,
         next_vn,
         expr_to_value,
+        load_expr_to_value,
+        load_generation,
         rollback_log,
+        load_rollback_log,
         vn_log,
-        load_keys,
     );
     *total_eliminated += eliminated;
 
@@ -200,9 +189,11 @@ fn gvn_dfs(
             value_numbers,
             next_vn,
             expr_to_value,
+            load_expr_to_value,
+            load_generation,
             rollback_log,
+            load_rollback_log,
             vn_log,
-            load_keys,
             total_eliminated,
         );
     }
@@ -217,14 +208,24 @@ fn gvn_dfs(
         }
     }
 
+    // Rollback: restore load_expr_to_value to state before this block
+    while load_rollback_log.len() > load_rollback_start {
+        let (key, old_val) = load_rollback_log.pop().unwrap();
+        if let Some(val) = old_val {
+            load_expr_to_value.insert(key, val);
+        } else {
+            load_expr_to_value.remove(&key);
+        }
+    }
+
     // Rollback: restore value_numbers to state before this block
     while vn_log.len() > vn_log_start {
         let (idx, old_vn) = vn_log.pop().unwrap();
         value_numbers[idx] = old_vn;
     }
 
-    // Rollback: restore load_keys to state before this block
-    load_keys.truncate(load_keys_start);
+    // Rollback: restore load_generation to state before this block
+    *load_generation = saved_load_generation;
 }
 
 /// Check if an instruction may modify memory, invalidating cached load values.
@@ -251,19 +252,21 @@ fn clobbers_memory(inst: &Instruction) -> bool {
 /// Process a single basic block for GVN.
 /// Returns the number of instructions eliminated.
 ///
-/// Load CSE entries are stored in `expr_to_value` alongside pure CSE entries,
-/// and tracked in `load_keys` for selective invalidation. Cross-block Load CSE
-/// propagation is controlled by `gvn_dfs` which invalidates Load entries at
-/// merge points (blocks with multiple CFG predecessors).
+/// Load CSE entries are stored separately in `load_expr_to_value`, tagged with
+/// a generation counter for O(1) invalidation on memory clobber. Cross-block
+/// Load CSE propagation is controlled by `gvn_dfs` which invalidates Load
+/// entries at merge points (blocks with multiple CFG predecessors).
 fn process_block(
     block_idx: usize,
     func: &mut IrFunction,
     value_numbers: &mut Vec<u32>,
     next_vn: &mut u32,
     expr_to_value: &mut FxHashMap<ExprKey, Value>,
+    load_expr_to_value: &mut FxHashMap<ExprKey, (Value, u32)>,
+    load_generation: &mut u32,
     rollback_log: &mut Vec<(ExprKey, Option<Value>)>,
+    load_rollback_log: &mut Vec<(ExprKey, Option<(Value, u32)>)>,
     vn_log: &mut Vec<(usize, u32)>,
-    load_keys: &mut Vec<ExprKey>,
 ) -> usize {
     let mut eliminated = 0;
     let mut new_instructions = Vec::with_capacity(func.blocks[block_idx].instructions.len());
@@ -272,22 +275,26 @@ fn process_block(
 
     for inst in func.blocks[block_idx].instructions.drain(..) {
         // Before processing the instruction, check if it clobbers memory.
-        // If so, invalidate all cached Load CSE entries since the memory
-        // state has changed and previously loaded values may be stale.
-        // Note: we iterate load_keys without draining it because the entries
-        // serve as a log for rollback. Stale entries (pointing to keys no
-        // longer in expr_to_value) are harmless - subsequent removes are no-ops.
+        // If so, invalidate all cached Load CSE entries by bumping the
+        // generation counter. This is O(1) instead of iterating all load keys.
         if clobbers_memory(&inst) {
-            for key in load_keys.iter() {
-                if let Some(old_val) = expr_to_value.remove(key) {
-                    rollback_log.push((key.clone(), Some(old_val)));
-                }
-            }
+            *load_generation += 1;
         }
 
         match make_expr_key(&inst, value_numbers, next_vn, vn_log) {
             Some((expr_key, dest)) => {
-                if let Some(&existing_value) = expr_to_value.get(&expr_key) {
+                let is_load = expr_key.is_load();
+
+                // Look up: check pure expr map, or load map with generation check
+                let existing = if is_load {
+                    load_expr_to_value.get(&expr_key).and_then(|&(val, gen)| {
+                        if gen == *load_generation { Some(val) } else { None }
+                    })
+                } else {
+                    expr_to_value.get(&expr_key).copied()
+                };
+
+                if let Some(existing_value) = existing {
                     // This expression was already computed
                     let idx = existing_value.0 as usize;
                     let existing_vn = if idx < value_numbers.len() && value_numbers[idx] != u32::MAX {
@@ -318,13 +325,15 @@ fn process_block(
                         vn_log.push((dest_idx, old_vn));
                         value_numbers[dest_idx] = vn;
                     }
-                    // Record in expr_to_value with rollback
-                    let is_load = expr_key.is_load();
-                    let old_val = expr_to_value.insert(expr_key.clone(), dest);
-                    rollback_log.push((expr_key.clone(), old_val));
-                    // Track load keys for memory invalidation
+                    // Record in appropriate map with rollback
                     if is_load {
-                        load_keys.push(expr_key);
+                        let key_for_log = expr_key.clone();
+                        let old_val = load_expr_to_value.insert(expr_key, (dest, *load_generation));
+                        load_rollback_log.push((key_for_log, old_val));
+                    } else {
+                        let key_for_log = expr_key.clone();
+                        let old_val = expr_to_value.insert(expr_key, dest);
+                        rollback_log.push((key_for_log, old_val));
                     }
                     new_instructions.push(inst);
                 }

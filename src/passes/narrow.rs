@@ -51,6 +51,24 @@ struct BinOpDef {
 
 /// Narrow operations in a single function.
 pub(crate) fn narrow_function(func: &mut IrFunction) -> usize {
+    // Early exit: the pass can only do work if the function contains I64/U64
+    // BinOps or Cmps (which are the targets of narrowing). Skip the expensive
+    // multi-pass analysis if none exist.
+    let has_narrowable = func.blocks.iter().any(|block| {
+        block.instructions.iter().any(|inst| match inst {
+            Instruction::BinOp { ty, .. } => {
+                matches!(ty, IrType::I64 | IrType::U64)
+            }
+            Instruction::Cmp { ty, .. } => {
+                matches!(ty, IrType::I64 | IrType::U64)
+            }
+            _ => false,
+        })
+    });
+    if !has_narrowable {
+        return 0;
+    }
+
     let max_id = func.max_value_id() as usize;
     let mut changes = 0;
 
