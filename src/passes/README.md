@@ -24,7 +24,7 @@ While the compiler is maturing, this maximizes test coverage and avoids tier-spe
 
 Before the main optimization loop:
 
-1. **Inline** small static/always_inline functions. Normal static inline functions are inlined up to 60 instructions / 6 blocks. `always_inline` functions use relaxed limits (150 instructions / 200 blocks). When the **caller** has a custom section attribute (e.g., `.head.text`, `.noinstr.text`), static inline callees use the relaxed always_inline limits to prevent dangerous cross-section calls. Inline asm is permitted in all inlined functions.
+1. **Inline** small static/always_inline functions. Normal static inline functions are inlined up to 60 instructions / 6 blocks. `always_inline` functions use relaxed limits (500 instructions / 200 blocks). When the **caller** has a custom section attribute (e.g., `.head.text`, `.noinstr.text`), static inline callees use the relaxed always_inline limits to prevent dangerous cross-section calls. When the caller exceeds the size limit, non-always_inline callees are skipped but always_inline callees continue to be inlined (required by C semantics). Inline asm is permitted in all inlined functions.
 2. **mem2reg** re-run to promote allocas from inlined callee entry blocks (now non-entry blocks in caller)
 3. **constant_fold + copy_prop + simplify + constant_fold + copy_prop** to resolve arithmetic on inlined constants
 4. **resolve_inline_asm_symbols** traces GlobalAddr+GEP/Add/Cast def chains to resolve "i" constraint symbol+offset strings (e.g., `boot_cpu_data+74`) for inline asm inputs that became resolvable after inlining

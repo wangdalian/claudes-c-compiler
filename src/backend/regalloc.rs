@@ -214,10 +214,23 @@ pub fn allocate_registers(
         }
     }
 
-    // Filter intervals to only eligible values.
+    // Filter intervals to only eligible values whose live ranges span across
+    // at least one function call. Callee-saved registers exist to preserve values
+    // across calls — using them for values that don't cross call boundaries wastes
+    // stack space on save/restore without benefit (the value could stay on the stack
+    // or in a caller-saved register). This optimization significantly reduces stack
+    // frame sizes, especially for functions with many short-lived temporaries.
+    let call_points = &liveness.call_points;
     let mut candidates: Vec<&LiveInterval> = liveness.intervals.iter()
         .filter(|iv| eligible.contains(&iv.value_id))
         .filter(|iv| iv.end > iv.start) // Must span at least 2 points
+        .filter(|iv| {
+            // Only allocate callee-saved regs to values that span a call.
+            // Use binary search since call_points is sorted by program point.
+            // Check if any call point falls within [start, end].
+            let start_idx = call_points.partition_point(|&cp| cp < iv.start);
+            start_idx < call_points.len() && call_points[start_idx] <= iv.end
+        })
         .collect();
 
     // Prioritize: longer intervals with more uses get registers first.

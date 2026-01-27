@@ -43,14 +43,14 @@ const MAX_INLINE_BUDGET_PER_CALLER: usize = 800;
 const MAX_CALLER_INSTRUCTIONS_AFTER_INLINE: usize = 800;
 
 /// Maximum instructions for __attribute__((always_inline)) functions.
-/// GCC silently refuses to inline always_inline functions that are too large
-/// or complex. We match this behavior by capping at 150 IR instructions.
-/// This allows most always_inline helpers (spin_lock, find_va_links, __link_va,
-/// __unlink_va, __merge_or_add_vmap_area, etc.) while blocking pathologically
-/// large always_inline functions like __rb_erase_augmented (182 IR instructions).
-/// Without this cap, deep always_inline chains create functions with hundreds of
-/// inlined values, causing stack frames to exceed the kernel's 16KB stack limit.
-const MAX_ALWAYS_INLINE_INSTRUCTIONS: usize = 150;
+/// GCC always inlines __attribute__((always_inline)) regardless of size, and
+/// failing to do so can cause section mismatch errors in the kernel (e.g., when
+/// an always_inline function in .text accesses __initconst data, but its caller
+/// is in .init.text). Stack frame bloat from large inlined functions is handled
+/// separately by MAX_CALLER_INSTRUCTIONS_AFTER_INLINE for normal inlining and
+/// by the kernel's -fconserve-stack. Set high enough to cover all real always_inline
+/// functions in the kernel (e.g., intel_pmu_init_hybrid at ~250 IR instructions).
+const MAX_ALWAYS_INLINE_INSTRUCTIONS: usize = 500;
 
 /// Maximum blocks for __attribute__((always_inline)) functions.
 const MAX_ALWAYS_INLINE_BLOCKS: usize = 200;
@@ -146,39 +146,45 @@ pub fn run(module: &mut IrModule) -> usize {
 
             // Inline one call site per round. After inlining, block indices shift,
             // so we must re-scan to get correct indices for subsequent call sites.
-            let site = &call_sites[0];
-            let callee_data = &callee_map[&site.callee_name];
-            let callee_inst_count: usize = callee_data.blocks.iter()
-                .map(|b| b.instructions.len())
-                .sum();
-
-            // Use appropriate budget based on whether callee is always_inline or
-            // exceeds normal limits (section-caller inlining uses always_inline budget)
-            let use_relaxed_budget = callee_data.is_always_inline || callee_data.exceeds_normal_limits;
-
-            // When the caller is too large, only allow always_inline callees.
-            // This prevents stack frame bloat that causes kernel stack overflows
-            // (e.g., ___slab_alloc in mm/slub.c growing to 19KB stack frame).
-            if caller_too_large && !callee_data.is_always_inline {
-                if debug_inline {
-                    eprintln!("[INLINE] Stopping normal inlining into '{}': caller has {} instructions (limit {})",
-                        module.functions[func_idx].name, caller_inst_count, MAX_CALLER_INSTRUCTIONS_AFTER_INLINE);
+            // When the caller is too large, skip non-always_inline callees instead
+            // of breaking, so that always_inline callees (which must be inlined per
+            // C semantics) are still processed.
+            let mut found_site = None;
+            for site in &call_sites {
+                let callee_data = &callee_map[&site.callee_name];
+                if caller_too_large && !callee_data.is_always_inline {
+                    continue;
                 }
+                let callee_inst_count: usize = callee_data.blocks.iter()
+                    .map(|b| b.instructions.len())
+                    .sum();
+                let use_relaxed = callee_data.is_always_inline || callee_data.exceeds_normal_limits;
+                let effective_budget = if use_relaxed {
+                    always_inline_budget_remaining
+                } else {
+                    budget_remaining
+                };
+                if callee_inst_count > effective_budget {
+                    continue;
+                }
+                found_site = Some((site.clone(), callee_inst_count, use_relaxed));
                 break;
             }
-
-            let effective_budget = if use_relaxed_budget {
-                always_inline_budget_remaining
-            } else {
-                budget_remaining
+            let (site, callee_inst_count, use_relaxed_budget) = match found_site {
+                Some(s) => s,
+                None => {
+                    if debug_inline && caller_too_large {
+                        eprintln!("[INLINE] No more always_inline callees to inline into '{}' (caller has {} instructions)",
+                            module.functions[func_idx].name, caller_inst_count);
+                    }
+                    break;
+                }
             };
-            if callee_inst_count > effective_budget {
-                break;
-            }
+            let callee_data = &callee_map[&site.callee_name];
 
             let success = inline_call_site(
                 &mut module.functions[func_idx],
-                site,
+                &site,
                 callee_data,
                 &mut global_max_block_id,
             );
@@ -711,6 +717,7 @@ struct CalleeData {
 }
 
 /// A call site that is eligible for inlining.
+#[derive(Clone)]
 struct InlineCallSite {
     /// Index of the block containing the call
     block_idx: usize,

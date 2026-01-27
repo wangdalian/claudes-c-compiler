@@ -35,6 +35,9 @@ pub struct LivenessResult {
     pub intervals: Vec<LiveInterval>,
     /// Total number of program points (for debugging/sizing).
     pub num_points: u32,
+    /// Program points that are Call or CallIndirect instructions.
+    /// Used by the register allocator to identify values that cross call boundaries.
+    pub call_points: Vec<u32>,
 }
 
 // ── Compact bitset for dataflow ──────────────────────────────────────────────
@@ -125,7 +128,7 @@ impl BitSet {
 pub fn compute_live_intervals(func: &IrFunction) -> LivenessResult {
     let num_blocks = func.blocks.len();
     if num_blocks == 0 {
-        return LivenessResult { intervals: Vec::new(), num_points: 0 };
+        return LivenessResult { intervals: Vec::new(), num_points: 0, call_points: Vec::new() };
     }
 
     // Collect alloca values (not register-allocatable).
@@ -174,7 +177,7 @@ pub fn compute_live_intervals(func: &IrFunction) -> LivenessResult {
 
     let num_values = value_ids.len();
     if num_values == 0 {
-        return LivenessResult { intervals: Vec::new(), num_points: 0 };
+        return LivenessResult { intervals: Vec::new(), num_points: 0, call_points: Vec::new() };
     }
 
     // Build sparse->dense mapping
@@ -208,6 +211,12 @@ pub fn compute_live_intervals(func: &IrFunction) -> LivenessResult {
     let mut setjmp_block_indices: Vec<usize> = Vec::new();
     let mut block_idx_counter: usize = 0;
 
+    // Track program points that are Call or CallIndirect instructions.
+    // The register allocator uses this to only assign callee-saved registers
+    // to values whose live intervals span across a call boundary, since
+    // callee-saved registers only provide benefit for values that survive calls.
+    let mut call_points: Vec<u32> = Vec::new();
+
     for block in &func.blocks {
         let block_start = point;
         block_start_points.push(block_start);
@@ -218,6 +227,11 @@ pub fn compute_live_intervals(func: &IrFunction) -> LivenessResult {
             // Detect calls to setjmp and friends (returns-twice functions).
             if is_returns_twice_call(inst) {
                 setjmp_block_indices.push(block_idx_counter);
+            }
+
+            // Track call instruction program points for register allocation.
+            if matches!(inst, Instruction::Call { .. } | Instruction::CallIndirect { .. }) {
+                call_points.push(point);
             }
 
             // Record uses before defs
@@ -402,6 +416,7 @@ pub fn compute_live_intervals(func: &IrFunction) -> LivenessResult {
     LivenessResult {
         intervals,
         num_points,
+        call_points,
     }
 }
 
