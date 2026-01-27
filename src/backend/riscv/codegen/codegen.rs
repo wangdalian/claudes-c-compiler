@@ -166,6 +166,11 @@ impl RiscvCodegen {
         self.state.no_jump_tables = enabled;
     }
 
+    /// Enable position-independent code generation (-fPIC/-fpie).
+    pub fn set_pic(&mut self, pic: bool) {
+        self.state.pic_mode = pic;
+    }
+
     /// Suppress linker relaxation (-mno-relax).
     pub fn set_no_relax(&mut self, enabled: bool) {
         self.no_relax = enabled;
@@ -660,15 +665,36 @@ impl ArchCodegen for RiscvCodegen {
         self.state.emit_fmt(format_args!("    li t1, {}", range));
         self.state.emit_fmt(format_args!("    bgeu t0, t1, {}", default_label));
 
-        // Load jump table base, index, and indirect branch
-        self.state.emit_fmt(format_args!("    la t1, {}", table_label));
-        self.state.emit("    slli t0, t0, 3");  // index * 8
-        self.state.emit("    add t1, t1, t0");
-        self.state.emit("    ld t1, 0(t1)");
-        self.state.emit("    jr t1");
+        if self.state.pic_mode {
+            // PIC mode: use relative 32-bit offsets to avoid R_RISCV_64 relocations.
+            // Each entry is .word (target - table_base), a signed 32-bit offset.
+            self.state.emit_fmt(format_args!("    la t1, {}", table_label));
+            self.state.emit("    slli t0, t0, 2");  // index * 4 (32-bit entries)
+            self.state.emit("    add t1, t1, t0");
+            self.state.emit("    lw t0, 0(t1)");    // load 32-bit signed offset
+            self.state.emit_fmt(format_args!("    la t1, {}", table_label));
+            self.state.emit("    add t1, t1, t0");   // base + offset
+            self.state.emit("    jr t1");
 
-        // Emit shared .rodata jump table entries and restore text section
-        emit_jump_table_rodata(self, &table_label, &table);
+            // Emit PIC jump table with relative .word entries
+            self.state.emit(".section .rodata");
+            self.state.emit(".align 2");
+            self.state.emit_fmt(format_args!("{}:", table_label));
+            for target in &table {
+                let target_label = target.as_label();
+                self.state.emit_fmt(format_args!("    .word {} - {}", target_label, table_label));
+            }
+            let sect = self.state.current_text_section.clone();
+            self.state.emit_fmt(format_args!(".section {},\"ax\",@progbits", sect));
+        } else {
+            // Non-PIC: absolute 64-bit addresses
+            self.state.emit_fmt(format_args!("    la t1, {}", table_label));
+            self.state.emit("    slli t0, t0, 3");  // index * 8
+            self.state.emit("    add t1, t1, t0");
+            self.state.emit("    ld t1, 0(t1)");
+            self.state.emit("    jr t1");
+            emit_jump_table_rodata(self, &table_label, &table);
+        }
         self.state.reg_cache.invalidate_all();
     }
 

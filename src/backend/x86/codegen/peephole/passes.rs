@@ -94,6 +94,8 @@ fn is_callee_saved_reg(reg: RegId) -> bool {
 
 /// Returns all string patterns that could reference a given register family in asm text.
 /// For example, register family 13 (r13) can appear as %r13, %r13d, %r13w, %r13b.
+/// Note: This is now only used as a fallback; the fast path uses LineInfo.reg_refs.
+#[allow(dead_code)]
 fn reg_family_patterns(reg: RegId) -> &'static [&'static str] {
     match reg {
         3 => &["%rbx", "%ebx", "%bx", "%bl", "%bh"],
@@ -106,6 +108,16 @@ fn reg_family_patterns(reg: RegId) -> &'static [&'static str] {
 }
 
 /// Check if a line of assembly text references a given register family.
+/// Uses the pre-computed reg_refs bitmask for O(1) lookup when available.
+#[inline]
+fn line_references_reg_fast(info: &LineInfo, reg: RegId) -> bool {
+    info.reg_refs & (1u16 << reg) != 0
+}
+
+/// Check if a line of assembly text references a given register family.
+/// Fallback for lines where reg_refs wasn't pre-computed (shouldn't happen
+/// in normal flow since classify_line now sets reg_refs for all instruction kinds).
+#[allow(dead_code)]
 fn line_references_reg(line: &str, reg: RegId) -> bool {
     let patterns = reg_family_patterns(reg);
     for pat in patterns {
@@ -256,9 +268,9 @@ fn eliminate_unused_callee_saves(store: &LineStore, infos: &mut [LineInfo]) {
                     }
                 }
 
-                // Check if the line references this register family at all
-                let line_text = store.get(k);
-                if line_references_reg(line_text, reg) {
+                // Check if the line references this register family using the
+                // pre-computed reg_refs bitmask for O(1) lookup.
+                if line_references_reg_fast(&infos[k], reg) {
                     body_has_reference = true;
                     break;
                 }
@@ -740,9 +752,10 @@ fn eliminate_dead_stores(store: &LineStore, infos: &mut [LineInfo]) -> bool {
     let len = store.len();
     const WINDOW: usize = 16;
 
-    // Reusable buffer for the "OFFSET(%rbp)" pattern string, used as fallback
+    // Reusable stack buffer for the "OFFSET(%rbp)" pattern string, used as fallback
     // when the pre-parsed rbp_offset is RBP_OFFSET_NONE (multiple/complex refs).
-    let mut pattern_buf = String::with_capacity(20);
+    // Uses write_rbp_pattern to avoid core::fmt overhead.
+    let mut pattern_bytes = [0u8; 24];
 
     for i in 0..len {
         let (store_offset, store_size) = match infos[i].kind {
@@ -758,7 +771,7 @@ fn eliminate_dead_stores(store: &LineStore, infos: &mut [LineInfo]) -> bool {
         let end = std::cmp::min(i + WINDOW, len);
         let mut slot_read = false;
         let mut slot_overwritten = false;
-        let mut pattern_built = false;
+        let mut pattern_len: usize = 0;
 
         for j in (i + 1)..end {
             if infos[j].is_nop() {
@@ -827,14 +840,13 @@ fn eliminate_dead_stores(store: &LineStore, infos: &mut [LineInfo]) -> bool {
                 // Fallback: rbp_offset is RBP_OFFSET_NONE (no rbp ref or complex pattern).
                 // Lines with no (%rbp) at all won't match; the string check handles
                 // edge cases where parse_rbp_offset couldn't determine a single offset.
-                if !pattern_built {
-                    pattern_buf.clear();
-                    use std::fmt::Write;
-                    write!(pattern_buf, "{}(%rbp)", store_offset).unwrap();
-                    pattern_built = true;
+                if pattern_len == 0 {
+                    pattern_len = write_rbp_pattern(&mut pattern_bytes, store_offset);
                 }
+                // SAFETY: write_rbp_pattern only writes ASCII digits, '-', and "(%rbp)" bytes.
+                let pattern = unsafe { std::str::from_utf8_unchecked(&pattern_bytes[..pattern_len]) };
                 let line = infos[j].trimmed(store.get(j));
-                if line.contains(pattern_buf.as_str()) {
+                if line.contains(pattern) {
                     slot_read = true;
                     break;
                 }
@@ -842,12 +854,11 @@ fn eliminate_dead_stores(store: &LineStore, infos: &mut [LineInfo]) -> bool {
                 if store_bytes > 1 {
                     for byte_off in 1..store_bytes {
                         let check_off = store_offset + byte_off;
-                        pattern_buf.clear();
-                        use std::fmt::Write;
-                        write!(pattern_buf, "{}(%rbp)", check_off).unwrap();
-                        pattern_built = true;
+                        let check_len = write_rbp_pattern(&mut pattern_bytes, check_off);
+                        // SAFETY: write_rbp_pattern only writes ASCII digits, '-', and "(%rbp)" bytes.
+                        let check_pattern = unsafe { std::str::from_utf8_unchecked(&pattern_bytes[..check_len]) };
                         let line = infos[j].trimmed(store.get(j));
-                        if line.contains(pattern_buf.as_str()) {
+                        if line.contains(check_pattern) {
                             slot_read = true;
                             break;
                         }

@@ -36,6 +36,11 @@ pub(super) struct LineInfo {
     /// multiple references, or non-Other kind. This eliminates expensive
     /// `str::contains` checks in `eliminate_dead_stores`.
     pub(super) rbp_offset: i32,
+    /// Bitmask of register families referenced in this line.
+    /// Bit N set means register family N (0=rax, 1=rcx, ..., 15=r15) appears
+    /// somewhere in the line text. Pre-computed during classify_line to eliminate
+    /// O(n * patterns) `str::contains` calls in `eliminate_unused_callee_saves`.
+    pub(super) reg_refs: u16,
 }
 
 /// What kind of assembly line this is, with pre-extracted fields for the
@@ -168,13 +173,19 @@ impl LineInfo {
 /// Helper to construct a LineInfo with default ext_kind and has_indirect_mem.
 #[inline]
 pub(super) fn line_info(kind: LineKind, ts: u16) -> LineInfo {
-    LineInfo { kind, ext_kind: ExtKind::None, trim_start: ts, has_indirect_mem: false, rbp_offset: RBP_OFFSET_NONE }
+    LineInfo { kind, ext_kind: ExtKind::None, trim_start: ts, has_indirect_mem: false, rbp_offset: RBP_OFFSET_NONE, reg_refs: 0 }
+}
+
+/// Helper to construct a LineInfo with default ext_kind but pre-scanned reg_refs.
+#[inline]
+pub(super) fn line_info_with_regs(kind: LineKind, ts: u16, reg_refs: u16) -> LineInfo {
+    LineInfo { kind, ext_kind: ExtKind::None, trim_start: ts, has_indirect_mem: false, rbp_offset: RBP_OFFSET_NONE, reg_refs }
 }
 
 /// Helper to construct a LineInfo with a specific ext_kind.
 #[inline]
 pub(super) fn line_info_ext(kind: LineKind, ext: ExtKind, ts: u16) -> LineInfo {
-    LineInfo { kind, ext_kind: ext, trim_start: ts, has_indirect_mem: false, rbp_offset: RBP_OFFSET_NONE }
+    LineInfo { kind, ext_kind: ext, trim_start: ts, has_indirect_mem: false, rbp_offset: RBP_OFFSET_NONE, reg_refs: 0 }
 }
 
 /// Parse one assembly line into a `LineInfo`.
@@ -210,7 +221,9 @@ pub(super) fn classify_line(raw: &str) -> LineInfo {
         if let Some((reg_str, offset_str, size)) = parse_store_to_rbp_str(s) {
             let reg = register_family_fast(reg_str);
             let offset = fast_parse_i32(offset_str);
-            return line_info(LineKind::StoreRbp { reg, offset, size }, ts);
+            // Store to rbp references both the source reg and rbp(5)
+            let rr = (1u16 << reg) | (1u16 << 5);
+            return line_info_with_regs(LineKind::StoreRbp { reg, offset, size }, ts, rr);
         }
         if let Some((offset_str, reg_str, size)) = parse_load_from_rbp_str(s) {
             let reg = register_family_fast(reg_str);
@@ -230,7 +243,11 @@ pub(super) fn classify_line(raw: &str) -> LineInfo {
             } else {
                 ExtKind::None
             };
-            return line_info_ext(LineKind::LoadRbp { reg, offset, size }, ext, ts);
+            // Load from rbp references both the dest reg and rbp(5)
+            let rr = (1u16 << reg) | (1u16 << 5);
+            let mut info = line_info_ext(LineKind::LoadRbp { reg, offset, size }, ext, ts);
+            info.reg_refs = rr;
+            return info;
         }
         // Check for self-move: movq %reg, %reg (same src and dst)
         if sb[3] == b'q' && sb.len() >= 6 && sb[4] == b' ' {
@@ -244,12 +261,14 @@ pub(super) fn classify_line(raw: &str) -> LineInfo {
             let dest_reg = parse_dest_reg_fast(s);
             let has_indirect = has_indirect_memory_access(s);
             let rbp_off = if has_indirect { RBP_OFFSET_NONE } else { parse_rbp_offset(s) };
+            let reg_refs = scan_register_refs(sb);
             return LineInfo {
                 kind: LineKind::Other { dest_reg },
                 ext_kind: ext,
                 trim_start: ts,
                 has_indirect_mem: has_indirect,
                 rbp_offset: rbp_off,
+                reg_refs,
             };
         }
     }
@@ -260,17 +279,17 @@ pub(super) fn classify_line(raw: &str) -> LineInfo {
             if sb[3] == b' ' {
                 // `jmp label` or `jmp __x86_indirect_thunk_rax` or `jmp *%reg`
                 if s.contains("indirect_thunk") {
-                    return line_info(LineKind::JmpIndirect, ts);
+                    return line_info_with_regs(LineKind::JmpIndirect, ts, scan_register_refs(sb));
                 }
                 // `jmp *%rcx` / `jmp *%rax` – indirect jump through register
                 if sb.len() > 4 && sb[4] == b'*' {
-                    return line_info(LineKind::JmpIndirect, ts);
+                    return line_info_with_regs(LineKind::JmpIndirect, ts, scan_register_refs(sb));
                 }
                 return line_info(LineKind::Jmp, ts);
             }
             if sb[3] == b'q' && sb.len() >= 5 && sb[4] == b' ' {
                 // `jmpq *%rax` – computed goto indirect jump
-                return line_info(LineKind::JmpIndirect, ts);
+                return line_info_with_regs(LineKind::JmpIndirect, ts, scan_register_refs(sb));
             }
         }
         if is_conditional_jump(s) {
@@ -280,15 +299,17 @@ pub(super) fn classify_line(raw: &str) -> LineInfo {
 
     if first == b'c' {
         if sb.len() >= 4 && sb[1] == b'a' && sb[2] == b'l' && sb[3] == b'l' {
-            return line_info(LineKind::Call, ts);
+            return line_info_with_regs(LineKind::Call, ts, scan_register_refs(sb));
         }
         // Compare: cmpX
         if sb.len() >= 5 && sb[1] == b'm' && sb[2] == b'p' {
-            return line_info(LineKind::Cmp, ts);
+            return line_info_with_regs(LineKind::Cmp, ts, scan_register_refs(sb));
         }
         // cltq - classify as extension producer
         if s == "cltq" {
-            return line_info_ext(LineKind::Other { dest_reg: 0 }, ExtKind::Cltq, ts);
+            let mut info = line_info_ext(LineKind::Other { dest_reg: 0 }, ExtKind::Cltq, ts);
+            info.reg_refs = 1u16 << 0; // implicitly references rax
+            return info;
         }
     }
 
@@ -298,29 +319,29 @@ pub(super) fn classify_line(raw: &str) -> LineInfo {
 
     // Test instructions
     if first == b't' && sb.len() >= 5 && sb[1] == b'e' && sb[2] == b's' && sb[3] == b't' {
-        return line_info(LineKind::Cmp, ts);
+        return line_info_with_regs(LineKind::Cmp, ts, scan_register_refs(sb));
     }
 
     // ucomis* instructions
     if first == b'u' && (s.starts_with("ucomisd ") || s.starts_with("ucomiss ")) {
-        return line_info(LineKind::Cmp, ts);
+        return line_info_with_regs(LineKind::Cmp, ts, scan_register_refs(sb));
     }
 
     // Push / Pop (extract register for fast checks)
     if first == b'p' {
         if s.starts_with("pushq ") {
             let reg = register_family_fast(s[6..].trim());
-            return line_info(LineKind::Push { reg }, ts);
+            return line_info_with_regs(LineKind::Push { reg }, ts, 1u16 << reg);
         }
         if s.starts_with("popq ") {
             let reg = register_family_fast(s[5..].trim());
-            return line_info(LineKind::Pop { reg }, ts);
+            return line_info_with_regs(LineKind::Pop { reg }, ts, 1u16 << reg);
         }
     }
 
     // SetCC
     if first == b's' && sb.len() >= 4 && sb[1] == b'e' && sb[2] == b't' && parse_setcc(s).is_some() {
-        return line_info(LineKind::SetCC, ts);
+        return line_info_with_regs(LineKind::SetCC, ts, scan_register_refs(sb));
     }
 
     // Pre-classify 32-bit arithmetic producers for extension elimination
@@ -331,7 +352,9 @@ pub(super) fn classify_line(raw: &str) -> LineInfo {
     // Cache has_indirect_memory_access for Other lines
     let has_indirect = has_indirect_memory_access(s);
     let rbp_off = if has_indirect { RBP_OFFSET_NONE } else { parse_rbp_offset(s) };
-    LineInfo { kind: LineKind::Other { dest_reg }, ext_kind: ext, trim_start: ts, has_indirect_mem: has_indirect, rbp_offset: rbp_off }
+    // Pre-scan register references for O(1) checks in eliminate_unused_callee_saves
+    let reg_refs = scan_register_refs(sb);
+    LineInfo { kind: LineKind::Other { dest_reg }, ext_kind: ext, trim_start: ts, has_indirect_mem: has_indirect, rbp_offset: rbp_off, reg_refs }
 }
 
 /// Fast check for self-move: `movq %REG, %REG` where both register names match.
@@ -654,24 +677,32 @@ pub(super) struct LineEntry {
 
 impl LineStore {
     /// Build a LineStore from an assembly string without per-line allocation.
+    /// Uses a single pass over the input to both count and record line boundaries.
     pub(super) fn new(asm: String) -> Self {
         let bytes = asm.as_bytes();
-        let line_count = bytes.iter().filter(|&&b| b == b'\n').count() + 1;
-        let mut entries = Vec::with_capacity(line_count);
+        let total_len = bytes.len();
 
+        // Estimate line count: average ~23 bytes per line for x86 asm.
+        // Over-estimate is fine; Vec will only use the capacity.
+        let estimated_lines = total_len / 20 + 1;
+        let mut entries = Vec::with_capacity(estimated_lines);
+
+        // Single pass: scan for newlines and record line boundaries.
         let mut start = 0usize;
-        for (i, &b) in bytes.iter().enumerate() {
-            if b == b'\n' {
+        let mut i = 0;
+        while i < total_len {
+            if bytes[i] == b'\n' {
                 entries.push(LineEntry {
                     start: start as u32,
                     len: (i - start) as u32,
                 });
                 start = i + 1;
             }
+            i += 1;
         }
         // Handle last line (no trailing newline)
-        if start <= bytes.len() {
-            let remaining = bytes.len() - start;
+        if start <= total_len {
+            let remaining = total_len - start;
             if remaining > 0 || entries.is_empty() {
                 entries.push(LineEntry {
                     start: start as u32,
@@ -743,7 +774,7 @@ impl LineStore {
 
 #[inline]
 pub(super) fn mark_nop(info: &mut LineInfo) {
-    *info = LineInfo { kind: LineKind::Nop, ext_kind: ExtKind::None, trim_start: 0, has_indirect_mem: false, rbp_offset: RBP_OFFSET_NONE };
+    *info = LineInfo { kind: LineKind::Nop, ext_kind: ExtKind::None, trim_start: 0, has_indirect_mem: false, rbp_offset: RBP_OFFSET_NONE, reg_refs: 0 };
 }
 
 /// Replace a line's text and re-classify it.
@@ -1103,6 +1134,145 @@ pub(super) const REG_NAMES: [[&str; 16]; 4] = [
     ["%al",  "%cl",  "%dl",  "%bl",  "%spl", "%bpl", "%sil", "%dil",
      "%r8b", "%r9b", "%r10b","%r11b","%r12b","%r13b","%r14b","%r15b"],
 ];
+
+/// Scan assembly line bytes for register references and return a bitmask.
+/// Bit N set means register family N is referenced somewhere in the line.
+/// This is O(n) in line length and is called once per line during classify_line.
+/// The bitmask eliminates O(n * patterns) `str::contains` calls in passes like
+/// `eliminate_unused_callee_saves`.
+#[inline]
+pub(super) fn scan_register_refs(b: &[u8]) -> u16 {
+    let mut refs: u16 = 0;
+    let len = b.len();
+    let mut i = 0;
+    while i < len {
+        if b[i] == b'%' && i + 2 < len {
+            // Try to identify the register family from the bytes after '%'
+            let fam = match b[i + 1] {
+                b'r' => {
+                    if i + 3 < len {
+                        match (b[i + 2], b[i + 3]) {
+                            (b'a', b'x') => Some(0u8),
+                            (b'c', b'x') => Some(1),
+                            (b'd', b'x') => Some(2),
+                            (b'b', b'x') => Some(3),
+                            (b's', b'p') => Some(4),
+                            (b'b', b'p') => Some(5),
+                            (b's', b'i') => Some(6),
+                            (b'd', b'i') => Some(7),
+                            (b'8', _) => Some(8),
+                            (b'9', _) => Some(9),
+                            (b'1', b'0') => Some(10),
+                            (b'1', b'1') => Some(11),
+                            (b'1', b'2') => Some(12),
+                            (b'1', b'3') => Some(13),
+                            (b'1', b'4') => Some(14),
+                            (b'1', b'5') => Some(15),
+                            _ => None,
+                        }
+                    } else {
+                        // Short: %r8, %r9 (only i + 2 < len is guaranteed here)
+                        match b[i + 2] {
+                            b'8' => Some(8),
+                            b'9' => Some(9),
+                            _ => None,
+                        }
+                    }
+                }
+                b'e' => {
+                    if i + 3 < len {
+                        match (b[i + 2], b[i + 3]) {
+                            (b'a', b'x') => Some(0),
+                            (b'c', b'x') => Some(1),
+                            (b'd', b'x') => Some(2),
+                            (b'b', b'x') => Some(3),
+                            (b's', b'p') => Some(4),
+                            (b'b', b'p') => Some(5),
+                            (b's', b'i') => Some(6),
+                            (b'd', b'i') => Some(7),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                }
+                // 16-bit / 8-bit: %ax, %al, %ah, %cx, %cl, etc.
+                b'a' => Some(0),
+                b'c' => Some(1),
+                b'd' => {
+                    if i + 2 < len && b[i + 2] == b'i' { Some(7) } else { Some(2) }
+                }
+                b'b' => {
+                    if i + 2 < len && b[i + 2] == b'p' { Some(5) } else { Some(3) }
+                }
+                b's' => {
+                    if i + 2 < len {
+                        match b[i + 2] { b'p' => Some(4), b'i' => Some(6), _ => None }
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let Some(id) = fam {
+                refs |= 1u16 << id;
+            }
+            i += 2; // skip past '%X'
+        } else {
+            i += 1;
+        }
+    }
+    refs
+}
+
+/// Write an integer and the "(%rbp)" suffix into a buffer without using core::fmt.
+/// This avoids the overhead of format_args!/write! which was measured at ~2.45%
+/// of total compilation time for large files. Returns the number of bytes written.
+#[inline]
+pub(super) fn write_rbp_pattern(buf: &mut [u8; 24], offset: i32) -> usize {
+    let mut pos = 0;
+    // Write the integer part
+    if offset < 0 {
+        buf[pos] = b'-';
+        pos += 1;
+        // Handle i32::MIN carefully
+        let abs = if offset == i32::MIN {
+            (i32::MIN as i64).unsigned_abs() as u32
+        } else {
+            (-offset) as u32
+        };
+        pos += write_u32_digits(&mut buf[pos..], abs);
+    } else if offset > 0 {
+        pos += write_u32_digits(&mut buf[pos..], offset as u32);
+    } else {
+        // offset == 0: just write "(%rbp)"
+    }
+    // Write "(%rbp)"
+    buf[pos..pos + 6].copy_from_slice(b"(%rbp)");
+    pos + 6
+}
+
+/// Write decimal digits of a u32 into a buffer. Returns the number of bytes written.
+#[inline]
+fn write_u32_digits(buf: &mut [u8], mut v: u32) -> usize {
+    if v == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    // Write digits in reverse order
+    let mut tmp = [0u8; 10];
+    let mut len = 0;
+    while v > 0 {
+        tmp[len] = b'0' + (v % 10) as u8;
+        v /= 10;
+        len += 1;
+    }
+    // Reverse into output buffer
+    for i in 0..len {
+        buf[i] = tmp[len - 1 - i];
+    }
+    len
+}
 
 /// Convert a register family ID and move size to the register name string.
 #[inline]

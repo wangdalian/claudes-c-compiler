@@ -165,6 +165,11 @@ impl ArmCodegen {
         self.state.no_jump_tables = enabled;
     }
 
+    /// Enable position-independent code generation (-fPIC/-fpie).
+    pub fn set_pic(&mut self, pic: bool) {
+        self.state.pic_mode = pic;
+    }
+
     /// Set general-regs-only mode (-mgeneral-regs-only).
     /// When true, FP/SIMD registers are not used in variadic prologues.
     pub fn set_general_regs_only(&mut self, enabled: bool) {
@@ -1225,14 +1230,34 @@ impl ArchCodegen for ArmCodegen {
         }
         self.state.emit_fmt(format_args!("    b.hs {}", default_label));
 
-        // Load jump table base, index, and indirect branch
-        self.state.emit_fmt(format_args!("    adrp x17, {}", table_label));
-        self.state.emit_fmt(format_args!("    add x17, x17, :lo12:{}", table_label));
-        self.state.emit("    ldr x17, [x17, x0, lsl #3]");
-        self.state.emit("    br x17");
+        if self.state.pic_mode {
+            // PIC mode: use relative 32-bit offsets to avoid R_AARCH64_ABS64 relocations.
+            // Each entry is .word (target - table_base), a signed 32-bit offset.
+            // Load table base address (PC-relative), read the 32-bit offset, add, branch.
+            self.state.emit_fmt(format_args!("    adrp x17, {}", table_label));
+            self.state.emit_fmt(format_args!("    add x17, x17, :lo12:{}", table_label));
+            self.state.emit("    ldr w16, [x17, x0, lsl #2]");  // 4-byte relative entries
+            self.state.emit("    add x17, x17, w16, sxtw");      // base + sign-extended offset
+            self.state.emit("    br x17");
 
-        // Emit shared .rodata jump table entries and restore text section
-        emit_jump_table_rodata(self, &table_label, &table);
+            // Emit PIC jump table with relative .word entries
+            self.state.emit(".section .rodata");
+            self.state.emit(".align 2");
+            self.state.emit_fmt(format_args!("{}:", table_label));
+            for target in &table {
+                let target_label = target.as_label();
+                self.state.emit_fmt(format_args!("    .word {} - {}", target_label, table_label));
+            }
+            let sect = self.state.current_text_section.clone();
+            self.state.emit_fmt(format_args!(".section {},\"ax\",@progbits", sect));
+        } else {
+            // Non-PIC: absolute 64-bit addresses
+            self.state.emit_fmt(format_args!("    adrp x17, {}", table_label));
+            self.state.emit_fmt(format_args!("    add x17, x17, :lo12:{}", table_label));
+            self.state.emit("    ldr x17, [x17, x0, lsl #3]");
+            self.state.emit("    br x17");
+            emit_jump_table_rodata(self, &table_label, &table);
+        }
         self.state.reg_cache.invalidate_all();
     }
 
