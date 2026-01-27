@@ -1,0 +1,13 @@
+Task: Fix drivers/ata/ata_piix.c x86 miscompilation
+Status: in_progress
+Started: 2026-01-27
+
+The delta debugging tool (seed=100) found that compiling drivers/ata/ata_piix.c
+with CCC causes the x86 kernel to fail to boot (223s timeout = hang).
+
+Plan:
+1. Compare CCC vs GCC assembly output for ata_piix.c
+2. Identify the miscompiled construct
+3. Write minimal reproducer
+4. Fix the compiler bug
+5. Verify the fix with the DD tool
