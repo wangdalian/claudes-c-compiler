@@ -71,9 +71,19 @@ fn find_constant_return_functions(module: &IrModule) -> FxHashMap<String, IrCons
     let mut result = FxHashMap::default();
 
     for func in &module.functions {
-        // Only analyze defined, static (internal-linkage) functions.
-        // External functions could be overridden or have unknown behavior.
-        if func.is_declaration || !func.is_static {
+        // Only analyze defined functions whose body we can see.
+        // Both static and non-static functions are eligible: we're not removing
+        // the function, just replacing calls within this TU with the constant.
+        // Non-static (external linkage) functions still keep their definition
+        // for other TUs to call. In C, having two strong definitions of the
+        // same function is a linker error, so we can trust the body we see.
+        if func.is_declaration {
+            continue;
+        }
+
+        // Skip weak functions: they can be overridden by a strong definition
+        // in another TU, so we can't trust the body we see.
+        if func.is_weak {
             continue;
         }
 

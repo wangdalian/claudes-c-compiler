@@ -1,0 +1,25 @@
+Task: Fix always_inline functions blocked by hard cap causing linker errors
+Status: in_progress
+
+Problem:
+  The inline pass has a MAX_CALLER_INSTRUCTIONS_HARD_CAP (500) that blocks
+  inlining of all functions including __attribute__((always_inline)) when the
+  caller is too large. This violates C semantics and causes linker errors.
+
+  Specifically, arch_static_branch() is a static __always_inline function
+  that uses asm goto with "i" constraint and %c modifier. When not inlined,
+  the standalone function body has unresolvable "i" constraint operands
+  (parameters are not compile-time constants), producing .quad x9 - . in
+  __jump_table, which causes "undefined reference to x9" linker errors.
+
+  Found via delta debugging: net/unix/af_unix.c fails on ARM.
+
+Fix:
+  1. Remove the hard cap for always_inline callees in the inline pass.
+     always_inline is a C semantic requirement that must be honored.
+  2. In dead function elimination, also remove static always_inline function
+     bodies that should never be emitted as standalone functions.
+
+Files to modify:
+  - src/passes/inline.rs (bypass hard cap for always_inline)
+  - src/passes/mod.rs (eliminate static always_inline in dead fn elimination)
