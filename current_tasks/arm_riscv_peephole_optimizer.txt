@@ -1,0 +1,14 @@
+Task: Implement peephole optimizers for ARM and RISC-V backends
+Status: in_progress
+
+Problem: SQLite tests time out on ARM and RISC-V because the generated code
+is 4-6x slower than GCC. The x86 backend has a sophisticated peephole optimizer
+that removes redundant instructions from the accumulator-based codegen, but
+ARM and RISC-V have no such optimizer.
+
+Plan:
+1. Implement ARM peephole optimizer (store/load elimination, dead stores,
+   self-move removal, redundant jumps, store forwarding, sxtw elimination)
+2. Implement RISC-V peephole optimizer (same patterns adapted for RISC-V syntax)
+3. Verify SQLite tests pass on all architectures
+4. Add regression tests
