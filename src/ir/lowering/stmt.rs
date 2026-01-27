@@ -86,6 +86,7 @@ impl Lowerer {
                 is_const: decl.is_const,
                 is_volatile: decl.is_volatile,
                 is_common: decl.is_common,
+                is_thread_local: decl.is_thread_local,
                 is_transparent_union: decl.is_transparent_union,
                 alignment: decl.alignment,
                 alignas_type: decl.alignas_type.clone(),
@@ -397,6 +398,7 @@ impl Lowerer {
             has_explicit_align,
             is_const: var_is_const,
             is_used: false,
+            is_thread_local: decl.is_thread_local,
         });
 
         // Track as a global for access via GlobalAddr

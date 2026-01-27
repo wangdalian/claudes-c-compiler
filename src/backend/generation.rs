@@ -421,6 +421,12 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule) -> String {
         for (label, _) in &module.wide_string_literals {
             state.local_symbols.insert(label.clone());
         }
+        // Build set of thread-local symbols for TLS-aware address generation
+        for global in &module.globals {
+            if global.is_thread_local {
+                state.tls_symbols.insert(global.name.clone());
+            }
+        }
     }
 
     // Emit data sections
@@ -832,13 +838,12 @@ fn generate_instruction(cg: &mut dyn ArchCodegen, inst: &Instruction, gep_fold_m
             // Cache is set by emit_store_result(dest) inside emit_gep.
         }
         Instruction::GlobalAddr { dest, name } => {
-            // In kernel code model, use absolute addressing (R_X86_64_32S) for
-            // GlobalAddr values that are NOT used as Load/Store pointers. This
-            // gives the linked virtual address, needed for expressions like
-            // (unsigned long)_text. For GlobalAddr values used as pointers,
-            // keep RIP-relative addressing so memory accesses work at any
-            // physical/virtual address during early boot.
-            if cg.state_ref().code_model_kernel && !global_addr_ptr_set.contains(&dest.0) {
+            if cg.state_ref().tls_symbols.contains(name.as_str()) {
+                // Thread-local variable: use TLS access pattern
+                cg.emit_tls_global_addr(dest, name);
+            } else if cg.state_ref().code_model_kernel && !global_addr_ptr_set.contains(&dest.0) {
+                // In kernel code model, use absolute addressing (R_X86_64_32S) for
+                // GlobalAddr values that are NOT used as Load/Store pointers.
                 cg.emit_global_addr_absolute(dest, name);
             } else {
                 cg.emit_global_addr(dest, name);

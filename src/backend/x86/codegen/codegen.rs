@@ -2944,6 +2944,15 @@ impl ArchCodegen for X86Codegen {
         self.store_rax_to(dest);
     }
 
+    fn emit_tls_global_addr(&mut self, dest: &Value, name: &str) {
+        // Local Exec TLS model for x86-64:
+        // movq %fs:0, %rax      ; load thread pointer
+        // leaq x@TPOFF(%rax), %rax  ; add TLS offset of x
+        self.state.emit("    movq %fs:0, %rax");
+        self.state.emit_fmt(format_args!("    leaq {}@TPOFF(%rax), %rax", name));
+        self.store_rax_to(dest);
+    }
+
     fn emit_global_addr_absolute(&mut self, dest: &Value, name: &str) {
         // Kernel code model: use absolute addressing to get the linked
         // virtual address of the symbol. This generates an R_X86_64_32S

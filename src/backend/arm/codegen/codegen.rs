@@ -2818,6 +2818,17 @@ impl ArchCodegen for ArmCodegen {
         self.store_x0_to(dest);
     }
 
+    fn emit_tls_global_addr(&mut self, dest: &Value, name: &str) {
+        // Local Exec TLS model for AArch64:
+        // mrs x0, tpidr_el0           ; load thread pointer
+        // add x0, x0, :tprel_hi12:x   ; add high 12 bits of TLS offset
+        // add x0, x0, :tprel_lo12_nc:x; add low 12 bits of TLS offset
+        self.state.emit("    mrs x0, tpidr_el0");
+        self.state.emit_fmt(format_args!("    add x0, x0, :tprel_hi12:{}", name));
+        self.state.emit_fmt(format_args!("    add x0, x0, :tprel_lo12_nc:{}", name));
+        self.store_x0_to(dest);
+    }
+
     fn emit_cast_instrs(&mut self, from_ty: IrType, to_ty: IrType) {
         match classify_cast(from_ty, to_ty) {
             CastKind::Noop => {}

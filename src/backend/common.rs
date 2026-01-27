@@ -588,6 +588,8 @@ fn effective_align(g: &IrGlobal) -> usize {
 fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective) {
     let mut has_data = false;
     let mut has_bss = false;
+    let mut has_tdata = false;
+    let mut has_tbss = false;
 
     // Emit visibility directives for extern (undefined) globals that have non-default
     // visibility. This is needed for PIC code so the assembler/linker knows these symbols
@@ -666,13 +668,34 @@ fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective
         }
     }
 
-    // Non-const initialized globals -> .data (skip those with custom sections)
+    // Thread-local initialized globals -> .tdata
+    for g in globals {
+        if g.is_extern || !g.is_thread_local || g.section.is_some() {
+            continue;
+        }
+        if matches!(g.init, GlobalInit::Zero) || g.size == 0 {
+            continue;
+        }
+        if !has_tdata {
+            out.emit(".section .tdata,\"awT\",@progbits");
+            has_tdata = true;
+        }
+        emit_global_def(out, g, ptr_dir);
+    }
+    if has_tdata {
+        out.emit("");
+    }
+
+    // Non-const initialized globals -> .data (skip those with custom sections and TLS)
     for g in globals {
         if g.is_extern {
             continue; // extern declarations have no storage
         }
         if g.section.is_some() {
             continue; // already emitted in custom section
+        }
+        if g.is_thread_local {
+            continue; // TLS globals go to .tdata/.tbss
         }
         if matches!(g.init, GlobalInit::Zero) {
             continue;
@@ -711,7 +734,37 @@ fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective
         out.emit_fmt(format_args!(".comm {},{},{}", g.name, g.size, effective_align(g)));
     }
 
-    // Zero-initialized globals -> .bss (skip those with custom sections)
+    // Thread-local zero-initialized globals -> .tbss
+    for g in globals {
+        if g.is_extern || !g.is_thread_local || g.section.is_some() {
+            continue;
+        }
+        if !matches!(g.init, GlobalInit::Zero) && g.size != 0 {
+            continue; // has initializer, already in .tdata
+        }
+        if !has_tbss {
+            out.emit(".section .tbss,\"awT\",@nobits");
+            has_tbss = true;
+        }
+        if !g.is_static {
+            if g.is_weak {
+                out.emit_fmt(format_args!(".weak {}", g.name));
+            } else {
+                out.emit_fmt(format_args!(".globl {}", g.name));
+            }
+        }
+        emit_visibility_directive(out, &g.name, &g.visibility);
+        out.emit_fmt(format_args!(".align {}", ptr_dir.align_arg(effective_align(g))));
+        out.emit_fmt(format_args!(".type {}, @tls_object", g.name));
+        out.emit_fmt(format_args!(".size {}, {}", g.name, g.size));
+        out.emit_fmt(format_args!("{}:", g.name));
+        out.emit_fmt(format_args!("    .zero {}", g.size));
+    }
+    if has_tbss {
+        out.emit("");
+    }
+
+    // Zero-initialized globals -> .bss (skip those with custom sections and TLS)
     // Also includes zero-size globals with empty initializers (e.g., `Type arr[0] = {}`)
     // which were skipped from .data to avoid address overlap.
     for g in globals {
@@ -720,6 +773,9 @@ fn emit_globals(out: &mut AsmOutput, globals: &[IrGlobal], ptr_dir: PtrDirective
         }
         if g.section.is_some() {
             continue; // already emitted in custom section
+        }
+        if g.is_thread_local {
+            continue; // TLS globals go to .tdata/.tbss
         }
         let is_zero_init = matches!(g.init, GlobalInit::Zero);
         let is_zero_size_with_init = g.size == 0 && !is_zero_init;
@@ -775,7 +831,8 @@ fn emit_global_def(out: &mut AsmOutput, g: &IrGlobal, ptr_dir: PtrDirective) {
     }
     emit_visibility_directive(out, &g.name, &g.visibility);
     out.emit_fmt(format_args!(".align {}", ptr_dir.align_arg(effective_align(g))));
-    out.emit_fmt(format_args!(".type {}, @object", g.name));
+    let obj_type = if g.is_thread_local { "@tls_object" } else { "@object" };
+    out.emit_fmt(format_args!(".type {}, {}", g.name, obj_type));
     out.emit_fmt(format_args!(".size {}, {}", g.name, g.size));
     out.emit_fmt(format_args!("{}:", g.name));
 

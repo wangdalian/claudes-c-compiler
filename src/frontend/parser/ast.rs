@@ -79,6 +79,8 @@ pub struct Declaration {
     pub is_const: bool,
     pub is_volatile: bool,
     pub is_common: bool,
+    /// Whether _Thread_local or __thread storage class was specified.
+    pub is_thread_local: bool,
     /// Whether __attribute__((transparent_union)) was applied to this typedef.
     pub is_transparent_union: bool,
     /// Alignment override from _Alignas(N) or __attribute__((aligned(N))).
@@ -113,6 +115,7 @@ impl Declaration {
             is_const: false,
             is_volatile: false,
             is_common: false,
+            is_thread_local: false,
             is_transparent_union: false,
             alignment: None,
             alignas_type: None,

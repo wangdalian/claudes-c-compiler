@@ -1,0 +1,6 @@
+Task: Split ir/lowering/types.rs into focused submodules
+Status: in_progress
+Started: 2026-01-27
+Description: Split the monolithic types.rs (1441 lines) into focused
+submodules: types_seed.rs (builtin seeding), types_ctype.rs (CType conversion).
+Files: src/ir/lowering/types.rs

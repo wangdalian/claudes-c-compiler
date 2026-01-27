@@ -496,6 +496,13 @@ pub trait ArchCodegen {
         self.emit_global_addr(dest, name);
     }
 
+    /// Emit the address of a thread-local variable using TLS access patterns.
+    /// Uses Local Exec model for executables:
+    /// - x86-64: %fs:0 + x@TPOFF
+    /// - AArch64: mrs tpidr_el0 + :tprel_hi12:/:tprel_lo12_nc: offsets
+    /// - RISC-V: tp register + %tprel_hi/%tprel_lo offsets
+    fn emit_tls_global_addr(&mut self, dest: &Value, name: &str);
+
     /// Emit a get-element-pointer (base + offset).
     fn emit_gep(&mut self, dest: &Value, base: &Value, offset: &Operand) {
         // Optimized path for constant offsets: avoid loading offset into acc

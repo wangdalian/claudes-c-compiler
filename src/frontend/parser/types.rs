@@ -95,7 +95,7 @@ impl Parser {
                 // Thread-local storage class (__thread / _Thread_local)
                 TokenKind::ThreadLocal => {
                     self.advance();
-                    // Treat as regular storage for now (TLS not yet implemented)
+                    self.parsing_thread_local = true;
                 }
                 // _Complex modifier
                 TokenKind::Complex => {
@@ -278,7 +278,8 @@ impl Parser {
                     TokenKind::SegFs => { self.advance(); self.parsing_address_space = AddressSpace::SegFs; }
                     TokenKind::Static => { self.advance(); self.parsing_static = true; }
                     TokenKind::Extern => { self.advance(); self.parsing_extern = true; }
-                    TokenKind::Auto | TokenKind::Register | TokenKind::ThreadLocal => { self.advance(); }
+                    TokenKind::Auto | TokenKind::Register => { self.advance(); }
+                    TokenKind::ThreadLocal => { self.advance(); self.parsing_thread_local = true; }
                     TokenKind::Noreturn => { self.advance(); self.parsing_noreturn = true; }
                     TokenKind::Inline => { self.advance(); self.parsing_inline = true; }
                     TokenKind::Attribute => {
@@ -302,7 +303,8 @@ impl Parser {
                     TokenKind::SegFs => { self.advance(); self.parsing_address_space = AddressSpace::SegFs; }
                     TokenKind::Static => { self.advance(); self.parsing_static = true; }
                     TokenKind::Extern => { self.advance(); self.parsing_extern = true; }
-                    TokenKind::Auto | TokenKind::Register | TokenKind::ThreadLocal => { self.advance(); }
+                    TokenKind::Auto | TokenKind::Register => { self.advance(); }
+                    TokenKind::ThreadLocal => { self.advance(); self.parsing_thread_local = true; }
                     TokenKind::Noreturn => { self.advance(); self.parsing_noreturn = true; }
                     TokenKind::Inline => { self.advance(); self.parsing_inline = true; }
                     TokenKind::Extension => { self.advance(); }
@@ -320,7 +322,8 @@ impl Parser {
                     TokenKind::SegFs => { self.advance(); self.parsing_address_space = AddressSpace::SegFs; }
                     TokenKind::Static => { self.advance(); self.parsing_static = true; }
                     TokenKind::Extern => { self.advance(); self.parsing_extern = true; }
-                    TokenKind::Auto | TokenKind::Register | TokenKind::ThreadLocal => { self.advance(); }
+                    TokenKind::Auto | TokenKind::Register => { self.advance(); }
+                    TokenKind::ThreadLocal => { self.advance(); self.parsing_thread_local = true; }
                     TokenKind::Noreturn => { self.advance(); self.parsing_noreturn = true; }
                     TokenKind::Inline => { self.advance(); self.parsing_inline = true; }
                     TokenKind::Extension => { self.advance(); }
@@ -486,8 +489,12 @@ impl Parser {
                     self.advance();
                     self.parsing_extern = true;
                 }
-                TokenKind::Auto | TokenKind::Register | TokenKind::ThreadLocal => {
+                TokenKind::Auto | TokenKind::Register => {
                     self.advance();
+                }
+                TokenKind::ThreadLocal => {
+                    self.advance();
+                    self.parsing_thread_local = true;
                 }
                 TokenKind::Noreturn => {
                     self.advance();

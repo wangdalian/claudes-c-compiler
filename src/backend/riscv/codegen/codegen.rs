@@ -2114,6 +2114,17 @@ impl ArchCodegen for RiscvCodegen {
         self.store_t0_to(dest);
     }
 
+    fn emit_tls_global_addr(&mut self, dest: &Value, name: &str) {
+        // Local Exec TLS model for RISC-V:
+        // lui t0, %tprel_hi(x)
+        // add t0, t0, tp, %tprel_add(x)
+        // addi t0, t0, %tprel_lo(x)
+        self.state.emit_fmt(format_args!("    lui t0, %tprel_hi({})", name));
+        self.state.emit_fmt(format_args!("    add t0, t0, tp, %tprel_add({})", name));
+        self.state.emit_fmt(format_args!("    addi t0, t0, %tprel_lo({})", name));
+        self.store_t0_to(dest);
+    }
+
     fn emit_cast_instrs(&mut self, from_ty: IrType, to_ty: IrType) {
         match classify_cast(from_ty, to_ty) {
             CastKind::Noop => {}

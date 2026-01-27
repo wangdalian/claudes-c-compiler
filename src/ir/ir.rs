@@ -72,6 +72,9 @@ pub struct IrGlobal {
     pub is_const: bool,
     /// __attribute__((used)) - prevent dead code elimination of this symbol.
     pub is_used: bool,
+    /// Whether this global has _Thread_local or __thread storage class.
+    /// Thread-local globals are placed in .tdata/.tbss and accessed via TLS mechanisms.
+    pub is_thread_local: bool,
 }
 
 /// Initializer for a global variable.

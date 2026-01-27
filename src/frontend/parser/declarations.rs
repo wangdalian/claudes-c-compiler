@@ -20,6 +20,7 @@ impl Parser {
         self.parsing_typedef = false;
         self.parsing_static = false;
         self.parsing_extern = false;
+        self.parsing_thread_local = false;
         self.parsing_inline = false;
         self.parsing_const = false;
         self.parsing_volatile = false;
@@ -113,6 +114,7 @@ impl Parser {
                 is_const: self.parsing_const,
                 is_volatile: self.parsing_volatile,
                 is_common: false,
+                is_thread_local: self.parsing_thread_local,
                 is_transparent_union: false,
                 alignment: None,
                 alignas_type: None,
@@ -563,6 +565,7 @@ impl Parser {
             is_const: self.parsing_const,
             is_volatile: self.parsing_volatile,
             is_common,
+            is_thread_local: self.parsing_thread_local,
             is_transparent_union,
             alignment,
             alignas_type,
@@ -577,6 +580,7 @@ impl Parser {
         let start = self.peek_span();
         self.parsing_static = false;
         self.parsing_extern = false;
+        self.parsing_thread_local = false;
         self.parsing_typedef = false;
         self.parsing_inline = false;
         self.parsing_const = false;
@@ -594,7 +598,7 @@ impl Parser {
         // Handle bare type with semicolon (struct/enum/union definition)
         if matches!(self.peek(), TokenKind::Semicolon) {
             self.advance();
-            return Some(Declaration { type_spec, declarators, is_static, is_extern, is_typedef: self.parsing_typedef, is_const: self.parsing_const, is_volatile: self.parsing_volatile, is_common: false, is_transparent_union: false, alignment: None, alignas_type: None, alignment_sizeof_type: None, address_space: self.parsing_address_space, vector_size: self.parsing_vector_size.take(), span: start });
+            return Some(Declaration { type_spec, declarators, is_static, is_extern, is_typedef: self.parsing_typedef, is_const: self.parsing_const, is_volatile: self.parsing_volatile, is_common: false, is_thread_local: self.parsing_thread_local, is_transparent_union: false, alignment: None, alignas_type: None, alignment_sizeof_type: None, address_space: self.parsing_address_space, vector_size: self.parsing_vector_size.take(), span: start });
         }
 
         let mut mode_kind: Option<ModeKind> = None;
@@ -677,7 +681,7 @@ impl Parser {
         let alignment_sizeof_type = self.parsed_alignment_sizeof_type.take();
         let is_transparent_union = self.parsing_transparent_union;
         self.parsing_transparent_union = false;
-        Some(Declaration { type_spec, declarators, is_static, is_extern, is_typedef, is_const: self.parsing_const, is_volatile: self.parsing_volatile, is_common: false, is_transparent_union, alignment, alignas_type, alignment_sizeof_type, address_space: self.parsing_address_space, vector_size: self.parsing_vector_size.take(), span: start })
+        Some(Declaration { type_spec, declarators, is_static, is_extern, is_typedef, is_const: self.parsing_const, is_volatile: self.parsing_volatile, is_common: false, is_thread_local: self.parsing_thread_local, is_transparent_union, alignment, alignas_type, alignment_sizeof_type, address_space: self.parsing_address_space, vector_size: self.parsing_vector_size.take(), span: start })
     }
 
     /// Parse an initializer: either a braced initializer list or a single expression.

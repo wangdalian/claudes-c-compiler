@@ -637,6 +637,7 @@ impl Lowerer {
             has_explicit_align: false, // compound literals don't have explicit alignment
             is_const: false, // compound literals are mutable by default
             is_used: false,
+            is_thread_local: false,
         });
 
         GlobalInit::GlobalAddr(label)

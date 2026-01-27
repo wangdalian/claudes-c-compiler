@@ -58,6 +58,8 @@ pub struct Parser {
     pub(super) parsing_static: bool,
     /// Set to true when parse_type_specifier encounters an `extern` keyword.
     pub(super) parsing_extern: bool,
+    /// Set to true when parse_type_specifier encounters `_Thread_local` or `__thread`.
+    pub(super) parsing_thread_local: bool,
     /// Set to true when parse_type_specifier encounters an `inline` keyword.
     pub(super) parsing_inline: bool,
     /// Set to true when parse_type_specifier encounters a `const` qualifier.
@@ -148,6 +150,7 @@ impl Parser {
             parsing_typedef: false,
             parsing_static: false,
             parsing_extern: false,
+            parsing_thread_local: false,
             parsing_inline: false,
             parsing_const: false,
             parsing_volatile: false,

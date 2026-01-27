@@ -95,6 +95,9 @@ pub struct CodegenState {
     /// Set of symbol names that are locally defined (not extern) and have internal
     /// linkage (static) — these can use direct addressing even in PIC mode.
     pub local_symbols: FxHashSet<String>,
+    /// Set of symbol names that are thread-local (_Thread_local / __thread).
+    /// These require TLS-specific access patterns (e.g., %fs:x@TPOFF on x86-64).
+    pub tls_symbols: FxHashSet<String>,
     /// Whether the current function contains DynAlloca instructions.
     /// When true, the epilogue must restore SP from the frame pointer instead of
     /// adding back the compile-time frame size.
@@ -155,6 +158,7 @@ impl CodegenState {
             label_counter: 0,
             pic_mode: false,
             local_symbols: FxHashSet::default(),
+            tls_symbols: FxHashSet::default(),
             has_dyn_alloca: false,
             reg_cache: RegCache::default(),
             function_return_thunk: false,

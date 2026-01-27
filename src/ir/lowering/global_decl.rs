@@ -103,6 +103,29 @@ impl Lowerer {
                     ginfo.var.address_space = decl.address_space;
                     self.globals.insert(declarator.name.clone(), ginfo);
                 }
+                // For extern TLS variables, we still need an IrGlobal entry so the
+                // codegen layer knows to use TLS access patterns for this symbol.
+                if decl.is_thread_local && !self.emitted_global_names.contains(&declarator.name) {
+                    let da = self.analyze_declaration(&decl.type_spec, &declarator.derived);
+                    self.module.globals.push(IrGlobal {
+                        name: declarator.name.clone(),
+                        ty: da.var_ty,
+                        size: da.actual_alloc_size,
+                        align: da.var_ty.align(),
+                        init: GlobalInit::Zero,
+                        is_static: false,
+                        is_extern: true,
+                        is_common: false,
+                        section: None,
+                        is_weak: declarator.is_weak,
+                        visibility: declarator.visibility.clone(),
+                        has_explicit_align: false,
+                        is_const: false,
+                        is_used: false,
+                        is_thread_local: true,
+                    });
+                    self.emitted_global_names.insert(declarator.name.clone());
+                }
                 continue;
             }
 
@@ -258,6 +281,7 @@ impl Lowerer {
                 has_explicit_align,
                 is_const: var_is_const,
                 is_used: declarator.is_used,
+                is_thread_local: decl.is_thread_local,
             });
         }
     }

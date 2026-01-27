@@ -60,6 +60,10 @@ A C compiler written from scratch in Rust, targeting x86-64, AArch64, and RISC-V
   - Global pointer-to-string (`char *msg = "hello";`)
   - Read/write access to globals from any function
   - Constant expression evaluation for initializers
+- **Thread-local storage**: `_Thread_local` / `__thread` variables with per-thread semantics
+  - Initialized TLS globals in `.tdata` section, zero-init in `.tbss`
+  - Local Exec TLS model on all 3 backends (x86: `%fs:@TPOFF`, ARM: `tpidr_el0`, RISC-V: `tp` register)
+  - Both `static _Thread_local` (function-scope) and `extern _Thread_local` (cross-TU) supported
 
 ### Recent Work
 See `git log` for full history. Key milestones:
@@ -102,7 +106,7 @@ See `git log` for full history. Key milestones:
 | libsodium | PASS | All 7 tests pass on all architectures (init, random, sha256, secretbox, sign, box, generichash) |
 | mquickjs | PASS | All 5 tests pass (closure, language, loop, builtin, bytecode roundtrip) |
 | libpng | PASS | pngtest passes |
-| libjpeg-turbo | PASS | Builds; cjpeg/djpeg roundtrip and jpegtran pass |
+| libjpeg-turbo | FAIL | Linker errors: static inline functions not emitted (pre-existing) |
 | sqlite | PASS | All 622 sqllogictest tests pass (x86, ARM, RISC-V) |
 | libuv | PASS | All 7 tests pass (version, loop, timer, idle, async, tcp_bind, fs) |
 | redis | PASS | All 3 tests pass (version, cli version, SET/GET roundtrip) |
