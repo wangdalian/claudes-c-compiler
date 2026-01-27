@@ -748,6 +748,8 @@ pub(super) fn for_each_operand_in_instruction(inst: &Instruction, mut f: impl Fn
         Instruction::SetReturnF64Second { src } => f(src),
         Instruction::GetReturnF32Second { .. } => {}
         Instruction::SetReturnF32Second { src } => f(src),
+        Instruction::GetReturnF128Second { .. } => {},
+        Instruction::SetReturnF128Second { src } => f(src),
         Instruction::InlineAsm { inputs, .. } => {
             for (_, op, _) in inputs { f(op); }
         }

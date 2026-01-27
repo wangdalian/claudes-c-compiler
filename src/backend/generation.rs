@@ -1080,6 +1080,8 @@ fn generate_instruction(cg: &mut dyn ArchCodegen, inst: &Instruction, gep_fold_m
                 Instruction::SetReturnF64Second { src } => cg.emit_set_return_f64_second(src),
                 Instruction::GetReturnF32Second { dest } => cg.emit_get_return_f32_second(dest),
                 Instruction::SetReturnF32Second { src } => cg.emit_set_return_f32_second(src),
+                Instruction::GetReturnF128Second { dest } => cg.emit_get_return_f128_second(dest),
+                Instruction::SetReturnF128Second { src } => cg.emit_set_return_f128_second(src),
                 Instruction::InlineAsm { template, outputs, inputs, clobbers, operand_types, goto_labels, input_symbols, seg_overrides } =>
                     cg.emit_inline_asm_with_segs(template, outputs, inputs, clobbers, operand_types, goto_labels, input_symbols, seg_overrides),
                 Instruction::Intrinsic { dest, op, dest_ptr, args } => cg.emit_intrinsic(dest, op, dest_ptr, args),

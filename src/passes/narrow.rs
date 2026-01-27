@@ -621,7 +621,8 @@ fn for_each_used_value(inst: &Instruction, f: &mut impl FnMut(Value)) {
         Instruction::Alloca { .. } | Instruction::GlobalAddr { .. }
         | Instruction::LabelAddr { .. } | Instruction::StackSave { .. }
         | Instruction::Fence { .. } | Instruction::GetReturnF64Second { .. }
-        | Instruction::GetReturnF32Second { .. } => {}
+        | Instruction::GetReturnF32Second { .. }
+        | Instruction::GetReturnF128Second { .. } => {}
 
         Instruction::DynAlloca { size, .. } => visit_operand(size, f),
         Instruction::Store { val, ptr, .. } => { visit_operand(val, f); f(*ptr); }
@@ -649,7 +650,7 @@ fn for_each_used_value(inst: &Instruction, f: &mut impl FnMut(Value)) {
         Instruction::Phi { incoming, .. } => {
             for (op, _) in incoming { visit_operand(op, f); }
         }
-        Instruction::SetReturnF64Second { src } | Instruction::SetReturnF32Second { src } => visit_operand(src, f),
+        Instruction::SetReturnF64Second { src } | Instruction::SetReturnF32Second { src } | Instruction::SetReturnF128Second { src } => visit_operand(src, f),
         Instruction::InlineAsm { outputs, inputs, .. } => {
             for (_, ptr, _) in outputs { f(*ptr); }
             for (_, op, _) in inputs { visit_operand(op, f); }

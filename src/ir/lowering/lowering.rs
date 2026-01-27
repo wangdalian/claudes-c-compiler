@@ -567,7 +567,10 @@ impl Lowerer {
         //   x86-64: packed two F32 in one xmm register -> F64
         //   ARM/RISC-V: real in first FP register -> F32, imag in second FP register
         if ptr_count == 0 {
-            if matches!(full_ret_ctype, CType::ComplexDouble) {
+            if matches!(full_ret_ctype, CType::ComplexLongDouble) && self.is_x86() {
+                // x86-64: _Complex long double returns real part in x87 st(0)
+                ret_ty = IrType::F128;
+            } else if matches!(full_ret_ctype, CType::ComplexDouble) {
                 ret_ty = IrType::F64;
             } else if matches!(full_ret_ctype, CType::ComplexFloat) {
                 if self.uses_packed_complex_float() {
@@ -603,8 +606,12 @@ impl Lowerer {
                 }
             }
             if matches!(full_ret_ctype, CType::ComplexLongDouble) {
-                let size = self.sizeof_type(ret_type_spec);
-                sret_size = Some(size);
+                // On x86-64, _Complex long double is returned via x87 st(0)/st(1),
+                // not via hidden pointer (sret). On other targets, use sret.
+                if !self.is_x86() {
+                    let size = self.sizeof_type(ret_type_spec);
+                    sret_size = Some(size);
+                }
             }
         }
 

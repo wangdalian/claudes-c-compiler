@@ -357,10 +357,14 @@ fn instruction_used_values(inst: &Instruction) -> Vec<u32> {
         Instruction::LabelAddr { .. } => {}
         Instruction::GetReturnF64Second { .. } => {}
         Instruction::GetReturnF32Second { .. } => {}
+        Instruction::GetReturnF128Second { .. } => {}
         Instruction::SetReturnF64Second { src } => {
             add_operand_values(src, &mut used);
         }
         Instruction::SetReturnF32Second { src } => {
+            add_operand_values(src, &mut used);
+        }
+        Instruction::SetReturnF128Second { src } => {
             add_operand_values(src, &mut used);
         }
         Instruction::InlineAsm { outputs, inputs, .. } => {

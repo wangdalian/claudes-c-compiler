@@ -177,6 +177,7 @@ fn is_side_effect_free(func: &crate::ir::ir::IrFunction) -> bool {
                 | Instruction::VaArg { .. }
                 | Instruction::SetReturnF64Second { .. }
                 | Instruction::SetReturnF32Second { .. }
+                | Instruction::SetReturnF128Second { .. }
                 | Instruction::Load { .. }
                 | Instruction::AtomicLoad { .. } => {
                     // Loads read memory that could change between calls,
@@ -203,7 +204,8 @@ fn is_side_effect_free(func: &crate::ir::ir::IrFunction) -> bool {
                 // but Call is already rejected above, so these are unreachable.
                 // Classify as side-effecting for correctness if that ever changes.
                 Instruction::GetReturnF64Second { .. }
-                | Instruction::GetReturnF32Second { .. } => {
+                | Instruction::GetReturnF32Second { .. }
+                | Instruction::GetReturnF128Second { .. } => {
                     return false;
                 }
             }

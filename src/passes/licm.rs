@@ -237,6 +237,7 @@ fn for_each_operand_value(inst: &Instruction, mut f: impl FnMut(u32)) {
         }
         Instruction::SetReturnF64Second { src } => collect(src, &mut f),
         Instruction::SetReturnF32Second { src } => collect(src, &mut f),
+        Instruction::SetReturnF128Second { src } => collect(src, &mut f),
         Instruction::DynAlloca { size, .. } => collect(size, &mut f),
         Instruction::Select { cond, true_val, false_val, .. } => {
             collect(cond, &mut f);
@@ -251,6 +252,7 @@ fn for_each_operand_value(inst: &Instruction, mut f: impl FnMut(u32)) {
         | Instruction::LabelAddr { .. }
         | Instruction::GetReturnF64Second { .. }
         | Instruction::GetReturnF32Second { .. }
+        | Instruction::GetReturnF128Second { .. }
         | Instruction::Fence { .. }
         | Instruction::StackSave { .. }
         | Instruction::StackRestore { .. } => {}

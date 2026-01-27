@@ -1486,6 +1486,12 @@ fn remap_instruction(inst: &Instruction, vo: u32, bo: u32) -> Instruction {
         Instruction::SetReturnF32Second { src } => Instruction::SetReturnF32Second {
             src: remap_operand(src, vo),
         },
+        Instruction::GetReturnF128Second { dest } => Instruction::GetReturnF128Second {
+            dest: remap_value(*dest, vo),
+        },
+        Instruction::SetReturnF128Second { src } => Instruction::SetReturnF128Second {
+            src: remap_operand(src, vo),
+        },
         Instruction::InlineAsm { template, outputs, inputs, clobbers, operand_types, goto_labels, input_symbols, seg_overrides } => Instruction::InlineAsm {
             template: template.clone(),
             outputs: outputs.iter().map(|(c, v, n)| (c.clone(), remap_value(*v, vo), n.clone())).collect(),

@@ -304,6 +304,26 @@ impl Lowerer {
                 self.emit(Instruction::Store { val: Operand::Value(imag_val), ptr: imag_ptr, ty: IrType::F64 , seg_override: AddressSpace::Default });
                 Some(Operand::Value(alloca))
             }
+            CType::ComplexLongDouble if self.is_x86() => {
+                // x86-64: _Complex long double returns real in x87 st(0), imag in x87 st(1).
+                // After the call, emit_call_store_result stores st(0) (real) into dest.
+                // GetReturnF128Second reads the next x87 value (former st(1), now st(0) after first fstpt).
+                let imag_val = self.fresh_value();
+                self.emit(Instruction::GetReturnF128Second { dest: imag_val });
+                let alloca = self.fresh_value();
+                self.emit(Instruction::Alloca { dest: alloca, ty: IrType::Ptr, size: 32, align: 16, volatile: false });
+                // Store real part (F128) at offset 0
+                self.emit(Instruction::Store { val: Operand::Value(dest), ptr: alloca, ty: IrType::F128, seg_override: AddressSpace::Default });
+                // Store imag part (F128) at offset 16
+                let imag_ptr = self.fresh_value();
+                self.emit(Instruction::BinOp {
+                    dest: imag_ptr, op: IrBinOp::Add,
+                    lhs: Operand::Value(alloca), rhs: Operand::Const(IrConst::I64(16)),
+                    ty: IrType::I64,
+                });
+                self.emit(Instruction::Store { val: Operand::Value(imag_val), ptr: imag_ptr, ty: IrType::F128, seg_override: AddressSpace::Default });
+                Some(Operand::Value(alloca))
+            }
             _ => None,
         }
     }
@@ -699,8 +719,9 @@ impl Lowerer {
             CType::ComplexFloat => IrType::F64,
             // Complex double: real part in xmm0 as F64
             CType::ComplexDouble => IrType::F64,
-            // Complex long double uses sret (passed via pointer), not registers
-            CType::ComplexLongDouble => IrType::Ptr,
+            // Complex long double: on x86-64 returns via x87 st(0)/st(1), real part as F128.
+            // On other targets this is handled via sret before reaching this point.
+            CType::ComplexLongDouble => IrType::F128,
             other => IrType::from_ctype(other),
         }
     }

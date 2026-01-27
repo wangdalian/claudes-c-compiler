@@ -3709,6 +3709,16 @@ impl ArchCodegen for ArmCodegen {
         }
     }
 
+    fn emit_get_return_f128_second(&mut self, _dest: &Value) {
+        // ARM64: _Complex long double is decomposed into separate F128 args/returns,
+        // so this should not be reached. If it is, do nothing.
+    }
+
+    fn emit_set_return_f128_second(&mut self, _src: &Operand) {
+        // ARM64: _Complex long double is decomposed into separate F128 args/returns,
+        // so this should not be reached. If it is, do nothing.
+    }
+
     fn emit_atomic_rmw(&mut self, dest: &Value, op: AtomicRmwOp, ptr: &Operand, val: &Operand, ty: IrType, ordering: AtomicOrdering) {
         // Load ptr into x1, val into x2
         self.operand_to_x0(ptr);

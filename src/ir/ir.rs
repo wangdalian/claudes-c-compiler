@@ -374,6 +374,16 @@ pub enum Instruction {
     /// Must appear immediately before a Return terminator.
     SetReturnF32Second { src: Operand },
 
+    /// Get the second F128 return value from a function call (for _Complex long double returns on x86-64).
+    /// On x86-64: reads st(0) after the first fstpt has already popped the real part.
+    /// Must appear immediately after a Call/CallIndirect instruction.
+    GetReturnF128Second { dest: Value },
+
+    /// Set the second F128 return value before a return (for _Complex long double returns on x86-64).
+    /// On x86-64: loads an additional value onto the x87 FPU stack as st(1).
+    /// Must appear immediately before a Return terminator.
+    SetReturnF128Second { src: Operand },
+
     /// Inline assembly statement
     InlineAsm {
         /// Assembly template string (with \n\t separators)
@@ -1193,6 +1203,7 @@ impl Instruction {
                 IntrinsicOp::SqrtF64 | IntrinsicOp::FabsF64 => Some(IrType::F64),
                 _ => None,
             },
+            Instruction::GetReturnF128Second { .. } => Some(IrType::F128),
             _ => None,
         }
     }
@@ -1217,6 +1228,7 @@ impl Instruction {
             | Instruction::LabelAddr { dest, .. }
             | Instruction::GetReturnF64Second { dest }
             | Instruction::GetReturnF32Second { dest }
+            | Instruction::GetReturnF128Second { dest }
             | Instruction::Select { dest, .. }
             | Instruction::StackSave { dest } => Some(*dest),
             Instruction::Call { dest, .. }
@@ -1231,6 +1243,7 @@ impl Instruction {
             | Instruction::Fence { .. }
             | Instruction::SetReturnF64Second { .. }
             | Instruction::SetReturnF32Second { .. }
+            | Instruction::SetReturnF128Second { .. }
             | Instruction::InlineAsm { .. }
             | Instruction::StackRestore { .. } => None,
         }

@@ -246,6 +246,14 @@ impl Lowerer {
                     return Some(real);
                 }
             }
+
+            // _Complex long double on x86-64: return real in x87 st(0), imag in x87 st(1)
+            if *rct == CType::ComplexLongDouble && self.is_x86() && !self.func_meta.sigs.get(&fname).and_then(|s| s.sret_size).is_some() {
+                let real = self.load_complex_real(src_ptr, rct);
+                let imag = self.load_complex_imag(src_ptr, rct);
+                self.emit(Instruction::SetReturnF128Second { src: imag });
+                return Some(real);
+            }
         }
 
         // Complex expression returned from non-complex function: extract real part
@@ -315,6 +323,15 @@ impl Lowerer {
                 self.emit(Instruction::SetReturnF32Second { src: imag });
                 return Some(real);
             }
+        }
+
+        // _Complex long double on x86-64: return real in x87 st(0), imag in x87 st(1)
+        if rct_clone == CType::ComplexLongDouble && self.is_x86() && !self.func_meta.sigs.get(&fname).and_then(|s| s.sret_size).is_some() {
+            let ptr = self.operand_to_value(complex_val);
+            let real = self.load_complex_real(ptr, &rct_clone);
+            let imag = self.load_complex_imag(ptr, &rct_clone);
+            self.emit(Instruction::SetReturnF128Second { src: imag });
+            return Some(real);
         }
 
         Some(complex_val)

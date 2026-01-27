@@ -224,10 +224,14 @@ fn replace_operands_in_instruction(inst: &mut Instruction, copy_map: &[Option<Op
         Instruction::LabelAddr { .. } => {}
         Instruction::GetReturnF64Second { .. } => {}
         Instruction::GetReturnF32Second { .. } => {}
+        Instruction::GetReturnF128Second { .. } => {}
         Instruction::SetReturnF64Second { src } => {
             count += replace_operand(src, copy_map);
         }
         Instruction::SetReturnF32Second { src } => {
+            count += replace_operand(src, copy_map);
+        }
+        Instruction::SetReturnF128Second { src } => {
             count += replace_operand(src, copy_map);
         }
         Instruction::InlineAsm { inputs, .. } => {

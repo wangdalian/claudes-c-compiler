@@ -205,10 +205,14 @@ fn collect_instruction_uses(inst: &Instruction, used: &mut [bool]) {
         Instruction::LabelAddr { .. } => {}
         Instruction::GetReturnF64Second { .. } => {}
         Instruction::GetReturnF32Second { .. } => {}
+        Instruction::GetReturnF128Second { .. } => {}
         Instruction::SetReturnF64Second { src } => {
             mark_operand_used(src, used);
         }
         Instruction::SetReturnF32Second { src } => {
+            mark_operand_used(src, used);
+        }
+        Instruction::SetReturnF128Second { src } => {
             mark_operand_used(src, used);
         }
         Instruction::InlineAsm { outputs, inputs, .. } => {
@@ -279,8 +283,10 @@ fn has_side_effects(inst: &Instruction) -> bool {
         Instruction::Fence { .. } |
         Instruction::GetReturnF64Second { .. } |
         Instruction::GetReturnF32Second { .. } |
+        Instruction::GetReturnF128Second { .. } |
         Instruction::SetReturnF64Second { .. } |
         Instruction::SetReturnF32Second { .. } |
+        Instruction::SetReturnF128Second { .. } |
         Instruction::InlineAsm { .. } |
         // StackRestore modifies the stack pointer at runtime - must not be removed.
         // StackSave is kept alive by its use in StackRestore (normal DCE liveness).

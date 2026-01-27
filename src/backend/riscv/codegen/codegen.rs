@@ -2645,6 +2645,16 @@ impl ArchCodegen for RiscvCodegen {
         }
     }
 
+    fn emit_get_return_f128_second(&mut self, _dest: &Value) {
+        // RISC-V: _Complex long double is passed by reference, not via register pair return.
+        // This should not be reached. If it is, do nothing.
+    }
+
+    fn emit_set_return_f128_second(&mut self, _src: &Operand) {
+        // RISC-V: _Complex long double is passed by reference, not via register pair return.
+        // This should not be reached. If it is, do nothing.
+    }
+
     fn emit_atomic_rmw(&mut self, dest: &Value, op: AtomicRmwOp, ptr: &Operand, val: &Operand, ty: IrType, ordering: AtomicOrdering) {
         // Load ptr into t1, val into t2
         self.operand_to_t0(ptr);

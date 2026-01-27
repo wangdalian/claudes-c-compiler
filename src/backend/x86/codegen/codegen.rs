@@ -3541,6 +3541,47 @@ impl ArchCodegen for X86Codegen {
         }
     }
 
+    fn emit_get_return_f128_second(&mut self, dest: &Value) {
+        // After a function returning _Complex long double, st(0) has already been
+        // popped by emit_call_store_result (for the real part via fstpt).
+        // The imaginary part is now in st(0) (was st(1) before the first fstpt).
+        // Store it to the dest slot as a full 80-bit x87 value.
+        if let Some(slot) = self.state.get_slot(dest.0) {
+            self.state.out.emit_instr_rbp("    fstpt", slot.0);
+            // Also store a truncated f64 copy in rax for operations that need it
+            self.state.out.emit_instr_rbp("    fldt", slot.0);
+            self.state.emit("    subq $8, %rsp");
+            self.state.emit("    fstpl (%rsp)");
+            self.state.emit("    popq %rax");
+            self.state.reg_cache.set_acc(dest.0, false);
+            // Mark this slot as containing direct F128 x87 data
+            self.state.f128_direct_slots.insert(dest.0);
+        } else {
+            // Fallback: discard the x87 value if no slot available
+            self.state.emit("    fstp %st(0)");
+        }
+    }
+
+    fn emit_set_return_f128_second(&mut self, src: &Operand) {
+        // Load the second long double (imaginary part) onto the x87 FPU stack.
+        // This should be called before emit_return which will load the real part.
+        // After both loads, st(0) = real (loaded last), st(1) = imag (loaded first).
+        match src {
+            Operand::Value(v) => {
+                if let Some(slot) = self.state.get_slot(v.0) {
+                    self.state.out.emit_instr_rbp("    fldt", slot.0);
+                }
+            }
+            _ => {
+                // For constants, load through rax -> push -> fld
+                self.operand_to_rax(src);
+                self.state.emit("    pushq %rax");
+                self.state.emit("    fildq (%rsp)");
+                self.state.emit("    addq $8, %rsp");
+            }
+        }
+    }
+
     fn emit_atomic_rmw(&mut self, dest: &Value, op: AtomicRmwOp, ptr: &Operand, val: &Operand, ty: IrType, _ordering: AtomicOrdering) {
         // Load ptr into rcx, val into rax/rdx
         self.operand_to_rax(ptr);

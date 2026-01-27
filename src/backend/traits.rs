@@ -1004,6 +1004,14 @@ pub trait ArchCodegen {
     /// Emit code to set the second F32 return value.
     fn emit_set_return_f32_second(&mut self, src: &Operand);
 
+    /// Emit code to capture the second F128 return value after a function call.
+    /// On x86-64: reads the second long double from x87 st(0) after the first fstpt.
+    fn emit_get_return_f128_second(&mut self, dest: &Value);
+
+    /// Emit code to set the second F128 return value before a return.
+    /// On x86-64: loads an additional long double onto the x87 FPU stack.
+    fn emit_set_return_f128_second(&mut self, src: &Operand);
+
     /// Emit the function directive for the function type attribute.
     fn function_type_directive(&self) -> &'static str { "@function" }
 
