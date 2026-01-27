@@ -1,0 +1,18 @@
+Task: Fix RISC-V kernel vDSO build failures
+Status: in_progress
+Started: 2026-01-27
+
+Two bugs preventing RISC-V Linux kernel build:
+
+1. Missing dep file in -E (preprocess-only) mode:
+   When the compiler is invoked with -E -Wp,-MMD,<depfile>, the dependency
+   file is never written because write_dep_file() is only called in
+   assembly/object modes but not in preprocess mode. The kernel's vdso.lds
+   rule uses -E to preprocess linker scripts and fixdep expects the .d file.
+
+2. Missing -Wa, flag passthrough for compiled C files:
+   The -Wa, assembler flags (like -Wa,-misa-spec=2.2) are stored in
+   assembler_extra_args but only passed through in assemble_source_file()
+   (for .S files). When compiling C to .o, build_asm_extra_args() does not
+   include them, so the assembler doesn't get -misa-spec=2.2, causing
+   csrr instructions from inline asm to fail with "extension zicsr required".

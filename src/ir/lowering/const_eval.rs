@@ -459,8 +459,13 @@ impl Lowerer {
                 IrConst::F64(fv)
             }
             IrType::F128 => {
-                let fv = if src_unsigned { (v128 as u128) as f64 } else { v128 as f64 };
-                IrConst::long_double(fv)
+                // Use direct integer-to-x87 conversion to preserve full 64-bit
+                // mantissa precision (x87 has 64-bit mantissa, unlike f64's 52-bit).
+                if src_unsigned {
+                    IrConst::long_double_from_u128(v128 as u128)
+                } else {
+                    IrConst::long_double_from_i128(v128)
+                }
             }
             _ => IrConst::I128(v128), // fallback: preserve value
         }

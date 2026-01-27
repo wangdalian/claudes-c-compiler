@@ -796,6 +796,85 @@ fn u64_to_x87_bytes_with_sign(val: u64, negative: bool) -> [u8; 16] {
     bytes
 }
 
+/// Convert an unsigned u128 to x87 80-bit bytes.
+/// x87 has a 64-bit mantissa, so values > 2^64 will be rounded to nearest-even.
+/// All u64 values are representable exactly.
+pub fn u128_to_x87_bytes(val: u128) -> [u8; 16] {
+    if val == 0 {
+        return make_x87_zero(false);
+    }
+    // If the value fits in u64, use the exact conversion
+    if val <= u64::MAX as u128 {
+        return u64_to_x87_bytes(val as u64);
+    }
+    u128_to_x87_bytes_with_sign(val, false)
+}
+
+/// Convert a signed i128 to x87 80-bit bytes.
+/// x87 has a 64-bit mantissa, so values with magnitude > 2^64 will be rounded.
+pub fn i128_to_x87_bytes(val: i128) -> [u8; 16] {
+    if val == 0 {
+        return make_x87_zero(false);
+    }
+    let negative = val < 0;
+    let abs_val: u128 = if val == i128::MIN {
+        1u128 << 127
+    } else if negative {
+        (-val) as u128
+    } else {
+        val as u128
+    };
+    // If the absolute value fits in u64, use the exact conversion
+    if abs_val <= u64::MAX as u128 {
+        return u64_to_x87_bytes_with_sign(abs_val as u64, negative);
+    }
+    u128_to_x87_bytes_with_sign(abs_val, negative)
+}
+
+/// Internal helper: convert a nonzero u128 magnitude > u64::MAX + sign to x87 bytes.
+/// Rounds to nearest-even when the value needs more than 64 bits.
+fn u128_to_x87_bytes_with_sign(val: u128, negative: bool) -> [u8; 16] {
+    let leading_zeros = val.leading_zeros();
+    let msb_pos = 127 - leading_zeros; // 0-indexed position of highest set bit
+
+    // We need to fit into 64-bit mantissa. Shift right by (msb_pos - 63).
+    let shift = msb_pos - 63;
+
+    // Round to nearest-even
+    let shifted = val >> shift;
+    let mantissa64 = shifted as u64;
+
+    // Check rounding: look at the bits we shifted away
+    let halfway = 1u128 << (shift - 1);
+    let remainder = val & ((1u128 << shift) - 1);
+    let mantissa64 = if remainder > halfway || (remainder == halfway && (mantissa64 & 1) != 0) {
+        // Round up
+        mantissa64.wrapping_add(1)
+    } else {
+        mantissa64
+    };
+
+    // If rounding caused overflow (mantissa became 0 from 0xFFFF...FFFF + 1), adjust exponent
+    let (mantissa64, msb_pos) = if mantissa64 == 0 {
+        (1u64 << 63, msb_pos + 1) // mantissa overflowed, bump exponent
+    } else {
+        (mantissa64, msb_pos)
+    };
+
+    // Normalize: ensure bit 63 is set (it should be from our shift logic)
+    let lz = mantissa64.leading_zeros();
+    let mantissa64 = mantissa64 << lz;
+    let msb_pos = msb_pos - lz;
+
+    let exp15 = (16383 + msb_pos) as u16;
+
+    let mut bytes = [0u8; 16];
+    bytes[..8].copy_from_slice(&mantissa64.to_le_bytes());
+    bytes[8] = (exp15 & 0xFF) as u8;
+    bytes[9] = ((exp15 >> 8) as u8) | (if negative { 0x80 } else { 0 });
+    bytes
+}
+
 /// Convert x87 80-bit bytes to i64 with truncation toward zero.
 /// This preserves the full 64-bit mantissa precision, unlike going through f64 first.
 /// Returns None for infinity, NaN, or values out of i64 range.

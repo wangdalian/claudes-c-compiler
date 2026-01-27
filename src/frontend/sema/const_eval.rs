@@ -566,8 +566,13 @@ impl<'a> SemaConstEval<'a> {
             }
             16 => {
                 if matches!(target, CType::LongDouble) {
-                    let int_val = if target_signed { bits as i64 as f64 } else { bits as u64 as f64 };
-                    IrConst::long_double(int_val)
+                    // Use direct integer-to-x87 conversion to preserve full 64-bit
+                    // precision (x87 has 64-bit mantissa, unlike f64's 52-bit).
+                    if target_signed {
+                        IrConst::long_double_from_i64(bits as i64)
+                    } else {
+                        IrConst::long_double_from_u64(bits)
+                    }
                 } else {
                     IrConst::I128(bits as i128) // __int128 / unsigned __int128
                 }
@@ -629,8 +634,13 @@ impl<'a> SemaConstEval<'a> {
             }
             16 => {
                 if matches!(target, CType::LongDouble) {
-                    let fv = if src_unsigned { (v128 as u128) as f64 } else { v128 as f64 };
-                    IrConst::long_double(fv)
+                    // Use direct integer-to-x87 conversion to preserve full 64-bit
+                    // mantissa precision (x87 has 64-bit mantissa, unlike f64's 52-bit).
+                    if src_unsigned {
+                        IrConst::long_double_from_u128(v128 as u128)
+                    } else {
+                        IrConst::long_double_from_i128(v128)
+                    }
                 } else {
                     // __int128 / unsigned __int128: preserve full 128-bit value
                     IrConst::I128(v128)

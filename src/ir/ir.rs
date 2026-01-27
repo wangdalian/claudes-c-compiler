@@ -682,6 +682,22 @@ impl IrConst {
         IrConst::LongDouble(val as f64, bytes)
     }
 
+    /// Create a LongDouble constant from an unsigned u128 with maximum precision.
+    /// Uses direct integer-to-x87 conversion. Values up to 2^64-1 are exact;
+    /// larger values are rounded to nearest-even (x87 has 64-bit mantissa).
+    pub fn long_double_from_u128(val: u128) -> IrConst {
+        let bytes = crate::common::long_double::u128_to_x87_bytes(val);
+        IrConst::LongDouble(val as f64, bytes)
+    }
+
+    /// Create a LongDouble constant from a signed i128 with maximum precision.
+    /// Uses direct integer-to-x87 conversion. Values with magnitude up to 2^63
+    /// are exact; larger values are rounded to nearest-even.
+    pub fn long_double_from_i128(val: i128) -> IrConst {
+        let bytes = crate::common::long_double::i128_to_x87_bytes(val);
+        IrConst::LongDouble(val as f64, bytes)
+    }
+
     /// Get the raw x87 bytes from a LongDouble constant.
     pub fn long_double_bytes(&self) -> Option<&[u8; 16]> {
         match self {

@@ -306,8 +306,8 @@ pub fn run_passes(module: &mut IrModule, _opt_level: u32) {
         //   cfg_simplify → copy_prop, gvn, dce (simpler CFG)
         //   copy_prop → simplify, constfold, gvn, narrow (propagated values)
         //   narrow → simplify, constfold (smaller types)
-        //   simplify → constfold, gvn (reduced expressions)
-        //   constfold → cfg_simplify, dce (constant branches/dead code)
+        //   simplify → constfold, copy_prop, gvn (reduced expressions, folded casts to copies)
+        //   constfold → cfg_simplify, copy_prop, dce (constant branches/dead code, folded exprs to copies)
         //   gvn → copy_prop, dce (eliminated redundant computations)
         //   licm → copy_prop, dce (hoisted code)
         //   if_convert → copy_prop, dce (eliminated branches)
@@ -400,8 +400,11 @@ pub fn run_passes(module: &mut IrModule, _opt_level: u32) {
         }
 
         // Phase 8: Copy propagation again
-        // Upstream: gvn (produced copies), licm (hoisted code), if_convert (select values)
-        if !dis_copyprop && should_run!(8, 5, 6, 7) {
+        // Upstream: simplify (folded casts to copies), constfold (folded exprs to copies),
+        //           gvn (produced copies), licm (hoisted code), if_convert (select values)
+        // Note: simplify and constfold run earlier in this iteration, so we check
+        // cur_pass_changes for them (not just prev_pass_changes via should_run!).
+        if !dis_copyprop && (should_run!(8, 5, 6, 7) || cur_pass_changes[3] > 0 || cur_pass_changes[4] > 0) {
             let n = timed_pass!("copy_prop2", run_on_visited(module, &dirty, &mut changed, copy_prop::propagate_copies));
             cur_pass_changes[8] = n;
             total_changes += n;
