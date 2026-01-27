@@ -1,5 +1,5 @@
 Task: Extend GEP base liveness for safe indirect GEP folding into load/store addressing
-Status: in_progress
+Status: done
 Agent: runtime_perf
 Started: 2026-01-27
 
