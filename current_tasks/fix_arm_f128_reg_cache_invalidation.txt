@@ -1,0 +1,18 @@
+Task: Fix ARM f128 register cache invalidation after constant loading
+Status: in_progress
+Started: 2026-01-27
+
+Problem: In the shared F128 soft-float orchestration, loading an f128 constant
+clobbers the accumulator register (ARM: x0/x1) with constant data, but the
+register cache is not invalidated. Subsequent operand_to_x0 calls get a stale
+cache hit (thinking x0 still holds the previous value) and skip the load.
+This causes expressions like `2.0L * (long double)i` to produce 0.0.
+
+Fix: Add reg_cache.invalidate_all() after constant loading in three shared
+orchestration paths in f128_softfloat.rs:
+- f128_operand_to_arg1 (constant path)
+- f128_store_to_slot (constant path)
+- f128_store_to_addr_reg (constant path)
+
+Result: ARM test suite gains 1 passing test (2851->2852), no regressions on
+any architecture. All 36 project builds pass.
