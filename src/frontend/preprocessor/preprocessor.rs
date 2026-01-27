@@ -793,6 +793,75 @@ impl Preprocessor {
         self.define_simple_macro("DECIMAL_DIG", "36");
     }
 
+    /// Override RISC-V preprocessor macros based on -mabi= and -march= flags.
+    ///
+    /// The kernel uses `-mabi=lp64` (soft-float ABI) and `-march=rv64imac...`
+    /// (no F/D extensions). When these flags are set, we must adjust:
+    /// - Float ABI macros: `__riscv_float_abi_soft` vs `__riscv_float_abi_double`
+    /// - `__riscv_flen`: only defined when FPU is available
+    /// - Extension macros: `__riscv_f`, `__riscv_d`, `__riscv_fdiv`, `__riscv_fsqrt`
+    pub fn set_riscv_abi(&mut self, abi: &str) {
+        match abi {
+            "lp64" => {
+                // Soft-float ABI (no FPU registers for argument passing).
+                // Undefine double-float macros and define soft-float.
+                self.macros.undefine("__riscv_float_abi_double");
+                self.macros.undefine("__riscv_flen");
+                self.macros.undefine("__riscv_fdiv");
+                self.macros.undefine("__riscv_fsqrt");
+                self.define_simple_macro("__riscv_float_abi_soft", "1");
+            }
+            "lp64f" => {
+                // Single-float ABI.
+                self.macros.undefine("__riscv_float_abi_double");
+                self.define_simple_macro("__riscv_float_abi_single", "1");
+                self.define_simple_macro("__riscv_flen", "32");
+            }
+            "lp64d" => {
+                // Double-float ABI (default) - macros already set by set_target.
+            }
+            _ => {
+                // Unknown ABI value - leave defaults (lp64d) in place.
+                // This covers ilp32* ABIs and any future additions.
+            }
+        }
+    }
+
+    /// Override RISC-V extension macros based on -march= flag.
+    ///
+    /// The kernel uses -march=rv64imac... (no F/D extensions). When the march
+    /// string doesn't contain 'f' or 'd' (or 'g' which implies both), we must
+    /// remove F/D extension macros that set_target unconditionally defines.
+    pub fn set_riscv_march(&mut self, march: &str) {
+        // Extract the base ISA string (strip rv32/rv64 prefix for extension parsing).
+        let exts = if march.starts_with("rv64") {
+            &march[4..]
+        } else if march.starts_with("rv32") {
+            &march[4..]
+        } else {
+            march
+        };
+        // 'g' = imafd, so check for 'g' as well.
+        // NOTE: This simple character check may false-positive on sub-extension names
+        // (e.g., 'f' in "zifencei"). In practice, kernel -march strings use the
+        // underscore-separated format (rv64imac_zicsr_zifencei) where single-letter
+        // extensions precede the first underscore, so this heuristic works correctly.
+        let has_f = exts.contains('f') || exts.contains('g');
+        let has_d = exts.contains('d') || exts.contains('g');
+
+        if !has_f {
+            self.macros.undefine("__riscv_f");
+            self.macros.undefine("__riscv_fdiv");
+            self.macros.undefine("__riscv_fsqrt");
+        }
+        if !has_d {
+            self.macros.undefine("__riscv_d");
+        }
+        if !has_f && !has_d {
+            self.macros.undefine("__riscv_flen");
+        }
+    }
+
     /// Get the list of includes encountered during preprocessing.
     pub fn includes(&self) -> &[String] {
         &self.includes

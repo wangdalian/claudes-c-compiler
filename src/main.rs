@@ -264,8 +264,20 @@ fn real_main() {
                 // should result in the small code model (e.g., Linux vDSO uses this).
                 driver.code_model_kernel = false;
             }
+            arg if arg.starts_with("-mabi=") => {
+                // RISC-V ABI selection: -mabi=lp64, -mabi=lp64d, -mabi=lp64f
+                // Passed through to the assembler to set correct ELF float ABI flags.
+                let abi = &arg["-mabi=".len()..];
+                driver.riscv_abi = Some(abi.to_string());
+            }
+            arg if arg.starts_with("-march=") => {
+                // Architecture selection (e.g., -march=rv64imac_zicsr_zifencei).
+                // Passed through to the assembler to set correct ELF arch attributes.
+                let march = &arg["-march=".len()..];
+                driver.riscv_march = Some(march.to_string());
+            }
             arg if arg.starts_with("-m") => {
-                // -m64, -march=, -mtune=, etc. (ignored for now)
+                // -m64, -mtune=, etc. (ignored for now)
             }
 
             // Feature flags

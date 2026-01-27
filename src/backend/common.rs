@@ -35,6 +35,14 @@ pub struct LinkerConfig {
 /// Uses a unique temporary file for the assembly source to avoid race conditions
 /// when multiple compiler instances target the same output path in parallel builds.
 pub fn assemble(config: &AssemblerConfig, asm_text: &str, output_path: &str) -> Result<(), String> {
+    assemble_with_extra(config, asm_text, output_path, &[])
+}
+
+/// Assemble text to an object file, with additional dynamic arguments.
+///
+/// The `extra_dynamic_args` are appended after the config's static extra_args,
+/// allowing runtime overrides (e.g., -mabi=lp64 from CLI flags).
+pub fn assemble_with_extra(config: &AssemblerConfig, asm_text: &str, output_path: &str, extra_dynamic_args: &[String]) -> Result<(), String> {
     // Use a unique temp file to avoid races in parallel builds.
     // Include PID and a counter to guarantee uniqueness even within the same process.
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -56,6 +64,7 @@ pub fn assemble(config: &AssemblerConfig, asm_text: &str, output_path: &str) -> 
 
     let mut cmd = Command::new(config.command);
     cmd.args(config.extra_args);
+    cmd.args(extra_dynamic_args);
     cmd.args(["-c", "-o", output_path, &asm_path]);
 
     let result = cmd.output()

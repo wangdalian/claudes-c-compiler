@@ -166,6 +166,12 @@ impl Target {
         common::assemble(&self.assembler_config(), asm_text, output_path)
     }
 
+    /// Assemble text to object file with dynamic extra arguments.
+    /// Used to pass through -mabi= and -march= flags from the CLI.
+    pub fn assemble_with_extra(&self, asm_text: &str, output_path: &str, extra_args: &[String]) -> Result<(), String> {
+        common::assemble_with_extra(&self.assembler_config(), asm_text, output_path, extra_args)
+    }
+
     /// Link object files into executable.
     pub fn link(&self, object_files: &[&str], output_path: &str) -> Result<(), String> {
         common::link(&self.linker_config(), object_files, output_path)

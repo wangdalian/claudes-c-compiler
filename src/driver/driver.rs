@@ -86,6 +86,13 @@ pub struct Driver {
     /// The Linux kernel uses this with -mindirect-branch=thunk-extern (retpoline) to
     /// prevent indirect jumps that objtool would reject.
     pub no_jump_tables: bool,
+    /// RISC-V ABI override from -mabi= flag (e.g., "lp64", "lp64d", "lp64f").
+    /// When set, overrides the default "lp64d" passed to the assembler.
+    /// The Linux kernel uses -mabi=lp64 (soft-float) for kernel code.
+    pub riscv_abi: Option<String>,
+    /// RISC-V architecture override from -march= flag (e.g., "rv64imac_zicsr_zifencei").
+    /// When set, overrides the default "rv64gc" passed to the assembler.
+    pub riscv_march: Option<String>,
     /// Explicit language override from -x flag.
     /// When set, overrides file extension detection for input language.
     /// Values: "c", "assembler", "assembler-with-cpp", "none" (reset).
@@ -139,6 +146,8 @@ impl Driver {
             general_regs_only: false,
             code_model_kernel: false,
             no_jump_tables: false,
+            riscv_abi: None,
+            riscv_march: None,
             explicit_language: None,
             assembler_extra_args: Vec::new(),
             dep_file: None,
@@ -217,6 +226,16 @@ impl Driver {
             Target::Aarch64 => preprocessor.set_target("aarch64"),
             Target::Riscv64 => preprocessor.set_target("riscv64"),
             Target::X86_64 => preprocessor.set_target("x86_64"),
+        }
+        // Apply RISC-V ABI/arch overrides from -mabi= and -march= flags.
+        // These must come after set_target() which sets defaults for RV64GC/lp64d.
+        if self.target == Target::Riscv64 {
+            if let Some(ref abi) = self.riscv_abi {
+                preprocessor.set_riscv_abi(abi);
+            }
+            if let Some(ref march) = self.riscv_march {
+                preprocessor.set_riscv_march(march);
+            }
         }
         // Set PIC mode: defines __PIC__/__pic__ only when -fPIC is active.
         // This is critical for kernel code where RIP_REL_REF() checks #ifndef __pic__
@@ -350,7 +369,8 @@ impl Driver {
                 self.assemble_source_file(input_file, &out_path)?;
             } else {
                 let asm = self.compile_to_assembly(input_file)?;
-                self.target.assemble(&asm, &out_path)?;
+                let extra = self.build_asm_extra_args();
+                self.target.assemble_with_extra(&asm, &out_path, &extra)?;
             }
             self.write_dep_file(input_file, &out_path);
             if self.verbose {
@@ -392,7 +412,8 @@ impl Driver {
 
                 let obj_path = format!("/tmp/ccc_{}_{}.o",
                     std::process::id(), Self::input_stem(input_file));
-                self.target.assemble(&asm, &obj_path)?;
+                let extra = self.build_asm_extra_args();
+                self.target.assemble_with_extra(&asm, &obj_path, &extra)?;
                 compiled_object_files.push(obj_path);
             }
         }
@@ -443,6 +464,11 @@ impl Driver {
         let mut cmd = std::process::Command::new(config.command);
         cmd.args(config.extra_args);
 
+        // Pass through RISC-V ABI/arch overrides (must come after config defaults
+        // so GCC uses last-wins semantics for -mabi= and -march=).
+        let extra_asm_args = self.build_asm_extra_args();
+        cmd.args(&extra_asm_args);
+
         // Pass through include paths and defines for .S preprocessing
         for path in &self.include_paths {
             cmd.arg("-I").arg(path);
@@ -483,6 +509,28 @@ impl Driver {
         }
 
         Ok(())
+    }
+
+    /// Build extra assembler arguments for RISC-V ABI/arch overrides.
+    ///
+    /// When -mabi= or -march= are specified on the CLI, these override the
+    /// defaults hardcoded in the assembler config. This is critical for the
+    /// Linux kernel which uses -mabi=lp64 (soft-float) instead of the default
+    /// lp64d (double-float), and -march=rv64imac... instead of rv64gc.
+    /// The assembler uses these flags to set ELF e_flags (float ABI, RVC, etc.).
+    fn build_asm_extra_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        // Only pass RISC-V flags to the RISC-V assembler. Passing -mabi/-march
+        // to x86/ARM gcc would cause warnings or errors.
+        if self.target == Target::Riscv64 {
+            if let Some(ref abi) = self.riscv_abi {
+                args.push(format!("-mabi={}", abi));
+            }
+            if let Some(ref march) = self.riscv_march {
+                args.push(format!("-march={}", march));
+            }
+        }
+        args
     }
 
     /// Build linker args from collected -l, -L, -static, -shared, and -nostdlib flags.
