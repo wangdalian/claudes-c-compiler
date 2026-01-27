@@ -1,5 +1,5 @@
 Task: Fix stale expr_ctype_cache from cloned AST nodes in typeof resolution
-Status: in_progress
+Status: completed
 Started: 2026-01-27
 
 Problem: lower_local_decl resolved typeof declarations by creating a cloned

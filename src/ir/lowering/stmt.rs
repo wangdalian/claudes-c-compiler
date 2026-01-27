@@ -57,11 +57,14 @@ impl Lowerer {
     }
 
     pub(super) fn lower_local_decl(&mut self, decl: &Declaration) {
-        // Resolve typeof(expr) or __auto_type to concrete type before processing
-        let resolved_decl;
-        let did_clone_decl = matches!(&decl.type_spec, TypeSpecifier::Typeof(_) | TypeSpecifier::TypeofType(_) | TypeSpecifier::AutoType);
-        let decl = if did_clone_decl {
-            let resolved_type_spec = if matches!(&decl.type_spec, TypeSpecifier::AutoType) {
+        // Resolve typeof(expr) or __auto_type to a concrete TypeSpecifier.
+        // We only resolve the type_spec; we do NOT clone the declarators because
+        // cloning creates new AST node addresses whose expr_ctype_cache entries
+        // become stale when the clone is dropped, poisoning later lookups for
+        // unrelated expressions that reuse those heap addresses.
+        let resolved_type_spec;
+        let type_spec = if matches!(&decl.type_spec, TypeSpecifier::Typeof(_) | TypeSpecifier::TypeofType(_) | TypeSpecifier::AutoType) {
+            resolved_type_spec = if matches!(&decl.type_spec, TypeSpecifier::AutoType) {
                 // __auto_type: infer type from the first declarator's initializer
                 if let Some(first) = decl.declarators.first() {
                     if let Some(Initializer::Expr(ref init_expr)) = first.init {
@@ -79,50 +82,21 @@ impl Lowerer {
             } else {
                 self.resolve_typeof(&decl.type_spec)
             };
-            // Cloning declarators creates new AST nodes at fresh heap addresses.
-            // Since expr_ctype_cache keys on pointer addresses, we must clear it
-            // after the cloned declaration is dropped to prevent stale entries
-            // from being returned for new nodes allocated at recycled addresses.
-            resolved_decl = Declaration {
-                type_spec: resolved_type_spec,
-                declarators: decl.declarators.clone(),
-                is_typedef: decl.is_typedef,
-                is_static: decl.is_static,
-                is_extern: decl.is_extern,
-                is_const: decl.is_const,
-                is_volatile: decl.is_volatile,
-                is_common: decl.is_common,
-                is_thread_local: decl.is_thread_local,
-                is_transparent_union: decl.is_transparent_union,
-                alignment: decl.alignment,
-                alignas_type: decl.alignas_type.clone(),
-                alignment_sizeof_type: decl.alignment_sizeof_type.clone(),
-                address_space: decl.address_space,
-                vector_size: decl.vector_size,
-                span: decl.span,
-            };
-            // Clear the expr_ctype_cache because `resolved_decl` clones the
-            // declaration's expression trees, creating new heap allocations.
-            // When `resolved_decl` is dropped at the end of this function, those
-            // allocations are freed and their addresses may be reused by subsequent
-            // declarations. Without clearing, stale cache entries keyed by those
-            // addresses would return incorrect types for the new expressions.
-            self.expr_ctype_cache.borrow_mut().clear();
-            &resolved_decl
+            &resolved_type_spec
         } else {
-            decl
+            &decl.type_spec
         };
 
-        self.register_struct_type(&decl.type_spec);
+        self.register_struct_type(type_spec);
 
         if decl.is_typedef {
             for declarator in &decl.declarators {
                 if !declarator.name.is_empty() {
-                    if let Some(fti) = extract_fptr_typedef_info(&decl.type_spec, &declarator.derived) {
+                    if let Some(fti) = extract_fptr_typedef_info(type_spec, &declarator.derived) {
                         self.types.func_ptr_typedefs.insert(declarator.name.clone());
                         self.types.func_ptr_typedef_info.insert(declarator.name.clone(), fti);
                     }
-                    let mut resolved_ctype = self.build_full_ctype(&decl.type_spec, &declarator.derived);
+                    let mut resolved_ctype = self.build_full_ctype(type_spec, &declarator.derived);
                     // Apply __attribute__((vector_size(N))): wrap base type in Vector
                     if let Some(vs) = decl.vector_size {
                         resolved_ctype = CType::Vector(Box::new(resolved_ctype), vs);
@@ -148,7 +122,7 @@ impl Lowerer {
                     // For VLA typedefs (e.g., `typedef char buf[n][m]`), compute the
                     // runtime sizeof and store it so that `sizeof(buf)` can use it.
                     if self.func_state.is_some() {
-                        if let Some(vla_size) = self.compute_vla_runtime_size(&decl.type_spec, &declarator.derived) {
+                        if let Some(vla_size) = self.compute_vla_runtime_size(type_spec, &declarator.derived) {
                             self.func_mut().insert_vla_typedef_size_scoped(declarator.name.clone(), vla_size);
                         }
                     }
@@ -176,13 +150,13 @@ impl Lowerer {
             }
 
             // Shared declaration analysis
-            let mut da = self.analyze_declaration(&decl.type_spec, &declarator.derived);
-            self.fixup_unsized_array(&mut da, &decl.type_spec, &declarator.derived, &declarator.init);
+            let mut da = self.analyze_declaration(type_spec, &declarator.derived);
+            self.fixup_unsized_array(&mut da, type_spec, &declarator.derived, &declarator.init);
 
             // Detect complex type variables and arrays of complex elements
-            let is_complex = !da.is_pointer && !da.is_array && self.is_type_complex(&decl.type_spec);
+            let is_complex = !da.is_pointer && !da.is_array && self.is_type_complex(type_spec);
             let complex_elem_ctype: Option<CType> = if da.is_array && !da.is_pointer {
-                let ctype = self.type_spec_to_ctype(&decl.type_spec);
+                let ctype = self.type_spec_to_ctype(type_spec);
                 match ctype {
                     CType::ComplexFloat => Some(CType::ComplexFloat),
                     CType::ComplexDouble => Some(CType::ComplexDouble),
@@ -202,12 +176,12 @@ impl Lowerer {
                     da.struct_layout = None;
                     da.is_struct = false;
                 }
-                self.lower_local_static_decl(&decl, &declarator, &da);
+                self.lower_local_static_decl(&decl, &declarator, &da, type_spec);
                 continue;
             }
 
             let vla_size = if da.is_array {
-                self.compute_vla_runtime_size(&decl.type_spec, &declarator.derived)
+                self.compute_vla_runtime_size(type_spec, &declarator.derived)
             } else {
                 None
             };
@@ -223,7 +197,7 @@ impl Lowerer {
                 if let Some(ref sizeof_ts) = decl.alignment_sizeof_type {
                     ea = ea.max(self.sizeof_type(sizeof_ts));
                 }
-                if let Some(&td_align) = self.typedef_alignment_for_type_spec(&decl.type_spec) {
+                if let Some(&td_align) = self.typedef_alignment_for_type_spec(type_spec) {
                     ea = ea.max(td_align);
                 }
                 ea
@@ -281,7 +255,7 @@ impl Lowerer {
             // For local VLAs with multiple dimensions, compute runtime strides
             // so that subscript operations use the correct element sizes.
             if vla_size.is_some() {
-                let strides = self.compute_vla_local_strides(&decl.type_spec, &declarator.derived);
+                let strides = self.compute_vla_local_strides(type_spec, &declarator.derived);
                 if !strides.is_empty() {
                     local_info.vla_strides = strides;
                 }
@@ -299,7 +273,7 @@ impl Lowerer {
             // Track function pointer return and param types
             for d in &declarator.derived {
                 if let DerivedDeclarator::FunctionPointer(params, _) = d {
-                    let ret_ty = self.type_spec_to_ir(&decl.type_spec);
+                    let ret_ty = self.type_spec_to_ir(type_spec);
                     let param_tys: Vec<IrType> = params.iter().map(|p| {
                         self.type_spec_to_ir(&p.type_spec)
                     }).collect();
@@ -331,21 +305,12 @@ impl Lowerer {
             }
         }
 
-        // Clear the expr_ctype_cache after processing declarations that cloned
-        // AST nodes (typeof/auto_type resolution). The cache keys on raw pointer
-        // addresses, and cloned nodes allocated at fresh addresses will be freed
-        // when resolved_decl drops. Without clearing, those addresses could be
-        // recycled by later allocations, causing the cache to return stale types
-        // for completely different expressions at the same address.
-        if did_clone_decl {
-            self.expr_ctype_cache.borrow_mut().clear();
-        }
     }
 
     /// Handle static local variable declarations: emit as globals with mangled names.
     /// Static locals are initialized once at program start (via .data/.bss),
     /// not at every function call.
-    fn lower_local_static_decl(&mut self, decl: &Declaration, declarator: &InitDeclarator, da: &DeclAnalysis) {
+    fn lower_local_static_decl(&mut self, decl: &Declaration, declarator: &InitDeclarator, da: &DeclAnalysis, type_spec: &TypeSpecifier) {
         let static_id = self.next_static_local;
         let static_name = format!("{}.{}.{}", self.func_mut().name, declarator.name, static_id);
 
@@ -375,7 +340,7 @@ impl Lowerer {
                 da.base_ty
             };
             self.lower_global_init(
-                initializer, &decl.type_spec, init_base_ty, da.is_array,
+                initializer, type_spec, init_base_ty, da.is_array,
                 da.elem_size, da.actual_alloc_size, &da.struct_layout, &da.array_dim_strides,
             )
         } else {
@@ -395,7 +360,7 @@ impl Lowerer {
             explicit_align = Some(explicit_align.map_or(real_sizeof, |a| a.max(real_sizeof)));
         }
         // Also incorporate alignment from typedef
-        if let Some(&td_align) = self.typedef_alignment_for_type_spec(&decl.type_spec) {
+        if let Some(&td_align) = self.typedef_alignment_for_type_spec(type_spec) {
             explicit_align = Some(explicit_align.map_or(td_align, |a: usize| a.max(td_align)));
         }
         let has_explicit_align = explicit_align.is_some();
@@ -452,7 +417,7 @@ impl Lowerer {
         // promotions (e.g. float->double for unprototyped `float (*sfp)()`).
         for d in &declarator.derived {
             if let DerivedDeclarator::FunctionPointer(params, _) = d {
-                let ret_ty = self.type_spec_to_ir(&decl.type_spec);
+                let ret_ty = self.type_spec_to_ir(type_spec);
                 let param_tys: Vec<IrType> = params.iter().map(|p| {
                     self.type_spec_to_ir(&p.type_spec)
                 }).collect();
