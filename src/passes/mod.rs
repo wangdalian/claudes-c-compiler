@@ -467,6 +467,12 @@ fn eliminate_dead_static_functions(module: &mut IrModule) {
     // unresolvable inline asm operands (e.g., "i" constraint with %c modifier
     // referencing function parameters that are only known after inlining), which
     // produce invalid assembly like `.quad x9 - .` instead of `.quad symbol - .`.
+    //
+    // HOWEVER, if a static always_inline function's address is taken (e.g., used as
+    // a function pointer in a struct initializer like `{ .less = mod_tree_less }`),
+    // it MUST be kept: the function pointer needs a callable address. The reachability
+    // analysis already tracks these references through global initializers, so we
+    // check reachability before removing.
     module.functions.retain(|func| {
         if func.is_declaration {
             return true;

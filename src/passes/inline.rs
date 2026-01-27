@@ -55,7 +55,12 @@ const MAX_CALLER_INSTRUCTIONS_AFTER_INLINE: usize = 200;
 const MAX_ALWAYS_INLINE_INSTRUCTIONS: usize = 500;
 
 /// Maximum blocks for __attribute__((always_inline)) functions.
-const MAX_ALWAYS_INLINE_BLOCKS: usize = 200;
+/// GCC has no block limit for always_inline — it always inlines them.
+/// Large always_inline kernel functions like __mutex_lock_common in
+/// kernel/locking/mutex.c can generate 215+ basic blocks from complex
+/// control flow (multiple if/else chains, error handling). Set high
+/// enough to handle all real kernel always_inline functions.
+const MAX_ALWAYS_INLINE_BLOCKS: usize = 500;
 
 /// Maximum instructions for a callee to be considered "tiny" and always inlined
 /// regardless of caller size. Tiny functions like `static inline bool f(void) { return false; }`
