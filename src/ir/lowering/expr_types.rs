@@ -1303,11 +1303,11 @@ impl Lowerer {
             self.lookup_sema_expr_type(expr)
         };
 
-        // Cache positive results only. We must NOT cache None results because
-        // expression type resolution depends on which locals are in scope, and
-        // locals change as declarations are lowered. An expression that fails
-        // to resolve during pre-lowering type checks (e.g., typeof(*ptr) where
-        // ptr hasn't been lowered yet) may succeed later when ptr is in locals.
+        // Only cache successful results.  A None result may become Some
+        // after more variables come into scope during lowering (e.g. when
+        // struct_value_size pre-scans a statement expression before its
+        // locals have been lowered).  Caching None would poison later
+        // resolve_typeof calls that need the now-in-scope variable.
         if result.is_some() {
             self.expr_ctype_cache.borrow_mut().insert(key, result.clone());
         }
