@@ -41,6 +41,12 @@ Remaining bottlenecks (items 1-2 have been fixed):
    Fix: Better peephole patterns, or teach the register allocator
    to avoid the accumulator roundtrip for register-to-register ops.
 
+6. XOR-ZEROING AND TEST-FOR-ZERO -- DONE
+   Replaced all `movq $0, %reg` with `xorl %ereg, %ereg` (2 bytes vs 7,
+   breaks register dependencies on modern CPUs) and all `cmp $0, %reg`
+   with `test %reg, %reg` (shorter encoding). On SQLite this eliminates
+   ~25K suboptimal instructions.
+
 Items 3-5 are the remaining performance bottlenecks.
 
 Key files:
