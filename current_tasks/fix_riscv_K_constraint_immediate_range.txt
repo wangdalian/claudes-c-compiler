@@ -1,0 +1,16 @@
+Fix RISC-V 'K' inline asm constraint immediate range
+
+The 'K' constraint letter has different meanings per architecture:
+- x86: 0-255 (unsigned byte)
+- RISC-V: 0-31 (5-bit unsigned CSR immediate for csrs/csrc/csrw)
+
+Currently constant_fits_immediate_constraint() in inline_asm.rs uses the x86
+range (0-255) for all architectures. This causes RISC-V CSR instructions like
+"csrs 0x10a, 128" to be emitted with out-of-range immediates (128 > 31),
+making the assembler fail with "improper CSRxI immediate".
+
+The fix: make the K constraint range architecture-aware. On RISC-V, K = 0..31.
+This affects kernel file: arch/riscv/kernel/cpufeature.c which uses the csr_set()
+macro with "rK" constraint and value 128 (ENVCFG_CBZE = 1 << 7).
+
+Status: in_progress
