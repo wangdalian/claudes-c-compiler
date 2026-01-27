@@ -277,6 +277,24 @@ pub fn emit_inline_asm_common_impl(
     input_symbols: &[Option<String>],
     seg_overrides: &[AddressSpace],
 ) {
+    // Skip the entire asm emission when it has asm goto labels AND the template
+    // uses .pushsection AND an immediate-only constraint has no compile-time value.
+    // This matches the condition in cfg_simplify's asm_goto_will_be_skipped() which
+    // marks goto label blocks as unreachable. Without this skip, the codegen would
+    // emit the asm template (with $0 placeholder immediates) referencing labels that
+    // were eliminated by dead block removal, causing undefined symbol linker errors.
+    if !goto_labels.is_empty() && template.contains(".pushsection") {
+        for (i, (constraint, operand, _name)) in inputs.iter().enumerate() {
+            if constraint_is_immediate_only(constraint) {
+                let is_const = matches!(operand, Operand::Const(_));
+                let has_symbol = input_symbols.get(i).map_or(false, |s| s.is_some());
+                if !is_const && !has_symbol {
+                    return;
+                }
+            }
+        }
+    }
+
     emitter.reset_scratch_state();
     let total_operands = outputs.len() + inputs.len();
 
