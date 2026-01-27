@@ -4,17 +4,27 @@
 //! It converts each Phi instruction into Copy instructions placed at the end
 //! of each predecessor block (before the terminator).
 //!
-//! For correctness with parallel copies (when multiple phis exist in the same
-//! block), we use fresh temporary values to avoid lost-copy problems.
-//! The pattern is:
+//! Smart temporary allocation:
+//! When a block has multiple phis, we analyze the copy graph per-predecessor
+//! to determine which copies actually need temporaries (only those involved
+//! in cycles, e.g., swap patterns) and which can be direct copies. This
+//! dramatically reduces the number of temporaries and copy instructions,
+//! especially for large switch statements where most phis pass through
+//! values unchanged.
+//!
+//! For non-conflicting phis (the common case), we emit direct copies:
 //!   pred_block:
-//!     ... existing code ...
-//!     %tmp1 = copy src1  // for phi1
-//!     %tmp2 = copy src2  // for phi2
+//!     %phi1_dest = copy src1
+//!     %phi2_dest = copy src2
+//!     <terminator>
+//!
+//! For conflicting phis (cycles), we use shared temporaries and a two-phase
+//! copy sequence to avoid the lost-copy problem:
+//!   pred_block:
+//!     %tmp1 = copy src1  // save source before it's overwritten
 //!     <terminator>
 //!   target_block:
-//!     %phi1_dest = copy %tmp1
-//!     %phi2_dest = copy %tmp2
+//!     %phi1_dest = copy %tmp1  // restore from temporary
 //!     ... rest of block ...
 //!
 //! Critical edge splitting:
@@ -25,7 +35,7 @@
 //! the critical edge by inserting a new trampoline block that contains only
 //! the phi copies and branches unconditionally to the target.
 
-use crate::common::fx_hash::FxHashMap;
+use crate::common::fx_hash::{FxHashMap, FxHashSet};
 use crate::ir::ir::*;
 
 /// Eliminate all phi nodes in the module by lowering them to copies.
@@ -145,6 +155,51 @@ fn get_or_create_trampoline(
         })
 }
 
+/// Determine which phi copies on a given predecessor edge need temporaries.
+///
+/// A copy `dest_i = src_i` needs a temporary if `src_i` is the destination
+/// of another phi copy (i.e., another phi writes to the value we're reading).
+/// This detects interference in the copy graph (e.g., swap patterns: x=y, y=x).
+///
+/// Returns a set of phi indices that need temporaries.
+fn find_conflicting_phis(copies: &[(u32, Option<u32>)]) -> FxHashSet<usize> {
+    // Build set of all phi destinations for this edge.
+    let dest_set: FxHashSet<u32> = copies.iter().map(|(d, _)| *d).collect();
+
+    // A phi copy needs a temporary if its source is overwritten by another phi
+    // destination on this same edge. Specifically, phi i needs a temp if
+    // src_i is in dest_set AND src_i != dest_i (self-copies don't conflict).
+    let mut needs_temp: FxHashSet<usize> = FxHashSet::default();
+
+    for (i, &(dest_i, src_i_opt)) in copies.iter().enumerate() {
+        if let Some(src_i) = src_i_opt {
+            if src_i != dest_i && dest_set.contains(&src_i) {
+                needs_temp.insert(i);
+            }
+        }
+    }
+
+    // Conservative safety net: also mark phis whose destination is read by a
+    // conflicting phi. This ensures the two-phase ordering (temp saves in
+    // Pass 1, direct copies in Pass 2) remains correct even for chain
+    // patterns like `a = b, b = c, c = a` where multiple values are involved
+    // in cycles. This may over-approximate slightly (e.g., marking a phi
+    // whose destination is read but already saved by another temp), but
+    // correctness is paramount.
+    if !needs_temp.is_empty() {
+        let conflicting_sources: FxHashSet<u32> = needs_temp.iter()
+            .filter_map(|&i| copies[i].1)
+            .collect();
+        for (j, &(dest_j, _)) in copies.iter().enumerate() {
+            if conflicting_sources.contains(&dest_j) {
+                needs_temp.insert(j);
+            }
+        }
+    }
+
+    needs_temp
+}
+
 fn eliminate_phis_in_function(func: &mut IrFunction, next_block_id: &mut u32) {
     // Use cached next_value_id if available, otherwise scan
     let mut next_value = if func.next_value_id > 0 {
@@ -217,61 +272,164 @@ fn eliminate_phis_in_function(func: &mut IrFunction, next_block_id: &mut u32) {
         }
 
         let target_block_id = func.blocks[block_idx].label;
-        let use_temporaries = phis.len() > 1;
 
-        for phi in phis {
-            if use_temporaries {
-                let tmp = Value(next_value);
+        if phis.len() == 1 {
+            // Single phi: copy directly (no temporaries needed)
+            let phi = &phis[0];
+            for (src, pred_label) in &phi.incoming {
+                if let Some(&pred_idx) = label_to_idx.get(pred_label) {
+                    // Skip self-copies: when src is the same value as dest
+                    if let Operand::Value(v) = src {
+                        if v.0 == phi.dest.0 {
+                            continue;
+                        }
+                    }
+
+                    let copy_inst = Instruction::Copy {
+                        dest: phi.dest,
+                        src: src.clone(),
+                    };
+
+                    if multi_succ[pred_idx] && !is_indirect_branch[pred_idx] {
+                        let tramp_idx = get_or_create_trampoline(
+                            &mut trampoline_map, &mut trampolines,
+                            pred_idx, target_block_id, next_block_id,
+                        );
+                        trampolines[tramp_idx].copies.push(copy_inst);
+                    } else {
+                        pred_copies.entry(pred_idx).or_default().push(copy_inst);
+                    }
+                }
+            }
+        } else {
+            // Multiple phis: use smart temporary allocation.
+            //
+            // Strategy: For each phi, determine if ANY predecessor edge has a
+            // conflict for that phi. If so, the phi uses a shared temporary
+            // (same temporary across all predecessors). If not, all predecessors
+            // use direct copies for that phi.
+            //
+            // This is correct because:
+            // - The temporary is shared across all predecessors, so the target
+            //   block has exactly ONE copy (temp -> dest) that works regardless
+            //   of which predecessor was taken.
+            // - Non-conflicting phis use direct copies in each predecessor,
+            //   writing directly to the phi destination.
+
+            // Collect all unique predecessor labels. Use a HashSet for O(1) dedup,
+            // which matters for large switch statements with hundreds of cases.
+            let mut pred_label_set: FxHashSet<BlockId> = FxHashSet::default();
+            let mut pred_labels: Vec<BlockId> = Vec::new();
+            for phi in phis {
+                for (_, pred_label) in &phi.incoming {
+                    if pred_label_set.insert(*pred_label) {
+                        pred_labels.push(*pred_label);
+                    }
+                }
+            }
+
+            // Precompute per-phi source lookup tables: for each phi, build a
+            // map from predecessor BlockId to the source Operand. This avoids
+            // O(incoming) linear search per phi per predecessor in the loops below.
+            let phi_src_maps: Vec<FxHashMap<BlockId, &Operand>> = phis.iter()
+                .map(|phi| {
+                    phi.incoming.iter()
+                        .map(|(src, pred_label)| (*pred_label, src))
+                        .collect()
+                })
+                .collect();
+
+            // Analyze each predecessor edge to find which phis have conflicts.
+            // A phi is "globally conflicting" if it has a conflict on ANY edge.
+            let mut globally_needs_temp: FxHashSet<usize> = FxHashSet::default();
+
+            for pred_label in &pred_labels {
+                if label_to_idx.get(pred_label).is_none() {
+                    continue;
+                }
+
+                // Build the list of (dest, src_value_id) for this predecessor.
+                let copies_info: Vec<(u32, Option<u32>)> = phis.iter().enumerate().map(|(i, phi)| {
+                    let src_val_id = phi_src_maps[i].get(pred_label).and_then(|s| {
+                        if let Operand::Value(v) = *s { Some(v.0) } else { None }
+                    });
+                    (phi.dest.0, src_val_id)
+                }).collect();
+
+                let edge_conflicts = find_conflicting_phis(&copies_info);
+                for &i in &edge_conflicts {
+                    globally_needs_temp.insert(i);
+                }
+            }
+
+            // Allocate ONE shared temporary per globally-conflicting phi.
+            let mut phi_temps: Vec<Option<Value>> = vec![None; phis.len()];
+            for &i in &globally_needs_temp {
+                phi_temps[i] = Some(Value(next_value));
                 next_value += 1;
+            }
 
-                for (src, pred_label) in &phi.incoming {
-                    if let Some(&pred_idx) = label_to_idx.get(pred_label) {
-                        let copy_inst = Instruction::Copy {
-                            dest: tmp,
-                            src: src.clone(),
-                        };
+            // Emit target block copies for conflicting phis (once, shared).
+            for (i, phi) in phis.iter().enumerate() {
+                if let Some(tmp) = phi_temps[i] {
+                    target_copies[block_idx].push(Instruction::Copy {
+                        dest: phi.dest,
+                        src: Operand::Value(tmp),
+                    });
+                }
+            }
 
-                        if multi_succ[pred_idx] && !is_indirect_branch[pred_idx] {
-                            // Critical edge: place copy in a trampoline block.
-                            // (Cannot use trampolines for IndirectBranch since
-                            // the runtime jump bypasses CFG metadata.)
-                            let tramp_idx = get_or_create_trampoline(
-                                &mut trampoline_map, &mut trampolines,
-                                pred_idx, target_block_id, next_block_id,
-                            );
-                            trampolines[tramp_idx].copies.push(copy_inst);
-                        } else {
-                            pred_copies.entry(pred_idx).or_default().push(copy_inst);
+            // Now emit copies for each predecessor edge.
+            for pred_label in &pred_labels {
+                let pred_idx = match label_to_idx.get(pred_label) {
+                    Some(&idx) => idx,
+                    None => continue,
+                };
+
+                let mut edge_copies: Vec<Instruction> = Vec::new();
+
+                // Pass 1: Emit temporary saves for conflicting phis (must come first
+                // to capture source values before any direct copies overwrite them).
+                // Note: we cannot skip self-copies here because the target block
+                // unconditionally copies tmp -> dest for all conflicting phis.
+                for (i, _phi) in phis.iter().enumerate() {
+                    if let Some(tmp) = phi_temps[i] {
+                        if let Some(src) = phi_src_maps[i].get(pred_label) {
+                            edge_copies.push(Instruction::Copy {
+                                dest: tmp,
+                                src: (*src).clone(),
+                            });
                         }
                     }
                 }
 
-                target_copies[block_idx].push(Instruction::Copy {
-                    dest: phi.dest,
-                    src: Operand::Value(tmp),
-                });
-            } else {
-                // Single phi: copy directly
-                for (src, pred_label) in &phi.incoming {
-                    if let Some(&pred_idx) = label_to_idx.get(pred_label) {
-                        let copy_inst = Instruction::Copy {
-                            dest: phi.dest,
-                            src: src.clone(),
-                        };
-
-                        if multi_succ[pred_idx] && !is_indirect_branch[pred_idx] {
-                            // Critical edge: place copy in a trampoline block.
-                            // (Cannot use trampolines for IndirectBranch since
-                            // the runtime jump bypasses CFG metadata.)
-                            let tramp_idx = get_or_create_trampoline(
-                                &mut trampoline_map, &mut trampolines,
-                                pred_idx, target_block_id, next_block_id,
-                            );
-                            trampolines[tramp_idx].copies.push(copy_inst);
-                        } else {
-                            pred_copies.entry(pred_idx).or_default().push(copy_inst);
+                // Pass 2: Emit direct copies for non-conflicting phis.
+                for (i, phi) in phis.iter().enumerate() {
+                    if phi_temps[i].is_none() {
+                        if let Some(src) = phi_src_maps[i].get(pred_label) {
+                            // Skip self-copies
+                            if let Operand::Value(v) = *src {
+                                if v.0 == phi.dest.0 {
+                                    continue;
+                                }
+                            }
+                            edge_copies.push(Instruction::Copy {
+                                dest: phi.dest,
+                                src: (*src).clone(),
+                            });
                         }
                     }
+                }
+
+                // Place copies in the appropriate location.
+                if multi_succ[pred_idx] && !is_indirect_branch[pred_idx] {
+                    let tramp_idx = get_or_create_trampoline(
+                        &mut trampoline_map, &mut trampolines,
+                        pred_idx, target_block_id, next_block_id,
+                    );
+                    trampolines[tramp_idx].copies.extend(edge_copies);
+                } else {
+                    pred_copies.entry(pred_idx).or_default().extend(edge_copies);
                 }
             }
         }
@@ -338,4 +496,72 @@ fn eliminate_phis_in_function(func: &mut IrFunction, next_block_id: &mut u32) {
 
     // Update cached next_value_id for downstream passes
     func.next_value_id = next_value;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_no_conflicts_independent_phis() {
+        // a = 1, b = 2 — no overlap between dests and sources
+        let copies = vec![(10, Some(1)), (20, Some(2))];
+        let result = find_conflicting_phis(&copies);
+        assert!(result.is_empty(), "Independent phis should have no conflicts");
+    }
+
+    #[test]
+    fn test_swap_pattern() {
+        // a = b, b = a — classic swap cycle
+        let copies = vec![(10, Some(20)), (20, Some(10))];
+        let result = find_conflicting_phis(&copies);
+        assert!(result.contains(&0), "First phi in swap should be conflicting");
+        assert!(result.contains(&1), "Second phi in swap should be conflicting");
+    }
+
+    #[test]
+    fn test_three_way_cycle() {
+        // a = b, b = c, c = a — three-way rotation
+        let copies = vec![(10, Some(20)), (20, Some(30)), (30, Some(10))];
+        let result = find_conflicting_phis(&copies);
+        assert_eq!(result.len(), 3, "All three phis in a 3-way cycle should be conflicting");
+    }
+
+    #[test]
+    fn test_mixed_conflicting_and_non_conflicting() {
+        // a = b, b = a (conflict), c = 99 (independent)
+        let copies = vec![(10, Some(20)), (20, Some(10)), (30, Some(99))];
+        let result = find_conflicting_phis(&copies);
+        assert!(result.contains(&0));
+        assert!(result.contains(&1));
+        assert!(!result.contains(&2), "Independent phi should not be marked conflicting");
+    }
+
+    #[test]
+    fn test_self_copy_not_conflicting() {
+        // a = a — self-copy, not a conflict
+        let copies = vec![(10, Some(10)), (20, Some(30))];
+        let result = find_conflicting_phis(&copies);
+        assert!(result.is_empty(), "Self-copy should not be conflicting");
+    }
+
+    #[test]
+    fn test_constant_source_not_conflicting() {
+        // a = <const>, b = <const> — None sources (constants)
+        let copies = vec![(10, None), (20, None)];
+        let result = find_conflicting_phis(&copies);
+        assert!(result.is_empty(), "Constant sources should have no conflicts");
+    }
+
+    #[test]
+    fn test_chain_pattern_conservative() {
+        // a = b, b = c — b is dest of phi 1 and source of phi 0
+        // phi 0 reads b (which is the dest of phi 1), so phi 0 is directly conflicting.
+        // The safety net then marks phi 1 because its dest (b=20) is a source
+        // of a conflicting phi.
+        let copies = vec![(10, Some(20)), (20, Some(30))];
+        let result = find_conflicting_phis(&copies);
+        assert!(result.contains(&0), "Chain phi reading overwritten dest should be conflicting");
+        assert!(result.contains(&1), "Chain phi whose dest is read by conflicting phi should also be marked");
+    }
 }
