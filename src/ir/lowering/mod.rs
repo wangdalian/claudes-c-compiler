@@ -2,6 +2,8 @@ pub mod definitions;
 pub mod func_state;
 pub mod lowering;
 pub mod expr;
+pub mod expr_ops;
+pub mod expr_access;
 pub mod expr_builtins;
 pub mod expr_atomics;
 pub mod expr_calls;
