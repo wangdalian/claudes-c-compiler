@@ -1242,6 +1242,20 @@ fn global_store_forwarding(store: &mut LineStore, infos: &mut [LineInfo]) -> boo
                         }
                     }
                 }
+                // Read-modify-write instructions with a memory destination at a
+                // (%rbp) offset (e.g., `orl $0x40, -8(%rbp)`) modify the stack
+                // slot without having a register destination. Invalidate the slot
+                // mapping so subsequent loads aren't incorrectly eliminated.
+                if dest_reg == REG_NONE && infos[i].rbp_offset != RBP_OFFSET_NONE {
+                    let rmw_offset = infos[i].rbp_offset;
+                    for entry in slot_entries.iter_mut().filter(|e| e.active) {
+                        if entry.offset == rmw_offset {
+                            let old_reg = entry.mapping.reg_id;
+                            entry.active = false;
+                            reg_offsets[old_reg as usize].remove_val(entry.offset);
+                        }
+                    }
+                }
                 // Use cached has_indirect_mem flag instead of re-scanning the line.
                 if infos[i].has_indirect_mem {
                     invalidate_all_mappings(&mut slot_entries, &mut reg_offsets);

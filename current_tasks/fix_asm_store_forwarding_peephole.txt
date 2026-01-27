@@ -1,0 +1,11 @@
+Fix peephole store forwarding for inline asm writing to stack slots
+
+The x86 peephole optimizer's global_store_forwarding pass failed to invalidate
+slot mappings when an inline asm instruction (like movntiq) wrote to a %rbp-relative
+stack slot. The instruction was classified as LineKind::Other (since movntiq doesn't
+match the standard mov prefix), and the Other handler only invalidated register
+mappings, not memory slot mappings. This caused subsequent loads from the same slot
+to be incorrectly eliminated, reading a stale register value instead of the value
+written by the inline asm.
+
+Status: in_progress

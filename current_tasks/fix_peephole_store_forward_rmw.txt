@@ -1,0 +1,19 @@
+Task: Fix peephole store forwarding not invalidating slot after RMW memory-destination instructions
+Status: completed
+Started: 2026-01-27
+
+Problem: global_store_forwarding in the peephole pass failed to invalidate
+slot-to-register mappings when a read-modify-write instruction (e.g.,
+orl $0x40, -8(%rbp)) modified a stack slot via a memory destination.
+Such instructions have dest_reg == REG_NONE and has_indirect_memory_access()
+returns false for (%rbp)-relative addresses, so the mapping was silently
+kept, causing the subsequent load to be eliminated and a stale register
+value to be used.
+
+Fix: When processing LineKind::Other with dest_reg == REG_NONE and a valid
+rbp_offset, invalidate any active slot mapping at that offset.
+
+Found via: test suite failures (asm-orl-andl-x86 / asm-vpxor-x86) and
+inline asm "+m" constraint analysis.
+
+Test: tests/peephole-store-forward-rmw-mem-x86/
