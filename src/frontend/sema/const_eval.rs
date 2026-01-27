@@ -873,7 +873,7 @@ impl<'a> SemaConstEval<'a> {
                         return layout.align;
                     }
                 }
-                1
+                struct_aligned.unwrap_or(1)
             }
             TypeSpecifier::Union(tag, fields, is_packed, _pragma_pack, struct_aligned) => {
                 if let Some(tag) = tag {
@@ -899,7 +899,7 @@ impl<'a> SemaConstEval<'a> {
                         return layout.align;
                     }
                 }
-                1
+                struct_aligned.unwrap_or(1)
             }
             TypeSpecifier::Enum(name, variants, is_packed) => {
                 let effective_packed = *is_packed || name.as_ref()

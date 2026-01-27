@@ -1,0 +1,16 @@
+Task: Fix AArch64 register name aliases (r0-r30 -> x0-x30)
+Status: in_progress
+Started: 2026-01-27
+
+Problem:
+The Linux kernel's arm-smccc.h uses `register unsigned long r0 asm("r0")` syntax.
+On AArch64, GCC treats r0-r30 as aliases for x0-x30, but our compiler passes them
+through literally, generating invalid assembly like `str r0,[sp,#48]` instead of
+`str x0,[sp,#48]`.
+
+This breaks compilation of arch/arm64/kernel/proton-pack.c (and likely other files
+using ARM SMCCC inline assembly).
+
+Fix:
+Add AArch64 register name normalization in the ARM backend's classify_constraint
+to map r0-r30 to x0-x30. Also normalize in format_reg_static for template substitution.

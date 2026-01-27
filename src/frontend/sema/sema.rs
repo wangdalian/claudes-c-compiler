@@ -1141,10 +1141,11 @@ impl type_builder::TypeConvertContext for SemanticAnalyzer {
             }
             self.result.type_context.insert_struct_layout_scoped_from_ref(&key, layout);
         } else if self.result.type_context.struct_layouts.get(&key).is_none() {
+            let align = struct_aligned.unwrap_or(1);
             let layout = StructLayout {
                 fields: Vec::new(),
                 size: 0,
-                align: 1,
+                align,
                 is_union,
                 is_transparent_union: false,
             };
