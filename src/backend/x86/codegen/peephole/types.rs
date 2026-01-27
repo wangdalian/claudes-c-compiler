@@ -115,6 +115,9 @@ pub(super) enum ExtKind {
     ProducerMovzwToEax,
     /// Producer: divl or idivl %ecx
     ProducerDiv32,
+    /// Producer: movq %REG, %rax (64-bit register-to-rax copy, REG != rax).
+    /// Used for fusion: `movq %REG, %rax; movl %eax, %eax` -> `movl %REGd, %eax`.
+    ProducerMovqRegToRax,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -417,6 +420,18 @@ pub(super) fn classify_mov_ext(s: &str, sb: &[u8]) -> ExtKind {
     if len >= 6 && sb[3] == b'q' && sb[4] == b' ' && sb[5] == b'$' {
         if s.ends_with("%rax") {
             return ExtKind::ProducerMovqConstRax;
+        }
+    }
+
+    // Producers: movq %REG, %rax (register-to-rax copy, REG != rax)
+    // Used for fusion: `movq %REG, %rax; movl %eax, %eax` -> `movl %REGd, %eax`
+    if len >= 6 && sb[3] == b'q' && sb[4] == b' ' && sb[5] == b'%' {
+        if s.ends_with(", %rax") {
+            // Extract source register and verify it's not %rax itself
+            let src = &s[5..s.len() - 6]; // between "movq " and ", %rax"
+            if src.starts_with('%') && src != "%rax" && !src.contains('(') {
+                return ExtKind::ProducerMovqRegToRax;
+            }
         }
     }
 

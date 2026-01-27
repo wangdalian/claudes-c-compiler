@@ -36,6 +36,8 @@ pub fn peephole_optimize(asm: String) -> String {
         changed = false;
         let local_changed = combined_local_pass(&store, &mut infos);
         changed |= local_changed;
+        // Fuse movq %REG, %rax + movl %eax, %eax -> movl %REGd, %eax
+        changed |= fuse_movq_ext_truncation(&mut store, &mut infos);
         // Only run push/pop passes if local pass made changes or this is the first iteration
         // (first iteration always runs all passes to catch initial opportunities)
         if local_changed || pass_count == 0 {
@@ -63,6 +65,7 @@ pub fn peephole_optimize(asm: String) -> String {
         while changed2 && pass_count2 < 4 {
             changed2 = false;
             changed2 |= combined_local_pass(&store, &mut infos);
+            changed2 |= fuse_movq_ext_truncation(&mut store, &mut infos);
             changed2 |= eliminate_dead_stores(&store, &mut infos);
             pass_count2 += 1;
         }
@@ -409,6 +412,112 @@ fn combined_local_pass(store: &LineStore, infos: &mut [LineInfo]) -> bool {
         }
 
         i += 1;
+    }
+    changed
+}
+
+// ── Movq + extension/truncation fusion ───────────────────────────────────────
+//
+// Fuses `movq %REG, %rax` followed by a cast instruction into a single
+// instruction. The two-instruction pattern arises from the accumulator-based
+// codegen model: emit_load_operand loads a 64-bit value into %rax, then
+// emit_cast_instrs emits an extension/truncation on %rax/%eax/%ax/%al.
+//
+// Fused patterns (all require REG != rax, no intervening non-NOP instructions):
+//   movq %REG, %rax + movl %eax, %eax   -> movl %REGd, %eax    (truncate to u32)
+//   movq %REG, %rax + movslq %eax, %rax -> movslq %REGd, %rax  (sign-extend i32->i64)
+//   movq %REG, %rax + cltq              -> movslq %REGd, %rax   (sign-extend i32->i64)
+//   movq %REG, %rax + movzbq %al, %rax  -> movzbl %REGb, %eax  (zero-extend u8->i64)
+//   movq %REG, %rax + movzwq %ax, %rax  -> movzwl %REGw, %eax  (zero-extend u16->i64)
+//   movq %REG, %rax + movsbq %al, %rax  -> movsbq %REGb, %rax  (sign-extend i8->i64)
+//
+// Safety: the two instructions must be truly adjacent (only NOPs between them,
+// NOT stores) because intermediate code may read the full 64-bit %rax value
+// before the truncation.
+
+fn fuse_movq_ext_truncation(store: &mut LineStore, infos: &mut [LineInfo]) -> bool {
+    let mut changed = false;
+    let len = store.len();
+
+    let mut i = 0;
+    while i + 1 < len {
+        // Look for ProducerMovqRegToRax
+        if infos[i].ext_kind != ExtKind::ProducerMovqRegToRax {
+            i += 1;
+            continue;
+        }
+
+        // Find next non-NOP instruction (skip only NOPs, not stores)
+        let mut j = i + 1;
+        while j < len && infos[j].is_nop() {
+            j += 1;
+        }
+        if j >= len {
+            i += 1;
+            continue;
+        }
+
+        // Check if next instruction is a fusable extension/truncation on %rax
+        let next_ext = infos[j].ext_kind;
+        let fusable = matches!(next_ext,
+            ExtKind::MovlEaxEax | ExtKind::MovslqEaxRax | ExtKind::Cltq |
+            ExtKind::MovzbqAlRax | ExtKind::MovzwqAxRax |
+            ExtKind::MovsbqAlRax);
+        if !fusable {
+            i += 1;
+            continue;
+        }
+
+        // Extract source register family from the movq instruction
+        let movq_line = infos[i].trimmed(store.get(i));
+        let src_family = if let Some(rest) = movq_line.strip_prefix("movq ") {
+            if let Some((src, _dst)) = rest.split_once(',') {
+                let src = src.trim();
+                let fam = register_family_fast(src);
+                if fam != REG_NONE && fam != 0 { fam } else { REG_NONE }
+            } else { REG_NONE }
+        } else { REG_NONE };
+
+        if src_family == REG_NONE {
+            i += 1;
+            continue;
+        }
+
+        // Build the fused instruction based on the extension type
+        let new_text = match next_ext {
+            ExtKind::MovlEaxEax => {
+                // movq %REG, %rax + movl %eax, %eax -> movl %REGd, %eax
+                let src_32 = REG_NAMES[1][src_family as usize];
+                format!("    movl {}, %eax", src_32)
+            }
+            ExtKind::MovslqEaxRax | ExtKind::Cltq => {
+                // movq %REG, %rax + movslq/cltq -> movslq %REGd, %rax
+                let src_32 = REG_NAMES[1][src_family as usize];
+                format!("    movslq {}, %rax", src_32)
+            }
+            ExtKind::MovzbqAlRax => {
+                // movq %REG, %rax + movzbq %al, %rax -> movzbl %REGb, %eax
+                let src_8 = REG_NAMES[3][src_family as usize];
+                format!("    movzbl {}, %eax", src_8)
+            }
+            ExtKind::MovzwqAxRax => {
+                // movq %REG, %rax + movzwq %ax, %rax -> movzwl %REGw, %eax
+                let src_16 = REG_NAMES[2][src_family as usize];
+                format!("    movzwl {}, %eax", src_16)
+            }
+            ExtKind::MovsbqAlRax => {
+                // movq %REG, %rax + movsbq %al, %rax -> movsbq %REGb, %rax
+                let src_8 = REG_NAMES[3][src_family as usize];
+                format!("    movsbq {}, %rax", src_8)
+            }
+            _ => unreachable!(),
+        };
+
+        replace_line(store, &mut infos[i], i, new_text);
+        mark_nop(&mut infos[j]);
+        changed = true;
+        i = j + 1;
+        continue;
     }
     changed
 }
