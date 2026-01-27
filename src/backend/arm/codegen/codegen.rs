@@ -19,19 +19,41 @@ const ARM_CALLEE_SAVED: [PhysReg; 9] = [
     PhysReg(25), PhysReg(26), PhysReg(27), PhysReg(28),
 ];
 
+/// Caller-saved registers available for register allocation: x13, x14.
+///
+/// These are a subset of the AAPCS64 "corruptible" registers (x9-x15).
+/// We exclude x9 (primary address register), x10 (memcpy source, secondary
+/// scratch), x11 (memcpy loop counter), x12 (memcpy byte transfer), x15
+/// (F128 large-offset scratch), and x16/x17/x18 (IP0/IP1/platform-reserved).
+///
+/// x13 and x14 have NO hardcoded scratch uses in the codegen. They only
+/// appear in ARM_TMP_REGS (call argument staging) and ARM_GP_SCRATCH
+/// (inline assembly scratch pool). Since caller-saved allocation only assigns
+/// values whose live ranges do NOT span any call, the call staging use is safe.
+/// Functions with inline assembly have the caller-saved pool disabled entirely.
+const ARM_CALLER_SAVED: [PhysReg; 2] = [
+    PhysReg(13), PhysReg(14),
+];
+
 pub(super) fn callee_saved_name(reg: PhysReg) -> &'static str {
     match reg.0 {
+        // Caller-saved registers
+        13 => "x13", 14 => "x14",
+        // Callee-saved registers
         19 => "x19", 20 => "x20", 21 => "x21", 22 => "x22", 23 => "x23", 24 => "x24",
         25 => "x25", 26 => "x26", 27 => "x27", 28 => "x28",
-        _ => unreachable!("invalid ARM callee-saved register index"),
+        _ => unreachable!("invalid ARM register index"),
     }
 }
 
 fn callee_saved_name_32(reg: PhysReg) -> &'static str {
     match reg.0 {
+        // Caller-saved registers
+        13 => "w13", 14 => "w14",
+        // Callee-saved registers
         19 => "w19", 20 => "w20", 21 => "w21", 22 => "w22", 23 => "w23", 24 => "w24",
         25 => "w25", 26 => "w26", 27 => "w27", 28 => "w28",
-        _ => unreachable!("invalid ARM callee-saved register index"),
+        _ => unreachable!("invalid ARM register index"),
     }
 }
 
@@ -1280,9 +1302,60 @@ impl ArchCodegen for ArmCodegen {
         Self::prescan_inline_asm_callee_saved(func, &mut asm_clobbered_regs);
         let base_regs: &[PhysReg] = if func.is_variadic { &[] } else { &ARM_CALLEE_SAVED };
         let available_regs = crate::backend::generation::filter_available_regs(base_regs, &asm_clobbered_regs);
-        // TODO: Add ARM caller-saved register allocation (x9-x15)
+
+        // Build caller-saved register pool (x13, x14). These registers have no
+        // hardcoded scratch uses in the codegen -- they only appear in ARM_TMP_REGS
+        // (call arg staging) and ARM_GP_SCRATCH (inline asm scratch). Since caller-saved
+        // allocation only assigns values whose live ranges don't span calls, the call
+        // staging use is safe. Functions with inline asm or F128 ops get the pool
+        // disabled entirely.
+        let mut caller_saved_regs: Vec<PhysReg> = if func.is_variadic {
+            Vec::new()
+        } else {
+            ARM_CALLER_SAVED.to_vec()
+        };
+        // Pre-scan for features that require disabling caller-saved allocation.
+        let mut has_inline_asm = false;
+        let mut has_f128_ops = false;
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                match inst {
+                    Instruction::InlineAsm { .. } => { has_inline_asm = true; }
+                    // F128 operations emit implicit `bl` calls to soft-float library
+                    // functions (e.g., __addtf3, __extenddftf2, __trunctfdf2) that
+                    // clobber all caller-saved registers (x0-x18 per AAPCS64). These
+                    // implicit calls are not visible in the IR liveness analysis
+                    // (which only tracks explicit Call/CallIndirect), so caller-saved
+                    // values could be silently destroyed across F128 codegen sequences.
+                    Instruction::BinOp { ty, .. } | Instruction::UnaryOp { ty, .. }
+                    | Instruction::Cmp { ty, .. } | Instruction::Load { ty, .. }
+                    | Instruction::Store { ty, .. } if *ty == IrType::F128 => {
+                        has_f128_ops = true;
+                    }
+                    Instruction::Cast { to_ty, .. } if *to_ty == IrType::F128 => {
+                        has_f128_ops = true;
+                    }
+                    Instruction::Cast { from_ty, .. } if *from_ty == IrType::F128 => {
+                        has_f128_ops = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // Conservatively disable caller-saved register allocation for functions
+        // containing inline asm. The ARM_GP_SCRATCH pool includes x13/x14, so
+        // inline asm with generic "r" constraints could use them.
+        if has_inline_asm {
+            caller_saved_regs.clear();
+        }
+        // Disable for functions with F128 ops: soft-float `bl` calls clobber
+        // caller-saved regs but aren't tracked in IR liveness call_points.
+        if has_f128_ops {
+            caller_saved_regs.clear();
+        }
+
         let (reg_assigned, cached_liveness) = crate::backend::generation::run_regalloc_and_merge_clobbers(
-            func, available_regs, Vec::new(), &asm_clobbered_regs,
+            func, available_regs, caller_saved_regs, &asm_clobbered_regs,
             &mut self.reg_assignments, &mut self.used_callee_saved,
         );
         self.f128_load_sources.clear();

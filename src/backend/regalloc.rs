@@ -10,7 +10,7 @@
 //!    are preserved across calls by the ABI, so no save/restore is needed at call
 //!    sites (but prologue/epilogue must save them).
 //!
-//! 2. **Caller-saved registers** (x86: r11, r10, r8, r9):
+//! 2. **Caller-saved registers** (x86: r11, r10, r8, r9; ARM: x13, x14):
 //!    Assigned to values whose live ranges do NOT span any function call. These
 //!    registers are destroyed by calls, so they can only hold values between calls.
 //!    No prologue/epilogue save/restore is needed since we never assign them to

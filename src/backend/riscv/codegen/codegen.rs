@@ -728,7 +728,15 @@ impl ArchCodegen for RiscvCodegen {
         let mut asm_clobbered_regs: Vec<PhysReg> = Vec::new();
         collect_inline_asm_callee_saved_riscv(func, &mut asm_clobbered_regs);
         let available_regs = crate::backend::generation::filter_available_regs(&RISCV_CALLEE_SAVED, &asm_clobbered_regs);
-        // TODO: Add RISC-V caller-saved register allocation (t2-t6)
+        // NOTE: RISC-V caller-saved register allocation (t2-t6) is not yet feasible.
+        // All five temporary registers are hardcoded as scratch throughout the codegen:
+        // t2 = comparison RHS, binop RHS, indirect call target, atomic val/expected
+        // t3 = accumulator save, i128 lhs_lo, call arg staging (1st GP)
+        // t4 = i128 lhs_hi, memcpy byte, call arg staging (2nd GP)
+        // t5 = primary pointer/address register for all indirect loads/stores
+        // t6 = large-offset scratch, long-range branch target, i128 rhs_hi
+        // Adding caller-saved allocation would require refactoring these to use
+        // dedicated non-allocatable scratch registers (or a separate scratch pool).
         let (reg_assigned, cached_liveness) = crate::backend::generation::run_regalloc_and_merge_clobbers(
             func, available_regs, Vec::new(), &asm_clobbered_regs,
             &mut self.reg_assignments, &mut self.used_callee_saved,

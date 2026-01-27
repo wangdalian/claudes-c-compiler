@@ -1,6 +1,5 @@
-Task: Fix x86 miscompilation of sound/core/info.c
+Task: Fix x86 kernel miscompilation via delta debugging
 Status: in_progress
 
-Delta debugging found that sound/core/info.c compiled with ccc causes
-kernel boot failure on x86. Investigating the miscompilation and fixing
-the compiler bug.
+Previous bug (kernel GEP store fold) was already fixed by someone else.
+Now running DD with different seeds to find additional miscompilation bugs.
