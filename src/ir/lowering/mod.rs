@@ -19,6 +19,8 @@ mod stmt_asm;
 mod struct_init;
 pub mod lvalue;
 pub mod types;
+mod types_seed;
+mod types_ctype;
 pub mod structs;
 pub mod complex;
 pub mod global_init;
