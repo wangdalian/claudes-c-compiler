@@ -1,0 +1,12 @@
+Task: Extract x86 F128/x87 handling into a separate module
+
+The x86 codegen.rs (5146 lines, largest in codebase) has ~550 lines of
+F128/x87-specific code scattered across multiple functions, with significant
+internal duplication (emit_store vs emit_store_with_const_offset F128 paths
+are near-identical ~230 lines).
+
+Plan:
+1. Extract F128/x87 helpers into f128.rs submodule
+2. Deduplicate the SlotAddr-dispatch patterns for F128 store/load
+3. Reduce codegen.rs by ~400-550 lines
+4. Verify tests pass
