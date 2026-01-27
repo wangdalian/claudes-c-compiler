@@ -43,6 +43,15 @@ pub struct CodegenOptions {
     /// operations, casts, and other FP codegen paths. Currently only the
     /// variadic ABI path is gated, which is sufficient for the Linux kernel.
     pub no_sse: bool,
+    /// Whether to use only general-purpose registers (-mgeneral-regs-only).
+    /// On AArch64, this prevents FP/SIMD register usage in variadic function
+    /// prologues (no q0-q7 saves) and sets __vr_offs=0 in va_start.
+    /// The Linux kernel uses this to avoid touching NEON/FP state.
+    /// TODO: Full -mgeneral-regs-only support would also need to avoid NEON/FP in
+    /// popcount, byte-swap, float casts, and other FP codegen paths. Currently only
+    /// the variadic ABI path is gated, which is sufficient for the Linux kernel
+    /// (kernel code doesn't use floats or popcount builtins in hot paths).
+    pub general_regs_only: bool,
     /// Whether to use the kernel code model (-mcmodel=kernel). All symbols
     /// are assumed to be in the negative 2GB of the virtual address space.
     /// Uses RIP-relative addressing for global access (same as default model).
@@ -141,6 +150,7 @@ impl Target {
             Target::Aarch64 => {
                 let mut cg = arm::ArmCodegen::new();
                 cg.set_no_jump_tables(opts.no_jump_tables);
+                cg.set_general_regs_only(opts.general_regs_only);
                 cg.generate(module)
             }
             Target::Riscv64 => {

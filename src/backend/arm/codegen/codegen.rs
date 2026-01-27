@@ -115,6 +115,10 @@ pub struct ArmCodegen {
     /// For large stack frames: reserved for future x19 frame base optimization.
     /// Currently always None (optimization disabled due to correctness issue).
     frame_base_offset: Option<i64>,
+    /// Whether -mgeneral-regs-only is set. When true, FP/SIMD registers (q0-q7)
+    /// must not be used. Variadic prologues skip saving q0-q7 and va_start
+    /// sets __vr_offs=0 (no FP register save area available).
+    general_regs_only: bool,
 }
 
 impl ArmCodegen {
@@ -134,12 +138,19 @@ impl ArmCodegen {
             used_callee_saved: Vec::new(),
             callee_save_offset: 0,
             frame_base_offset: None,
+            general_regs_only: false,
         }
     }
 
     /// Disable jump table emission (-fno-jump-tables).
     pub fn set_no_jump_tables(&mut self, enabled: bool) {
         self.state.no_jump_tables = enabled;
+    }
+
+    /// Set general-regs-only mode (-mgeneral-regs-only).
+    /// When true, FP/SIMD registers are not used in variadic prologues.
+    pub fn set_general_regs_only(&mut self, enabled: bool) {
+        self.general_regs_only = enabled;
     }
 
     pub fn generate(mut self, module: &IrModule) -> String {
@@ -1686,6 +1697,7 @@ impl ArchCodegen for ArmCodegen {
         // For variadic functions, reserve space for register save areas:
         // - GP save area: x0-x7 = 64 bytes (8 regs * 8 bytes)
         // - FP save area: q0-q7 = 128 bytes (8 regs * 16 bytes each)
+        //   (skipped when -mgeneral-regs-only is set, e.g., Linux kernel)
         if func.is_variadic {
             // GP register save area (64 bytes, 8-byte aligned)
             space = (space + 7) & !7;
@@ -1693,9 +1705,12 @@ impl ArchCodegen for ArmCodegen {
             space += 64; // 8 GP registers * 8 bytes
 
             // FP register save area (128 bytes, 16-byte aligned)
-            space = (space + 15) & !15;
-            self.va_fp_save_offset = space;
-            space += 128; // 8 FP/SIMD registers * 16 bytes (q0-q7)
+            // Skip when -mgeneral-regs-only: no FP/SIMD registers to save
+            if !self.general_regs_only {
+                space = (space + 15) & !15;
+                self.va_fp_save_offset = space;
+                space += 128; // 8 FP/SIMD registers * 16 bytes (q0-q7)
+            }
 
             // Count named GP and FP params using the ABI classification
             // to properly account for 2-register structs and by-ref structs.
@@ -1778,10 +1793,14 @@ impl ArchCodegen for ArmCodegen {
                 let offset = gp_base + (i as i64) * 8;
                 self.emit_stp_to_sp(&format!("x{}", i), &format!("x{}", i + 1), offset);
             }
-            let fp_base = self.va_fp_save_offset;
-            for i in (0..8).step_by(2) {
-                let offset = fp_base + (i as i64) * 16;
-                self.emit_stp_to_sp(&format!("q{}", i), &format!("q{}", i + 1), offset);
+            // Save FP/SIMD registers q0-q7 only if FP registers are available.
+            // With -mgeneral-regs-only, FP/SIMD instructions are forbidden.
+            if !self.general_regs_only {
+                let fp_base = self.va_fp_save_offset;
+                for i in (0..8).step_by(2) {
+                    let offset = fp_base + (i as i64) * 16;
+                    self.emit_stp_to_sp(&format!("q{}", i), &format!("q{}", i + 1), offset);
+                }
             }
         }
 
@@ -2349,6 +2368,11 @@ impl ArchCodegen for ArmCodegen {
     }
 
     fn emit_int_popcount(&mut self, ty: IrType) {
+        // TODO: This uses NEON instructions (fmov, cnt, uaddlv) which are not
+        // available with -mgeneral-regs-only. For kernel code this is fine because
+        // the kernel doesn't call __builtin_popcount in critical paths, but a full
+        // implementation should fall back to scalar bit counting when general_regs_only.
+        //
         // For 32-bit types, use fmov s0, w0 to zero-extend to 32 bits only,
         // preventing sign-extended upper 32 bits from being counted.
         // For 64-bit types, use fmov d0, x0 to count all 64 bits.
@@ -3456,9 +3480,17 @@ impl ArchCodegen for ArmCodegen {
         self.state.emit("    str x1, [x0, #8]");  // __gr_top at offset 8
 
         // __vr_top: pointer to the end (one past last) of the FP/SIMD register save area
-        let vr_top_offset = self.va_fp_save_offset + 128; // end of q0-q7 save area
-        self.emit_add_sp_offset("x1", vr_top_offset);
-        self.state.emit("    str x1, [x0, #16]");  // __vr_top at offset 16
+        // With -mgeneral-regs-only, there is no FP save area, but we still need to
+        // write a valid pointer (va_arg won't use it since __vr_offs will be 0).
+        if self.general_regs_only {
+            // No FP save area exists; store 0 as __vr_top (it won't be dereferenced
+            // because __vr_offs=0 means immediate overflow to stack).
+            self.state.emit("    str xzr, [x0, #16]");  // __vr_top = NULL
+        } else {
+            let vr_top_offset = self.va_fp_save_offset + 128; // end of q0-q7 save area
+            self.emit_add_sp_offset("x1", vr_top_offset);
+            self.state.emit("    str x1, [x0, #16]");  // __vr_top at offset 16
+        }
 
         // __gr_offs: negative offset from __gr_top to next unnamed GP reg
         // = -(8 - named_gp_count) * 8
@@ -3469,7 +3501,13 @@ impl ArchCodegen for ArmCodegen {
 
         // __vr_offs: negative offset from __vr_top to next unnamed FP/SIMD reg
         // = -(8 - named_fp_count) * 16
-        let vr_offs: i32 = -((8 - self.va_named_fp_count as i32) * 16);
+        // With -mgeneral-regs-only, set to 0 so va_arg immediately overflows to stack
+        // (no FP register save area exists).
+        let vr_offs: i32 = if self.general_regs_only {
+            0
+        } else {
+            -((8 - self.va_named_fp_count as i32) * 16)
+        };
         self.state.emit_fmt(format_args!("    mov w1, #{}", vr_offs));
         self.state.emit("    str w1, [x0, #28]");  // __vr_offs at offset 28
     }

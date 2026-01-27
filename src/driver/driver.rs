@@ -72,6 +72,11 @@ pub struct Driver {
     /// any SSE/SSE2/AVX instructions (movdqu, movss, movsd, etc.).
     /// The Linux kernel uses -mno-sse to avoid FPU state in kernel code.
     pub no_sse: bool,
+    /// Whether to use only general-purpose registers (-mgeneral-regs-only).
+    /// On AArch64, this prevents FP/SIMD register usage. The Linux kernel uses
+    /// this to avoid touching NEON/FP state. When set, variadic function prologues
+    /// must not save q0-q7, and va_start sets __vr_offs=0 (no FP save area).
+    pub general_regs_only: bool,
     /// Whether to use the kernel code model (-mcmodel=kernel). All symbols
     /// are assumed to be in the negative 2GB of the virtual address space.
     /// Uses RIP-relative addressing for global access, which is required for
@@ -131,6 +136,7 @@ impl Driver {
             patchable_function_entry: None,
             cf_protection_branch: false,
             no_sse: false,
+            general_regs_only: false,
             code_model_kernel: false,
             no_jump_tables: false,
             explicit_language: None,
@@ -681,6 +687,7 @@ impl Driver {
             patchable_function_entry: self.patchable_function_entry,
             cf_protection_branch: self.cf_protection_branch,
             no_sse: self.no_sse,
+            general_regs_only: self.general_regs_only,
             code_model_kernel: self.code_model_kernel,
             no_jump_tables: self.no_jump_tables,
         };

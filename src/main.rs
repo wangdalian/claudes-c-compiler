@@ -245,6 +245,13 @@ fn real_main() {
                 // we must not emit XMM instructions (e.g., in variadic prologues).
                 driver.no_sse = true;
             }
+            "-mgeneral-regs-only" => {
+                // AArch64: disable FP/SIMD register usage. The Linux kernel uses this
+                // to prevent NEON/FP instructions in kernel code (kernel_neon_begin/end
+                // is required to use SIMD). When set, variadic function prologues must
+                // not save q0-q7 and va_start must set __vr_offs=0 (no FP save area).
+                driver.general_regs_only = true;
+            }
             "-mcmodel=kernel" => {
                 // Kernel code model: all symbols in the negative 2GB of virtual address space.
                 // Uses RIP-relative addressing for global access (same as default model),
