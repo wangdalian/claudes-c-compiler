@@ -1625,11 +1625,24 @@ impl ArchCodegen for X86Codegen {
                     self.emit_typed_load_from_slot(load_instr, folded_slot);
                 }
                 SlotAddr::Indirect(slot) => {
-                    self.emit_load_ptr_from_slot(slot, base.0);
-                    if offset != 0 {
-                        self.emit_add_offset_to_addr_reg(offset);
+                    // Optimization: when the base pointer is in a register and the
+                    // offset fits in a 32-bit displacement, emit a single instruction
+                    // like "movl offset(%rbx), %eax" instead of separate load+add+load.
+                    if let Some(&reg) = self.reg_assignments.get(&base.0) {
+                        let reg_name = phys_reg_name(reg);
+                        let dest_reg = Self::load_dest_reg(ty);
+                        if offset != 0 {
+                            self.state.emit_fmt(format_args!("    {} {}(%{}), {}", load_instr, offset, reg_name, dest_reg));
+                        } else {
+                            self.state.emit_fmt(format_args!("    {} (%{}), {}", load_instr, reg_name, dest_reg));
+                        }
+                    } else {
+                        self.emit_load_ptr_from_slot(slot, base.0);
+                        if offset != 0 {
+                            self.emit_add_offset_to_addr_reg(offset);
+                        }
+                        self.emit_typed_load_indirect(load_instr);
                     }
-                    self.emit_typed_load_indirect(load_instr);
                 }
             }
             self.emit_store_result(dest);
@@ -1755,12 +1768,25 @@ impl ArchCodegen for X86Codegen {
                     self.emit_typed_store_to_slot(store_instr, ty, folded_slot);
                 }
                 SlotAddr::Indirect(slot) => {
-                    self.emit_save_acc();
-                    self.emit_load_ptr_from_slot(slot, base.0);
-                    if offset != 0 {
-                        self.emit_add_offset_to_addr_reg(offset);
+                    // Optimization: when the base pointer is in a register and the
+                    // offset fits in a 32-bit displacement, emit a single instruction
+                    // like "movl %eax, offset(%rbx)" instead of save+load+add+store.
+                    if let Some(&reg) = self.reg_assignments.get(&base.0) {
+                        let reg_name = phys_reg_name(reg);
+                        let store_reg = Self::reg_for_type("rax", ty);
+                        if offset != 0 {
+                            self.state.emit_fmt(format_args!("    {} %{}, {}(%{})", store_instr, store_reg, offset, reg_name));
+                        } else {
+                            self.state.emit_fmt(format_args!("    {} %{}, (%{})", store_instr, store_reg, reg_name));
+                        }
+                    } else {
+                        self.emit_save_acc();
+                        self.emit_load_ptr_from_slot(slot, base.0);
+                        if offset != 0 {
+                            self.emit_add_offset_to_addr_reg(offset);
+                        }
+                        self.emit_typed_store_indirect(store_instr, ty);
                     }
-                    self.emit_typed_store_indirect(store_instr, ty);
                 }
             }
         }

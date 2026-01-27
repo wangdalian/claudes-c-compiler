@@ -663,14 +663,16 @@ fn generate_function(cg: &mut dyn ArchCodegen, func: &IrFunction) {
                 continue;
             }
             // Skip GEP instructions whose offset has been folded into Load/Store.
-            // Only skip when the GEP's base is an alloca (Direct or OverAligned),
-            // because alloca slots are stable and never reused by liveness packing.
-            // For non-alloca (Indirect) bases, the base pointer's slot might be
-            // reused by another value between the GEP definition and the Load/Store
-            // use point (due to Tier 2/3 slot coalescing), so we must eagerly
-            // compute the GEP result rather than deferring to the Load/Store point.
+            // Safe to skip when:
+            // 1. Base is an alloca (Direct or OverAligned): alloca slots are stable
+            //    and never reused by liveness packing.
+            // 2. Base has a register assignment: the liveness analysis has been
+            //    extended to keep the base alive through all Load/Store uses of
+            //    this GEP result (see extend_gep_base_liveness in liveness.rs),
+            //    so the register holds the correct value at the use points.
             if let Instruction::GetElementPtr { dest, base, .. } = inst {
-                if gep_fold_map.contains_key(&dest.0) && cg.state_ref().is_alloca(base.0) {
+                if gep_fold_map.contains_key(&dest.0) &&
+                   (cg.state_ref().is_alloca(base.0) || cg.get_phys_reg_for_value(base.0).is_some()) {
                     continue;
                 }
             }
@@ -764,11 +766,13 @@ fn generate_instruction(cg: &mut dyn ArchCodegen, inst: &Instruction, gep_fold_m
                 return;
             }
             // Check if the ptr comes from a foldable GEP with constant offset.
-            // Only fold when the GEP's base is an alloca, because alloca slots
-            // are stable and never reused by liveness packing. Non-alloca base
-            // slots may be overwritten between GEP definition and Load use.
+            // Fold when the base is safe to access at the Load point:
+            // 1. Alloca bases: slots are stable, never reused by packing.
+            // 2. Register-assigned bases: liveness has been extended to cover
+            //    this use point (see extend_gep_base_liveness in liveness.rs).
             if let Some(gep_info) = gep_fold_map.get(&ptr.0) {
-                if !is_i128_type(*ty) && cg.state_ref().is_alloca(gep_info.base.0) {
+                if !is_i128_type(*ty) &&
+                   (cg.state_ref().is_alloca(gep_info.base.0) || cg.get_phys_reg_for_value(gep_info.base.0).is_some()) {
                     cg.emit_load_with_const_offset(dest, &gep_info.base, gep_info.offset, *ty);
                     return;
                 }
@@ -853,8 +857,10 @@ fn generate_instruction(cg: &mut dyn ArchCodegen, inst: &Instruction, gep_fold_m
                             cg.emit_seg_store(val, ptr, *ty, *seg_override);
                         }
                     } else if let Some(gep_info) = gep_fold_map.get(&ptr.0) {
-                        // Fold GEP into store (alloca bases only; see Load comment).
-                        if !is_i128_type(*ty) && cg.state_ref().is_alloca(gep_info.base.0) {
+                        // Fold GEP into store when base is safe at use site:
+                        // alloca (stable slot) or register-assigned (liveness extended).
+                        if !is_i128_type(*ty) &&
+                           (cg.state_ref().is_alloca(gep_info.base.0) || cg.get_phys_reg_for_value(gep_info.base.0).is_some()) {
                             cg.emit_store_with_const_offset(val, &gep_info.base, gep_info.offset, *ty);
                         } else {
                             cg.emit_store(val, ptr, *ty);

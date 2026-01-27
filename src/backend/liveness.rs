@@ -18,6 +18,7 @@
 //! with fast word-level bitwise ops (union = OR, difference = AND-NOT, equality = ==).
 
 use crate::common::fx_hash::{FxHashMap, FxHashSet};
+use crate::common::types::IrType;
 use crate::ir::ir::*;
 
 /// A live interval for an IR value: [start, end] in program point numbering.
@@ -268,6 +269,20 @@ pub fn compute_live_intervals(func: &IrFunction) -> LivenessResult {
 
     let num_points = point;
 
+    // Phase 1b: Extend liveness of GEP base values for GEP folding.
+    //
+    // When a GEP with constant offset has its result only used as a Load/Store
+    // ptr operand (making it eligible for address-mode folding), the GEP base
+    // value must remain live through the Load/Store use point. Without this
+    // extension, the register allocator might free the base's register between
+    // the GEP definition and the Load/Store that will use the base directly.
+    //
+    // We scan for foldable GEPs with non-alloca bases and extend the base's
+    // last_use_point to cover all Load/Store uses of the GEP result. This also
+    // updates the gen bitsets so the backward dataflow propagates correctly.
+    extend_gep_base_liveness(func, &alloca_set, &id_to_dense,
+        &mut last_use_points, &mut block_gen);
+
     // Phase 2: Build successor lists for the CFG.
     let mut successors: Vec<Vec<usize>> = vec![Vec::new(); num_blocks];
     for (idx, block) in func.blocks.iter().enumerate() {
@@ -417,6 +432,150 @@ pub fn compute_live_intervals(func: &IrFunction) -> LivenessResult {
         intervals,
         num_points,
         call_points,
+    }
+}
+
+/// Extend liveness of GEP base values so that their registers remain valid
+/// at Load/Store use points where the GEP offset can be folded into the
+/// addressing mode.
+///
+/// For each GEP `%gep = gep %base, const_offset` whose result is only used
+/// as a Load/Store ptr operand:
+/// - Find all Load/Store instructions that use %gep as their ptr
+/// - Record %base as "used" at those instruction program points
+/// - Update the gen bitset for the block containing the Load/Store
+///
+/// This ensures the register allocator keeps %base alive through the folded
+/// Load/Store, enabling safe `offset(%base_reg)` addressing at codegen time.
+fn extend_gep_base_liveness(
+    func: &IrFunction,
+    alloca_set: &FxHashSet<u32>,
+    id_to_dense: &FxHashMap<u32, usize>,
+    last_use_points: &mut [u32],
+    block_gen: &mut [BitSet],
+) {
+    // Phase A: Identify foldable GEPs with non-alloca bases.
+    // Same criteria as build_gep_fold_map in generation.rs.
+    let mut gep_info: FxHashMap<u32, (u32, i64)> = FxHashMap::default(); // gep_dest_id -> (base_id, offset)
+
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            if let Instruction::GetElementPtr { dest, base, offset: Operand::Const(c), .. } = inst {
+                // Skip alloca bases (already handled by existing fold logic)
+                if alloca_set.contains(&base.0) {
+                    continue;
+                }
+                let offset_val = match c {
+                    IrConst::I64(n) => *n,
+                    IrConst::I32(n) => *n as i64,
+                    IrConst::I16(n) => *n as i64,
+                    IrConst::I8(n) => *n as i64,
+                    _ => continue,
+                };
+                if offset_val >= i32::MIN as i64 && offset_val <= i32::MAX as i64 {
+                    gep_info.insert(dest.0, (base.0, offset_val));
+                }
+            }
+        }
+    }
+
+    if gep_info.is_empty() {
+        return;
+    }
+
+    // Phase B: Verify each GEP dest is only used as Load/Store ptr operand.
+    // If used elsewhere, remove from the map (not foldable).
+    let mut non_foldable: FxHashSet<u32> = FxHashSet::default();
+
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            match inst {
+                Instruction::Load { ptr, ty, .. } => {
+                    // Load.ptr is foldable unless i128
+                    if matches!(ty, IrType::I128 | IrType::U128) {
+                        if gep_info.contains_key(&ptr.0) {
+                            non_foldable.insert(ptr.0);
+                        }
+                    }
+                }
+                Instruction::Store { val, ptr, ty, .. } => {
+                    // Store.val is NOT foldable; Store.ptr is (unless i128)
+                    if let Operand::Value(v) = val {
+                        if gep_info.contains_key(&v.0) {
+                            non_foldable.insert(v.0);
+                        }
+                    }
+                    if matches!(ty, IrType::I128 | IrType::U128) {
+                        if gep_info.contains_key(&ptr.0) {
+                            non_foldable.insert(ptr.0);
+                        }
+                    }
+                }
+                _ => {
+                    // Any other use invalidates folding
+                    for_each_operand_in_instruction(inst, |op| {
+                        if let Operand::Value(v) = op {
+                            if gep_info.contains_key(&v.0) {
+                                non_foldable.insert(v.0);
+                            }
+                        }
+                    });
+                    for_each_value_use_in_instruction(inst, |v| {
+                        if gep_info.contains_key(&v.0) {
+                            non_foldable.insert(v.0);
+                        }
+                    });
+                }
+            }
+        }
+        for_each_operand_in_terminator(&block.terminator, |op| {
+            if let Operand::Value(v) = op {
+                if gep_info.contains_key(&v.0) {
+                    non_foldable.insert(v.0);
+                }
+            }
+        });
+    }
+
+    for id in &non_foldable {
+        gep_info.remove(id);
+    }
+
+    if gep_info.is_empty() {
+        return;
+    }
+
+    // Phase C: Extend base liveness to Load/Store points that use foldable GEP results.
+    let mut block_point: u32 = 0;
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for inst in &block.instructions {
+            match inst {
+                Instruction::Load { ptr, .. } | Instruction::Store { ptr, .. } => {
+                    let ptr_id = match inst {
+                        Instruction::Load { ptr, .. } => ptr.0,
+                        Instruction::Store { ptr, .. } => ptr.0,
+                        _ => unreachable!(),
+                    };
+                    if let Some(&(base_id, _offset)) = gep_info.get(&ptr_id) {
+                        // Extend base's last_use to this program point
+                        if !alloca_set.contains(&base_id) {
+                            if let Some(&dense) = id_to_dense.get(&base_id) {
+                                let entry = &mut last_use_points[dense];
+                                if *entry == u32::MAX || block_point > *entry {
+                                    *entry = block_point;
+                                }
+                                // Also add to block's gen set (the base is "used" here)
+                                block_gen[bi].insert(dense);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            block_point += 1;
+        }
+        // Account for terminator point
+        block_point += 1;
     }
 }
 
