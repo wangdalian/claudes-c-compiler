@@ -1,0 +1,6 @@
+Task: Split ir/lowering/const_eval.rs into focused submodules
+Status: in_progress
+Started: 2026-01-27
+Description: Split the monolithic const_eval.rs (1667 lines) into focused
+submodules for better organization and maintainability.
+Files: src/ir/lowering/const_eval.rs
