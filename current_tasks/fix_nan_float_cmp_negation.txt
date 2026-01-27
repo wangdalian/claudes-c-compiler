@@ -1,0 +1,22 @@
+Task: Fix NaN-incorrect float comparison negation in simplify pass
+Status: in_progress
+Started: 2026-01-27
+
+Problem: The simplify pass transforms !(a <= b) into (a > b) for floating-point
+comparisons. This is incorrect when NaN is involved: !(NaN <= x) should be true
+(since NaN <= x is false, and !false = true), but (NaN > x) is also false.
+
+The bug was in simplify_cmp() which applied invert_cmp_op() to the inner
+comparison without checking whether the comparison type is floating-point.
+For floats, ordered comparison inversion is not valid because NaN makes the
+relationship non-total.
+
+Impact: Fixes postgres line geometry NaN test (line_interpt with NaN coefficients),
+and potentially other NaN-related correctness issues across all architectures.
+
+Fix: Skip inversion for float ordered comparisons (Slt, Sle, Sgt, Sge) in the
+simplify pass. Only Eq<->Ne inversion is safe for floats.
+
+Files changed:
+- src/passes/simplify.rs: Guard invert_cmp_op calls with float-ordered check
+- tests/nan-float-cmp-negation/: Regression test
