@@ -1,0 +1,9 @@
+Task: Fix kernel/sched/core.c ARM miscompilation causing boot hang
+Status: in_progress
+Started: 2026-01-27
+
+Problem: kernel/sched/core.c causes ARM kernel boot hang (timeout after 400s)
+when compiled with ccc-arm. This is separate from the sizeof(_Generic) bug 
+which was fixed in commit 73d1be7.
+
+Found via delta debugging (seed 7, total-count 500).
