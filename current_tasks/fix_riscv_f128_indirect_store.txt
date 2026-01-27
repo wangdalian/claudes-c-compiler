@@ -1,0 +1,17 @@
+Fix RISC-V F128 long double store through indirect pointers (in_progress)
+
+Bug: When storing F128 (long double) values loaded from variable-indexed
+arrays (GEP results), the RISC-V codegen incorrectly read the pointer
+value from the stack slot as if it were the F128 data. This caused long
+double array copies in loops to produce zeros/garbage.
+
+Root cause: f128_load_sources tracked the GEP result value ID, but
+emit_f128_store_to_slot and emit_f128_store_to_addr_in_t5 used get_slot()
+and read directly from the slot, which only works for allocas (where the
+slot contains data) but not for non-alloca pointers (where the slot
+contains a pointer that needs dereferencing).
+
+Fix: Add an is_indirect flag to f128_load_sources entries to distinguish
+between direct data sources (allocas, cast results) and indirect pointer
+sources (GEP results). The store and operand functions now correctly
+dereference the pointer for indirect sources.
