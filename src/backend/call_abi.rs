@@ -78,8 +78,8 @@ pub struct CallAbiConfig {
     pub f128_in_gp_pairs: bool,
     /// Whether variadic float args must go in GP registers instead of FP regs (RISC-V: true, x86: false, ARM: false).
     pub variadic_floats_in_gp: bool,
-    /// Whether large structs (>16 bytes) are passed by reference (pointer in GP reg) per AAPCS64.
-    /// ARM: true (caller passes pointer in x0-x7 or on stack), x86/RISC-V: false (copy to stack).
+    /// Whether large structs (>16 bytes) are passed by reference (pointer in GP reg).
+    /// ARM/RISC-V: true (pointer in GP reg or on stack), x86: false (copy to stack).
     pub large_struct_by_ref: bool,
     /// Whether to use SysV per-eightbyte struct classification (x86-64 only).
     /// When true, struct eightbytes classified as SSE are passed in xmm registers.

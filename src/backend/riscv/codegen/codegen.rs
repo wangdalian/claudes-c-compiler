@@ -987,9 +987,47 @@ impl ArchCodegen for RiscvCodegen {
                         self.emit_store_to_s0("t0", dst_off, "sd");
                     }
                 }
-                // F128 in FP reg doesn't happen on RISC-V. By-ref structs and SysV SSE-class structs don't happen on RISC-V.
+                ParamClass::LargeStructByRefReg { reg_idx, size } => {
+                    // RISC-V LP64: register holds a pointer to the struct data.
+                    // Copy size bytes from the pointer into the local alloca.
+                    let src_reg = if has_f128_reg_params && !func.is_variadic {
+                        let off = f128_save_offset + (reg_idx as i64) * 8;
+                        self.state.emit_fmt(format_args!("    ld t0, {}(sp)", off));
+                        "t0"
+                    } else if func.is_variadic {
+                        let off = (reg_idx as i64) * 8;
+                        self.emit_load_from_s0("t0", off, "ld");
+                        "t0"
+                    } else {
+                        RISCV_ARG_REGS[reg_idx]
+                    };
+                    // t1 = pointer to struct data
+                    if src_reg != "t1" {
+                        self.state.emit_fmt(format_args!("    mv t1, {}", src_reg));
+                    }
+                    let n_dwords = (size + 7) / 8;
+                    for qi in 0..n_dwords {
+                        let src_off = (qi * 8) as i64;
+                        let dst_off = slot.0 + src_off;
+                        self.state.emit_fmt(format_args!("    ld t0, {}(t1)", src_off));
+                        self.emit_store_to_s0("t0", dst_off, "sd");
+                    }
+                }
+                ParamClass::LargeStructByRefStack { offset, size } => {
+                    // RISC-V LP64: stack slot holds a pointer to the struct data.
+                    // Load the pointer, then copy the struct data into the alloca.
+                    let caller_offset = stack_base + offset;
+                    self.emit_load_from_s0("t1", caller_offset, "ld");
+                    let n_dwords = (size + 7) / 8;
+                    for qi in 0..n_dwords {
+                        let src_off = (qi * 8) as i64;
+                        let dst_off = slot.0 + src_off;
+                        self.state.emit_fmt(format_args!("    ld t0, {}(t1)", src_off));
+                        self.emit_store_to_s0("t0", dst_off, "sd");
+                    }
+                }
+                // F128 in FP reg doesn't happen on RISC-V. SysV SSE-class structs don't happen on RISC-V.
                 ParamClass::F128FpReg { .. } |
-                ParamClass::LargeStructByRefReg { .. } | ParamClass::LargeStructByRefStack { .. } |
                 ParamClass::StructSseReg { .. } | ParamClass::StructMixedIntSseReg { .. } | ParamClass::StructMixedSseIntReg { .. } => {}
             }
         }
@@ -1848,7 +1886,7 @@ impl ArchCodegen for RiscvCodegen {
             align_i128_pairs: true,
             f128_in_fp_regs: false, f128_in_gp_pairs: true,
             variadic_floats_in_gp: true,
-            large_struct_by_ref: false, // RISC-V: large structs passed on stack by value
+            large_struct_by_ref: true, // RISC-V LP64: composites > 16 bytes passed by reference (pointer in GP reg)
             use_sysv_struct_classification: false, // RISC-V uses its own ABI, not SysV
         }
     }
