@@ -2890,16 +2890,21 @@ impl ArchCodegen for X86Codegen {
         if self.state.needs_got(name) {
             // PIC mode: load the address from the GOT
             self.state.emit_fmt(format_args!("    movq {}@GOTPCREL(%rip), %rax", name));
+        } else if self.state.code_model_kernel {
+            // Kernel code model: use absolute sign-extended 32-bit addressing.
+            // In mcmodel=kernel, all symbols are in the negative 2GB of the virtual
+            // address space, so they fit in a sign-extended 32-bit immediate.
+            // This produces R_X86_64_32S relocations, matching GCC's behavior.
+            // Using absolute addressing gives the link-time virtual address, which
+            // is what C code expects when casting a symbol to an integer (e.g.,
+            // `(unsigned long)_text`). RIP-relative `leaq` would give the runtime
+            // physical address, which differs from the virtual address during early
+            // boot before page tables are fully set up.
+            // Note: early boot code that needs the physical address uses explicit
+            // RIP-relative inline asm (e.g., `asm("leaq %c1(%%rip), %0")`).
+            self.state.emit_fmt(format_args!("    movq ${}, %rax", name));
         } else {
-            // Use RIP-relative LEA for both default and kernel code models.
-            // For mcmodel=kernel: GCC also uses RIP-relative addressing for global
-            // accesses. While absolute sign-extended 32-bit addressing (movq $symbol)
-            // would work for most kernel code (the linker/relocation handles it),
-            // RIP-relative is required for early boot code in .head.text (e.g.
-            // __startup_64) which runs at physical addresses before the kernel is
-            // relocated to its final virtual address. At that point, absolute
-            // addresses point to wrong locations, but RIP-relative offsets are
-            // correct since code and data maintain the same relative positions.
+            // Default code model: use RIP-relative LEA
             self.state.emit_fmt(format_args!("    leaq {}(%rip), %rax", name));
         }
         self.store_rax_to(dest);

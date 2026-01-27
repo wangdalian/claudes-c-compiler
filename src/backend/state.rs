@@ -131,7 +131,8 @@ pub struct CodegenState {
     pub current_text_section: String,
     /// Whether to use the kernel code model (-mcmodel=kernel). All symbols
     /// are assumed to be in the negative 2GB of the virtual address space.
-    /// Currently uses RIP-relative addressing (same as default model).
+    /// Uses absolute sign-extended 32-bit addressing (movq $symbol) for
+    /// global address references, producing R_X86_64_32S relocations.
     pub code_model_kernel: bool,
     /// Whether to disable jump table emission for switch statements (-fno-jump-tables).
     pub no_jump_tables: bool,

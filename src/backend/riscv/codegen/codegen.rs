@@ -90,10 +90,16 @@ pub struct RiscvCodegen {
     reg_assignments: FxHashMap<u32, PhysReg>,
     /// Which callee-saved registers are used and need save/restore.
     used_callee_saved: Vec<PhysReg>,
-    /// Maps F128 load result value ID -> (source alloca/ptr ID, byte offset).
+    /// Maps F128 load result value ID -> (source ID, byte offset, is_indirect).
     /// Used by emit_f128_operand_to_a0_a1 to reload the full 16-byte f128
     /// from the original memory location for comparisons.
-    f128_load_sources: FxHashMap<u32, (u32, i64)>,
+    /// - For alloca sources (constant-offset GEP folded): (alloca_id, offset, false)
+    ///   The data is at the alloca's stack slot + offset.
+    /// - For pointer sources (variable-index GEP): (ptr_id, 0, true)
+    ///   The ptr_id's slot holds a pointer; data is at *ptr + offset.
+    /// - For self-referential cast results: (dest_id, 0, false)
+    ///   The data is stored directly in the dest's own stack slot.
+    f128_load_sources: FxHashMap<u32, (u32, i64, bool)>,
 }
 
 impl RiscvCodegen {
@@ -993,33 +999,45 @@ impl RiscvCodegen {
             // Try to load the full 16-byte f128 from the original memory location
             // that this value was loaded from (tracked by f128_load_sources with offset).
             // The alloca stores the full IEEE f128 (16 bytes), preserving quad precision.
-            if let Some(&(alloca_id, offset)) = self.f128_load_sources.get(&v.0) {
-                let addr = self.state.resolve_slot_addr(alloca_id);
-                if let Some(addr) = addr {
-                    match addr {
-                        SlotAddr::Direct(slot) => {
-                            let effective = slot.0 + offset;
-                            self.emit_load_from_s0("a0", effective, "ld");
-                            self.emit_load_from_s0("a1", effective + 8, "ld");
+            if let Some(&(src_id, offset, is_indirect)) = self.f128_load_sources.get(&v.0) {
+                if is_indirect {
+                    // Source is a pointer (e.g., GEP result): slot holds a pointer
+                    // that must be dereferenced to access the F128 data.
+                    if let Some(src_slot) = self.state.get_slot(src_id) {
+                        self.emit_load_ptr_from_slot(src_slot, src_id);
+                        if offset != 0 {
+                            self.emit_add_offset_to_addr_reg(offset);
                         }
-                        SlotAddr::OverAligned(slot, id) => {
-                            self.emit_alloca_aligned_addr(slot, id);
-                            if offset != 0 {
-                                self.emit_add_offset_to_addr_reg(offset);
-                            }
-                            self.state.emit("    ld a0, 0(t5)");
-                            self.state.emit("    ld a1, 8(t5)");
-                        }
-                        SlotAddr::Indirect(slot) => {
-                            self.emit_load_ptr_from_slot(slot, alloca_id);
-                            if offset != 0 {
-                                self.emit_add_offset_to_addr_reg(offset);
-                            }
-                            self.state.emit("    ld a0, 0(t5)");
-                            self.state.emit("    ld a1, 8(t5)");
-                        }
+                        self.state.emit("    ld a0, 0(t5)");
+                        self.state.emit("    ld a1, 8(t5)");
+                        return;
                     }
-                    return;
+                } else {
+                    // Source is direct: data is in the slot at the given offset.
+                    // This covers allocas (direct or over-aligned) and self-referential
+                    // cast results.
+                    let addr = self.state.resolve_slot_addr(src_id);
+                    if let Some(addr) = addr {
+                        match addr {
+                            SlotAddr::Direct(slot) | SlotAddr::Indirect(slot) => {
+                                // For Direct allocas: data is at slot + offset.
+                                // For Indirect with is_indirect=false: data was stored
+                                // directly in the slot (e.g., cast result).
+                                let effective = slot.0 + offset;
+                                self.emit_load_from_s0("a0", effective, "ld");
+                                self.emit_load_from_s0("a1", effective + 8, "ld");
+                            }
+                            SlotAddr::OverAligned(slot, id) => {
+                                self.emit_alloca_aligned_addr(slot, id);
+                                if offset != 0 {
+                                    self.emit_add_offset_to_addr_reg(offset);
+                                }
+                                self.state.emit("    ld a0, 0(t5)");
+                                self.state.emit("    ld a1, 8(t5)");
+                            }
+                        }
+                        return;
+                    }
                 }
             }
             // Fallback: load f64 approximation and convert to f128 via libcall.
@@ -1116,17 +1134,35 @@ impl RiscvCodegen {
             self.state.emit_fmt(format_args!("    li t0, {}", hi as i64));
             self.emit_store_to_s0("t0", slot.0 + 8, "sd");
         } else if let Operand::Value(v) = val {
-            // Check if this value has full f128 data in a tracked slot
-            // (e.g., from an int->F128 cast that stored full precision).
-            if let Some(&(src_id, offset)) = self.f128_load_sources.get(&v.0) {
-                if let Some(src_slot) = self.state.get_slot(src_id) {
-                    let src_off = src_slot.0 + offset;
-                    // Copy full 16-byte f128 from source to destination.
-                    self.emit_load_from_s0("t0", src_off, "ld");
-                    self.emit_store_to_s0("t0", slot.0, "sd");
-                    self.emit_load_from_s0("t0", src_off + 8, "ld");
-                    self.emit_store_to_s0("t0", slot.0 + 8, "sd");
-                    return;
+            // Check if this value has full f128 data in a tracked source
+            // (e.g., from an alloca load or int->F128 cast).
+            // Uses is_indirect flag to distinguish between:
+            // - Direct sources (allocas, cast results): data is in the slot itself
+            // - Indirect sources (GEP results): slot holds a pointer to the data
+            if let Some(&(src_id, offset, is_indirect)) = self.f128_load_sources.get(&v.0) {
+                if is_indirect {
+                    // Source slot holds a pointer; dereference to get F128 data.
+                    if let Some(src_slot) = self.state.get_slot(src_id) {
+                        self.emit_load_ptr_from_slot(src_slot, src_id);
+                        if offset != 0 {
+                            self.emit_add_offset_to_addr_reg(offset);
+                        }
+                        self.state.emit("    ld t0, 0(t5)");
+                        self.emit_store_to_s0("t0", slot.0, "sd");
+                        self.state.emit("    ld t0, 8(t5)");
+                        self.emit_store_to_s0("t0", slot.0 + 8, "sd");
+                        return;
+                    }
+                } else {
+                    // Source data is directly in the slot (alloca or cast result).
+                    if let Some(src_slot) = self.state.get_slot(src_id) {
+                        let src_off = src_slot.0 + offset;
+                        self.emit_load_from_s0("t0", src_off, "ld");
+                        self.emit_store_to_s0("t0", slot.0, "sd");
+                        self.emit_load_from_s0("t0", src_off + 8, "ld");
+                        self.emit_store_to_s0("t0", slot.0 + 8, "sd");
+                        return;
+                    }
                 }
             }
             // Fallback: convert f64 in t0 to f128 via __extenddftf2, store 16 bytes.
@@ -1164,16 +1200,34 @@ impl RiscvCodegen {
             self.state.emit_fmt(format_args!("    li t0, {}", hi as i64));
             self.state.emit("    sd t0, 8(t5)");
         } else if let Operand::Value(v) = val {
-            // Check if value has full f128 data in a tracked slot
-            if let Some(&(src_id, offset)) = self.f128_load_sources.get(&v.0) {
-                if let Some(src_slot) = self.state.get_slot(src_id) {
-                    let src_off = src_slot.0 + offset;
-                    self.state.emit("    mv t3, t5");
-                    self.emit_load_from_s0("t0", src_off, "ld");
-                    self.state.emit("    sd t0, 0(t3)");
-                    self.emit_load_from_s0("t0", src_off + 8, "ld");
-                    self.state.emit("    sd t0, 8(t3)");
-                    return;
+            // Check if value has full f128 data in a tracked source.
+            // Uses is_indirect flag to distinguish pointer vs data sources.
+            if let Some(&(src_id, offset, is_indirect)) = self.f128_load_sources.get(&v.0) {
+                if is_indirect {
+                    // Source slot holds a pointer; save dest addr, dereference src pointer.
+                    if let Some(src_slot) = self.state.get_slot(src_id) {
+                        self.state.emit("    mv t3, t5");
+                        self.emit_load_ptr_from_slot(src_slot, src_id);
+                        if offset != 0 {
+                            self.emit_add_offset_to_addr_reg(offset);
+                        }
+                        self.state.emit("    ld t0, 0(t5)");
+                        self.state.emit("    sd t0, 0(t3)");
+                        self.state.emit("    ld t0, 8(t5)");
+                        self.state.emit("    sd t0, 8(t3)");
+                        return;
+                    }
+                } else {
+                    // Source data is directly in the slot.
+                    if let Some(src_slot) = self.state.get_slot(src_id) {
+                        let src_off = src_slot.0 + offset;
+                        self.state.emit("    mv t3, t5");
+                        self.emit_load_from_s0("t0", src_off, "ld");
+                        self.state.emit("    sd t0, 0(t3)");
+                        self.emit_load_from_s0("t0", src_off + 8, "ld");
+                        self.state.emit("    sd t0, 8(t3)");
+                        return;
+                    }
                 }
             }
             // Fallback: use f64 approximation
@@ -1752,7 +1806,11 @@ impl ArchCodegen for RiscvCodegen {
             // Track which alloca+offset this F128 value was loaded from, so that
             // emit_f128_operand_to_a0_a1 can load the full 16-byte f128 directly
             // from the original memory for comparisons (avoiding f64 precision loss).
-            self.f128_load_sources.insert(dest.0, (ptr.0, 0));
+            // Track source for full-precision reload. Mark as indirect when
+            // the source is a non-alloca pointer (e.g., GEP result) whose slot
+            // holds a pointer that must be dereferenced to access the data.
+            let is_indirect = !self.state.is_alloca(ptr.0);
+            self.f128_load_sources.insert(dest.0, (ptr.0, 0, is_indirect));
 
             let addr = self.state.resolve_slot_addr(ptr.0);
             if let Some(addr) = addr {
@@ -1845,7 +1903,8 @@ impl ArchCodegen for RiscvCodegen {
     fn emit_load_with_const_offset(&mut self, dest: &Value, base: &Value, offset: i64, ty: IrType) {
         if ty == IrType::F128 {
             // Track the source alloca + offset for full-precision comparison access.
-            self.f128_load_sources.insert(dest.0, (base.0, offset));
+            // base is always an alloca here (const-offset GEP was folded), so not indirect.
+            self.f128_load_sources.insert(dest.0, (base.0, offset, false));
 
             let addr = self.state.resolve_slot_addr(base.0);
             if let Some(addr) = addr {
@@ -2900,8 +2959,8 @@ impl ArchCodegen for RiscvCodegen {
             self.state.emit("    call __trunctfdf2");
             self.state.emit("    fmv.x.d t0, fa0");
             self.state.reg_cache.invalidate_all();
-            // Track that this value has full f128 in its slot
-            self.f128_load_sources.insert(dest.0, (dest.0, 0));
+            // Track that this value has full f128 in its slot (not indirect; data is in slot).
+            self.f128_load_sources.insert(dest.0, (dest.0, 0, false));
             // Store f64 approx only to register (if register-allocated), not to stack.
             if let Some(&reg) = self.reg_assignments.get(&dest.0) {
                 let reg_name = callee_saved_name(reg);

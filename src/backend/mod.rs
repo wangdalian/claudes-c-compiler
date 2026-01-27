@@ -55,9 +55,8 @@ pub struct CodegenOptions {
     pub general_regs_only: bool,
     /// Whether to use the kernel code model (-mcmodel=kernel). All symbols
     /// are assumed to be in the negative 2GB of the virtual address space.
-    /// Uses RIP-relative addressing for global access (same as default model).
-    /// RIP-relative is required for early boot code in .head.text which runs
-    /// at physical addresses before the kernel is relocated to virtual addresses.
+    /// Uses absolute sign-extended 32-bit addressing (movq $symbol) for
+    /// global address references, producing R_X86_64_32S relocations.
     pub code_model_kernel: bool,
     /// Whether to disable jump table emission for switch statements (-fno-jump-tables).
     /// When true, all switch statements use compare-and-branch chains instead of

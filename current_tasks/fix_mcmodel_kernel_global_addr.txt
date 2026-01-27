@@ -13,4 +13,4 @@ virtual address, not the physical address.
 Fix: Add a code_model_kernel branch in emit_global_addr that uses `movq $symbol, %rax`
 with R_X86_64_32S relocations.
 
-Status: in_progress
+Status: completed
