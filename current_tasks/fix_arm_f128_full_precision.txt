@@ -1,0 +1,16 @@
+Fix ARM64 F128 (long double) to use full IEEE binary128 precision
+
+The ARM64 backend currently stores F128 values as f64 approximations in 8-byte
+stack slots, losing significant precision. This causes ~10 test failures.
+
+RISC-V already has the correct implementation (full 16-byte IEEE binary128).
+This task ports that approach to ARM64:
+
+1. Override emit_store/emit_load for F128 to use 16-byte memory operations
+2. Add f128_load_sources tracking (like RISC-V) for full-precision reloads
+3. Override emit_cast for F128 to use soft-float libcalls (__floatditf, etc.)
+4. Fix ARM global data emission to use IEEE binary128 (not f64 + 8 zeros)
+5. Fix constant loading to use full-precision bytes
+6. Fix parameter passing to preserve full 128-bit values
+
+Status: in_progress
