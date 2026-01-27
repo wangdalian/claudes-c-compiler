@@ -1,0 +1,6 @@
+Task: Fix x86 miscompilation of sound/core/info.c
+Status: in_progress
+
+Delta debugging found that sound/core/info.c compiled with ccc causes
+kernel boot failure on x86. Investigating the miscompilation and fixing
+the compiler bug.
