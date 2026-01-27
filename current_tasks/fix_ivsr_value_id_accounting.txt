@@ -1,0 +1,20 @@
+Task: Fix IVSR value ID accounting bug causing miscompilation
+Status: in_progress
+
+Bug: The IVSR (Induction Variable Strength Reduction) pass has a value ID
+accounting bug in the non-constant init, stride > 1, I64 type path.
+
+When the IV type is already I64 (no cast needed), the code does `next_id -= 1`
+to reclaim the unused `init_cast_val`. But `init_mul_val` was allocated AFTER
+`init_cast_val`, so decrementing leaves `next_id` equal to `init_mul_val`'s ID.
+
+This causes func.next_value_id to not account for init_mul_val, making DCE's
+bitvector too small and incorrectly removing the multiply instruction as "dead".
+
+The result is a bad pointer computation that crashes or produces garbage output
+when loops use non-constant array indices (e.g., `for(i = n; i < 4; i++) a[i]`).
+
+Fix: Restructure value allocation to only allocate init_cast_val when needed,
+rather than allocating both values upfront and trying to undo one.
+
+Impact: Fixes ~19 test failures across x86/ARM/RISC-V architectures.
