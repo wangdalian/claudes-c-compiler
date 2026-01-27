@@ -1,5 +1,5 @@
 Task: Fix ARM f128 register cache invalidation after constant loading
-Status: in_progress
+Status: completed
 Started: 2026-01-27
 
 Problem: In the shared F128 soft-float orchestration, loading an f128 constant
