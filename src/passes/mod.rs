@@ -13,6 +13,7 @@ pub mod cfg_simplify;
 pub mod constant_fold;
 pub mod copy_prop;
 pub mod dce;
+pub mod div_by_const;
 pub mod gvn;
 pub mod if_convert;
 pub mod inline;
@@ -169,6 +170,14 @@ pub fn run_passes(module: &mut IrModule, _opt_level: u32) {
         // and lowering so subsequent passes see through them)
         if !dis_copyprop {
             total_changes += run_on_visited(module, &dirty, &mut changed, copy_prop::propagate_copies);
+        }
+
+        // Phase 2a: Division-by-constant strength reduction (first iteration only).
+        // Replaces slow div/idiv instructions with fast multiply-and-shift sequences.
+        // Run early so subsequent passes (narrowing, simplify, constant folding, DCE)
+        // can optimize the expanded instruction sequences.
+        if iter == 0 && !disabled.contains("divconst") {
+            total_changes += run_on_visited(module, &dirty, &mut changed, div_by_const::div_by_const_function);
         }
 
         // Phase 2b: Integer narrowing (widen-operate-narrow => direct narrow operation)
