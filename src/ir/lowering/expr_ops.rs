@@ -427,6 +427,7 @@ impl Lowerer {
 
         self.emit_ternary_branch(
             cond_val,
+            common_ty,
             |s| {
                 let then_val = s.lower_expr(then_expr);
                 s.emit_implicit_cast(then_val, then_ty, common_ty)
@@ -456,6 +457,7 @@ impl Lowerer {
 
         self.emit_ternary_branch(
             Operand::Value(cond_bool),
+            common_ty,
             |s| s.emit_implicit_cast(cond_val.clone(), cond_ty, common_ty),
             |s| {
                 let else_val = s.lower_expr(else_expr);
@@ -470,6 +472,7 @@ impl Lowerer {
     fn emit_ternary_branch(
         &mut self,
         cond: Operand,
+        result_ty: IrType,
         then_fn: impl FnOnce(&mut Self) -> Operand,
         else_fn: impl FnOnce(&mut Self) -> Operand,
     ) -> Operand {
@@ -478,7 +481,12 @@ impl Lowerer {
         // which placed the alloca in the current block — if the expression was inside
         // nested control flow (e.g., inside a loop or if body), the alloca would
         // be in a non-entry block and mem2reg would refuse to promote it.
-        let result_alloca = self.emit_entry_alloca(IrType::I64, 8, 0, false);
+        //
+        // Use the actual result type for the alloca size so that wider types like
+        // long double (F128, 16 bytes) and __int128 are stored correctly.
+        let alloca_size = result_ty.size().max(8);
+        let alloca_ty = if result_ty.size() > 8 { result_ty } else { IrType::I64 };
+        let result_alloca = self.emit_entry_alloca(alloca_ty, alloca_size, 0, false);
 
         let then_label = self.fresh_label();
         let else_label = self.fresh_label();
@@ -492,17 +500,17 @@ impl Lowerer {
 
         self.start_block(then_label);
         let then_val = then_fn(self);
-        self.emit(Instruction::Store { val: then_val, ptr: result_alloca, ty: IrType::I64 , seg_override: AddressSpace::Default });
+        self.emit(Instruction::Store { val: then_val, ptr: result_alloca, ty: alloca_ty, seg_override: AddressSpace::Default });
         self.terminate(Terminator::Branch(end_label));
 
         self.start_block(else_label);
         let else_val = else_fn(self);
-        self.emit(Instruction::Store { val: else_val, ptr: result_alloca, ty: IrType::I64 , seg_override: AddressSpace::Default });
+        self.emit(Instruction::Store { val: else_val, ptr: result_alloca, ty: alloca_ty, seg_override: AddressSpace::Default });
         self.terminate(Terminator::Branch(end_label));
 
         self.start_block(end_label);
         let result = self.fresh_value();
-        self.emit(Instruction::Load { dest: result, ptr: result_alloca, ty: IrType::I64 , seg_override: AddressSpace::Default });
+        self.emit(Instruction::Load { dest: result, ptr: result_alloca, ty: alloca_ty, seg_override: AddressSpace::Default });
         Operand::Value(result)
     }
 

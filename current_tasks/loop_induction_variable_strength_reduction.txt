@@ -1,0 +1,23 @@
+Loop Induction Variable Strength Reduction (IVSR)
+Status: in_progress
+
+Goal: Add an optimization pass that transforms expensive multiply-based
+array index computations in loops into cheaper pointer increment operations.
+
+Currently, for `arr[i]` in a loop, we generate:
+  %idx_i64 = Cast(%i, I32 -> I64)
+  %offset  = Mul(%idx_i64, elem_size)
+  %addr    = GetElementPtr(%base, %offset)
+  %val     = Load(%addr)
+
+After IVSR, this becomes:
+  %ptr = Phi(%base_init, %ptr_next)    // pointer induction variable
+  %val = Load(%ptr)
+  %ptr_next = BinOp(Add, %ptr, elem_size)
+
+This eliminates the multiply and sign-extend per iteration.
+
+Key files:
+- NEW: src/passes/iv_strength_reduce.rs
+- src/passes/mod.rs (add to pipeline)
+- src/ir/ir.rs (IR types reference)
