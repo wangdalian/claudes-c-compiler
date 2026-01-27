@@ -197,6 +197,9 @@ pub fn f128_operand_to_arg1<T: F128SoftFloat + ?Sized>(cg: &mut T, op: &Operand)
         let lo = u64::from_le_bytes(f128_bytes[0..8].try_into().unwrap());
         let hi = u64::from_le_bytes(f128_bytes[8..16].try_into().unwrap());
         cg.f128_load_const_to_arg1(lo, hi);
+        // The accumulator register (ARM: x0) was clobbered with constant data.
+        // Invalidate the cache so subsequent loads don't get a stale hit.
+        cg.state().reg_cache.invalidate_all();
         return;
     }
 
@@ -248,6 +251,8 @@ pub fn f128_store_to_slot<T: F128SoftFloat + ?Sized>(cg: &mut T, val: &Operand, 
     // Path 1: F128 constant.
     if let Some((lo, hi)) = crate::backend::cast::f128_const_halves(val) {
         cg.f128_store_const_halves_to_slot(lo, hi, slot);
+        // The accumulator register was clobbered with constant data.
+        cg.state().reg_cache.invalidate_all();
         return;
     }
 
@@ -289,6 +294,8 @@ pub fn f128_store_to_addr_reg<T: F128SoftFloat + ?Sized>(cg: &mut T, val: &Opera
     // Path 1: F128 constant.
     if let Some((lo, hi)) = crate::backend::cast::f128_const_halves(val) {
         cg.f128_store_const_halves_to_addr(lo, hi);
+        // The accumulator register was clobbered with constant data.
+        cg.state().reg_cache.invalidate_all();
         return;
     }
 
