@@ -1,0 +1,20 @@
+Task: Optimize phi elimination to avoid unnecessary temporary values
+
+Status: in_progress
+
+Problem:
+The current phi elimination pass creates temporary values for ALL phi edges when a block
+has multiple phis. This causes massive code bloat and stack traffic in functions with large
+switch statements (like sqlite3VdbeExec), because each phi copy goes through an intermediate
+stack slot: src -> tmp_slot -> dest_slot.
+
+For sqlite3VdbeExec: CCC generates 1.6MB of code vs GCC's 40KB (42x bloat).
+SQLite speedtest: CCC 10.5s vs GCC 0.87s (12x slower).
+
+Solution:
+Implement smart phi elimination that analyzes which phi copies actually need temporaries
+(only when there are circular dependencies like swap patterns) and uses direct copies for
+the rest. This eliminates one stack load/store per non-conflicting phi per predecessor edge.
+
+Also extend the copy coalescing in stack_layout to handle cross-block phi copy pairs where
+the temporary is only used once.
