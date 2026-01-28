@@ -1911,7 +1911,7 @@ impl ArchCodegen for RiscvCodegen {
         }
     }
 
-    fn emit_call_compute_stack_space(&self, arg_classes: &[CallArgClass]) -> usize {
+    fn emit_call_compute_stack_space(&self, arg_classes: &[CallArgClass], _arg_types: &[IrType]) -> usize {
         compute_stack_arg_space(arg_classes)
     }
 

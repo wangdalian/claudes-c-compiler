@@ -642,18 +642,25 @@ impl ArchCodegen for I686Codegen {
     }
 
     fn emit_param_ref(&mut self, dest: &Value, param_idx: usize, ty: IrType) {
-        // On i686, parameters are on the stack at 8+param_idx*4(%ebp) or later.
-        // But actually they may have varying sizes. For simplicity, look up the alloca
-        // slot where emit_store_params saved the value.
-        // If the dest has a slot, load from the parameter's alloca.
-        // This is a fallback used when mem2reg promotes a parameter.
+        // On i686 cdecl, all parameters are on the stack.
+        // Use the classified parameter offsets from emit_store_params for accuracy.
+        use crate::backend::call_emit::ParamClass;
 
-        // Try to find the parameter alloca slot by iterating the function's params.
-        // For now, compute a simple stack offset.
-        // Parameters in cdecl are at 8(%ebp), 12(%ebp), 16(%ebp), etc.
-        // But they may have different sizes. Use a simple 4-byte-per-param estimate.
-        // TODO: proper parameter offset tracking
-        let param_offset = 8 + (param_idx as i64) * 4;
+        let stack_base: i64 = 8; // after saved ebp + return address
+        let param_offset = if param_idx < self.state.param_classes.len() {
+            match self.state.param_classes[param_idx] {
+                ParamClass::StackScalar { offset } |
+                ParamClass::StructStack { offset, .. } |
+                ParamClass::LargeStructStack { offset, .. } |
+                ParamClass::F128AlwaysStack { offset } |
+                ParamClass::I128Stack { offset } |
+                ParamClass::F128Stack { offset } |
+                ParamClass::LargeStructByRefStack { offset, .. } => stack_base + offset,
+                _ => stack_base + (param_idx as i64) * 4, // fallback
+            }
+        } else {
+            stack_base + (param_idx as i64) * 4 // fallback
+        };
 
         if is_i128_type(ty) {
             // Load 16 bytes
@@ -872,117 +879,199 @@ impl ArchCodegen for I686Codegen {
     }
 
     fn emit_cast_instrs(&mut self, from_ty: IrType, to_ty: IrType) {
-        match (from_ty, to_ty) {
-            // Integer truncation (wider -> narrower): no-op on x86 (sub-registers)
-            (IrType::I32, IrType::I8) | (IrType::U32, IrType::U8) |
-            (IrType::I32, IrType::I16) | (IrType::U32, IrType::U16) |
-            (IrType::I16, IrType::I8) | (IrType::U16, IrType::U8) |
-            (IrType::I32, IrType::U8) | (IrType::U32, IrType::I8) |
-            (IrType::I32, IrType::U16) | (IrType::U32, IrType::I16) |
-            (IrType::I64, IrType::I8) | (IrType::U64, IrType::U8) |
-            (IrType::I64, IrType::I16) | (IrType::U64, IrType::U16) |
-            (IrType::I64, IrType::I32) | (IrType::U64, IrType::U32) |
-            (IrType::I64, IrType::U8) | (IrType::U64, IrType::I8) |
-            (IrType::I64, IrType::U16) | (IrType::U64, IrType::I16) |
-            (IrType::I64, IrType::U32) | (IrType::U64, IrType::I32) |
-            (IrType::Ptr, IrType::I8) | (IrType::Ptr, IrType::U8) |
-            (IrType::Ptr, IrType::I16) | (IrType::Ptr, IrType::U16) |
-            (IrType::Ptr, IrType::I32) | (IrType::Ptr, IrType::U32) => {}
+        use crate::backend::cast::{CastKind, classify_cast};
 
-            // Integer widening: sign/zero extend
-            (IrType::I8, IrType::I16) | (IrType::I8, IrType::I32) | (IrType::I8, IrType::Ptr) => {
-                self.state.emit("    movsbl %al, %eax");
-            }
-            (IrType::U8, IrType::U16) | (IrType::U8, IrType::U32) | (IrType::U8, IrType::I32) |
-            (IrType::U8, IrType::I16) | (IrType::U8, IrType::Ptr) => {
-                self.state.emit("    movzbl %al, %eax");
-            }
-            (IrType::I16, IrType::I32) | (IrType::I16, IrType::Ptr) => {
-                self.state.emit("    movswl %ax, %eax");
-            }
-            (IrType::U16, IrType::U32) | (IrType::U16, IrType::I32) | (IrType::U16, IrType::Ptr) => {
-                self.state.emit("    movzwl %ax, %eax");
+        match classify_cast(from_ty, to_ty) {
+            CastKind::Noop => {}
+
+            CastKind::IntNarrow { .. } => {
+                // Truncation: no-op on x86 (use sub-register)
             }
 
-            // Pointer <-> integer (same size on i686)
-            (IrType::I32, IrType::Ptr) | (IrType::U32, IrType::Ptr) |
-            (IrType::Ptr, IrType::I64) | (IrType::Ptr, IrType::U64) => {}
-
-            // 32-bit -> 64-bit: no-op on i686 (only low 32 bits matter)
-            (IrType::I32, IrType::I64) => {}
-            (IrType::U32, IrType::U64) | (IrType::U32, IrType::I64) => {}
-            (IrType::I32, IrType::U64) => {}
-            (IrType::I8, IrType::I64) | (IrType::I8, IrType::U64) => {
-                self.state.emit("    movsbl %al, %eax");
-            }
-            (IrType::U8, IrType::I64) | (IrType::U8, IrType::U64) => {
-                self.state.emit("    movzbl %al, %eax");
-            }
-            (IrType::I16, IrType::I64) | (IrType::I16, IrType::U64) => {
-                self.state.emit("    movswl %ax, %eax");
-            }
-            (IrType::U16, IrType::I64) | (IrType::U16, IrType::U64) => {
-                self.state.emit("    movzwl %ax, %eax");
+            CastKind::IntWiden { from_ty, .. } => {
+                if from_ty.is_unsigned() {
+                    match from_ty {
+                        IrType::U8 => self.state.emit("    movzbl %al, %eax"),
+                        IrType::U16 => self.state.emit("    movzwl %ax, %eax"),
+                        // U32 -> I64/U64: no-op on i686 (eax already has 32 bits)
+                        _ => {}
+                    }
+                } else {
+                    match from_ty {
+                        IrType::I8 => self.state.emit("    movsbl %al, %eax"),
+                        IrType::I16 => self.state.emit("    movswl %ax, %eax"),
+                        // I32 -> I64/U64: no-op on i686 (eax already has 32 bits)
+                        _ => {}
+                    }
+                }
             }
 
-            // Float -> integer conversions
-            (IrType::F32, IrType::I32) | (IrType::F32, IrType::U32) | (IrType::F32, IrType::Ptr) => {
-                // Convert F32 in eax to integer
-                self.state.emit("    movd %eax, %xmm0");
-                self.state.emit("    cvttss2si %xmm0, %eax");
-            }
-            (IrType::F64, IrType::I32) | (IrType::F64, IrType::U32) | (IrType::F64, IrType::Ptr) => {
-                // F64 needs x87 or SSE2
-                self.state.emit("    subl $8, %esp");
-                self.state.emit("    movl %eax, (%esp)");
-                // TODO: need both halves for proper F64 -> int conversion
-                self.state.emit("    fildl (%esp)");  // This is wrong, but placeholder
-                self.state.emit("    fistpl (%esp)");
-                self.state.emit("    movl (%esp), %eax");
-                self.state.emit("    addl $8, %esp");
+            CastKind::SignedToUnsignedSameSize { to_ty } => {
+                // On i686, same-size signed->unsigned: mask for sub-32-bit types
+                match to_ty {
+                    IrType::U8 => self.state.emit("    movzbl %al, %eax"),
+                    IrType::U16 => self.state.emit("    movzwl %ax, %eax"),
+                    _ => {} // U32, U64: no-op
+                }
             }
 
-            // Integer -> float conversions
-            (IrType::I32, IrType::F32) | (IrType::U32, IrType::F32) => {
-                self.state.emit("    cvtsi2ssl %eax, %xmm0");
-                self.state.emit("    movd %xmm0, %eax");
-            }
-            (IrType::I32, IrType::F64) | (IrType::U32, IrType::F64) => {
-                // Convert integer to F64 via x87
-                self.state.emit("    pushl %eax");
-                self.state.emit("    fildl (%esp)");
-                self.state.emit("    fstpl (%esp)");
-                self.state.emit("    movl (%esp), %eax");
-                self.state.emit("    addl $4, %esp");
-            }
-
-            // F32 <-> F64 conversions
-            (IrType::F32, IrType::F64) => {
-                self.state.emit("    movd %eax, %xmm0");
-                self.state.emit("    cvtss2sd %xmm0, %xmm0");
-                self.state.emit("    subl $8, %esp");
-                self.state.emit("    movsd %xmm0, (%esp)");
-                self.state.emit("    movl (%esp), %eax");
-                self.state.emit("    addl $8, %esp");
-            }
-            (IrType::F64, IrType::F32) => {
-                // Load F64 from stack (need both halves), convert to F32
-                // TODO: proper F64 load
-                self.state.emit("    movd %eax, %xmm0");
-                self.state.emit("    cvtss2sd %xmm0, %xmm0"); // wrong direction, placeholder
-                self.state.emit("    movd %xmm0, %eax");
+            CastKind::SignedToFloat { to_f64, from_ty } => {
+                // Sign-extend sub-32-bit types to 32-bit first
+                match from_ty {
+                    IrType::I8 => self.state.emit("    movsbl %al, %eax"),
+                    IrType::I16 => self.state.emit("    movswl %ax, %eax"),
+                    _ => {}
+                }
+                if to_f64 {
+                    // Signed int -> F64 via x87
+                    // fstpl writes 8 bytes, so allocate 8 bytes of stack space
+                    self.state.emit("    subl $8, %esp");
+                    self.state.emit("    movl %eax, (%esp)");
+                    self.state.emit("    fildl (%esp)");
+                    self.state.emit("    fstpl (%esp)");
+                    // F64 result low 32 bits in eax (the accumulator model only carries low 32 bits)
+                    self.state.emit("    movl (%esp), %eax");
+                    self.state.emit("    addl $8, %esp");
+                } else {
+                    // Signed int -> F32 via SSE
+                    self.state.emit("    cvtsi2ssl %eax, %xmm0");
+                    self.state.emit("    movd %xmm0, %eax");
+                }
             }
 
-            // F128 conversions
-            (IrType::F128, IrType::F64) | (IrType::F128, IrType::F32) |
-            (IrType::F64, IrType::F128) | (IrType::F32, IrType::F128) |
-            (IrType::I32, IrType::F128) | (IrType::U32, IrType::F128) |
-            (IrType::F128, IrType::I32) | (IrType::F128, IrType::U32) => {
+            CastKind::UnsignedToFloat { to_f64, from_u64 } => {
+                if from_u64 {
+                    // U64 -> float: rare on i686, use x87 with special handling
+                    // TODO: proper U64 -> float conversion
+                    self.state.emit("    subl $8, %esp");
+                    self.state.emit("    movl %eax, (%esp)");
+                    self.state.emit("    fildl (%esp)");
+                    if to_f64 {
+                        self.state.emit("    fstpl (%esp)");
+                    } else {
+                        self.state.emit("    fstps (%esp)");
+                    }
+                    self.state.emit("    movl (%esp), %eax");
+                    self.state.emit("    addl $8, %esp");
+                } else {
+                    // U8/U16/U32 -> float
+                    // For U32, cvtsi2ss treats eax as signed. For values with bit 31 set,
+                    // we zero-extend to 64-bit and use x87 fildq.
+                    let big_label = self.state.fresh_label("u2f_big");
+                    let done_label = self.state.fresh_label("u2f_done");
+                    self.state.emit("    testl %eax, %eax");
+                    self.state.out.emit_jcc_label("    js", &big_label);
+                    // Positive (< 2^31): cvtsi2ss/cvtsi2sd works directly
+                    if to_f64 {
+                        self.state.emit("    subl $8, %esp");
+                        self.state.emit("    movl %eax, (%esp)");
+                        self.state.emit("    fildl (%esp)");
+                        self.state.emit("    fstpl (%esp)");
+                        self.state.emit("    movl (%esp), %eax");
+                        self.state.emit("    addl $8, %esp");
+                    } else {
+                        self.state.emit("    cvtsi2ssl %eax, %xmm0");
+                        self.state.emit("    movd %xmm0, %eax");
+                    }
+                    self.state.out.emit_jmp_label(&done_label);
+                    self.state.out.emit_named_label(&big_label);
+                    // Bit 31 set: push as u64 (zero-extend), use fildq
+                    self.state.emit("    pushl $0");       // high 32 bits = 0
+                    self.state.emit("    pushl %eax");     // low 32 bits
+                    self.state.emit("    fildq (%esp)");   // load as 64-bit signed (value < 2^32, so positive)
+                    if to_f64 {
+                        self.state.emit("    fstpl (%esp)");
+                        self.state.emit("    popl %eax");
+                        self.state.emit("    addl $4, %esp");
+                    } else {
+                        self.state.emit("    fstps (%esp)");
+                        self.state.emit("    popl %eax");
+                        self.state.emit("    addl $4, %esp");
+                    }
+                    self.state.out.emit_named_label(&done_label);
+                }
+            }
+
+            CastKind::FloatToSigned { from_f64 } => {
+                if from_f64 {
+                    // F64 -> signed: need x87 (eax only has low 32 bits of F64)
+                    // The F64 value is in the stack slot, not in eax properly.
+                    // Use fisttpl for truncation toward zero.
+                    // For now, use SSE2 cvttsd2si if we can load both halves.
+                    // Since eax only has low 32 bits, we need the slot.
+                    // TODO: proper F64 -> int via stack slot access
+                    // Fallback: treat as F32 conversion (lossy)
+                    self.state.emit("    subl $8, %esp");
+                    self.state.emit("    movl %eax, (%esp)");
+                    // We'd need the high 32 bits too. For now, use x87 approach:
+                    // Push eax as an integer and convert (this is wrong for actual F64 values)
+                    // Actually, since emit_cast loads the operand via operand_to_eax, and for F64
+                    // that only gets the low 32 bits, we need a different approach.
+                    // Use the x87 FPU: load from source slot directly.
+                    self.state.emit("    flds (%esp)");   // Load as F32 (only low 32 bits available)
+                    self.state.emit("    fisttpl (%esp)"); // Truncate to int
+                    self.state.emit("    movl (%esp), %eax");
+                    self.state.emit("    addl $8, %esp");
+                }  else {
+                    // F32 -> signed int via SSE
+                    self.state.emit("    movd %eax, %xmm0");
+                    self.state.emit("    cvttss2si %xmm0, %eax");
+                }
+            }
+
+            CastKind::FloatToUnsigned { from_f64, to_u64 } => {
+                if to_u64 {
+                    // Float -> U64: rare on i686, use x87
+                    // TODO: proper float -> U64 conversion
+                    self.state.emit("    movd %eax, %xmm0");
+                    self.state.emit("    cvttss2si %xmm0, %eax");
+                } else if from_f64 {
+                    // F64 -> unsigned 32-bit
+                    // Same issue as FloatToSigned with F64
+                    self.state.emit("    subl $8, %esp");
+                    self.state.emit("    movl %eax, (%esp)");
+                    self.state.emit("    flds (%esp)");
+                    self.state.emit("    fisttpl (%esp)");
+                    self.state.emit("    movl (%esp), %eax");
+                    self.state.emit("    addl $8, %esp");
+                } else {
+                    // F32 -> unsigned int: cvttss2si treats result as signed
+                    // For values < 2^31, this works fine
+                    // For values >= 2^31, we need special handling
+                    self.state.emit("    movd %eax, %xmm0");
+                    self.state.emit("    cvttss2si %xmm0, %eax");
+                }
+            }
+
+            CastKind::FloatToFloat { widen } => {
+                if widen {
+                    // F32 -> F64: convert via SSE, result low 32 bits in eax
+                    self.state.emit("    movd %eax, %xmm0");
+                    self.state.emit("    cvtss2sd %xmm0, %xmm0");
+                    self.state.emit("    subl $8, %esp");
+                    self.state.emit("    movsd %xmm0, (%esp)");
+                    self.state.emit("    movl (%esp), %eax");
+                    self.state.emit("    addl $8, %esp");
+                } else {
+                    // F64 -> F32: requires both halves of the F64 value.
+                    // The accumulator model only carries the low 32 bits in eax,
+                    // so this conversion is inherently lossy until full F64 support
+                    // is implemented with x87-based F64 storage.
+                    // TODO: proper F64->F32 requires full 64-bit F64 values (see fix_i686_f64_double_support)
+                    // For now, treat the low 32 bits as F32 bits (wrong but avoids crash)
+                    // No conversion needed since we're just reinterpreting bits.
+                }
+            }
+
+            // F128 conversions via x87
+            CastKind::SignedToF128 { .. } |
+            CastKind::UnsignedToF128 { .. } |
+            CastKind::F128ToSigned { .. } |
+            CastKind::F128ToUnsigned { .. } |
+            CastKind::FloatToF128 { .. } |
+            CastKind::F128ToFloat { .. } => {
                 // TODO: F128 conversions via x87
             }
-
-            // Same type: no-op
-            _ => {}
         }
     }
 
@@ -1254,13 +1343,21 @@ impl ArchCodegen for I686Codegen {
         }
     }
 
-    fn emit_call_compute_stack_space(&self, arg_classes: &[call_abi::CallArgClass]) -> usize {
+    fn emit_call_compute_stack_space(&self, arg_classes: &[call_abi::CallArgClass], arg_types: &[IrType]) -> usize {
         // Count total bytes needed for all arguments (all go on stack in cdecl).
-        // On i686, Stack args are 4 bytes (not 8 like x86-64).
+        // On i686 cdecl, each arg occupies at least 4 bytes (one stack slot).
+        // F64 (double) and I64/U64 occupy 8 bytes.
         let mut total = 0;
-        for ac in arg_classes {
+        for (i, ac) in arg_classes.iter().enumerate() {
+            let ty = if i < arg_types.len() { arg_types[i] } else { IrType::I32 };
             match ac {
-                call_abi::CallArgClass::Stack => total += 4,  // 32-bit stack slot
+                call_abi::CallArgClass::Stack => {
+                    // F64 and I64/U64 need 8 bytes; everything else needs 4
+                    match ty {
+                        IrType::F64 | IrType::I64 | IrType::U64 => total += 8,
+                        _ => total += 4,
+                    }
+                }
                 call_abi::CallArgClass::F128Stack => total += 12, // x87 long double = 12 bytes
                 call_abi::CallArgClass::I128Stack => total += 16,
                 call_abi::CallArgClass::StructByValStack { size } => total += (*size + 3) & !3,
@@ -1330,9 +1427,34 @@ impl ArchCodegen for I686Codegen {
                     stack_offset += (sz + 3) & !3;
                 }
                 call_abi::CallArgClass::Stack => {
-                    // Regular scalar: 4 bytes on i686
+                    // cdecl: all args are passed as full stack slots.
+                    // F64 and I64/U64 take 8 bytes; everything else takes 4 bytes.
+                    // Sub-int types (I8, I16) are promoted to full 4-byte words.
                     if ty == IrType::F64 {
                         // Double: copy 8 bytes
+                        if let Operand::Value(v) = &args[i] {
+                            if let Some(slot) = self.state.get_slot(v.0) {
+                                emit!(self.state, "    movl {}(%ebp), %eax", slot.0);
+                                emit!(self.state, "    movl %eax, {}(%esp)", stack_offset);
+                                emit!(self.state, "    movl {}(%ebp), %eax", slot.0 + 4);
+                                emit!(self.state, "    movl %eax, {}(%esp)", stack_offset + 4);
+                            }
+                        } else if let Operand::Const(IrConst::F64(f)) = &args[i] {
+                            // F64 constant: store both 32-bit halves
+                            let bits = f.to_bits();
+                            let lo = (bits & 0xFFFF_FFFF) as u32;
+                            let hi = (bits >> 32) as u32;
+                            emit!(self.state, "    movl ${}, {}(%esp)", lo as i32, stack_offset);
+                            emit!(self.state, "    movl ${}, {}(%esp)", hi as i32, stack_offset + 4);
+                        } else {
+                            // Fallback: only low 32 bits available via accumulator
+                            self.operand_to_eax(&args[i]);
+                            emit!(self.state, "    movl %eax, {}(%esp)", stack_offset);
+                            emit!(self.state, "    movl $0, {}(%esp)", stack_offset + 4);
+                        }
+                        stack_offset += 8;
+                    } else if ty == IrType::I64 || ty == IrType::U64 {
+                        // 64-bit integer: copy 8 bytes
                         if let Operand::Value(v) = &args[i] {
                             if let Some(slot) = self.state.get_slot(v.0) {
                                 emit!(self.state, "    movl {}(%ebp), %eax", slot.0);
@@ -1343,14 +1465,23 @@ impl ArchCodegen for I686Codegen {
                         } else {
                             self.operand_to_eax(&args[i]);
                             emit!(self.state, "    movl %eax, {}(%esp)", stack_offset);
+                            // High 32 bits: for constants, compute from i64 value
+                            if let Operand::Const(IrConst::I64(v)) = &args[i] {
+                                let hi = ((*v as u64) >> 32) as i32;
+                                emit!(self.state, "    movl ${}, {}(%esp)", hi, stack_offset + 4);
+                            } else {
+                                emit!(self.state, "    movl $0, {}(%esp)", stack_offset + 4);
+                            }
                         }
+                        stack_offset += 8;
                     } else {
+                        // All other scalars (I8, I16, I32, U8, U16, U32, F32, Ptr):
+                        // Always store as a full 4-byte word via movl %eax.
+                        // operand_to_eax already loads sub-int types with sign/zero extension.
                         self.operand_to_eax(&args[i]);
-                        let store_instr = self.mov_store_for_type(ty);
-                        let reg = self.eax_for_type(ty);
-                        emit!(self.state, "    {} {}, {}(%esp)", store_instr, reg, stack_offset);
+                        emit!(self.state, "    movl %eax, {}(%esp)", stack_offset);
+                        stack_offset += 4;
                     }
-                    stack_offset += 4;
                 }
                 _ => {
                     // Fallback: put on stack as 4-byte value

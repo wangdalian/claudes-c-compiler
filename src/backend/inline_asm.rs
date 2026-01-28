@@ -616,17 +616,16 @@ pub fn emit_inline_asm_common_impl(
     }
 
     // Pre-load read-write output values (non-x87)
-    // Skip Specific register constraints (e.g., {rsp}) because the synthetic + input
-    // already loaded the correct register value via load_input_to_reg. Preloading from
-    // the output alloca would overwrite the register with uninitialized data, which is
-    // catastrophic for registers like RSP (global register variables bound to the stack pointer).
-    for (i, (constraint, ptr, _)) in outputs.iter().enumerate() {
-        if constraint.contains('+') {
-            if !matches!(operands[i].kind, AsmOperandKind::Memory | AsmOperandKind::X87St0 | AsmOperandKind::X87St1 | AsmOperandKind::Specific(_)) {
-                emitter.preload_readwrite_output(&operands[i], ptr);
-            }
-        }
-    }
+    // For "+r" (GpReg/FpReg/Specific) constraints, the synthetic input mechanism already
+    // loaded the correct value into the register via load_input_to_reg above. Calling
+    // preload_readwrite_output here would overwrite that register with data from the
+    // output temp alloca, which is UNINITIALIZED at this point. This caused the Linux
+    // kernel to crash on boot: native_write_cr4() wrote garbage to CR4 because the
+    // preload overwrote the val parameter with uninitialized stack data.
+    //
+    // Only memory and x87 operands might need preloading here (x87 is handled separately
+    // below). For memory "+m" operands, the value is accessed in-place so no preload needed.
+    // Therefore, we skip preloading entirely for non-x87 operands.
 
     // x87 FPU stack inputs must be loaded in reverse stack order: st(1) first, then st(0),
     // because each fld pushes onto the stack (LIFO). Collect x87 inputs, sort by stack

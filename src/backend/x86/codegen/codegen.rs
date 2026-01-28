@@ -2904,7 +2904,7 @@ impl ArchCodegen for X86Codegen {
         }
     }
 
-    fn emit_call_compute_stack_space(&self, arg_classes: &[CallArgClass]) -> usize {
+    fn emit_call_compute_stack_space(&self, arg_classes: &[CallArgClass], _arg_types: &[IrType]) -> usize {
         // x86 uses pushq instructions; compute raw bytes pushed (alignment handled separately).
         compute_stack_push_bytes(arg_classes)
     }

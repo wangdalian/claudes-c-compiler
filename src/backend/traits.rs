@@ -359,7 +359,7 @@ pub trait ArchCodegen {
         }
 
         // Compute stack space needed for overflow args.
-        let stack_arg_space = self.emit_call_compute_stack_space(&arg_classes);
+        let stack_arg_space = self.emit_call_compute_stack_space(&arg_classes, arg_types);
 
         // Phase 1: Pre-convert F128 values that need helper calls (before stack args clobber regs).
         let f128_temp_space = self.emit_call_f128_pre_convert(args, &arg_classes, arg_types, stack_arg_space);
@@ -397,7 +397,8 @@ pub trait ArchCodegen {
 
     /// Compute how much stack space to allocate for overflow arguments.
     /// x86 returns raw push bytes; ARM/RISC-V return pre-allocated SP space.
-    fn emit_call_compute_stack_space(&self, arg_classes: &[super::call_abi::CallArgClass]) -> usize;
+    /// `arg_types` is provided so that i686 can account for F64 taking 8 bytes on the stack.
+    fn emit_call_compute_stack_space(&self, arg_classes: &[super::call_abi::CallArgClass], arg_types: &[IrType]) -> usize;
 
     /// Spill an indirect function pointer to a safe location before stack manipulation.
     /// No-op on x86 (uses r10). ARM/RISC-V spill to stack.
