@@ -605,7 +605,7 @@ fn instruction_modifies_reg_id(info: &LineInfo, reg_id: RegId) -> bool {
         LineKind::LoadRbp { reg, .. } => reg == reg_id,
         LineKind::Pop { reg } => reg == reg_id,
         LineKind::Push { .. } => false, // push reads, doesn't modify the source reg
-        LineKind::SetCC => reg_id == 0, // setCC writes %al (rax family)
+        LineKind::SetCC { reg } => reg_id == reg, // setCC writes to the byte register's family
         LineKind::Call => matches!(reg_id, 0 | 1 | 2 | 6 | 7 | 8 | 9 | 10 | 11),
         LineKind::Ret => false,
         LineKind::Other { dest_reg } => {
@@ -709,7 +709,7 @@ fn fuse_compare_and_branch(store: &mut LineStore, infos: &mut [LineInfo]) -> boo
         }
 
         // Second must be setCC
-        if infos[seq_indices[1]].kind != LineKind::SetCC {
+        if !matches!(infos[seq_indices[1]].kind, LineKind::SetCC { .. }) {
             i += 1;
             continue;
         }
@@ -1320,9 +1320,10 @@ fn global_store_forwarding(store: &mut LineStore, infos: &mut [LineInfo]) -> boo
                 prev_was_unconditional_jump = false;
             }
 
-            LineKind::SetCC => {
-                // setCC writes to %al, which is part of rax (family 0).
-                invalidate_reg_flat(&mut slot_entries, &mut reg_offsets, 0);
+            LineKind::SetCC { reg } => {
+                // setCC writes to a byte register. Inline asm can use any
+                // register (e.g., sete %cl writes to rcx family 1), not just %al.
+                invalidate_reg_flat(&mut slot_entries, &mut reg_offsets, reg);
                 prev_was_unconditional_jump = false;
             }
 
@@ -1930,5 +1931,34 @@ mod tests {
         let result = peephole_optimize(asm);
         assert!(result.contains("-24(%rbp), %rax"),
             "must not forward across cpuid (implicit clobber of rax/rbx/rcx/rdx): {}", result);
+    }
+
+    #[test]
+    fn test_setcc_non_al_invalidates_store_forwarding() {
+        // setCC can write to any byte register (not just %al).
+        // When inline asm emits "sete %cl", it clobbers %ecx/%rcx (family 1).
+        // The store forwarding pass must not forward a stale %rcx value
+        // across such a setCC instruction.
+        let asm = [
+            "    movl %ecx, -8(%rbp)",     // store from ecx to stack slot
+            "    sete %cl",                // clobbers ecx (low byte)
+            "    movl -8(%rbp), %eax",     // must load from stack, NOT forward ecx
+        ].join("\n") + "\n";
+        let result = peephole_optimize(asm);
+        assert!(result.contains("-8(%rbp), %eax"),
+            "must NOT forward ecx across sete %%cl (ecx clobbered): {}", result);
+    }
+
+    #[test]
+    fn test_setcc_al_still_invalidates_rax() {
+        // Verify that setCC writing to %al still correctly invalidates rax.
+        let asm = [
+            "    movq %rax, -16(%rbp)",    // store from rax to stack slot
+            "    sete %al",                // clobbers rax (low byte)
+            "    movq -16(%rbp), %rax",    // must load from stack, NOT eliminate
+        ].join("\n") + "\n";
+        let result = peephole_optimize(asm);
+        assert!(result.contains("-16(%rbp), %rax"),
+            "must NOT forward rax across sete %%al (rax clobbered): {}", result);
     }
 }

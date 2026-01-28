@@ -71,7 +71,7 @@ pub(super) enum LineKind {
     Ret,                // `ret`
     Push { reg: RegId },  // `pushq %reg`
     Pop { reg: RegId },   // `popq %reg`
-    SetCC,              // `setCC %al`
+    SetCC { reg: RegId },  // `setCC %reg` (byte register; reg is family ID)
     Cmp,                // `cmpX`/`testX`/`ucomis*`
     Directive,          // Lines starting with `.`
 
@@ -347,9 +347,16 @@ pub(super) fn classify_line(raw: &str) -> LineInfo {
         }
     }
 
-    // SetCC
+    // SetCC: extract the actual destination register (not always %al).
+    // Inline asm can emit setCC to any byte register (e.g., sete %cl, seta %dl).
     if first == b's' && sb.len() >= 4 && sb[1] == b'e' && sb[2] == b't' && parse_setcc(s).is_some() {
-        return line_info_with_regs(LineKind::SetCC, ts, scan_register_refs(sb));
+        let setcc_reg = if let Some(space_pos) = s.rfind(' ') {
+            let operand = s[space_pos + 1..].trim();
+            register_family_fast(operand)
+        } else {
+            0 // default to rax family if can't parse
+        };
+        return line_info_with_regs(LineKind::SetCC { reg: setcc_reg }, ts, scan_register_refs(sb));
     }
 
     // Pre-classify 32-bit arithmetic producers for extension elimination
