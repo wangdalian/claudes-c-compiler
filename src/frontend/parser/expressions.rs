@@ -403,6 +403,18 @@ impl Parser {
                 self.advance();
                 Expr::ULongLiteral(val, span)
             }
+            TokenKind::LongLongLiteral(val) => {
+                let val = *val;
+                let span = self.peek_span();
+                self.advance();
+                Expr::LongLongLiteral(val, span)
+            }
+            TokenKind::ULongLongLiteral(val) => {
+                let val = *val;
+                let span = self.peek_span();
+                self.advance();
+                Expr::ULongLongLiteral(val, span)
+            }
             TokenKind::FloatLiteral(val) => {
                 let val = *val;
                 let span = self.peek_span();

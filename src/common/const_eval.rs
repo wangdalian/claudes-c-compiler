@@ -36,9 +36,11 @@ pub fn eval_literal(expr: &Expr) -> Option<IrConst> {
             }
         }
         Expr::LongLiteral(val, _) => Some(IrConst::I64(*val)),
+        Expr::LongLongLiteral(val, _) => Some(IrConst::I64(*val)),
         // UIntLiteral stays as I64 to preserve the unsigned value.
         Expr::UIntLiteral(val, _) => Some(IrConst::I64(*val as i64)),
         Expr::ULongLiteral(val, _) => Some(IrConst::I64(*val as i64)),
+        Expr::ULongLongLiteral(val, _) => Some(IrConst::I64(*val as i64)),
         Expr::CharLiteral(ch, _) => Some(IrConst::I32(*ch as i32)),
         Expr::FloatLiteral(val, _) => Some(IrConst::F64(*val)),
         Expr::FloatLiteralF32(val, _) => Some(IrConst::F32(*val as f32)),

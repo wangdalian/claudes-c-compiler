@@ -449,7 +449,8 @@ pub fn is_zero_expr(expr: &crate::frontend::parser::ast::Expr) -> bool {
     use crate::frontend::parser::ast::Expr;
     match expr {
         Expr::IntLiteral(0, _) | Expr::UIntLiteral(0, _)
-        | Expr::LongLiteral(0, _) | Expr::ULongLiteral(0, _) => true,
+        | Expr::LongLiteral(0, _) | Expr::ULongLiteral(0, _)
+        | Expr::LongLongLiteral(0, _) | Expr::ULongLongLiteral(0, _) => true,
         Expr::Cast(_, inner, _) => is_zero_expr(inner),
         _ => false,
     }

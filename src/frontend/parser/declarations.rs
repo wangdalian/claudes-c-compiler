@@ -789,6 +789,8 @@ impl Parser {
             Expr::UIntLiteral(val, _) => Some(*val as i64),
             Expr::LongLiteral(val, _) => Some(*val),
             Expr::ULongLiteral(val, _) => Some(*val as i64),
+            Expr::LongLongLiteral(val, _) => Some(*val),
+            Expr::ULongLongLiteral(val, _) => Some(*val as i64),
             Expr::CharLiteral(val, _) => Some(*val as i64),
             // Identifiers: look up enum constants if available
             Expr::Identifier(name, _) => {

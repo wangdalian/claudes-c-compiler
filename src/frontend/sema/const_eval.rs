@@ -76,8 +76,9 @@ impl<'a> SemaConstEval<'a> {
 
         match expr {
             // Literals: delegate to shared evaluation
-            Expr::IntLiteral(..) | Expr::LongLiteral(..) | Expr::UIntLiteral(..)
-            | Expr::ULongLiteral(..) | Expr::CharLiteral(..) | Expr::FloatLiteral(..)
+            Expr::IntLiteral(..) | Expr::LongLiteral(..) | Expr::LongLongLiteral(..)
+            | Expr::UIntLiteral(..) | Expr::ULongLiteral(..) | Expr::ULongLongLiteral(..)
+            | Expr::CharLiteral(..) | Expr::FloatLiteral(..)
             | Expr::FloatLiteralF32(..) | Expr::FloatLiteralLongDouble(..) => {
                 return shared_const_eval::eval_literal(expr);
             }
@@ -978,8 +979,8 @@ fn ctype_from_type_spec(spec: &TypeSpecifier, types: &TypeContext) -> CType {
             let array_size = size.as_ref().and_then(|s| {
                 // Try simple literal evaluation for array sizes
                 match s.as_ref() {
-                    Expr::IntLiteral(n, _) | Expr::LongLiteral(n, _) => Some(*n as usize),
-                    Expr::UIntLiteral(n, _) | Expr::ULongLiteral(n, _) => Some(*n as usize),
+                    Expr::IntLiteral(n, _) | Expr::LongLiteral(n, _) | Expr::LongLongLiteral(n, _) => Some(*n as usize),
+                    Expr::UIntLiteral(n, _) | Expr::ULongLiteral(n, _) | Expr::ULongLongLiteral(n, _) => Some(*n as usize),
                     _ => None,
                 }
             });
@@ -1060,8 +1061,8 @@ fn ctype_from_type_spec_with_derived(
             DerivedDeclarator::Array(Some(size_expr)) => {
                 let expr: &Expr = size_expr;
                 let size = match expr {
-                    Expr::IntLiteral(n, _) | Expr::LongLiteral(n, _) => Some(*n as usize),
-                    Expr::UIntLiteral(n, _) | Expr::ULongLiteral(n, _) => Some(*n as usize),
+                    Expr::IntLiteral(n, _) | Expr::LongLiteral(n, _) | Expr::LongLongLiteral(n, _) => Some(*n as usize),
+                    Expr::UIntLiteral(n, _) | Expr::ULongLiteral(n, _) | Expr::ULongLongLiteral(n, _) => Some(*n as usize),
                     _ => None,
                 };
                 ty = CType::Array(Box::new(ty), size);

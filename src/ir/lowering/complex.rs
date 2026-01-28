@@ -426,6 +426,8 @@ impl Lowerer {
             Expr::UIntLiteral(_, _) => CType::UInt,
             Expr::LongLiteral(_, _) => CType::Long,
             Expr::ULongLiteral(_, _) => CType::ULong,
+            Expr::LongLongLiteral(_, _) => CType::LongLong,
+            Expr::ULongLongLiteral(_, _) => CType::ULongLong,
             Expr::Identifier(name, _) => {
                 self.get_var_ctype(name)
             }

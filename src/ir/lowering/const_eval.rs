@@ -81,8 +81,9 @@ impl Lowerer {
         }
         match expr {
             // Literals: delegate to shared evaluation
-            Expr::IntLiteral(..) | Expr::LongLiteral(..) | Expr::UIntLiteral(..)
-            | Expr::ULongLiteral(..) | Expr::CharLiteral(..) | Expr::FloatLiteral(..)
+            Expr::IntLiteral(..) | Expr::LongLiteral(..) | Expr::LongLongLiteral(..)
+            | Expr::UIntLiteral(..) | Expr::ULongLiteral(..) | Expr::ULongLongLiteral(..)
+            | Expr::CharLiteral(..) | Expr::FloatLiteral(..)
             | Expr::FloatLiteralF32(..) | Expr::FloatLiteralLongDouble(..) => {
                 return shared_const_eval::eval_literal(expr);
             }
@@ -586,8 +587,8 @@ impl Lowerer {
     pub(super) fn expr_as_array_size(&self, expr: &Expr) -> Option<i64> {
         // Try simple literals first (fast path)
         match expr {
-            Expr::IntLiteral(n, _) | Expr::LongLiteral(n, _) => return Some(*n),
-            Expr::UIntLiteral(n, _) | Expr::ULongLiteral(n, _) => return Some(*n as i64),
+            Expr::IntLiteral(n, _) | Expr::LongLiteral(n, _) | Expr::LongLongLiteral(n, _) => return Some(*n),
+            Expr::UIntLiteral(n, _) | Expr::ULongLiteral(n, _) | Expr::ULongLongLiteral(n, _) => return Some(*n as i64),
             _ => {}
         }
         // Fall back to full constant expression evaluation (handles sizeof, arithmetic, etc.)

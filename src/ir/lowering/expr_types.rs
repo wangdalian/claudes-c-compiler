@@ -624,6 +624,9 @@ impl Lowerer {
                     IrType::U64
                 }
             }
+            // long long is always 64-bit, regardless of target
+            Expr::LongLongLiteral(_, _) => IrType::I64,
+            Expr::ULongLongLiteral(_, _) => IrType::U64,
             Expr::FloatLiteral(_, _) => IrType::F64,
             Expr::FloatLiteralF32(_, _) => IrType::F32,
             Expr::FloatLiteralLongDouble(_, _, _) => IrType::F128,
@@ -1010,6 +1013,8 @@ impl Lowerer {
                     8 // LP64: unsigned long is always 8 bytes
                 }
             }
+            // long long is always 8 bytes regardless of target
+            Expr::LongLongLiteral(_, _) | Expr::ULongLongLiteral(_, _) => 8,
             // Float literal: type double (8 bytes) by default in C
             Expr::FloatLiteral(_, _) => 8,
             // Float literal with f suffix: type float (4 bytes)
@@ -1546,6 +1551,9 @@ impl Lowerer {
                     Some(CType::ULong)
                 }
             }
+            // long long is always 64-bit regardless of target
+            Expr::LongLongLiteral(_, _) => Some(CType::LongLong),
+            Expr::ULongLongLiteral(_, _) => Some(CType::ULongLong),
             Expr::CharLiteral(_, _) => Some(CType::Int), // char literals have type int in C
             Expr::FloatLiteral(_, _) => Some(CType::Double),
             Expr::FloatLiteralF32(_, _) => Some(CType::Float),

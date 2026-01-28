@@ -500,6 +500,8 @@ pub enum Expr {
     UIntLiteral(u64, Span),
     LongLiteral(i64, Span),
     ULongLiteral(u64, Span),
+    LongLongLiteral(i64, Span),   // ll/LL suffix (signed long long, always 64-bit)
+    ULongLongLiteral(u64, Span),  // ull/ULL suffix (unsigned long long, always 64-bit)
     FloatLiteral(f64, Span),            // double literal (no suffix)
     FloatLiteralF32(f64, Span),         // float literal (f/F suffix)
     /// Long double literal (l/L suffix). Stores (f64_approx, f128_bytes, span).
@@ -629,6 +631,7 @@ impl Expr {
         match self {
             Expr::IntLiteral(_, s) | Expr::UIntLiteral(_, s)
             | Expr::LongLiteral(_, s) | Expr::ULongLiteral(_, s)
+            | Expr::LongLongLiteral(_, s) | Expr::ULongLongLiteral(_, s)
             | Expr::FloatLiteral(_, s) | Expr::FloatLiteralF32(_, s) | Expr::FloatLiteralLongDouble(_, _, s)
             | Expr::ImaginaryLiteral(_, s) | Expr::ImaginaryLiteralF32(_, s) | Expr::ImaginaryLiteralLongDouble(_, _, s)
             | Expr::StringLiteral(_, s) | Expr::WideStringLiteral(_, s)

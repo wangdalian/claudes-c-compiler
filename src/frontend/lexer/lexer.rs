@@ -242,12 +242,12 @@ impl Lexer {
             // Regular hex integer
             let hex_str = std::str::from_utf8(&self.input[hex_start..self.pos]).unwrap_or("0");
             let value = u64::from_str_radix(hex_str, 16).unwrap_or(0);
-            let (is_unsigned, is_long, is_imaginary) = self.parse_int_suffix();
+            let (is_unsigned, is_long, is_long_long, is_imaginary) = self.parse_int_suffix();
             if is_imaginary {
                 let span = Span::new(start as u32, self.pos as u32, self.file_id);
                 return Token::new(TokenKind::ImaginaryLiteral(value as f64), span);
             }
-            return self.make_int_token(value, is_unsigned, is_long, true, start);
+            return self.make_int_token(value, is_unsigned, is_long, is_long_long, true, start);
         }
 
         // Handle binary (0b/0B)
@@ -261,12 +261,12 @@ impl Lexer {
             }
             let bin_str = std::str::from_utf8(&self.input[bin_start..self.pos]).unwrap_or("0");
             let value = u64::from_str_radix(bin_str, 2).unwrap_or(0);
-            let (is_unsigned, is_long, is_imaginary) = self.parse_int_suffix();
+            let (is_unsigned, is_long, is_long_long, is_imaginary) = self.parse_int_suffix();
             if is_imaginary {
                 let span = Span::new(start as u32, self.pos as u32, self.file_id);
                 return Token::new(TokenKind::ImaginaryLiteral(value as f64), span);
             }
-            return self.make_int_token(value, is_unsigned, is_long, true, start);
+            return self.make_int_token(value, is_unsigned, is_long, is_long_long, true, start);
         }
 
         // Handle octal (but not if followed by '.' or 'e'/'E' which makes it a float)
@@ -291,12 +291,12 @@ impl Lexer {
                 } else {
                     let oct_str = std::str::from_utf8(&self.input[oct_start..self.pos]).unwrap_or("0");
                     let value = u64::from_str_radix(oct_str, 8).unwrap_or(0);
-                    let (is_unsigned, is_long, is_imaginary) = self.parse_int_suffix();
+                    let (is_unsigned, is_long, is_long_long, is_imaginary) = self.parse_int_suffix();
                     if is_imaginary {
                         let span = Span::new(start as u32, self.pos as u32, self.file_id);
                         return Token::new(TokenKind::ImaginaryLiteral(value as f64), span);
                     }
-                    return self.make_int_token(value, is_unsigned, is_long, true, start);
+                    return self.make_int_token(value, is_unsigned, is_long, is_long_long, true, start);
                 }
             }
         }
@@ -398,13 +398,13 @@ impl Lexer {
             }
         } else {
             let uvalue: u64 = text.parse().unwrap_or(0);
-            let (is_unsigned, is_long, is_imaginary) = self.parse_int_suffix();
+            let (is_unsigned, is_long, is_long_long, is_imaginary) = self.parse_int_suffix();
             if is_imaginary {
                 // Integer imaginary literal (e.g., 5i) becomes double imaginary
                 let span = Span::new(start as u32, self.pos as u32, self.file_id);
                 Token::new(TokenKind::ImaginaryLiteral(uvalue as f64), span)
             } else {
-                self.make_int_token(uvalue, is_unsigned, is_long, false, start)
+                self.make_int_token(uvalue, is_unsigned, is_long, is_long_long, false, start)
             }
         }
     }
@@ -412,7 +412,9 @@ impl Lexer {
     /// Parse integer suffix and return (is_unsigned, is_long, is_imaginary).
     /// is_long is true for l/L or ll/LL suffixes.
     /// is_imaginary is true for trailing 'i' suffix (GCC extension: 5i).
-    fn parse_int_suffix(&mut self) -> (bool, bool, bool) {
+    /// Parse integer suffix and return (is_unsigned, is_long, is_long_long, is_imaginary).
+    /// is_long is true for single l/L suffix. is_long_long is true for ll/LL suffix.
+    fn parse_int_suffix(&mut self) -> (bool, bool, bool, bool) {
         let mut is_imaginary = false;
         // First check for standalone 'i'/'I' imaginary suffix (GCC extension: 5i, 5I)
         // Must check this before the main loop since 'i'/'I' alone means imaginary, not a regular suffix
@@ -421,22 +423,25 @@ impl Lexer {
             let next = if self.pos + 1 < self.input.len() { self.input[self.pos + 1] } else { 0 };
             if !next.is_ascii_alphanumeric() && next != b'_' {
                 self.pos += 1; // consume 'i'/'I' as imaginary suffix
-                return (false, false, true);
+                return (false, false, false, true);
             }
         }
 
         let mut is_unsigned = false;
         let mut is_long = false;
+        let mut is_long_long = false;
         loop {
             if self.pos < self.input.len() && (self.input[self.pos] == b'u' || self.input[self.pos] == b'U') {
                 is_unsigned = true;
                 self.pos += 1;
             } else if self.pos < self.input.len() && (self.input[self.pos] == b'l' || self.input[self.pos] == b'L') {
-                is_long = true;
                 self.pos += 1;
-                // Skip second l/L for ll/LL
+                // Check for second l/L for ll/LL
                 if self.pos < self.input.len() && (self.input[self.pos] == b'l' || self.input[self.pos] == b'L') {
+                    is_long_long = true;
                     self.pos += 1;
+                } else {
+                    is_long = true;
                 }
             } else {
                 break;
@@ -450,15 +455,19 @@ impl Lexer {
                 is_imaginary = true;
             }
         }
-        (is_unsigned, is_long, is_imaginary)
+        (is_unsigned, is_long, is_long_long, is_imaginary)
     }
 
     /// Create the appropriate token kind based on integer value, suffix, and base info.
-    /// For hex/octal literals, C promotes: int -> unsigned int -> long -> unsigned long.
+    /// For hex/octal literals, C promotes: int -> unsigned int -> long -> unsigned long -> long long -> unsigned long long.
     /// For decimal literals: int -> long -> long long (no implicit unsigned).
-    fn make_int_token(&self, value: u64, is_unsigned: bool, is_long: bool, is_hex_or_octal: bool, start: usize) -> Token {
+    fn make_int_token(&self, value: u64, is_unsigned: bool, is_long: bool, is_long_long: bool, is_hex_or_octal: bool, start: usize) -> Token {
         let span = Span::new(start as u32, self.pos as u32, self.file_id);
-        if is_unsigned && is_long {
+        if is_unsigned && is_long_long {
+            // Explicit ULL suffix: always unsigned long long (64-bit)
+            Token::new(TokenKind::ULongLongLiteral(value), span)
+        } else if is_unsigned && is_long {
+            // Explicit UL suffix: unsigned long
             Token::new(TokenKind::ULongLiteral(value), span)
         } else if is_unsigned {
             if value > u32::MAX as u64 {
@@ -466,7 +475,15 @@ impl Lexer {
             } else {
                 Token::new(TokenKind::UIntLiteral(value), span)
             }
+        } else if is_long_long {
+            // Explicit LL suffix: always long long (64-bit)
+            if is_hex_or_octal && value > i64::MAX as u64 {
+                Token::new(TokenKind::ULongLongLiteral(value), span)
+            } else {
+                Token::new(TokenKind::LongLongLiteral(value as i64), span)
+            }
         } else if is_long {
+            // Explicit L suffix: long
             if is_hex_or_octal && value > i64::MAX as u64 {
                 Token::new(TokenKind::ULongLiteral(value), span)
             } else {

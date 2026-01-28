@@ -91,6 +91,8 @@ impl Lowerer {
             Expr::UIntLiteral(val, _) => Operand::Const(IrConst::I64(*val as i64)),
             Expr::LongLiteral(val, _) => Operand::Const(IrConst::I64(*val)),
             Expr::ULongLiteral(val, _) => Operand::Const(IrConst::I64(*val as i64)),
+            Expr::LongLongLiteral(val, _) => Operand::Const(IrConst::I64(*val)),
+            Expr::ULongLongLiteral(val, _) => Operand::Const(IrConst::I64(*val as i64)),
             Expr::FloatLiteral(val, _) => Operand::Const(IrConst::F64(*val)),
             Expr::FloatLiteralF32(val, _) => Operand::Const(IrConst::F32(*val as f32)),
             Expr::FloatLiteralLongDouble(val, bytes, _) => Operand::Const(IrConst::long_double_with_bytes(*val, *bytes)),
@@ -369,6 +371,9 @@ impl Lowerer {
                     IrType::U64
                 }
             }
+            // long long is always 64-bit, regardless of target
+            Expr::LongLongLiteral(_, _) => IrType::I64,
+            Expr::ULongLongLiteral(_, _) => IrType::U64,
             Expr::CharLiteral(_, _) => IrType::I8,
             // Comparisons and logical ops produce C int (I32), not I64
             Expr::BinaryOp(op, lhs, rhs, _) => {

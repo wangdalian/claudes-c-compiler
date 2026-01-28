@@ -6,8 +6,10 @@ pub enum TokenKind {
     // Literals
     IntLiteral(i64),       // no suffix or value > i32::MAX
     UIntLiteral(u64),      // u/U suffix or value > i64::MAX
-    LongLiteral(i64),      // l/L or ll/LL suffix (signed long/long long)
-    ULongLiteral(u64),     // ul/UL suffix (unsigned long/long long)
+    LongLiteral(i64),      // l/L suffix (signed long)
+    ULongLiteral(u64),     // ul/UL suffix (unsigned long)
+    LongLongLiteral(i64),  // ll/LL suffix (signed long long, always 64-bit)
+    ULongLongLiteral(u64), // ull/ULL suffix (unsigned long long, always 64-bit)
     FloatLiteral(f64),             // no suffix (double)
     FloatLiteralF32(f64),          // f/F suffix (float, 32-bit)
     /// Long double literal (l/L suffix). Stores (f64_approx, f128_bytes).

@@ -573,8 +573,8 @@ impl SemanticAnalyzer {
     // TODO: extend to handle const expressions (e.g., enum values, sizeof)
     fn eval_designator_index(expr: &Expr) -> Option<usize> {
         match expr {
-            Expr::IntLiteral(n, _) | Expr::LongLiteral(n, _) => Some(*n as usize),
-            Expr::UIntLiteral(n, _) | Expr::ULongLiteral(n, _) => Some(*n as usize),
+            Expr::IntLiteral(n, _) | Expr::LongLiteral(n, _) | Expr::LongLongLiteral(n, _) => Some(*n as usize),
+            Expr::UIntLiteral(n, _) | Expr::ULongLiteral(n, _) | Expr::ULongLongLiteral(n, _) => Some(*n as usize),
             Expr::CharLiteral(n, _) => Some(*n as usize),
             _ => None,
         }
@@ -901,6 +901,8 @@ impl SemanticAnalyzer {
             | Expr::UIntLiteral(_, _)
             | Expr::LongLiteral(_, _)
             | Expr::ULongLiteral(_, _)
+            | Expr::LongLongLiteral(_, _)
+            | Expr::ULongLongLiteral(_, _)
             | Expr::FloatLiteral(_, _)
             | Expr::FloatLiteralF32(_, _)
             | Expr::FloatLiteralLongDouble(_, _, _)

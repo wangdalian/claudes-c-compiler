@@ -122,6 +122,9 @@ impl<'a> ExprTypeChecker<'a> {
                     Some(CType::ULong)
                 }
             }
+            // long long is always 64-bit, regardless of target
+            Expr::LongLongLiteral(_, _) => Some(CType::LongLong),
+            Expr::ULongLongLiteral(_, _) => Some(CType::ULongLong),
             Expr::FloatLiteral(_, _) => Some(CType::Double),
             Expr::FloatLiteralF32(_, _) => Some(CType::Float),
             Expr::FloatLiteralLongDouble(_, _, _) => Some(CType::LongDouble),
