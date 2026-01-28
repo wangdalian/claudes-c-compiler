@@ -967,16 +967,33 @@ pub fn emit_const_data(out: &mut AsmOutput, c: &IrConst, ty: IrType, ptr_dir: Pt
             out.emit_fmt(format_args!("    .long {}", v.to_bits()));
         }
         IrConst::F64(v) => {
-            out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), v.to_bits()));
+            let bits = v.to_bits();
+            if ptr_dir.is_32bit() {
+                // On i686, split 64-bit double into two .long (low word first, little-endian)
+                let lo = bits as u32;
+                let hi = (bits >> 32) as u32;
+                out.emit_fmt(format_args!("    .long {}", lo));
+                out.emit_fmt(format_args!("    .long {}", hi));
+            } else {
+                out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), bits));
+            }
         }
         IrConst::LongDouble(f64_val, f128_bytes) => {
             if ptr_dir.is_x86() {
-                // x86-64: convert f128 bytes to x87 80-bit extended precision for emission.
+                // x86: convert f128 bytes to x87 80-bit extended precision for emission.
+                // x87 80-bit format = 10 bytes: 8 bytes (significand+exp low) + 2 bytes (exp high+sign)
                 let x87 = crate::common::long_double::f128_bytes_to_x87_bytes(f128_bytes);
                 let lo = u64::from_le_bytes(x87[0..8].try_into().unwrap());
                 let hi = u64::from_le_bytes([x87[8], x87[9], 0, 0, 0, 0, 0, 0]);
-                out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), lo as i64));
-                out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), hi as i64));
+                if ptr_dir.is_32bit() {
+                    // i686: split each 64-bit value into two .long directives
+                    out.emit_fmt(format_args!("    .long {}", lo as u32));
+                    out.emit_fmt(format_args!("    .long {}", (lo >> 32) as u32));
+                    out.emit_fmt(format_args!("    .long {}", hi as u32));
+                } else {
+                    out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), lo as i64));
+                    out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), hi as i64));
+                }
             } else if ptr_dir.is_riscv() || ptr_dir.is_arm() {
                 // RISC-V and ARM64: f128 bytes are already in IEEE 754 binary128 format.
                 let lo = u64::from_le_bytes(f128_bytes[0..8].try_into().unwrap());
@@ -991,11 +1008,19 @@ pub fn emit_const_data(out: &mut AsmOutput, c: &IrConst, ty: IrType, ptr_dir: Pt
             }
         }
         IrConst::I128(v) => {
-            // Emit as two 64-bit values (little-endian: low quad first)
             let lo = *v as u64;
             let hi = (*v >> 64) as u64;
-            out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), lo as i64));
-            out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), hi as i64));
+            if ptr_dir.is_32bit() {
+                // i686: emit as four .long directives (little-endian)
+                out.emit_fmt(format_args!("    .long {}", lo as u32));
+                out.emit_fmt(format_args!("    .long {}", (lo >> 32) as u32));
+                out.emit_fmt(format_args!("    .long {}", hi as u32));
+                out.emit_fmt(format_args!("    .long {}", (hi >> 32) as u32));
+            } else {
+                // 64-bit targets: emit as two 64-bit values (little-endian: low quad first)
+                out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), lo as i64));
+                out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), hi as i64));
+            }
         }
         IrConst::Zero => {
             let size = ty.size();
@@ -1011,7 +1036,16 @@ fn emit_int_data(out: &mut AsmOutput, val: i64, ty: IrType, ptr_dir: PtrDirectiv
         IrType::I8 | IrType::U8 => out.emit_fmt(format_args!("    .byte {}", val as u8)),
         IrType::I16 | IrType::U16 => out.emit_fmt(format_args!("    .short {}", val as u16)),
         IrType::I32 | IrType::U32 => out.emit_fmt(format_args!("    .long {}", val as u32)),
-        _ => out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), val)),
+        _ => {
+            if ptr_dir.is_32bit() {
+                // i686: split 64-bit value into two .long directives (little-endian)
+                let bits = val as u64;
+                out.emit_fmt(format_args!("    .long {}", bits as u32));
+                out.emit_fmt(format_args!("    .long {}", (bits >> 32) as u32));
+            } else {
+                out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), val));
+            }
+        }
     }
 }
 
