@@ -1,0 +1,14 @@
+Task: Fix i686 variadic long long and va_arg issues
+
+Problem:
+1. Long long literals (14LL) are typed as I32 on i686 when the value fits in 32 bits.
+   The lexer conflates L and LL suffixes into `LongLiteral`. On i686, `long` is 32-bit
+   but `long long` is 64-bit, so 14LL must be typed as I64.
+
+2. This causes variadic call args to push only 4 bytes for long long values,
+   corrupting subsequent arguments on the stack.
+
+Fix approach:
+- Add `is_long_long` boolean to LongLiteral/ULongLiteral in lexer token and AST
+- Use this flag in get_expr_type and expr_ctype to return I64/CType::LongLong
+  when the suffix was LL, even if the value fits in 32 bits
