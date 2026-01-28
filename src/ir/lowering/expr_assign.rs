@@ -134,17 +134,20 @@ impl Lowerer {
 
     /// Truncate a value to bit_width bits and sign-extend if the bitfield is signed.
     pub(super) fn truncate_to_bitfield_value(&mut self, val: Operand, bit_width: u32, is_signed: bool) -> Operand {
-        if bit_width >= 64 {
+        // Use the target's widened op type: I32 on i686, I64 on 64-bit targets.
+        let op_ty = widened_op_type(IrType::I32);
+        let op_bits = (op_ty.size() * 8) as u32;
+        if bit_width >= op_bits {
             return val;
         }
         if is_signed {
-            let shl_amount = 64 - bit_width;
-            let shifted = self.emit_binop_val(IrBinOp::Shl, val, Operand::Const(IrConst::I64(shl_amount as i64)), IrType::I64);
-            let result = self.emit_binop_val(IrBinOp::AShr, Operand::Value(shifted), Operand::Const(IrConst::I64(shl_amount as i64)), IrType::I64);
+            let shl_amount = op_bits - bit_width;
+            let shifted = self.emit_binop_val(IrBinOp::Shl, val, Operand::Const(IrConst::I64(shl_amount as i64)), op_ty);
+            let result = self.emit_binop_val(IrBinOp::AShr, Operand::Value(shifted), Operand::Const(IrConst::I64(shl_amount as i64)), op_ty);
             Operand::Value(result)
         } else {
             let mask = (1u64 << bit_width) - 1;
-            let masked = self.emit_binop_val(IrBinOp::And, val, Operand::Const(IrConst::I64(mask as i64)), IrType::I64);
+            let masked = self.emit_binop_val(IrBinOp::And, val, Operand::Const(IrConst::I64(mask as i64)), op_ty);
             Operand::Value(masked)
         }
     }
@@ -232,11 +235,15 @@ impl Lowerer {
             return;
         }
 
-        let mask = if bit_width >= 64 { u64::MAX } else { (1u64 << bit_width) - 1 };
-        let masked_val = self.emit_binop_val(IrBinOp::And, val, Operand::Const(IrConst::I64(mask as i64)), IrType::I64);
+        // Use the target-appropriate operation type: I32 on i686 for <=32-bit storage, I64 on 64-bit targets.
+        let op_ty = widened_op_type(storage_ty);
+        let op_bits = (op_ty.size() * 8) as u32;
+
+        let mask = if bit_width >= op_bits { u64::MAX } else { (1u64 << bit_width) - 1 };
+        let masked_val = self.emit_binop_val(IrBinOp::And, val, Operand::Const(IrConst::I64(mask as i64)), op_ty);
 
         let shifted_val = if bit_offset > 0 {
-            self.emit_binop_val(IrBinOp::Shl, Operand::Value(masked_val), Operand::Const(IrConst::I64(bit_offset as i64)), IrType::I64)
+            self.emit_binop_val(IrBinOp::Shl, Operand::Value(masked_val), Operand::Const(IrConst::I64(bit_offset as i64)), op_ty)
         } else {
             masked_val
         };
@@ -244,9 +251,9 @@ impl Lowerer {
         let old_val = self.fresh_value();
         self.emit(Instruction::Load { dest: old_val, ptr: addr, ty: storage_ty , seg_override: AddressSpace::Default });
 
-        let clear_mask = if bit_width >= 64 { 0u64 } else { !(mask << bit_offset) };
-        let cleared = self.emit_binop_val(IrBinOp::And, Operand::Value(old_val), Operand::Const(IrConst::I64(clear_mask as i64)), IrType::I64);
-        let new_val = self.emit_binop_val(IrBinOp::Or, Operand::Value(cleared), Operand::Value(shifted_val), IrType::I64);
+        let clear_mask = if bit_width >= op_bits { 0u64 } else { !(mask << bit_offset) };
+        let cleared = self.emit_binop_val(IrBinOp::And, Operand::Value(old_val), Operand::Const(IrConst::I64(clear_mask as i64)), op_ty);
+        let new_val = self.emit_binop_val(IrBinOp::Or, Operand::Value(cleared), Operand::Value(shifted_val), op_ty);
 
         self.emit(Instruction::Store { val: Operand::Value(new_val), ptr: addr, ty: storage_ty , seg_override: AddressSpace::Default });
     }
@@ -257,14 +264,18 @@ impl Lowerer {
         let low_bits = storage_bits - bit_offset;
         let high_bits = bit_width - low_bits;
 
-        let mask = if bit_width >= 64 { u64::MAX } else { (1u64 << bit_width) - 1 };
-        let masked_val = self.emit_binop_val(IrBinOp::And, val, Operand::Const(IrConst::I64(mask as i64)), IrType::I64);
+        // Use the target-appropriate operation type: I32 on i686 for <=32-bit storage, I64 on 64-bit targets.
+        let op_ty = widened_op_type(storage_ty);
+        let op_bits = (op_ty.size() * 8) as u32;
+
+        let mask = if bit_width >= op_bits { u64::MAX } else { (1u64 << bit_width) - 1 };
+        let masked_val = self.emit_binop_val(IrBinOp::And, val, Operand::Const(IrConst::I64(mask as i64)), op_ty);
 
         // Low part: take low_bits from masked_val, shift left by bit_offset
-        let low_mask = if low_bits >= 64 { u64::MAX } else { (1u64 << low_bits) - 1 };
-        let low_val = self.emit_binop_val(IrBinOp::And, Operand::Value(masked_val), Operand::Const(IrConst::I64(low_mask as i64)), IrType::I64);
+        let low_mask = if low_bits >= op_bits { u64::MAX } else { (1u64 << low_bits) - 1 };
+        let low_val = self.emit_binop_val(IrBinOp::And, Operand::Value(masked_val), Operand::Const(IrConst::I64(low_mask as i64)), op_ty);
         let shifted_low = if bit_offset > 0 {
-            self.emit_binop_val(IrBinOp::Shl, Operand::Value(low_val), Operand::Const(IrConst::I64(bit_offset as i64)), IrType::I64)
+            self.emit_binop_val(IrBinOp::Shl, Operand::Value(low_val), Operand::Const(IrConst::I64(bit_offset as i64)), op_ty)
         } else {
             low_val
         };
@@ -273,14 +284,14 @@ impl Lowerer {
         let old_low = self.fresh_value();
         self.emit(Instruction::Load { dest: old_low, ptr: addr, ty: storage_ty , seg_override: AddressSpace::Default });
         let low_clear = !(low_mask << bit_offset);
-        let cleared_low = self.emit_binop_val(IrBinOp::And, Operand::Value(old_low), Operand::Const(IrConst::I64(low_clear as i64)), IrType::I64);
-        let new_low = self.emit_binop_val(IrBinOp::Or, Operand::Value(cleared_low), Operand::Value(shifted_low), IrType::I64);
+        let cleared_low = self.emit_binop_val(IrBinOp::And, Operand::Value(old_low), Operand::Const(IrConst::I64(low_clear as i64)), op_ty);
+        let new_low = self.emit_binop_val(IrBinOp::Or, Operand::Value(cleared_low), Operand::Value(shifted_low), op_ty);
         self.emit(Instruction::Store { val: Operand::Value(new_low), ptr: addr, ty: storage_ty , seg_override: AddressSpace::Default });
 
         // High part: take remaining bits from masked_val >> low_bits, store at bit 0 of next unit
-        let high_val = self.emit_binop_val(IrBinOp::LShr, Operand::Value(masked_val), Operand::Const(IrConst::I64(low_bits as i64)), IrType::I64);
-        let high_mask = if high_bits >= 64 { u64::MAX } else { (1u64 << high_bits) - 1 };
-        let masked_high = self.emit_binop_val(IrBinOp::And, Operand::Value(high_val), Operand::Const(IrConst::I64(high_mask as i64)), IrType::I64);
+        let high_val = self.emit_binop_val(IrBinOp::LShr, Operand::Value(masked_val), Operand::Const(IrConst::I64(low_bits as i64)), op_ty);
+        let high_mask = if high_bits >= op_bits { u64::MAX } else { (1u64 << high_bits) - 1 };
+        let masked_high = self.emit_binop_val(IrBinOp::And, Operand::Value(high_val), Operand::Const(IrConst::I64(high_mask as i64)), op_ty);
 
         let high_addr = self.emit_gep_offset(addr, storage_ty.size(), IrType::I8);
 
@@ -288,26 +299,28 @@ impl Lowerer {
         let old_high = self.fresh_value();
         self.emit(Instruction::Load { dest: old_high, ptr: high_addr, ty: storage_ty , seg_override: AddressSpace::Default });
         let high_clear = !high_mask;
-        let cleared_high = self.emit_binop_val(IrBinOp::And, Operand::Value(old_high), Operand::Const(IrConst::I64(high_clear as i64)), IrType::I64);
-        let new_high = self.emit_binop_val(IrBinOp::Or, Operand::Value(cleared_high), Operand::Value(masked_high), IrType::I64);
+        let cleared_high = self.emit_binop_val(IrBinOp::And, Operand::Value(old_high), Operand::Const(IrConst::I64(high_clear as i64)), op_ty);
+        let new_high = self.emit_binop_val(IrBinOp::Or, Operand::Value(cleared_high), Operand::Value(masked_high), op_ty);
         self.emit(Instruction::Store { val: Operand::Value(new_high), ptr: high_addr, ty: storage_ty , seg_override: AddressSpace::Default });
     }
 
     /// Extract a bitfield value from a loaded storage unit.
     pub(super) fn extract_bitfield(&mut self, loaded: Value, storage_ty: IrType, bit_offset: u32, bit_width: u32) -> Operand {
-        if bit_width >= 64 && bit_offset == 0 {
+        // Use the target-appropriate operation type: I32 on i686 for <=32-bit storage, I64 on 64-bit targets.
+        let op_ty = widened_op_type(storage_ty);
+        let op_bits = (op_ty.size() * 8) as u32;
+
+        if bit_width >= op_bits && bit_offset == 0 {
             return Operand::Value(loaded);
         }
 
-        // Widen the loaded value to I64 before performing I64 shift/mask operations.
-        // On i686, smaller types (I8/I16/I32) only populate eax; without this cast,
-        // I64 operations would use an uninitialized edx register.
-        let widened = if storage_ty != IrType::I64 && storage_ty != IrType::U64 {
-            // Use zero-extension (cast to unsigned equivalent first) since
-            // the shift/mask operations handle sign-extension explicitly.
+        // Widen the loaded value to the operation type before performing shift/mask.
+        // On i686 with I32 op_ty, a sub-32-bit storage (I8/I16) needs widening to I32.
+        // On 64-bit targets, everything widens to I64.
+        let widened = if storage_ty.size() < op_ty.size() {
             let unsigned_storage = storage_ty.to_unsigned();
-            let cast_val = self.emit_cast_val(Operand::Value(loaded), unsigned_storage, IrType::U64);
-            cast_val
+            let target_unsigned = op_ty.to_unsigned();
+            self.emit_cast_val(Operand::Value(loaded), unsigned_storage, target_unsigned)
         } else {
             loaded
         };
@@ -315,15 +328,15 @@ impl Lowerer {
         // If the loaded value doesn't cover all bits (split case), the caller
         // should use extract_bitfield_from_addr instead. But handle the non-split case.
         if storage_ty.is_signed() {
-            let shl_amount = 64 - bit_offset - bit_width;
-            let ashr_amount = 64 - bit_width;
+            let shl_amount = op_bits - bit_offset - bit_width;
+            let ashr_amount = op_bits - bit_width;
             let mut val = Operand::Value(widened);
-            if shl_amount > 0 && shl_amount < 64 {
-                let shifted = self.emit_binop_val(IrBinOp::Shl, val, Operand::Const(IrConst::I64(shl_amount as i64)), IrType::I64);
+            if shl_amount > 0 && shl_amount < op_bits {
+                let shifted = self.emit_binop_val(IrBinOp::Shl, val, Operand::Const(IrConst::I64(shl_amount as i64)), op_ty);
                 val = Operand::Value(shifted);
             }
-            if ashr_amount > 0 && ashr_amount < 64 {
-                let result = self.emit_binop_val(IrBinOp::AShr, val, Operand::Const(IrConst::I64(ashr_amount as i64)), IrType::I64);
+            if ashr_amount > 0 && ashr_amount < op_bits {
+                let result = self.emit_binop_val(IrBinOp::AShr, val, Operand::Const(IrConst::I64(ashr_amount as i64)), op_ty);
                 Operand::Value(result)
             } else {
                 val
@@ -331,14 +344,14 @@ impl Lowerer {
         } else {
             let mut val = Operand::Value(widened);
             if bit_offset > 0 {
-                let shifted = self.emit_binop_val(IrBinOp::LShr, val, Operand::Const(IrConst::I64(bit_offset as i64)), IrType::I64);
+                let shifted = self.emit_binop_val(IrBinOp::LShr, val, Operand::Const(IrConst::I64(bit_offset as i64)), op_ty);
                 val = Operand::Value(shifted);
             }
-            if bit_width >= 64 {
+            if bit_width >= op_bits {
                 val
             } else {
                 let mask = (1u64 << bit_width) - 1;
-                let masked = self.emit_binop_val(IrBinOp::And, val, Operand::Const(IrConst::I64(mask as i64)), IrType::I64);
+                let masked = self.emit_binop_val(IrBinOp::And, val, Operand::Const(IrConst::I64(mask as i64)), op_ty);
                 Operand::Value(masked)
             }
         }
@@ -350,6 +363,9 @@ impl Lowerer {
 
         if storage_bits > 0 && bit_offset + bit_width > storage_bits {
             // Split extraction: load from two storage units and combine
+            // Use the target-appropriate operation type for shift/mask operations.
+            let op_ty = widened_op_type(storage_ty);
+            let op_bits = (op_ty.size() * 8) as u32;
             let low_bits = storage_bits - bit_offset;
             let high_bits = bit_width - low_bits;
 
@@ -357,30 +373,30 @@ impl Lowerer {
             let low_loaded = self.fresh_value();
             self.emit(Instruction::Load { dest: low_loaded, ptr: addr, ty: storage_ty , seg_override: AddressSpace::Default });
             let low_val = if bit_offset > 0 {
-                let shifted = self.emit_binop_val(IrBinOp::LShr, Operand::Value(low_loaded), Operand::Const(IrConst::I64(bit_offset as i64)), IrType::I64);
+                let shifted = self.emit_binop_val(IrBinOp::LShr, Operand::Value(low_loaded), Operand::Const(IrConst::I64(bit_offset as i64)), op_ty);
                 shifted
             } else {
                 low_loaded
             };
-            let low_mask = if low_bits >= 64 { u64::MAX } else { (1u64 << low_bits) - 1 };
-            let masked_low = self.emit_binop_val(IrBinOp::And, Operand::Value(low_val), Operand::Const(IrConst::I64(low_mask as i64)), IrType::I64);
+            let low_mask = if low_bits >= op_bits { u64::MAX } else { (1u64 << low_bits) - 1 };
+            let masked_low = self.emit_binop_val(IrBinOp::And, Operand::Value(low_val), Operand::Const(IrConst::I64(low_mask as i64)), op_ty);
 
             // Load high part from next storage unit
             let high_addr = self.emit_gep_offset(addr, storage_ty.size(), IrType::I8);
             let high_loaded = self.fresh_value();
             self.emit(Instruction::Load { dest: high_loaded, ptr: high_addr, ty: storage_ty , seg_override: AddressSpace::Default });
-            let high_mask = if high_bits >= 64 { u64::MAX } else { (1u64 << high_bits) - 1 };
-            let masked_high = self.emit_binop_val(IrBinOp::And, Operand::Value(high_loaded), Operand::Const(IrConst::I64(high_mask as i64)), IrType::I64);
+            let high_mask = if high_bits >= op_bits { u64::MAX } else { (1u64 << high_bits) - 1 };
+            let masked_high = self.emit_binop_val(IrBinOp::And, Operand::Value(high_loaded), Operand::Const(IrConst::I64(high_mask as i64)), op_ty);
 
             // Shift high part left by low_bits and OR with low part
-            let shifted_high = self.emit_binop_val(IrBinOp::Shl, Operand::Value(masked_high), Operand::Const(IrConst::I64(low_bits as i64)), IrType::I64);
-            let combined = self.emit_binop_val(IrBinOp::Or, Operand::Value(masked_low), Operand::Value(shifted_high), IrType::I64);
+            let shifted_high = self.emit_binop_val(IrBinOp::Shl, Operand::Value(masked_high), Operand::Const(IrConst::I64(low_bits as i64)), op_ty);
+            let combined = self.emit_binop_val(IrBinOp::Or, Operand::Value(masked_low), Operand::Value(shifted_high), op_ty);
 
             // Sign extend if the field type is signed
-            if storage_ty.is_signed() && bit_width < 64 {
-                let shl_amount = 64 - bit_width;
-                let shifted = self.emit_binop_val(IrBinOp::Shl, Operand::Value(combined), Operand::Const(IrConst::I64(shl_amount as i64)), IrType::I64);
-                let result = self.emit_binop_val(IrBinOp::AShr, Operand::Value(shifted), Operand::Const(IrConst::I64(shl_amount as i64)), IrType::I64);
+            if storage_ty.is_signed() && bit_width < op_bits {
+                let shl_amount = op_bits - bit_width;
+                let shifted = self.emit_binop_val(IrBinOp::Shl, Operand::Value(combined), Operand::Const(IrConst::I64(shl_amount as i64)), op_ty);
+                let result = self.emit_binop_val(IrBinOp::AShr, Operand::Value(shifted), Operand::Const(IrConst::I64(shl_amount as i64)), op_ty);
                 Operand::Value(result)
             } else {
                 Operand::Value(combined)
