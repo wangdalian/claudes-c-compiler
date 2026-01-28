@@ -303,7 +303,13 @@ impl InlineAsmEmitter for X86Codegen {
 
         match val {
             Operand::Const(c) => {
-                let imm = c.to_i64().unwrap_or(0);
+                // Extract IEEE 754 bit pattern for float constants.
+                // to_i64() returns None for F32/F64, so use to_bits() instead.
+                let imm = match c {
+                    IrConst::F32(v) => v.to_bits() as i64,
+                    IrConst::F64(v) => v.to_bits() as i64,
+                    _ => c.to_i64().unwrap_or(0),
+                };
                 // When the register is a sub-64-bit name (e.g., "esi" from
                 // `register uint32_t val asm("esi")`), we must use instructions
                 // compatible with that register width. movabsq/xorq require

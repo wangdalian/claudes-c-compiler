@@ -145,7 +145,13 @@ impl InlineAsmEmitter for RiscvCodegen {
         match val {
             Operand::Const(c) => {
                 if is_fp {
-                    let imm = c.to_i64().unwrap_or(0);
+                    // Extract IEEE 754 bit pattern for float constants.
+                    // to_i64() returns None for F32/F64, so use to_bits() instead.
+                    let imm = match c {
+                        IrConst::F32(v) => v.to_bits() as i64,
+                        IrConst::F64(v) => v.to_bits() as i64,
+                        _ => c.to_i64().unwrap_or(0),
+                    };
                     self.state.emit_fmt(format_args!("    li t5, {}", imm));
                     if constraint.contains('f') && !constraint.contains("64") {
                         self.state.emit_fmt(format_args!("    fmv.w.x {}, t5", reg));

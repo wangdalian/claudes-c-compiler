@@ -145,8 +145,14 @@ impl InlineAsmEmitter for ArmCodegen {
         match val {
             Operand::Const(c) => {
                 if is_fp {
-                    // Load FP constant: move to GP reg first, then fmov to FP reg
-                    let bits = c.to_i64().unwrap_or(0);
+                    // Load FP constant: extract IEEE 754 bit pattern, move to GP reg,
+                    // then fmov to FP reg. to_i64() returns None for floats, so we
+                    // must use to_bits() to get the bit-level representation.
+                    let bits = match c {
+                        IrConst::F32(v) => v.to_bits() as i64,
+                        IrConst::F64(v) => v.to_bits() as i64,
+                        _ => c.to_i64().unwrap_or(0),
+                    };
                     self.emit_load_imm64("x9", bits);
                     if op.operand_type == IrType::F32 {
                         // Convert d-register name to s-register for single-precision
