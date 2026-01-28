@@ -1,0 +1,18 @@
+Task: Fix i686 atomic RMW cmpxchg loop register sizes and logic, plus long double alignment
+Status: in_progress
+Started: 2026-01-28
+
+Description:
+1. The i686 atomic RMW cmpxchg loop in emit_atomic_rmw always uses %edx
+   (32-bit register) in the cmpxchg instruction, but for byte and word types
+   it must use %dl/%dx. This causes assembly failures with cmpxchgb/cmpxchgw.
+
+2. The cmpxchg loop logic for And/Or/Xor operations is incorrect: it computes
+   the new value into %eax but then uses %edx (unchanged operand) as the
+   desired value in cmpxchg. The desired value should be the computed result.
+
+3. The Sub operation in the loop references (%esp) incorrectly.
+
+4. Long double alignment on i686 should be 4, not 12 (which is the size).
+   The compiler currently uses size as alignment, causing "alignment not a
+   power of 2" assembly errors.
