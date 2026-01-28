@@ -13,6 +13,7 @@
 //! Phi nodes in successor blocks are updated when edges are redirected.
 
 use crate::common::fx_hash::{FxHashMap, FxHashSet};
+use crate::common::types::IrType;
 use crate::ir::ir::*;
 
 /// Maximum depth for resolving transitive jump chains (A→B→C→...),
@@ -335,10 +336,18 @@ fn resolve_value_to_const_in_block(block: &BasicBlock, v: Value) -> Option<IrCon
                 return first_const;
             }
             // Evaluate Cmp with constant operands
-            Instruction::Cmp { dest, op, lhs, rhs, .. } if *dest == v => {
+            Instruction::Cmp { dest, op, lhs, rhs, ty } if *dest == v => {
                 let lhs_const = resolve_operand_to_i64_in_block(block, lhs);
                 let rhs_const = resolve_operand_to_i64_in_block(block, rhs);
                 if let (Some(l), Some(r)) = (lhs_const, rhs_const) {
+                    // Truncate operands to the comparison type's width before comparing.
+                    // Constants may be stored in different IrConst variants (e.g., I32 vs I64)
+                    // and to_i64() sign-extends I32 values. Without truncation, a U32 value
+                    // like 0xFFFFFFFE stored as IrConst::I32(-2) sign-extends to i64 -2,
+                    // while the same value stored as IrConst::I64(4294967294) stays positive,
+                    // causing incorrect comparison results.
+                    let l = truncate_to_cmp_type(l, *ty);
+                    let r = truncate_to_cmp_type(r, *ty);
                     let result = match op {
                         IrCmpOp::Eq => l == r,
                         IrCmpOp::Ne => l != r,
@@ -376,6 +385,22 @@ fn resolve_operand_to_i64_in_block(block: &BasicBlock, op: &Operand) -> Option<i
     match op {
         Operand::Const(c) => c.to_i64(),
         Operand::Value(v) => resolve_value_to_const_in_block(block, *v)?.to_i64(),
+    }
+}
+
+/// Truncate an i64 value to the width of the given IR type, with proper
+/// sign/zero extension back to i64. This ensures constants stored in different
+/// IrConst variants (e.g., I32 vs I64) are normalized to the same representation
+/// before comparison, matching the semantics in constant_fold::truncate_to_type.
+fn truncate_to_cmp_type(val: i64, ty: IrType) -> i64 {
+    match ty {
+        IrType::I8 => val as i8 as i64,
+        IrType::U8 => val as u8 as i64,
+        IrType::I16 => val as i16 as i64,
+        IrType::U16 => val as u16 as i64,
+        IrType::I32 => val as i32 as i64,
+        IrType::U32 => val as u32 as i64,
+        _ => val,
     }
 }
 
