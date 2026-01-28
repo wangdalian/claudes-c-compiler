@@ -52,6 +52,9 @@ pub struct Lowerer {
     /// Set of function names declared with __attribute__((noreturn)) or _Noreturn.
     /// After calls to these functions, emit Unreachable to avoid generating dead epilogue code.
     pub(super) noreturn_functions: FxHashSet<String>,
+    /// Set of function names declared with __attribute__((fastcall)).
+    /// On i386, these use ecx/edx for the first two integer/pointer args.
+    pub(super) fastcall_functions: FxHashSet<String>,
     /// Type-system state (struct layouts, typedefs, enum constants, type caches)
     pub(super) types: TypeContext,
     /// Metadata about known functions (consolidated FuncSig)
@@ -146,6 +149,7 @@ impl Lowerer {
             static_functions: FxHashSet::default(),
             error_functions: FxHashSet::default(),
             noreturn_functions: FxHashSet::default(),
+            fastcall_functions: FxHashSet::default(),
             types: type_context,
             func_meta: FunctionMeta::default(),
             emitted_global_names: FxHashSet::default(),
@@ -324,6 +328,7 @@ impl Lowerer {
                 struct_arg_sizes: vec![None],
                 struct_arg_classes: Vec::new(),
                 is_sret: false,
+                is_fastcall: false,
             });
         }
     }
@@ -497,6 +502,9 @@ impl Lowerer {
                     if func.attrs.is_destructor() && !self.module.destructors.contains(&func.name) {
                         self.module.destructors.push(func.name.clone());
                     }
+                    if func.attrs.is_fastcall() {
+                        self.fastcall_functions.insert(func.name.clone());
+                    }
                 }
                 ExternalDecl::Declaration(decl) => {
                     for declarator in &decl.declarators {
@@ -527,6 +535,10 @@ impl Lowerer {
                         // Collect __attribute__((noreturn)) / _Noreturn
                         if declarator.attrs.is_noreturn() && !declarator.name.is_empty() {
                             self.noreturn_functions.insert(declarator.name.clone());
+                        }
+                        // Collect __attribute__((fastcall))
+                        if declarator.attrs.is_fastcall() && !declarator.name.is_empty() {
+                            self.fastcall_functions.insert(declarator.name.clone());
                         }
                         // Collect weak/visibility attributes on extern declarations (not aliases).
                         // Skip typedefs: they are not linker symbols and should never get

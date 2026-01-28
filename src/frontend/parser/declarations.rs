@@ -135,6 +135,7 @@ impl Parser {
         let is_noreturn = self.attrs.parsing_noreturn;
         let cleanup_fn = self.attrs.parsing_cleanup_fn.take();
         let is_used = self.attrs.parsing_used;
+        let is_fastcall = self.attrs.parsing_fastcall;
 
         // Apply __attribute__((mode(...))): transform type to specified bit-width
         let type_spec = if let Some(mk) = mode_kind {
@@ -149,9 +150,9 @@ impl Parser {
             && (matches!(self.peek(), TokenKind::LBrace) || self.is_type_specifier());
 
         if is_funcdef {
-            self.parse_function_def(type_spec, name, derived, start, is_constructor, is_destructor, section, visibility, is_weak, is_used)
+            self.parse_function_def(type_spec, name, derived, start, is_constructor, is_destructor, section, visibility, is_weak, is_used, is_fastcall)
         } else {
-            self.parse_declaration_rest(type_spec, name, derived, start, is_constructor, is_destructor, is_common, merged_alignment, alignas_type, alignment_sizeof_type, is_weak, alias_target, visibility, section, first_asm_reg, is_error_attr, is_noreturn, cleanup_fn, is_used)
+            self.parse_declaration_rest(type_spec, name, derived, start, is_constructor, is_destructor, is_common, merged_alignment, alignas_type, alignment_sizeof_type, is_weak, alias_target, visibility, section, first_asm_reg, is_error_attr, is_noreturn, cleanup_fn, is_used, is_fastcall)
         }
     }
 
@@ -168,6 +169,7 @@ impl Parser {
         visibility: Option<String>,
         is_weak: bool,
         is_used: bool,
+        is_fastcall: bool,
     ) -> Option<ExternalDecl> {
         self.attrs.parsing_typedef = false; // function defs are never typedefs
         let (params, variadic) = if let Some(DerivedDeclarator::Function(p, v)) = derived.last() {
@@ -224,6 +226,7 @@ impl Parser {
                 attrs.set_destructor(is_destructor);
                 attrs.set_weak(is_weak);
                 attrs.set_used(is_used);
+                attrs.set_fastcall(is_fastcall);
                 attrs.section = section;
                 attrs.visibility = visibility;
                 attrs
@@ -415,6 +418,7 @@ impl Parser {
         is_noreturn: bool,
         cleanup_fn: Option<String>,
         is_used: bool,
+        is_fastcall: bool,
     ) -> Option<ExternalDecl> {
         let mut declarators = Vec::new();
         let init = if self.consume_if(&TokenKind::Assign) {
@@ -434,6 +438,7 @@ impl Parser {
                 da.set_error_attr(is_error_attr);
                 da.set_noreturn(is_noreturn);
                 da.set_used(is_used);
+                da.set_fastcall(is_fastcall);
                 da.alias_target = alias_target;
                 da.visibility = visibility;
                 da.section = section.clone();
@@ -483,6 +488,7 @@ impl Parser {
         self.attrs.parsing_noreturn = false;
         self.attrs.parsing_cleanup_fn = None;
         self.attrs.parsing_used = false;
+        self.attrs.parsing_fastcall = false;
         is_common = is_common || extra_common;
         if let Some(a) = extra_aligned {
             alignment = Some(alignment.map_or(a, |prev| prev.max(a)));
@@ -504,6 +510,7 @@ impl Parser {
             let d_used = self.attrs.parsing_used;
             self.attrs.parsing_weak = false;
             self.attrs.parsing_used = false;
+            self.attrs.parsing_fastcall = false;
             let dinit = if self.consume_if(&TokenKind::Assign) {
                 Some(self.parse_initializer())
             } else {
@@ -511,6 +518,7 @@ impl Parser {
             };
             let d_error_attr = self.attrs.parsing_error_attr;
             let d_noreturn = self.attrs.parsing_noreturn;
+            let d_fastcall = self.attrs.parsing_fastcall;
             declarators.push(InitDeclarator {
                 name: dname.unwrap_or_default(),
                 derived: dderived,
@@ -523,6 +531,7 @@ impl Parser {
                     da.set_error_attr(d_error_attr);
                     da.set_noreturn(d_noreturn);
                     da.set_used(d_used);
+                    da.set_fastcall(d_fastcall);
                     da.alias_target = d_alias;
                     da.visibility = d_vis;
                     da.section = d_section;

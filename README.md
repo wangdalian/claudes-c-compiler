@@ -84,7 +84,10 @@ and PostgreSQL.
 - **GNU extensions**: Partial `__attribute__` support. ARM NEON intrinsics are partially
   implemented (core 128-bit operations work; some SSE-equivalent stubs remain).
 - **i686**: The 32-bit x86 backend is new. Inline assembly with full
-  operand substitution and register constraints is supported.
+  operand substitution and register constraints is supported. The
+  `__attribute__((fastcall))` calling convention is supported (first two
+  DWORD int/ptr args in ECX/EDX, callee cleans stack). libffi builds and
+  passes call tests; closure tests have a pre-existing issue.
 
 ## Architecture
 

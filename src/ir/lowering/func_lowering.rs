@@ -521,6 +521,7 @@ impl Lowerer {
             has_inlined_calls: false,
             param_alloca_values: param_alloca_vals,
             uses_sret,
+            is_fastcall: func.attrs.is_fastcall(),
         };
         self.module.functions.push(ir_func);
         self.pop_scope();

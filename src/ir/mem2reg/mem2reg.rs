@@ -826,6 +826,8 @@ mod tests {
                     num_fixed_args: 1,
                     struct_arg_sizes: vec![None],
                     struct_arg_classes: Vec::new(),
+                    is_sret: false,
+                    is_fastcall: false,
                 },
                 Instruction::Load { dest: Value(1), ptr: Value(0), ty: IrType::I32 , seg_override: AddressSpace::Default },
             ],

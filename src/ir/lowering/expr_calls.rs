@@ -653,12 +653,15 @@ impl Lowerer {
                 if self.is_func_ptr_variable(name) {
                     // Function pointer variable: load pointer and call indirect
                     let func_ptr = self.load_func_ptr_variable(name);
+                    // TODO: Support fastcall through function pointers (requires tracking
+                    // calling convention in function pointer types)
                     self.emit(Instruction::CallIndirect {
                         dest: Some(dest), func_ptr: Operand::Value(func_ptr),
                         args: arg_vals, arg_types, return_type: indirect_ret_ty, is_variadic, num_fixed_args,
                         struct_arg_sizes,
                         struct_arg_classes,
                         is_sret: sret_size.is_some(),
+                        is_fastcall: false,
                     });
                     indirect_ret_ty
                 } else {
@@ -685,12 +688,14 @@ impl Lowerer {
                             }
                         }
                     }
+                    let callee_is_fastcall = self.fastcall_functions.contains(name.as_str());
                     self.emit(Instruction::Call {
                         dest: Some(dest), func: call_name,
                         args: arg_vals, arg_types, return_type: ret_ty, is_variadic, num_fixed_args,
                         struct_arg_sizes,
                         struct_arg_classes,
                         is_sret: sret_size.is_some(),
+                        is_fastcall: callee_is_fastcall,
                     });
                     ret_ty
                 }
@@ -718,6 +723,7 @@ impl Lowerer {
                     struct_arg_sizes: sas,
                     struct_arg_classes: sac,
                     is_sret: sret_size.is_some(),
+                    is_fastcall: false,
                 });
                 indirect_ret_ty
             }
@@ -732,6 +738,7 @@ impl Lowerer {
                     struct_arg_sizes: sas,
                     struct_arg_classes: sac,
                     is_sret: sret_size.is_some(),
+                    is_fastcall: false,
                 });
                 indirect_ret_ty
             }

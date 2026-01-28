@@ -184,6 +184,7 @@ impl Lowerer {
                     struct_arg_sizes,
                     struct_arg_classes: Vec::new(),
                     is_sret: false,
+                    is_fastcall: false,
                 });
                 Some(Operand::Value(dest))
             }

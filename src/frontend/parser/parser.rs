@@ -97,6 +97,8 @@ pub(super) struct ParsedDeclAttrs {
     pub parsing_error_attr: bool,
     /// `__attribute__((transparent_union))` encountered.
     pub parsing_transparent_union: bool,
+    /// `__attribute__((fastcall))` encountered (i386 fastcall calling convention).
+    pub parsing_fastcall: bool,
 
     // --- GCC attributes with values ---
     /// `__attribute__((alias("target")))` target symbol name.
@@ -646,6 +648,10 @@ impl Parser {
                                     }
                                     TokenKind::Identifier(name) if name == "used" || name == "__used__" => {
                                         self.attrs.parsing_used = true;
+                                        self.advance();
+                                    }
+                                    TokenKind::Identifier(name) if name == "fastcall" || name == "__fastcall__" => {
+                                        self.attrs.parsing_fastcall = true;
                                         self.advance();
                                     }
                                     TokenKind::Identifier(name) if name == "address_space" || name == "__address_space__" => {

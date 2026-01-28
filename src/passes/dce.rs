@@ -473,6 +473,8 @@ mod tests {
                     num_fixed_args: 0,
                     struct_arg_sizes: vec![],
                     struct_arg_classes: Vec::new(),
+                    is_sret: false,
+                    is_fastcall: false,
                 },
             ],
             terminator: Terminator::Return(None),

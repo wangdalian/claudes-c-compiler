@@ -57,6 +57,8 @@ pub mod func_attr_flag {
     pub const WEAK: u16          = 1 << 8;
     /// `__attribute__((used))` — prevent dead code elimination.
     pub const USED: u16          = 1 << 9;
+    /// `__attribute__((fastcall))` — i386 fastcall convention (first 2 int args in ecx/edx).
+    pub const FASTCALL: u16      = 1 << 10;
 }
 
 impl FunctionAttributes {
@@ -77,6 +79,7 @@ impl FunctionAttributes {
     #[inline] pub fn is_destructor(&self) -> bool     { self.flags & func_attr_flag::DESTRUCTOR != 0 }
     #[inline] pub fn is_weak(&self) -> bool           { self.flags & func_attr_flag::WEAK != 0 }
     #[inline] pub fn is_used(&self) -> bool           { self.flags & func_attr_flag::USED != 0 }
+    #[inline] pub fn is_fastcall(&self) -> bool       { self.flags & func_attr_flag::FASTCALL != 0 }
 
     // --- flag setters ---
 
@@ -90,6 +93,7 @@ impl FunctionAttributes {
     #[inline] pub fn set_destructor(&mut self, v: bool)    { self.set_flag(func_attr_flag::DESTRUCTOR, v) }
     #[inline] pub fn set_weak(&mut self, v: bool)          { self.set_flag(func_attr_flag::WEAK, v) }
     #[inline] pub fn set_used(&mut self, v: bool)          { self.set_flag(func_attr_flag::USED, v) }
+    #[inline] pub fn set_fastcall(&mut self, v: bool)      { self.set_flag(func_attr_flag::FASTCALL, v) }
 
     #[inline]
     fn set_flag(&mut self, mask: u16, v: bool) {
@@ -110,6 +114,7 @@ impl std::fmt::Debug for FunctionAttributes {
             .field("is_destructor", &self.is_destructor())
             .field("is_weak", &self.is_weak())
             .field("is_used", &self.is_used())
+            .field("is_fastcall", &self.is_fastcall())
             .field("section", &self.section)
             .field("visibility", &self.visibility)
             .finish()
@@ -244,6 +249,8 @@ pub mod decl_attr_flag {
     pub const NORETURN: u16    = 1 << 4;
     /// `__attribute__((used))` — prevent dead code elimination.
     pub const USED: u16        = 1 << 5;
+    /// `__attribute__((fastcall))` — i386 fastcall calling convention.
+    pub const FASTCALL: u16    = 1 << 6;
 }
 
 impl DeclAttributes {
@@ -255,6 +262,7 @@ impl DeclAttributes {
     #[inline] pub fn is_error_attr(&self) -> bool  { self.flags & decl_attr_flag::ERROR_ATTR != 0 }
     #[inline] pub fn is_noreturn(&self) -> bool    { self.flags & decl_attr_flag::NORETURN != 0 }
     #[inline] pub fn is_used(&self) -> bool        { self.flags & decl_attr_flag::USED != 0 }
+    #[inline] pub fn is_fastcall(&self) -> bool    { self.flags & decl_attr_flag::FASTCALL != 0 }
 
     // --- flag setters ---
 
@@ -264,6 +272,7 @@ impl DeclAttributes {
     #[inline] pub fn set_error_attr(&mut self, v: bool)  { self.set_flag(decl_attr_flag::ERROR_ATTR, v) }
     #[inline] pub fn set_noreturn(&mut self, v: bool)    { self.set_flag(decl_attr_flag::NORETURN, v) }
     #[inline] pub fn set_used(&mut self, v: bool)        { self.set_flag(decl_attr_flag::USED, v) }
+    #[inline] pub fn set_fastcall(&mut self, v: bool)    { self.set_flag(decl_attr_flag::FASTCALL, v) }
 
     #[inline]
     fn set_flag(&mut self, mask: u16, v: bool) {

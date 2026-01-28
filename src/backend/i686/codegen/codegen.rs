@@ -41,6 +41,13 @@ pub struct I686Codegen {
     pub(super) asm_scratch_idx: usize,
     /// Scratch register allocation index for inline asm XMM registers.
     pub(super) asm_xmm_scratch_idx: usize,
+    /// Whether the current function uses the fastcall calling convention.
+    /// When true, the first two DWORD integer/pointer args are passed in ecx/edx.
+    is_fastcall: bool,
+    /// For fastcall functions, the number of bytes of stack args the callee must pop on return.
+    fastcall_stack_cleanup: usize,
+    /// For fastcall functions, how many leading params are passed in registers (0, 1, or 2).
+    fastcall_reg_param_count: usize,
 }
 
 // Callee-saved physical register indices for i686
@@ -89,6 +96,9 @@ impl I686Codegen {
             va_named_stack_bytes: 0,
             asm_scratch_idx: 0,
             asm_xmm_scratch_idx: 0,
+            is_fastcall: false,
+            fastcall_stack_cleanup: 0,
+            fastcall_reg_param_count: 0,
         }
     }
 
@@ -360,6 +370,46 @@ impl I686Codegen {
             IrType::I16 | IrType::U16 => "%ax",
             _ => "%eax",
         }
+    }
+
+    /// Return the register name for ecx sub-register based on type size.
+    fn ecx_for_type(&self, ty: IrType) -> &'static str {
+        match ty {
+            IrType::I8 | IrType::U8 => "%cl",
+            IrType::I16 | IrType::U16 => "%cx",
+            _ => "%ecx",
+        }
+    }
+
+    /// Return the register name for edx sub-register based on type size.
+    fn edx_for_type(&self, ty: IrType) -> &'static str {
+        match ty {
+            IrType::I8 | IrType::U8 => "%dl",
+            IrType::I16 | IrType::U16 => "%dx",
+            _ => "%edx",
+        }
+    }
+
+    /// Check if a param type is eligible for fastcall register passing.
+    /// Only DWORD-sized or smaller integer/pointer types qualify.
+    fn is_fastcall_reg_eligible(&self, ty: IrType) -> bool {
+        matches!(ty, IrType::I8 | IrType::U8 | IrType::I16 | IrType::U16 |
+                     IrType::I32 | IrType::U32 | IrType::Ptr)
+    }
+
+    /// Count how many leading params are passed in registers for fastcall (max 2).
+    fn count_fastcall_reg_params(&self, func: &IrFunction) -> usize {
+        let mut count = 0;
+        for param in &func.params {
+            if count >= 2 { break; }
+            let ty = param.ty;
+            if self.is_fastcall_reg_eligible(ty) {
+                count += 1;
+            } else {
+                break; // non-eligible param stops register assignment
+            }
+        }
+        count
     }
 
     /// Check if an operand is a constant that fits in an i32 immediate.
@@ -812,6 +862,131 @@ impl I686Codegen {
             }
         }
     }
+
+    /// Emit a fastcall function call on i686.
+    /// First two DWORD (int/ptr) args go in ECX, EDX.
+    /// Remaining args go on the stack (right-to-left push order).
+    /// The callee pops stack args, so caller does NOT adjust ESP after call.
+    fn emit_fastcall(&mut self, args: &[Operand], arg_types: &[IrType],
+                     direct_name: Option<&str>, func_ptr: Option<&Operand>,
+                     dest: Option<Value>, return_type: IrType) {
+        let indirect = func_ptr.is_some() && direct_name.is_none();
+
+        // Determine which args go in registers vs stack.
+        let mut reg_count = 0usize;
+        for ty in arg_types.iter() {
+            if reg_count >= 2 { break; }
+            if self.is_fastcall_reg_eligible(*ty) {
+                reg_count += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Compute stack space for overflow args (args beyond the register ones).
+        let mut stack_bytes = 0usize;
+        for i in reg_count..args.len() {
+            let ty = if i < arg_types.len() { arg_types[i] } else { IrType::I32 };
+            match ty {
+                IrType::F64 | IrType::I64 | IrType::U64 => stack_bytes += 8,
+                IrType::F128 => stack_bytes += 12,
+                _ if is_i128_type(ty) => stack_bytes += 16,
+                _ => stack_bytes += 4,
+            }
+        }
+        // Align to 16 bytes
+        let stack_arg_space = (stack_bytes + 15) & !15;
+
+        // Spill indirect function pointer before stack manipulation.
+        if indirect {
+            self.emit_call_spill_fptr(func_ptr.unwrap());
+        }
+
+        // Phase 1: Allocate stack space and write stack args.
+        if stack_arg_space > 0 {
+            emit!(self.state, "    subl ${}, %esp", stack_arg_space);
+        }
+
+        // Write stack args (skipping register args).
+        let mut offset = 0i64;
+        for i in reg_count..args.len() {
+            let ty = if i < arg_types.len() { arg_types[i] } else { IrType::I32 };
+            let arg = &args[i];
+
+            match ty {
+                IrType::I64 | IrType::U64 | IrType::F64 => {
+                    self.emit_load_acc_pair(arg);
+                    emit!(self.state, "    movl %eax, {}(%esp)", offset);
+                    emit!(self.state, "    movl %edx, {}(%esp)", offset + 4);
+                    offset += 8;
+                }
+                IrType::F128 => {
+                    // Load F128 value to x87 and store to stack
+                    self.emit_f128_load_to_x87(arg);
+                    emit!(self.state, "    fstpt {}(%esp)", offset);
+                    offset += 12;
+                }
+                _ if is_i128_type(ty) => {
+                    // Copy 16 bytes
+                    if let Operand::Value(v) = arg {
+                        if let Some(slot) = self.state.get_slot(v.0) {
+                            for j in (0..16).step_by(4) {
+                                emit!(self.state, "    movl {}(%ebp), %eax", slot.0 + j as i64);
+                                emit!(self.state, "    movl %eax, {}(%esp)", offset + j as i64);
+                            }
+                        }
+                    }
+                    offset += 16;
+                }
+                _ => {
+                    self.emit_load_operand(arg);
+                    emit!(self.state, "    movl %eax, {}(%esp)", offset);
+                    offset += 4;
+                }
+            }
+        }
+
+        // Phase 2: Load register args into ECX and EDX.
+        // Load EDX first (arg 1) then ECX (arg 0), because loading arg 0
+        // may clobber EDX if it involves function calls.
+        if reg_count >= 2 {
+            self.emit_load_operand(&args[1]);
+            self.state.emit("    movl %eax, %edx");
+        }
+        if reg_count >= 1 {
+            self.emit_load_operand(&args[0]);
+            self.state.emit("    movl %eax, %ecx");
+        }
+
+        // Phase 3: Emit the call.
+        if indirect {
+            // Reload function pointer from spill slot
+            let fptr_offset = stack_arg_space as i64;
+            emit!(self.state, "    movl {}(%esp), %eax", fptr_offset);
+            self.state.emit("    call *%eax");
+        } else if let Some(name) = direct_name {
+            emit!(self.state, "    call {}", name);
+        }
+
+        // Phase 4: For indirect calls, pop the spilled function pointer.
+        // Note: callee already cleaned up the stack args, so we only need
+        // to handle the fptr spill and alignment padding.
+        if indirect {
+            self.state.emit("    addl $4, %esp"); // pop fptr spill
+        }
+        // Clean up alignment padding (the difference between actual stack bytes and aligned)
+        let padding = stack_arg_space - stack_bytes;
+        if padding > 0 {
+            emit!(self.state, "    addl ${}, %esp", padding);
+        }
+
+        // Phase 5: Store return value.
+        if let Some(dest) = dest {
+            self.emit_call_store_result(&dest, return_type);
+        }
+
+        self.state.reg_cache.invalidate_acc();
+    }
 }
 
 // Helper functions for ALU mnemonics
@@ -864,6 +1039,7 @@ impl ArchCodegen for I686Codegen {
 
     fn calculate_stack_space(&mut self, func: &IrFunction) -> i64 {
         self.is_variadic = func.is_variadic;
+        self.is_fastcall = func.is_fastcall;
         self.current_return_type = func.return_type;
 
         // Compute named parameter stack bytes for va_start (variadic functions).
@@ -978,8 +1154,40 @@ impl ArchCodegen for I686Codegen {
             })
         }).collect();
 
+        // For fastcall, determine how many params go in registers (max 2 DWORD int/ptr params).
+        // Track which params are register-passed and the stack offset adjustment.
+        let fastcall_reg_count = if self.is_fastcall {
+            self.count_fastcall_reg_params(func)
+        } else {
+            0
+        };
+        self.fastcall_reg_param_count = fastcall_reg_count;
+
+        // For fastcall, compute the total stack-passed parameter bytes for callee cleanup.
+        if self.is_fastcall {
+            // The classify_params assigns offsets as if all params are on stack.
+            // The stack cleanup is total param stack size minus the register-passed params.
+            // We can compute it from the last param's offset + size.
+            let mut total_stack_bytes: usize = 0;
+            for (i, _p) in func.params.iter().enumerate() {
+                if i < fastcall_reg_count { continue; }
+                let ty = func.params[i].ty;
+                let size = match ty {
+                    IrType::I64 | IrType::U64 | IrType::F64 => 8,
+                    IrType::F128 => 12,
+                    _ if is_i128_type(ty) => 16,
+                    _ => 4,
+                };
+                total_stack_bytes += size;
+            }
+            self.fastcall_stack_cleanup = total_stack_bytes;
+        } else {
+            self.fastcall_stack_cleanup = 0;
+        }
+
         // Stack-passed parameters start at 8(%ebp) (after saved ebp + return addr).
         let stack_base: i64 = 8;
+        let mut fastcall_reg_idx = 0usize; // which reg param we're on (0=ecx, 1=edx)
 
         for (i, _param) in func.params.iter().enumerate() {
             let class = param_classes[i];
@@ -989,15 +1197,45 @@ impl ArchCodegen for I686Codegen {
                 if let Some(slot) = self.state.get_slot(dest.0) {
                     (slot, ty, dest.0)
                 } else {
+                    if self.is_fastcall && fastcall_reg_idx < fastcall_reg_count && i < func.params.len() {
+                        if self.is_fastcall_reg_eligible(ty) {
+                            fastcall_reg_idx += 1;
+                        }
+                    }
                     continue;
                 }
             } else {
+                if self.is_fastcall && fastcall_reg_idx < fastcall_reg_count && i < func.params.len() {
+                    let param_ty = func.params[i].ty;
+                    if self.is_fastcall_reg_eligible(param_ty) {
+                        fastcall_reg_idx += 1;
+                    }
+                }
                 continue;
             };
 
+            // Fastcall: first eligible params come from ecx/edx
+            if self.is_fastcall && fastcall_reg_idx < fastcall_reg_count && self.is_fastcall_reg_eligible(ty) {
+                let store_instr = self.mov_store_for_type(ty);
+                let src_reg = if fastcall_reg_idx == 0 {
+                    self.ecx_for_type(ty)
+                } else {
+                    self.edx_for_type(ty)
+                };
+                emit!(self.state, "    {} {}, {}(%ebp)", store_instr, src_reg, slot.0);
+                fastcall_reg_idx += 1;
+                continue;
+            }
+
+            // For fastcall stack params, adjust offsets: the stack params don't include
+            // the register-passed params, so the offset from classify_params already
+            // accounts for all params. We need to subtract the space that would have
+            // been used by register params.
+            let stack_offset_adjust = if self.is_fastcall { fastcall_reg_count as i64 * 4 } else { 0 };
+
             match class {
                 ParamClass::StackScalar { offset } => {
-                    let src_offset = stack_base + offset;
+                    let src_offset = stack_base + offset - stack_offset_adjust;
                     if ty == IrType::F64 || ty == IrType::I64 || ty == IrType::U64 {
                         // 8-byte types: copy both halves
                         emit!(self.state, "    movl {}(%ebp), %eax", src_offset);
@@ -1013,7 +1251,7 @@ impl ArchCodegen for I686Codegen {
                     }
                 }
                 ParamClass::StructStack { offset, size } => {
-                    let src = stack_base + offset;
+                    let src = stack_base + offset - stack_offset_adjust;
                     let mut copied = 0usize;
                     while copied + 4 <= size {
                         emit!(self.state, "    movl {}(%ebp), %eax", src + copied as i64);
@@ -1027,7 +1265,7 @@ impl ArchCodegen for I686Codegen {
                     }
                 }
                 ParamClass::LargeStructStack { offset, size } => {
-                    let src = stack_base + offset;
+                    let src = stack_base + offset - stack_offset_adjust;
                     let mut copied = 0usize;
                     while copied + 4 <= size {
                         emit!(self.state, "    movl {}(%ebp), %eax", src + copied as i64);
@@ -1041,20 +1279,20 @@ impl ArchCodegen for I686Codegen {
                     }
                 }
                 ParamClass::F128AlwaysStack { offset } => {
-                    let src = stack_base + offset;
+                    let src = stack_base + offset - stack_offset_adjust;
                     emit!(self.state, "    fldt {}(%ebp)", src);
                     emit!(self.state, "    fstpt {}(%ebp)", slot.0);
                     self.state.f128_direct_slots.insert(dest_id);
                 }
                 ParamClass::I128Stack { offset } => {
-                    let src = stack_base + offset;
+                    let src = stack_base + offset - stack_offset_adjust;
                     for j in (0..16).step_by(4) {
                         emit!(self.state, "    movl {}(%ebp), %eax", src + j as i64);
                         emit!(self.state, "    movl %eax, {}(%ebp)", slot.0 + j as i64);
                     }
                 }
                 ParamClass::F128Stack { offset } => {
-                    let src = stack_base + offset;
+                    let src = stack_base + offset - stack_offset_adjust;
                     emit!(self.state, "    fldt {}(%ebp)", src);
                     emit!(self.state, "    fstpt {}(%ebp)", slot.0);
                     self.state.f128_direct_slots.insert(dest_id);
@@ -1071,7 +1309,19 @@ impl ArchCodegen for I686Codegen {
         // Use the classified parameter offsets from emit_store_params for accuracy.
         use crate::backend::call_emit::ParamClass;
 
+        // For fastcall register params, the value was already stored to the param's
+        // alloca slot by emit_store_params (from ecx/edx). Read from that slot.
+        if self.is_fastcall && param_idx < self.fastcall_reg_param_count {
+            if let Some(Some((slot, _slot_ty))) = self.state.param_alloca_slots.get(param_idx) {
+                let load_instr = self.mov_load_for_type(ty);
+                emit!(self.state, "    {} {}(%ebp), %eax", load_instr, slot.0);
+                self.store_eax_to(dest);
+            }
+            return;
+        }
+
         let stack_base: i64 = 8; // after saved ebp + return address
+        let stack_offset_adjust = if self.is_fastcall { self.fastcall_reg_param_count as i64 * 4 } else { 0 };
         let param_offset = if param_idx < self.state.param_classes.len() {
             match self.state.param_classes[param_idx] {
                 ParamClass::StackScalar { offset } |
@@ -1080,7 +1330,7 @@ impl ArchCodegen for I686Codegen {
                 ParamClass::F128AlwaysStack { offset } |
                 ParamClass::I128Stack { offset } |
                 ParamClass::F128Stack { offset } |
-                ParamClass::LargeStructByRefStack { offset, .. } => stack_base + offset,
+                ParamClass::LargeStructByRefStack { offset, .. } => stack_base + offset - stack_offset_adjust,
                 _ => stack_base + (param_idx as i64) * 4, // fallback
             }
         } else {
@@ -2375,6 +2625,50 @@ impl ArchCodegen for I686Codegen {
         }
     }
 
+    /// Override emit_call to handle the fastcall calling convention on i686.
+    /// For fastcall, the first two DWORD integer/pointer args go in ecx/edx,
+    /// remaining args go on the stack, and the callee cleans up the stack.
+    fn emit_call(&mut self, args: &[Operand], arg_types: &[IrType], direct_name: Option<&str>,
+                 func_ptr: Option<&Operand>, dest: Option<Value>, return_type: IrType,
+                 is_variadic: bool, num_fixed_args: usize, struct_arg_sizes: &[Option<usize>],
+                 struct_arg_classes: &[Vec<crate::common::types::EightbyteClass>],
+                 _is_sret: bool,
+                 is_fastcall: bool) {
+        if !is_fastcall {
+            // Delegate to the default trait implementation for cdecl calls.
+            // We can't call the default method directly because Rust doesn't support
+            // calling default trait methods from an overriding method. So we duplicate
+            // the call to the shared skeleton.
+            use crate::backend::call_abi::*;
+            let config = self.call_abi_config();
+            let arg_classes_vec = classify_call_args(args, arg_types, struct_arg_sizes, struct_arg_classes, is_variadic, &config);
+            let indirect = func_ptr.is_some() && direct_name.is_none();
+            if indirect {
+                self.emit_call_spill_fptr(func_ptr.unwrap());
+            }
+            let stack_arg_space = self.emit_call_compute_stack_space(&arg_classes_vec, arg_types);
+            let f128_temp_space = self.emit_call_f128_pre_convert(args, &arg_classes_vec, arg_types, stack_arg_space);
+            self.state().reg_cache.invalidate_acc();
+            let total_sp_adjust = self.emit_call_stack_args(args, &arg_classes_vec, arg_types, stack_arg_space,
+                                                            if indirect { self.emit_call_fptr_spill_size() } else { 0 },
+                                                            f128_temp_space);
+            self.state().reg_cache.invalidate_acc();
+            self.emit_call_reg_args(args, &arg_classes_vec, arg_types, total_sp_adjust, f128_temp_space, stack_arg_space);
+            self.emit_call_instruction(direct_name, func_ptr, indirect, stack_arg_space);
+            self.emit_call_cleanup(stack_arg_space, f128_temp_space, indirect);
+            if let Some(dest) = dest {
+                self.emit_call_store_result(&dest, return_type);
+            }
+            return;
+        }
+
+        // Fastcall calling convention:
+        // - First two DWORD (int/ptr) args in ECX, EDX
+        // - Remaining args pushed right-to-left on stack
+        // - Callee pops the stack args (caller does NOT adjust ESP after call)
+        self.emit_fastcall(args, arg_types, direct_name, func_ptr, dest, return_type);
+    }
+
     fn emit_call_compute_stack_space(&self, arg_classes: &[call_abi::CallArgClass], arg_types: &[IrType]) -> usize {
         // Count total bytes needed for all arguments (all go on stack in cdecl).
         // On i686 cdecl, each arg occupies at least 4 bytes (one stack slot).
@@ -2787,6 +3081,8 @@ impl ArchCodegen for I686Codegen {
         // must pop the hidden pointer argument with `ret $4`.
         if self.state.uses_sret {
             self.state.emit("    ret $4");
+        } else if self.is_fastcall && self.fastcall_stack_cleanup > 0 {
+            emit!(self.state, "    ret ${}", self.fastcall_stack_cleanup);
         } else {
             self.state.emit("    ret");
         }

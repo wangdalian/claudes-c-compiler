@@ -361,7 +361,8 @@ pub trait ArchCodegen {
                  func_ptr: Option<&Operand>, dest: Option<Value>, return_type: IrType,
                  is_variadic: bool, _num_fixed_args: usize, struct_arg_sizes: &[Option<usize>],
                  struct_arg_classes: &[Vec<crate::common::types::EightbyteClass>],
-                 is_sret: bool) {
+                 is_sret: bool,
+                 _is_fastcall: bool) {
         use super::call_abi::*;
         let config = self.call_abi_config();
         let arg_classes = classify_call_args(args, arg_types, struct_arg_sizes, struct_arg_classes, is_variadic, &config);
