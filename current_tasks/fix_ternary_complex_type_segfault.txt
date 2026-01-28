@@ -1,0 +1,16 @@
+Fix ternary expression segfault with complex types
+
+Bug: When a ternary expression (cond ? a : b) has complex type operands where
+one branch is a variable and the other is a function call, the generated code
+segfaults. The true branch incorrectly uses `lea` to get the address and then
+`cvtsi2sd` to convert that address to a float, instead of loading the complex
+value from memory. This results in garbage pointer values that cause a segfault
+during the subsequent `rep movsb` memory copy.
+
+Reproducer:
+    _Complex float xf = 12345.0f + 123456.0f * I;
+    _Complex float make_cf(void) { return 100.0f + 200.0f * I; }
+    int cond = 1;
+    _Complex float result = cond ? xf : make_cf();  // SEGFAULT
+
+Status: in_progress
