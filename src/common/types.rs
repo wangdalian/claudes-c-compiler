@@ -1155,6 +1155,24 @@ impl CType {
         }
     }
 
+    /// Preferred (natural) alignment in bytes, as returned by GCC's __alignof__.
+    /// On i686, this differs from align_ctx() for long long (8 vs 4) and double (8 vs 4).
+    /// On LP64 targets, preferred == ABI alignment, so this returns the same as align_ctx().
+    pub fn preferred_align_ctx(&self, ctx: &dyn StructLayoutProvider) -> usize {
+        let ptr_sz = target_ptr_size();
+        if ptr_sz != 4 {
+            // On 64-bit targets, preferred == ABI alignment
+            return self.align_ctx(ctx);
+        }
+        // On i686: long long and double have preferred alignment of 8
+        match self {
+            CType::LongLong | CType::ULongLong => 8,
+            CType::Double => 8,
+            CType::ComplexDouble => 8,
+            _ => self.align_ctx(ctx),
+        }
+    }
+
     /// Size in bytes for non-struct/union types. For struct/union, returns 0.
     /// Use size_ctx() when you need accurate struct/union sizes.
     pub fn size(&self) -> usize {

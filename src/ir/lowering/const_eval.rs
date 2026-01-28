@@ -238,6 +238,14 @@ impl Lowerer {
                 let align = self.alignof_expr(inner_expr);
                 Some(IrConst::I64(align as i64))
             }
+            Expr::GnuAlignof(ref ts, _) => {
+                let align = self.preferred_alignof_type(ts);
+                Some(IrConst::I64(align as i64))
+            }
+            Expr::GnuAlignofExpr(ref inner_expr, _) => {
+                let align = self.preferred_alignof_expr(inner_expr);
+                Some(IrConst::I64(align as i64))
+            }
             Expr::Conditional(cond, then_e, else_e, _) => {
                 // Ternary in constant expr: evaluate condition and pick branch
                 let cond_val = self.eval_const_expr(cond)?;

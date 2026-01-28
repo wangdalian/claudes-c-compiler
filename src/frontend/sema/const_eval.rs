@@ -218,9 +218,16 @@ impl<'a> SemaConstEval<'a> {
                 size.map(|s| IrConst::I64(s as i64))
             }
 
-            // _Alignof
+            // _Alignof - C11 standard, returns minimum ABI alignment
             Expr::Alignof(ref ts, _) => {
                 let align = self.alignof_type_spec(ts);
+                Some(IrConst::I64(align as i64))
+            }
+
+            // __alignof(type) / __alignof__(type) - GCC extension, returns preferred alignment.
+            // On i686: __alignof__(long long) == 8, _Alignof(long long) == 4.
+            Expr::GnuAlignof(ref ts, _) => {
+                let align = self.preferred_alignof_type_spec(ts);
                 Some(IrConst::I64(align as i64))
             }
 
@@ -240,6 +247,21 @@ impl<'a> SemaConstEval<'a> {
                 }
                 let ctype = self.infer_expr_ctype(inner_expr)?;
                 let align = ctype.align_ctx(&self.types.struct_layouts);
+                Some(IrConst::I64(align as i64))
+            }
+
+            // __alignof__(expr) via GnuAlignof path - returns preferred alignment
+            Expr::GnuAlignofExpr(ref inner_expr, _) => {
+                if let Expr::Identifier(name, _) = inner_expr.as_ref() {
+                    if let Some(sym) = self.symbols.lookup(name) {
+                        if let Some(explicit_align) = sym.explicit_alignment {
+                            let natural = sym.ty.preferred_align_ctx(&self.types.struct_layouts);
+                            return Some(IrConst::I64(natural.max(explicit_align) as i64));
+                        }
+                    }
+                }
+                let ctype = self.infer_expr_ctype(inner_expr)?;
+                let align = ctype.preferred_align_ctx(&self.types.struct_layouts);
                 Some(IrConst::I64(align as i64))
             }
 
@@ -921,6 +943,40 @@ impl<'a> SemaConstEval<'a> {
                 }
             }
             _ => crate::common::types::target_ptr_size(),
+        }
+    }
+
+    /// Compute preferred (natural) alignment for a type specifier.
+    /// Used by GCC's __alignof/__alignof__ which returns preferred alignment.
+    /// On i686: __alignof__(long long) == 8, __alignof__(double) == 8.
+    fn preferred_alignof_type_spec(&self, spec: &TypeSpecifier) -> usize {
+        use crate::common::types::target_ptr_size;
+        let ptr_sz = target_ptr_size();
+        if ptr_sz != 4 {
+            return self.alignof_type_spec(spec);
+        }
+        // On i686: long long and double have preferred alignment of 8
+        match spec {
+            TypeSpecifier::LongLong | TypeSpecifier::UnsignedLongLong => 8,
+            TypeSpecifier::Double => 8,
+            TypeSpecifier::ComplexDouble => 8,
+            TypeSpecifier::Array(elem, _) => self.preferred_alignof_type_spec(elem),
+            TypeSpecifier::TypedefName(name) => {
+                if let Some(ctype) = self.types.typedefs.get(name) {
+                    ctype.preferred_align_ctx(&self.types.struct_layouts)
+                } else {
+                    target_ptr_size()
+                }
+            }
+            TypeSpecifier::TypeofType(inner) => self.preferred_alignof_type_spec(inner),
+            TypeSpecifier::Typeof(expr) => {
+                if let Some(ctype) = self.infer_expr_ctype(expr) {
+                    ctype.preferred_align_ctx(&self.types.struct_layouts)
+                } else {
+                    target_ptr_size()
+                }
+            }
+            _ => self.alignof_type_spec(spec),
         }
     }
 

@@ -96,6 +96,10 @@ pub enum TokenKind {
     ImagPart,
     /// __auto_type - GCC extension for type inference from initializer
     AutoType,
+    /// __alignof / __alignof__ - GCC extension returning preferred (natural) alignment.
+    /// Differs from C11 _Alignof which returns minimum ABI alignment.
+    /// On i686: __alignof__(long long) == 8, _Alignof(long long) == 4.
+    GnuAlignof,
     /// __label__ - GCC extension for local label declarations in block scope
     GnuLabel,
     /// __seg_gs - GCC named address space qualifier (x86 %gs segment)
@@ -256,6 +260,7 @@ impl TokenKind {
             "__real__" | "__real" => Some(TokenKind::RealPart),
             "__imag__" | "__imag" => Some(TokenKind::ImagPart),
             "__auto_type" => Some(TokenKind::AutoType),
+            "__alignof" | "__alignof__" => Some(TokenKind::GnuAlignof),
             "__label__" => Some(TokenKind::GnuLabel),
             "__seg_gs" => Some(TokenKind::SegGs),
             "__seg_fs" => Some(TokenKind::SegFs),

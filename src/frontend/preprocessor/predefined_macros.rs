@@ -118,7 +118,9 @@ impl Preprocessor {
             // __restrict__, __signed__, __typeof__) are handled as keyword tokens in
             // the lexer (token.rs), not as macros, because GCC treats them as reserved
             // keywords immune to #define redefinition.
-            ("__alignof", "_Alignof"), ("__alignof__", "_Alignof"),
+            // __alignof/__alignof__ are handled as keyword tokens (GnuAlignof)
+            // in the lexer, not as macros - they return preferred alignment,
+            // which differs from C11 _Alignof on i686.
             // Named address spaces (Linux kernel): __seg_gs/__seg_fs are handled
             // as keyword tokens in the lexer (token.rs), not as macros.
             // __float128 -> long double (glibc compat)

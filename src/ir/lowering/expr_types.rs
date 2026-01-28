@@ -1099,7 +1099,8 @@ impl Lowerer {
             }
 
             // sizeof(sizeof(...)) or sizeof(_Alignof(...)) -> size_t
-            Expr::Sizeof(_, _) | Expr::Alignof(_, _) | Expr::AlignofExpr(_, _) => crate::common::types::target_ptr_size(),
+            Expr::Sizeof(_, _) | Expr::Alignof(_, _) | Expr::AlignofExpr(_, _)
+            | Expr::GnuAlignof(_, _) | Expr::GnuAlignofExpr(_, _) => crate::common::types::target_ptr_size(),
 
             // Cast: size of the target type
             Expr::Cast(target_type, _, _) => {
@@ -1251,6 +1252,43 @@ impl Lowerer {
             // On ILP32, 8-byte types (double, long long) are typically aligned to 4
             8 if ptr_sz == 4 => 4,
             _ => ptr_sz,
+        }
+    }
+
+    /// Compute preferred alignment for an expression by inferring its type and returning
+    /// the type's preferred alignment. This implements GCC's __alignof__(expr) semantics
+    /// with preferred alignment (8 for long long/double on i686).
+    pub(super) fn preferred_alignof_expr(&self, expr: &Expr) -> usize {
+        use crate::common::types::target_ptr_size;
+        if target_ptr_size() != 4 {
+            return self.alignof_expr(expr);
+        }
+        // Check for explicit alignment on a variable identifier
+        if let Expr::Identifier(name, _) = expr {
+            if let Some(vi) = self.lookup_var_info(name) {
+                if let Some(explicit_align) = vi.explicit_alignment {
+                    let natural = if let Some(ref ctype) = vi.c_type {
+                        ctype.preferred_align_ctx(&self.types.struct_layouts)
+                    } else {
+                        // Fallback: use size as preferred alignment (min 1, max 16)
+                        vi.ty.size().min(16).max(1)
+                    };
+                    return natural.max(explicit_align);
+                }
+            }
+        }
+        if let Some(ctype) = self.get_expr_ctype(expr) {
+            return ctype.preferred_align_ctx(&self.types.struct_layouts);
+        }
+        // Fallback: derive preferred alignment from the expression's size
+        let size = self.sizeof_expr(expr);
+        match size {
+            1 => 1,
+            2 => 2,
+            4 => 4,
+            8 => 8,  // preferred alignment for 8-byte types on i686
+            16 => 16,
+            _ => target_ptr_size(),
         }
     }
 

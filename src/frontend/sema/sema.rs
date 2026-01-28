@@ -870,7 +870,8 @@ impl SemanticAnalyzer {
             Expr::Cast(_, inner, _) => {
                 self.analyze_expr(inner);
             }
-            Expr::Sizeof(..) | Expr::Alignof(..) | Expr::AlignofExpr(..) => {} // sizeof/_Alignof are always compile-time
+            Expr::Sizeof(..) | Expr::Alignof(..) | Expr::AlignofExpr(..)
+            | Expr::GnuAlignof(..) | Expr::GnuAlignofExpr(..) => {} // sizeof/_Alignof/__alignof are always compile-time
             Expr::AddressOf(inner, _) => {
                 self.analyze_expr(inner);
             }

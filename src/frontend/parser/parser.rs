@@ -1069,4 +1069,25 @@ impl Parser {
             _ => ptr_sz,
         }
     }
+
+    /// Compute preferred (natural) alignment for a type specifier.
+    /// Used by GCC's __alignof/__alignof__ which returns preferred alignment.
+    /// On i686: __alignof__(long long) == 8, __alignof__(double) == 8,
+    /// while _Alignof returns 4 for both (minimum ABI alignment).
+    pub(super) fn preferred_alignof_type_spec(ts: &TypeSpecifier) -> usize {
+        use crate::common::types::target_ptr_size;
+        let ptr_sz = target_ptr_size();
+        if ptr_sz != 4 {
+            // On 64-bit targets, preferred == ABI alignment
+            return Self::alignof_type_spec(ts);
+        }
+        // On i686: long long and double have preferred alignment of 8
+        match ts {
+            TypeSpecifier::LongLong | TypeSpecifier::UnsignedLongLong
+            | TypeSpecifier::Double => 8,
+            TypeSpecifier::ComplexDouble => 8,
+            TypeSpecifier::Array(elem, _) => Self::preferred_alignof_type_spec(elem),
+            _ => Self::alignof_type_spec(ts),
+        }
+    }
 }

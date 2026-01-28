@@ -427,6 +427,53 @@ impl Lowerer {
         self.struct_union_layout(ts).map(|l| l.align).unwrap_or(crate::common::types::target_ptr_size())
     }
 
+    /// Compute preferred (natural) alignment of a type in bytes (__alignof__).
+    /// On i686: __alignof__(long long) == 8, __alignof__(double) == 8.
+    pub(super) fn preferred_alignof_type(&self, ts: &TypeSpecifier) -> usize {
+        use crate::common::types::target_ptr_size;
+        let ptr_sz = target_ptr_size();
+        if ptr_sz != 4 {
+            return self.alignof_type(ts);
+        }
+        // Handle TypedefName through CType preferred alignment
+        if let TypeSpecifier::TypedefName(name) = ts {
+            let natural = if let Some(ctype) = self.types.typedefs.get(name) {
+                ctype.preferred_align_ctx(&self.types.struct_layouts)
+            } else {
+                target_ptr_size()
+            };
+            if let Some(&td_align) = self.types.typedef_alignments.get(name) {
+                return natural.max(td_align);
+            }
+            return natural;
+        }
+        if let TypeSpecifier::Typeof(expr) = ts {
+            if let Some(ctype) = self.get_expr_ctype(expr) {
+                return ctype.preferred_align_ctx(&self.types.struct_layouts);
+            }
+            return target_ptr_size();
+        }
+        if let TypeSpecifier::TypeofType(inner) = ts {
+            return self.preferred_alignof_type(inner);
+        }
+        let ts = self.resolve_type_spec(ts);
+        // On i686, check if scalar type has preferred alignment different from ABI
+        match ts {
+            TypeSpecifier::LongLong | TypeSpecifier::UnsignedLongLong
+            | TypeSpecifier::Double => return 8,
+            TypeSpecifier::ComplexDouble => return 8,
+            _ => {}
+        }
+        // Fall back to normal alignof for all other types
+        if let Some((_, align)) = Self::scalar_type_size_align(ts) {
+            return align;
+        }
+        if let TypeSpecifier::Array(elem, _) = ts {
+            return self.preferred_alignof_type(elem);
+        }
+        self.struct_union_layout(ts).map(|l| l.align).unwrap_or(target_ptr_size())
+    }
+
     /// Return the typedef alignment override for a type specifier, if any.
     /// For `TypeSpecifier::TypedefName("foo")`, looks up `foo` in `typedef_alignments`.
     pub(super) fn typedef_alignment_for_type_spec(&self, ts: &TypeSpecifier) -> Option<&usize> {

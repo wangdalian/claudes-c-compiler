@@ -862,9 +862,13 @@ impl Parser {
             Expr::Alignof(ts, _) => {
                 Some(Self::alignof_type_spec(ts) as i64)
             }
+            // __alignof(type) returns preferred alignment (8 for long long/double on i686)
+            Expr::GnuAlignof(ts, _) => {
+                Some(Self::preferred_alignof_type_spec(ts) as i64)
+            }
             // __alignof__(expr): parser-level can't always determine type alignment
             // from an expression, so return None (let sema/lowerer handle it)
-            Expr::AlignofExpr(_, _) => None,
+            Expr::AlignofExpr(_, _) | Expr::GnuAlignofExpr(_, _) => None,
             _ => None,
         }
     }

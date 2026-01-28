@@ -262,7 +262,7 @@ impl Parser {
             TokenKind::Alignof => {
                 let span = self.peek_span();
                 self.advance();
-                // _Alignof(type) - always requires parenthesized type
+                // _Alignof(type) - C11 standard, returns minimum ABI alignment
                 self.expect(&TokenKind::LParen);
                 if let Some(ts) = self.parse_type_specifier() {
                     let result_type = self.parse_abstract_declarator_suffix(ts);
@@ -273,6 +273,21 @@ impl Parser {
                     let expr = self.parse_assignment_expr();
                     self.expect(&TokenKind::RParen);
                     Expr::AlignofExpr(Box::new(expr), span)
+                }
+            }
+            TokenKind::GnuAlignof => {
+                let span = self.peek_span();
+                self.advance();
+                // __alignof / __alignof__ - GCC extension, returns preferred alignment
+                self.expect(&TokenKind::LParen);
+                if let Some(ts) = self.parse_type_specifier() {
+                    let result_type = self.parse_abstract_declarator_suffix(ts);
+                    self.expect(&TokenKind::RParen);
+                    Expr::GnuAlignof(result_type, span)
+                } else {
+                    let expr = self.parse_assignment_expr();
+                    self.expect(&TokenKind::RParen);
+                    Expr::GnuAlignofExpr(Box::new(expr), span)
                 }
             }
             _ => self.parse_postfix_expr(),
