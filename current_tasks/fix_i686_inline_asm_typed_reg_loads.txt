@@ -1,0 +1,19 @@
+Task: Fix i686 inline asm typed register load destinations
+
+Problem:
+In the i686 inline asm emitter (asm_emitter.rs), load_input_to_reg and
+preload_readwrite_output use dest_reg_for_type() to choose the destination
+register for movzbl/movzwl/movsbl/movswl instructions. For sub-32-bit types
+(U8, I8, U16, I16), dest_reg_for_type returns the sub-register (e.g. %cx for
+U16), but movz/movs instructions require a 32-bit destination register.
+
+This produces invalid assembly like "movzwl -64(%ebp), %cx" which the
+assembler rejects with "operand size mismatch for `movzw'".
+
+Blocks: libsodium build on i686 (verify.c uses `__asm__ __volatile__("" : "+r"(d))`
+where d is uint16_t).
+
+Fix:
+For zero/sign-extending loads (movzbl, movzwl, movsbl, movswl), always use the
+32-bit destination register. Only use the typed sub-register for plain mov
+instructions (movb, movw).
