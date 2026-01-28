@@ -1,0 +1,23 @@
+Fix i686 long long literal typing
+==================================
+Status: in_progress
+Date: 2026-01-28
+
+Problem: The AST conflates 'long' (L suffix) and 'long long' (LL suffix) literals
+into the same Expr::LongLiteral/Expr::ULongLiteral nodes. On i686 (ILP32), 'long' is
+32-bit but 'long long' is always 64-bit. This causes constant folding of expressions
+like `0xf0000000ULL + 0x10000000ULL` to truncate to 32-bit, producing 0 instead of
+0x100000000.
+
+Fix approach: Add Expr::LongLongLiteral and Expr::ULongLongLiteral to the AST,
+distinguishing them from Expr::LongLiteral and Expr::ULongLiteral. Then update
+the type checker, lowerer, and const evaluator to always assign 64-bit types
+to long long literals.
+
+Files to modify:
+- frontend/lexer/ (emit different tokens for L vs LL)
+- frontend/parser/ (create different AST nodes)
+- frontend/sema/type_checker.rs (type long long as 64-bit)
+- ir/lowering/expr.rs (infer correct type)
+- ir/lowering/expr_types.rs (get correct type)
+- common/const_eval.rs (use correct sizes)
