@@ -1,0 +1,19 @@
+Task: Fix double-brace initialization of struct with _Complex member
+Status: in_progress
+
+Problem:
+When initializing a struct containing a _Complex member with double braces like:
+    typedef struct { long double _Complex c; } v_test_t;
+    v_test_t v = {{1.0L + 2.0Li}};
+The compiler incorrectly treats the inner braces as a sub-aggregate initializer,
+trying to decompose the _Complex type into real/imaginary parts as if it were a struct.
+This produces garbage values.
+
+In C, _Complex types are scalar types, not aggregate types. The inner braces
+should be treated as "braces around scalar initializer" (with a warning, as GCC does).
+
+Fix: In the initializer lowering code, when encountering a brace-enclosed initializer
+for a scalar type (including _Complex), consume and ignore the extra braces rather
+than treating it as aggregate initialization.
+
+This fixes the only remaining x86 test failure (compiler_suite_0147_0070).
