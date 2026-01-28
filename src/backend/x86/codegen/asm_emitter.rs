@@ -60,11 +60,13 @@ impl InlineAsmEmitter for X86Codegen {
         let mut has_fp = false;
         let mut has_mem = false;
         let mut has_imm = false;
+        let mut has_qreg = false;
         let mut specific: Option<String> = None;
 
         for ch in c.chars() {
             match ch {
-                'r' | 'q' | 'R' | 'Q' | 'l' => has_gp = true,
+                'r' | 'q' | 'R' | 'l' => has_gp = true,
+                'Q' => has_qreg = true,
                 'g' => { has_gp = true; has_mem = true; has_imm = true; } // "general operand"
                 'x' | 'v' | 'Y' => has_fp = true,
                 'm' | 'o' | 'V' | 'p' => has_mem = true, // 'p' = valid memory address
@@ -75,6 +77,10 @@ impl InlineAsmEmitter for X86Codegen {
                 'd' if specific.is_none() => specific = Some("rdx".to_string()),
                 'S' if specific.is_none() => specific = Some("rsi".to_string()),
                 'D' if specific.is_none() => specific = Some("rdi".to_string()),
+                // GCC "A" constraint: on x86-64, equivalent to "a" (rax).
+                // On x86-32, it means edx:eax pair for 64-bit values, but
+                // we handle x86-64 only here (i686 backend has its own classify_constraint).
+                'A' if specific.is_none() => specific = Some("rax".to_string()),
                 _ => {}
             }
         }
@@ -87,6 +93,8 @@ impl InlineAsmEmitter for X86Codegen {
             AsmOperandKind::Specific(reg)
         } else if has_gp {
             AsmOperandKind::GpReg
+        } else if has_qreg {
+            AsmOperandKind::QReg
         } else if has_fp {
             AsmOperandKind::FpReg
         } else if has_mem {
@@ -207,6 +215,17 @@ impl InlineAsmEmitter for X86Codegen {
                     return reg;
                 }
             }
+        } else if matches!(kind, AsmOperandKind::QReg) {
+            // "Q" constraint: only rax/rbx/rcx/rdx have high-byte forms (%ah/%bh/%ch/%dh).
+            // These are the only registers valid for the %h modifier in inline asm templates.
+            for reg_name in &["rax", "rbx", "rcx", "rdx"] {
+                if !excluded.iter().any(|e| e == *reg_name) {
+                    return reg_name.to_string();
+                }
+            }
+            // Fallback: all four legacy regs are excluded; use rax anyway.
+            // This shouldn't happen in practice with correct inline asm.
+            "rax".to_string()
         } else {
             // Skip registers that are claimed by specific-register constraints
             loop {

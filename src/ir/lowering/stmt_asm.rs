@@ -90,7 +90,7 @@ impl Lowerer {
                     false
                 };
                 let stripped_for_mem_check = constraint.replace('+', "");
-                let needs_address = constraint_needs_address(&stripped_for_mem_check);
+                let needs_address = constraint_needs_address(&stripped_for_mem_check, self.is_riscv(), self.is_arm());
                 let input_operand = if is_global_reg {
                     if let Expr::Identifier(ref var_name, _) = &out.expr {
                         let asm_reg = self.get_asm_register(var_name).unwrap();
@@ -134,7 +134,7 @@ impl Lowerer {
                 // For "+m" constraints, extract the symbol name so the backend can emit
                 // direct symbol(%rip) references instead of register-indirect addressing.
                 let stripped_constraint = constraint.replace('+', "");
-                if constraint_is_memory_only(&stripped_constraint) {
+                if constraint_is_memory_only(&stripped_constraint, self.is_arm()) {
                     plus_input_symbols.push(self.extract_mem_operand_symbol(&out.expr));
                 } else {
                     plus_input_symbols.push(None);
@@ -197,16 +197,18 @@ impl Lowerer {
                     sym_name = self.extract_symbol_name(&inp.expr);
                     self.lower_expr(&inp.expr)
                 }
-            } else if constraint_needs_address(&constraint) {
-                // For memory-only and address constraints (m, o, V, Q, A), provide the
+            } else if constraint_needs_address(&constraint, self.is_riscv(), self.is_arm()) {
+                // For memory-only and address constraints (m, o, V), provide the
                 // address (lvalue) rather than the loaded value (rvalue).
+                // On AArch64, 'Q' is also memory-only (single base register addressing).
+                // On x86, 'Q' is a register constraint (legacy byte register).
                 // For memory constraints, also try to extract the symbol name so the
                 // backend can emit direct symbol(%rip) references instead of loading
                 // addresses into registers, which is critical when the inline asm
                 // template adds a segment prefix like %%gs:.
                 // For RISC-V "A" constraints (AMO/LR/SC), the address is loaded into
                 // a register and formatted as "(reg)" in the template.
-                if constraint_is_memory_only(&constraint) {
+                if constraint_is_memory_only(&constraint, self.is_arm()) {
                     sym_name = self.extract_mem_operand_symbol(&inp.expr);
                 }
                 if let Some(lv) = self.lower_lvalue(&inp.expr) {

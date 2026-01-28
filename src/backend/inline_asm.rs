@@ -43,6 +43,11 @@ pub enum AsmOperandKind {
     X87St0,
     /// x87 FPU stack second register st(1), selected by "u" constraint.
     X87St1,
+    /// GP register with accessible high-byte form (x86 "Q" constraint).
+    /// On x86-64, only rax/rbx/rcx/rdx have %ah/%bh/%ch/%dh forms.
+    /// Used when the asm template uses the %h modifier to access the
+    /// second byte (bits 8-15) of the register.
+    QReg,
 }
 
 /// Per-operand state tracked by the shared inline asm framework.
@@ -240,21 +245,24 @@ pub fn constraint_has_memory_alt(constraint: &str) -> bool {
 /// the address for memory operand formatting.
 /// Note: "Q" is AArch64-specific meaning "single base register memory address" and is
 /// always memory-only (no register alternative), used for atomic ops like ldaxr/stlxr.
-pub fn constraint_is_memory_only(constraint: &str) -> bool {
+/// The `is_arm` flag controls whether 'Q' is treated as a memory constraint:
+/// - On AArch64: 'Q' = memory-only (single base register addressing)
+/// - On x86/x86-64: 'Q' = legacy byte register (rax/rbx/rcx/rdx with %h form)
+/// - On RISC-V: 'Q' is not a standard constraint
+pub fn constraint_is_memory_only(constraint: &str, is_arm: bool) -> bool {
     let stripped = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
     // Named tied operands ("[name]") are never memory-only
     if stripped.starts_with('[') && stripped.ends_with(']') {
         return false;
     }
-    // "Q" is an AArch64 memory-only constraint (single base register addressing)
-    let has_mem = stripped.chars().any(|c| matches!(c, 'm' | 'o' | 'V' | 'p' | 'Q'));
+    // 'Q' is memory-only ONLY on AArch64; on x86 it's a register constraint.
+    let has_mem = stripped.chars().any(|c| {
+        matches!(c, 'm' | 'o' | 'V' | 'p') || (c == 'Q' && is_arm)
+    });
     if !has_mem {
         return false;
     }
     // Check for any register alternative (GP, FP, or specific register)
-    // Note: 'Q' is NOT listed as a register here — on AArch64 it's memory, and on x86
-    // it's rarely used (legacy "a,b,c,d" registers). The backend classify_constraint
-    // handles x86 Q correctly regardless.
     let has_reg = stripped.chars().any(|c| matches!(c,
         'r' | 'q' | 'R' | 'l' |           // GP register
         'g' |                              // general (reg + mem + imm)
@@ -267,23 +275,27 @@ pub fn constraint_is_memory_only(constraint: &str) -> bool {
 }
 
 /// Check whether a constraint requires an address (lvalue) rather than a value (rvalue).
-/// This covers both memory-only constraints (m, o, V, Q) and address constraints (A)
-/// that need the compiler to provide the memory address, not the loaded value.
+/// This covers both memory-only constraints (m, o, V, Q) and address constraints.
 ///
-/// "A" is RISC-V-specific: it means "address operand for AMO/LR/SC instructions".
-/// The inline asm template receives the address in a register, formatted as "(reg)".
-/// Unlike "m" constraints where the backend formats the memory reference, "A" provides
-/// just the bare register holding the address.
+/// The `is_riscv` flag controls whether "A" is treated as an address constraint:
+/// - On RISC-V, "A" means "address operand for AMO/LR/SC instructions" — the inline
+///   asm template receives the address in a register, formatted as "(reg)".
+/// - On x86, "A" means the accumulator register (rax/eax:edx), NOT an address.
 ///
 /// This is used by the IR lowering to decide whether to call lower_lvalue() (getting
 /// the address) or lower_expr() (loading the value) for inline asm input operands.
-pub fn constraint_needs_address(constraint: &str) -> bool {
-    if constraint_is_memory_only(constraint) {
+pub fn constraint_needs_address(constraint: &str, is_riscv: bool, is_arm: bool) -> bool {
+    if constraint_is_memory_only(constraint, is_arm) {
         return true;
     }
     // RISC-V "A" constraint: address for AMO/LR/SC instructions
-    let stripped = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
-    stripped == "A"
+    if is_riscv {
+        let stripped = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+        if stripped == "A" {
+            return true;
+        }
+    }
+    false
 }
 
 /// Shared inline assembly emission logic. All three backends call this from their
@@ -370,7 +382,7 @@ pub fn emit_inline_asm_common_impl(
         // constant value fits the range of that immediate constraint. For example,
         // x86 "I" requires 0-31 (for shift/bit instructions), so values >= 32 must
         // use the register alternative instead.
-        if matches!(op.kind, AsmOperandKind::GpReg) {
+        if matches!(op.kind, AsmOperandKind::GpReg | AsmOperandKind::QReg) {
             if let Operand::Const(c) = val {
                 if let Some(v) = c.to_i64() {
                     if emitter.constant_fits_immediate(constraint, v) {
@@ -381,7 +393,7 @@ pub fn emit_inline_asm_common_impl(
             }
         }
 
-        // For pure immediate-only constraints ("i", "n", etc.) that are still GpReg
+        // For pure immediate-only constraints ("i", "n", etc.) that are still GpReg/QReg
         // because the operand is a Value (not a Const), promote to Immediate with a
         // placeholder value of 0. This happens in standalone bodies of static inline
         // functions where "i" constraint parameters can't be resolved to constants.
@@ -390,7 +402,7 @@ pub fn emit_inline_asm_common_impl(
         // linked into the final binary. Without this, the backend would load the value
         // into a register and substitute the register name (e.g., "x9") into data
         // directives like .hword, causing linker errors ("undefined reference to x9").
-        if matches!(op.kind, AsmOperandKind::GpReg) && matches!(val, Operand::Value(_)) {
+        if matches!(op.kind, AsmOperandKind::GpReg | AsmOperandKind::QReg) && matches!(val, Operand::Value(_)) {
             if constraint_is_immediate_only(constraint) {
                 op.imm_value = Some(0);
                 op.kind = AsmOperandKind::Immediate;
@@ -410,7 +422,7 @@ pub fn emit_inline_asm_common_impl(
             if let Some(ref s) = sym {
                 operands[op_idx].imm_symbol = Some(s.clone());
                 // Promote to Immediate so the symbol is emitted directly
-                if matches!(operands[op_idx].kind, AsmOperandKind::GpReg) {
+                if matches!(operands[op_idx].kind, AsmOperandKind::GpReg | AsmOperandKind::QReg) {
                     operands[op_idx].kind = AsmOperandKind::Immediate;
                 }
             }
