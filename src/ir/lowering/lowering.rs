@@ -15,6 +15,8 @@
 use std::cell::RefCell;
 use std::mem::Discriminant;
 use crate::common::fx_hash::{FxHashMap, FxHashSet};
+use crate::common::error::DiagnosticEngine;
+use crate::common::source::Span;
 use crate::frontend::parser::ast::*;
 use crate::frontend::sema::{FunctionInfo, ExprTypeMap, ConstMap};
 use crate::ir::ir::*;
@@ -90,6 +92,13 @@ pub struct Lowerer {
     /// in the main AST, so a stale hit from a prior discriminant must be treated
     /// as a miss to avoid returning the wrong type.
     pub(super) expr_ctype_cache: RefCell<FxHashMap<usize, (Discriminant<Expr>, Option<CType>)>>,
+    /// Diagnostic engine for emitting structured errors and warnings during lowering.
+    /// Threaded from the driver through the compilation pipeline so that lowering-phase
+    /// diagnostics get the same source location rendering and warning control as
+    /// parser/sema diagnostics.
+    /// Wrapped in RefCell because many lowering methods take &self (not &mut self)
+    /// but still need to emit diagnostics (same pattern as expr_ctype_cache).
+    pub(super) diagnostics: RefCell<DiagnosticEngine>,
 }
 
 impl Lowerer {
@@ -113,6 +122,7 @@ impl Lowerer {
         sema_functions: FxHashMap<String, FunctionInfo>,
         sema_expr_types: ExprTypeMap,
         sema_const_values: ConstMap,
+        diagnostics: DiagnosticEngine,
     ) -> Self {
         // Pre-populate known_functions from sema's function map.
         // This means the lowerer knows about all functions before the first pass,
@@ -146,6 +156,7 @@ impl Lowerer {
             next_local_label_scope: 0,
             asm_label_map: FxHashMap::default(),
             expr_ctype_cache: RefCell::new(FxHashMap::default()),
+            diagnostics: RefCell::new(diagnostics),
         }
     }
 
@@ -233,6 +244,20 @@ impl Lowerer {
     /// On all 64-bit targets: true (decomposed into two FP register args).
     pub(super) fn decomposes_complex_float(&self) -> bool {
         self.target != Target::I686
+    }
+
+    // --- Diagnostic helpers ---
+
+    /// Emit a warning diagnostic with a source span.
+    /// Uses RefCell for interior mutability so this can be called from &self methods.
+    pub(super) fn emit_warning(&self, message: impl Into<String>, span: Span) {
+        self.diagnostics.borrow_mut().warning(message, span);
+    }
+
+    /// Emit a warning diagnostic without a source span.
+    #[allow(dead_code)]
+    pub(super) fn emit_warning_no_span(&self, message: impl Into<String>) {
+        self.diagnostics.borrow_mut().warning_no_span(message);
     }
 
     /// Look up the shared type metadata for a variable by name.
@@ -356,7 +381,7 @@ impl Lowerer {
 
     // --- Top-level orchestration ---
 
-    pub fn lower(mut self, tu: &TranslationUnit) -> IrModule {
+    pub fn lower(mut self, tu: &TranslationUnit) -> (IrModule, DiagnosticEngine) {
         // Sema has already populated TypeContext with typedefs, enum constants,
         // struct/union layouts, function typedefs, and function pointer typedefs.
         // We only need to seed target-dependent builtin typedefs (va_list, size_t, etc.)
@@ -573,7 +598,7 @@ impl Lowerer {
                 }
             }
         }
-        self.module
+        (self.module, self.diagnostics.into_inner())
     }
 
     /// Register function metadata (return type, param types, variadic, sret) for

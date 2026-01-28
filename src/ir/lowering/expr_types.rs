@@ -1696,7 +1696,10 @@ impl Lowerer {
                 if let Some(ctype) = self.get_expr_ctype_with_scope(expr, scope) {
                     return Self::ctype_to_type_spec(&ctype);
                 }
-                // TODO: report diagnostic for unresolved typeof expression
+                self.emit_warning(
+                    "could not resolve type of 'typeof' expression; defaulting to 'int'",
+                    expr.span(),
+                );
                 TypeSpecifier::Int // ultimate fallback
             }
             TypeSpecifier::TypeofType(inner) => {

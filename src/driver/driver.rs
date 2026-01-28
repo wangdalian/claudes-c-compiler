@@ -834,8 +834,9 @@ impl Driver {
             sema_result.functions,
             sema_result.expr_types,
             sema_result.const_values,
+            diagnostics,
         );
-        let mut module = lowerer.lower(&ast);
+        let (mut module, diagnostics) = lowerer.lower(&ast);
 
         // Apply #pragma weak directives from the preprocessor.
         for (symbol, target) in &preprocessor.weak_pragmas {
@@ -857,6 +858,16 @@ impl Driver {
         }
 
         if time_phases { eprintln!("[TIME] lowering: {:.3}s ({} functions)", t4.elapsed().as_secs_f64(), module.functions.len()); }
+
+        // Check for errors emitted during lowering (e.g., unresolved types, invalid constructs)
+        if diagnostics.has_errors() {
+            return Err(format!("{} error(s) during IR lowering", diagnostics.error_count()));
+        }
+
+        // Log diagnostic summary if there were any warnings during lowering
+        if self.verbose && diagnostics.warning_count() > 0 {
+            eprintln!("{} warning(s) during lowering", diagnostics.warning_count());
+        }
 
         if self.verbose {
             eprintln!("Lowered to {} IR functions", module.functions.len());

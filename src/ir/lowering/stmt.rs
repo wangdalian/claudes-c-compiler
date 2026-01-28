@@ -71,9 +71,17 @@ impl Lowerer {
                         if let Some(ctype) = self.get_expr_ctype(init_expr) {
                             Self::ctype_to_type_spec(&ctype)
                         } else {
+                            self.emit_warning(
+                                "could not infer type for '__auto_type'; defaulting to 'int'",
+                                init_expr.span(),
+                            );
                             TypeSpecifier::Int // fallback
                         }
                     } else {
+                        self.emit_warning(
+                            "'__auto_type' requires an initializer; defaulting to 'int'",
+                            decl.span,
+                        );
                         TypeSpecifier::Int // fallback: no initializer
                     }
                 } else {

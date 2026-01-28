@@ -102,6 +102,10 @@ impl Lowerer {
                 if let Some(ctype) = ctype {
                     Self::ctype_to_type_spec(&ctype)
                 } else {
+                    self.emit_warning(
+                        "could not resolve type of 'typeof' expression; defaulting to 'int'",
+                        expr.span(),
+                    );
                     TypeSpecifier::Int // fallback
                 }
             }

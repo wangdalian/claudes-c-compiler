@@ -31,19 +31,33 @@ COMPLETED (2026-01-28):
   "note: expression has type 'Foo'" with span pointing to the expression
 - Removed #[allow(dead_code)] from Diagnostic::with_note() (now in active use)
 
+COMPLETED (2026-01-28):
+- Wired DiagnosticEngine into the IR lowering phase:
+  - Added DiagnosticEngine field (RefCell-wrapped) to Lowerer struct
+  - Driver threads DiagnosticEngine: parser -> sema -> lowerer pipeline
+  - Lowerer::lower() returns (IrModule, DiagnosticEngine) tuple
+  - Driver checks for lowering errors after IR generation
+  - Added emit_warning() helper using RefCell for interior mutability
+    (many lowering methods take &self, same pattern as expr_ctype_cache)
+  - Added diagnostics for unresolved typeof expressions (was a TODO)
+  - Added diagnostics for __auto_type inference failures
+  - All diagnostics include source spans for GCC-compatible location output
+
 REMAINING FOLLOW-UPS:
 1. Add spans to preprocessor errors (#error directives)
-2. Wire DiagnosticEngine into IR lowering phase (standalone eprintln! with no buffering)
-3. Add more WarningKind categories as compiler implements more warnings
+2. Add more WarningKind categories as compiler implements more warnings
    (UnusedVariable, ReturnType, SignCompare, ImplicitConversion, etc.)
-4. Add Display impl for CType to show user-friendly type names in diagnostics
+3. Add Display impl for CType to show user-friendly type names in diagnostics
    (currently uses Debug formatting which shows e.g. "Double" instead of "double")
-5. Add more "note:" follow-ups: "previous declaration was here", "did you mean to include <header>?"
+4. Add more "note:" follow-ups: "previous declaration was here", "did you mean to include <header>?"
+5. Add more lowering diagnostics: unresolved lvalue in assignments, unresolved typedefs,
+   vector type mismatches in compound assignment
 
 Key files:
 - src/common/error.rs (DiagnosticEngine, Diagnostic, Severity, with_note)
 - src/common/source.rs (SourceManager with line map, get_source_line for snippets)
 - src/frontend/parser/parser.rs (uses emit_error/emit_warning)
 - src/frontend/sema/sema.rs (uses diagnostics.error/warning_with_kind with spans)
+- src/ir/lowering/lowering.rs (uses RefCell<DiagnosticEngine> for &self methods)
 - src/frontend/preprocessor/preprocessor.rs (collects errors and warnings Vecs)
 - src/driver/driver.rs (creates and threads DiagnosticEngine through phases)
