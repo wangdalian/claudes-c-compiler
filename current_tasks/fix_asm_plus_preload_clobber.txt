@@ -1,0 +1,19 @@
+Fix inline asm "+" constraint preload clobbering input register value
+
+Bug: In the shared inline_asm.rs backend, the preload_readwrite_output() call at
+Phase 2 (lines 618-629) loads from the output pointer into the same register that
+was already correctly loaded by the synthetic "+" input's load_input_to_reg() call.
+
+After commit 9c5dc14 (which created temporary allocas for register outputs to enable
+mem2reg promotion), the output pointer for non-memory outputs is now an uninitialized
+temp alloca. The preload overwrites the register with garbage, causing:
+- x86 kernel boot triple fault (native_write_cr4 writes garbage to CR4)
+- musl libc_start_main crash (stage2 function pointer clobbered)
+- ~392 inline asm test failures
+- libsodium sign/box crypto failures
+- mbedtls ECP failures
+
+Fix: Remove the preload_readwrite_output block entirely, since the synthetic "+"
+inputs (created during IR lowering) already handle loading the correct current value
+into the register via load_input_to_reg(). The preload was always redundant (before
+the RISC-V fix it loaded the same value; after the fix it loads garbage).
