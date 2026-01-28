@@ -1,0 +1,26 @@
+Task: Fix i686 sret calling convention (ret $4 / stack cleanup)
+
+Status: in_progress
+
+Problem:
+On i386 SysV ABI, when a function returns a struct via hidden pointer (sret),
+the callee should do `ret $4` to pop the hidden pointer argument, and the caller
+should account for this by subtracting 4 from its stack cleanup.
+
+Currently, our i686 backend:
+1. Callee always emits `ret` instead of `ret $4` for sret functions
+2. Caller always cleans up the full stack_arg_space without subtracting 4
+
+This causes a stack pointer drift of 4 bytes per sret call. When calling
+external sret functions (like catan from libm), the callee does `ret $4`
+but our caller still cleans up the full amount, leading to ESP corruption
+and segfaults in loops.
+
+Fix:
+1. In emit_epilogue_and_ret: emit `ret $4` when the function uses sret
+2. In emit_call_cleanup: subtract 4 from cleanup when calling an sret function
+3. Thread the sret information through emit_call so emit_call_cleanup knows about it
+
+Files to modify:
+- src/backend/i686/codegen/codegen.rs (emit_call_cleanup, emit_epilogue_and_ret)
+- src/backend/traits.rs (emit_call signature to pass sret info)
