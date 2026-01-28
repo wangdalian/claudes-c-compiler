@@ -1,0 +1,22 @@
+Fix over-aligned alloca with inline asm "m" (memory) constraint
+
+Status: in_progress
+
+Problem:
+When a local variable has __attribute__((aligned(32))) or higher, the compiler
+allocates extra space in the stack slot and computes the aligned address at runtime
+using leaq + addq + andq. This works correctly for register "r" constraints and
+normal codegen accesses. However, for inline assembly "m" (memory) constraints,
+the code in setup_operand_metadata() emits the raw stack slot offset (e.g., -64(%rbp))
+without the runtime alignment fixup. This means vmovdqa and similar alignment-sensitive
+instructions receive an unaligned address and crash with SIGSEGV.
+
+Fix:
+In setup_operand_metadata(), when an alloca has over-alignment (> 16 bytes), compute
+the aligned address into a scratch register and use indirect addressing (e.g., (%rcx))
+instead of the raw rbp-relative offset.
+
+This fixes ~10 AVX2 inline asm tests that all crash with segfault.
+
+Files to modify:
+- src/backend/x86/codegen/asm_emitter.rs (setup_operand_metadata)
