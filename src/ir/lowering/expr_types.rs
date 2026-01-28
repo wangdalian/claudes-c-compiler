@@ -316,9 +316,6 @@ impl Lowerer {
             | "__builtin_popcount" | "__builtin_popcountl" | "__builtin_popcountll"
             | "__builtin_parity" | "__builtin_parityl" | "__builtin_parityll"
             | "__builtin_ffs" | "__builtin_ffsl" | "__builtin_ffsll" => Some(IrType::I32),
-            // bswap16/32 return int (C integer promotion), bswap64 returns uint64_t
-            "__builtin_bswap16" | "__builtin_bswap32" => Some(IrType::I32),
-            "__builtin_bswap64" => Some(IrType::U64),
             // Memory/string comparison builtins return int
             "__builtin_memcmp" | "__builtin_strcmp" | "__builtin_strncmp" => Some(IrType::I32),
             // I/O builtins return int
