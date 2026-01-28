@@ -87,7 +87,7 @@ and PostgreSQL.
   operand substitution and register constraints is supported. The
   `__attribute__((fastcall))` calling convention is supported (first two
   DWORD int/ptr args in ECX/EDX, callee cleans stack). libffi builds and
-  passes call tests; closure tests have a pre-existing issue.
+  passes all tests including closures.
 
 ## Architecture
 

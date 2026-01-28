@@ -6,7 +6,8 @@ Current status:
 - Unit tests: 99.9% pass - up from 99.7%
 - Projects passing: 9/15 (zlib, lua, libpng, jq, libjpeg, libuv, redis, musl, tcc*)
   * tcc build succeeds; test suite fails due to missing i686 CRT/headers (same as GCC)
-- Projects failing: libsodium, mquickjs, sqlite, mbedtls, libffi, postgres
+- Projects failing: libsodium, mquickjs, sqlite, mbedtls, postgres
+- Projects fixed this round: libffi (was crashing due to __CET__ mismatch)
 
 Fixed in latest round (bitfield I32 ops fix):
 - Bitfield extract/store operations used hardcoded IrType::I64 for all shift/mask ops
@@ -98,9 +99,12 @@ Known remaining issues:
    - Needs SSE2 intrinsic: _mm_shuffle_epi32 -> __builtin_ia32_pshufd
    - Used in AES-NI key schedule (aesni_set_rk_128/192/256)
 
-5. libffi: Build succeeds, 0/6 tests pass (all SIGSEGV)
-   - All FFI call tests crash (call_int, call_double, call_pointer, etc.)
-   - Likely i686 ABI/calling convention issue in libffi's closure/trampoline code
+5. libffi: FIXED - all 6/6 tests pass (including closures)
+   - Root cause: __CET__ was defined for i686 but i686-linux-gnu-gcc -m32
+     (used for assembling .S files) does NOT define __CET__. This caused a
+     mismatch where C code expected ENDBR_PRESENT (44-byte trampolines) but
+     assembly produced non-ENDBR trampolines (40 bytes).
+   - Fix: undefine __CET__ for i686 target in predefined_macros.rs
 
 6. postgres: Build fails - linker error (R_386_GOTOFF relocation / shared lib issue)
    - dict_snowball.so link fails

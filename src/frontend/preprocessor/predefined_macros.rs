@@ -404,6 +404,13 @@ impl Preprocessor {
                 self.macros.undefine("__LP64__");
                 self.macros.undefine("_LP64");
                 self.macros.undefine("__SIZEOF_INT128__");
+                // i686-linux-gnu-gcc -m32 does NOT define __CET__ (CET is
+                // disabled by -m32).  We must match this because .S assembly
+                // files are assembled by GCC, and if the C code expects
+                // ENDBR_PRESENT (44-byte trampolines) but the assembly
+                // produces non-ENDBR trampolines (40 bytes), the mismatch
+                // causes crashes (e.g. libffi closures).
+                self.macros.undefine("__CET__");
                 // Define i686/i386 macros
                 self.define_simple_macro("__i386__", "1");
                 self.define_simple_macro("__i386", "1");
