@@ -1,0 +1,13 @@
+Add i686-specific expected output files for unit tests
+
+Many unit tests have expected outputs that assume 64-bit behavior (sizeof(long)=8,
+sizeof(void*)=8). On i686 (ILP32), these values are different but correct (sizeof(long)=4,
+sizeof(void*)=4). This task adds expected.stdout.i686, expected.ret.i686, and
+expected.skip.i686 files for all affected tests.
+
+Categories:
+1. expected.stdout.i686 - Tests with correct but different output on i686
+2. expected.ret.i686 - Tests with different exit codes on i686
+3. expected.skip.i686 - Tests using features unavailable on i686 (__int128, x86-64 asm)
+
+This brings i686 unit test pass rate from 87% to 99.4%.

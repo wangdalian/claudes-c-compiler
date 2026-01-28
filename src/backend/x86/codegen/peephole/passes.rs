@@ -1963,4 +1963,18 @@ mod tests {
         assert!(result.contains("-16(%rbp), %rax"),
             "must NOT forward rax across sete %%al (rax clobbered): {}", result);
     }
+
+    #[test]
+    fn test_syscall_invalidates_mappings() {
+        // syscall clobbers rcx (return RIP) and r11 (saved RFLAGS).
+        // Store forwarding must not forward rcx across a syscall instruction.
+        let asm = [
+            "    movq %rcx, -16(%rbp)",    // store rcx to stack slot
+            "    syscall",                 // clobbers rcx and r11
+            "    movq -16(%rbp), %rcx",    // must load from stack, NOT forward
+        ].join("\n") + "\n";
+        let result = peephole_optimize(asm);
+        assert!(result.contains("-16(%rbp), %rcx"),
+            "must NOT forward rcx across syscall (rcx clobbered): {}", result);
+    }
 }

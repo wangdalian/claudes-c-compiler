@@ -870,17 +870,24 @@ pub(super) fn has_indirect_memory_access(s: &str) -> bool {
 
     // Privileged/special x86 instructions that implicitly clobber multiple
     // registers not visible in the instruction text:
-    //   rdmsr  -> reads ecx, writes eax:edx
-    //   wrmsr  -> reads ecx:eax:edx (all inputs, but may affect state)
-    //   cpuid  -> reads eax, writes eax:ebx:ecx:edx
-    //   rdtsc  -> writes eax:edx
-    //   rdtscp -> writes eax:edx:ecx
-    //   xgetbv -> reads ecx, writes eax:edx
+    //   rdmsr   -> reads ecx, writes eax:edx
+    //   wrmsr   -> reads ecx:eax:edx (all inputs, but may affect state)
+    //   cpuid   -> reads eax, writes eax:ebx:ecx:edx
+    //   rdtsc   -> writes eax:edx
+    //   rdtscp  -> writes eax:edx:ecx
+    //   xgetbv  -> reads ecx, writes eax:edx
+    //   syscall -> writes rcx (return RIP) and r11 (saved RFLAGS)
+    //   sysenter -> modifies rsp, writes rip (OS-dependent register effects)
+    //   int     -> software interrupt; clobbers varies by handler (treat conservatively)
+    //   iret    -> restores rip, cs, rflags, rsp, ss from stack
     // Treat these as barriers for store forwarding since parse_dest_reg_fast
     // cannot detect their implicit register writes.
     if trimmed.starts_with("rdmsr") || trimmed.starts_with("wrmsr")
         || trimmed.starts_with("cpuid") || trimmed.starts_with("rdtsc")
         || trimmed.starts_with("xgetbv")
+        || trimmed.starts_with("syscall") || trimmed.starts_with("sysenter")
+        || trimmed.starts_with("int ") || trimmed.starts_with("int\t")
+        || trimmed.starts_with("iret")
     {
         return true;
     }
