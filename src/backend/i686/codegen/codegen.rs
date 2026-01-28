@@ -1456,40 +1456,25 @@ impl ArchCodegen for I686Codegen {
             CastKind::UnsignedToFloat { to_f64: true, from_ty } => {
                 let from_u64 = from_ty == IrType::U64;
                 // unsigned → F64
-                self.operand_to_eax(src);
                 if from_u64 {
-                    // U64: fildq treats the value as signed, so values >= 2^63
-                    // (i.e. bit 63 set) would produce a negative result. We must
-                    // detect this and use the shift-and-double trick instead.
+                    // U64 → F64: fildq treats the value as signed, so values
+                    // >= 2^63 need correction by adding float constant 2^64.
                     self.emit_load_acc_pair(src);
                     self.state.emit("    pushl %edx");
                     self.state.emit("    pushl %eax");
-                    self.state.emit("    testl %edx, %edx");
-                    let big_label = self.state.fresh_label("u64_f64_big");
-                    let done_label = self.state.fresh_label("u64_f64_done");
-                    self.state.out.emit_jcc_label("    js", &big_label);
-                    // Positive (< 2^63): fildq works directly
                     self.state.emit("    fildq (%esp)");
-                    self.state.out.emit_jmp_label(&done_label);
-                    self.state.out.emit_named_label(&big_label);
-                    // Bit 63 set: right-shift by 1, OR in the lowest bit
-                    // of the original value to preserve rounding, convert as
-                    // signed, then double.
-                    self.state.emit("    movl (%esp), %ecx");  // save original low for bit 0
-                    self.state.emit("    movl (%esp), %eax");
-                    self.state.emit("    movl 4(%esp), %edx");
-                    self.state.emit("    shrdl $1, %edx, %eax");
-                    self.state.emit("    shrl $1, %edx");
-                    self.state.emit("    andl $1, %ecx");
-                    self.state.emit("    orl %ecx, %eax");
-                    self.state.emit("    movl %eax, (%esp)");
-                    self.state.emit("    movl %edx, 4(%esp)");
-                    self.state.emit("    fildq (%esp)");
-                    self.state.emit("    fadd %st(0), %st(0)");
-                    self.state.out.emit_named_label(&done_label);
                     self.state.emit("    addl $8, %esp");
+                    self.state.emit("    testl %edx, %edx");
+                    let done_label = self.state.fresh_label("u64_f64_done");
+                    self.state.out.emit_jcc_label("    jns", &done_label);
+                    // High bit set: add 2^64 (float 0x5F800000) to fix sign
+                    self.state.emit("    pushl $0x5F800000");
+                    self.state.emit("    fadds (%esp)");
+                    self.state.emit("    addl $4, %esp");
+                    self.state.out.emit_named_label(&done_label);
                 } else {
-                    // U32: handle high-bit-set values
+                    // U8/U16/U32 → F64: handle high-bit-set U32 values
+                    self.operand_to_eax(src);
                     let big_label = self.state.fresh_label("u2f_big");
                     let done_label = self.state.fresh_label("u2f_done");
                     self.state.emit("    testl %eax, %eax");
@@ -1640,35 +1625,26 @@ impl ArchCodegen for I686Codegen {
             }
             CastKind::UnsignedToF128 { from_ty: src_ty } => {
                 if src_ty == IrType::U64 {
-                    // U64 → F128: fildq treats the value as signed, so values
-                    // >= 2^63 need the shift-and-double trick.
+                    // U64 → F128 (x87 80-bit long double):
+                    // fildq treats the value as signed. For values >= 2^63
+                    // (high bit set), fildq gives a negative result. We fix
+                    // this by adding 2^64 (as a float constant 0x5F800000).
+                    // This is exact because x87 extended precision has a
+                    // 64-bit significand, enough for all uint64 values.
                     self.emit_load_acc_pair(src);
                     self.state.emit("    pushl %edx");
                     self.state.emit("    pushl %eax");
-                    self.state.emit("    testl %edx, %edx");
-                    let big_label = self.state.fresh_label("u64_f128_big");
-                    let done_label = self.state.fresh_label("u64_f128_done");
-                    self.state.out.emit_jcc_label("    js", &big_label);
-                    // Positive (< 2^63): fildq works directly
                     self.state.emit("    fildq (%esp)");
-                    self.state.out.emit_jmp_label(&done_label);
-                    self.state.out.emit_named_label(&big_label);
-                    // Bit 63 set: right-shift by 1, OR in the lowest bit of
-                    // the original value to preserve rounding, convert, then
-                    // double to recover the unsigned value.
-                    self.state.emit("    movl (%esp), %ecx");  // save original low for bit 0
-                    self.state.emit("    movl (%esp), %eax");
-                    self.state.emit("    movl 4(%esp), %edx");
-                    self.state.emit("    shrdl $1, %edx, %eax");
-                    self.state.emit("    shrl $1, %edx");
-                    self.state.emit("    andl $1, %ecx");
-                    self.state.emit("    orl %ecx, %eax");
-                    self.state.emit("    movl %eax, (%esp)");
-                    self.state.emit("    movl %edx, 4(%esp)");
-                    self.state.emit("    fildq (%esp)");
-                    self.state.emit("    fadd %st(0), %st(0)");
-                    self.state.out.emit_named_label(&done_label);
                     self.state.emit("    addl $8, %esp");
+                    self.state.emit("    testl %edx, %edx");
+                    let done_label = self.state.fresh_label("u64_f128_done");
+                    self.state.out.emit_jcc_label("    jns", &done_label);
+                    // High bit set: add 2^64 to compensate for signed interpretation.
+                    // Float constant 0x5F800000 = 2^64 = 18446744073709551616.0f
+                    self.state.emit("    pushl $0x5F800000");
+                    self.state.emit("    fadds (%esp)");
+                    self.state.emit("    addl $4, %esp");
+                    self.state.out.emit_named_label(&done_label);
                 } else {
                     // U8/U16/U32 → F128: handle high-bit-set U32 values
                     self.operand_to_eax(src);
@@ -1752,33 +1728,21 @@ impl ArchCodegen for I686Codegen {
                 self.emit_load_acc_pair(src);
                 self.state.emit("    pushl %edx");
                 self.state.emit("    pushl %eax");
-                // Check if signed bit is set (value >= 2^63)
+                self.state.emit("    fildq (%esp)");
+                self.state.emit("    addl $8, %esp");
+                // If high bit was set, fildq gave a negative result; add 2^64
                 self.state.emit("    testl %edx, %edx");
-                let big_label = self.state.fresh_label("u64_f32_big");
                 let done_label = self.state.fresh_label("u64_f32_done");
-                self.state.out.emit_jcc_label("    js", &big_label);
-                // Positive: fildq works directly
-                self.state.emit("    fildq (%esp)");
-                self.state.out.emit_jmp_label(&done_label);
-                self.state.out.emit_named_label(&big_label);
-                // Negative signed: fildq gives wrong result, adjust.
-                // Compute (val >> 1) | (val & 1), convert, then double.
-                // The OR preserves the low bit for rounding.
-                self.state.emit("    movl (%esp), %ecx");  // save original low for bit 0
-                self.state.emit("    movl (%esp), %eax");
-                self.state.emit("    movl 4(%esp), %edx");
-                self.state.emit("    shrdl $1, %edx, %eax");
-                self.state.emit("    shrl $1, %edx");
-                self.state.emit("    andl $1, %ecx");
-                self.state.emit("    orl %ecx, %eax");
-                self.state.emit("    movl %eax, (%esp)");
-                self.state.emit("    movl %edx, 4(%esp)");
-                self.state.emit("    fildq (%esp)");
-                self.state.emit("    fadd %st(0), %st(0)");
+                self.state.out.emit_jcc_label("    jns", &done_label);
+                // Float constant 0x5F800000 = 2^64
+                self.state.emit("    pushl $0x5F800000");
+                self.state.emit("    fadds (%esp)");
+                self.state.emit("    addl $4, %esp");
                 self.state.out.emit_named_label(&done_label);
+                self.state.emit("    subl $4, %esp");
                 self.state.emit("    fstps (%esp)");
                 self.state.emit("    movl (%esp), %eax");
-                self.state.emit("    addl $8, %esp");
+                self.state.emit("    addl $4, %esp");
                 self.state.reg_cache.invalidate_acc();
                 self.store_eax_to(dest);
             }
