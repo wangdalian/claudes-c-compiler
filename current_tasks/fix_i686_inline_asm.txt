@@ -1,0 +1,23 @@
+Task: Implement proper inline assembly support for i686 backend
+
+Problem:
+The i686 backend's emit_inline_asm is a stub that outputs the template verbatim
+without any operand substitution. This causes musl build failures on i686 because:
+1. %% in templates is not converted to literal % (outputs %%ax instead of %ax)
+2. %0, %1 etc. are not replaced with actual operands (outputs %0 literally)
+3. No register setup for inputs/outputs (constraints like "=a", "=m", "+t", "u" not handled)
+
+Solution:
+Implement the InlineAsmEmitter trait for I686Codegen, adapting the x86-64
+implementation for 32-bit registers:
+- Create asm_emitter.rs: constraint classification, register loading/storing
+- Create inline_asm.rs: template operand substitution with 32-bit register names
+- Wire emit_inline_asm to call emit_inline_asm_common
+
+Key differences from x86-64:
+- 32-bit registers (eax, ebx, ecx, edx, esi, edi) instead of 64-bit
+- No r8-r15 registers
+- Stack-based parameter passing (no rsi/rdi for args)
+- Different scratch register set
+- ebp-relative addressing instead of rbp
+- movl/leal instead of movq/leaq
