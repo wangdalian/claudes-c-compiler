@@ -1134,13 +1134,12 @@ pub fn is_i128_type(ty: IrType) -> bool {
 
 /// Check if a type is "wide" — needs register-pair operations on the current target.
 ///
-/// Currently only I128/U128 on all targets. On i686, I64/U64 are intentionally
-/// NOT included here because the IR uses I64 as the canonical widened arithmetic
-/// type for all integer ops (even for `int` variables). I64/U64 BinOp/Cmp use
-/// regular 32-bit paths (only low 32 bits matter since results get narrowed back).
-/// The i686 backend handles true `long long` at ABI boundaries: emit_load/emit_store
-/// for 8-byte memory access, emit_cast for I64<->I32, emit_return/emit_store_params
-/// for long long returns and parameters.
+/// Only I128/U128 on all targets. On i686, I64/U64 BinOps are handled via
+/// the i686-specific `emit_binop`/`emit_cmp`/`emit_unaryop` overrides which
+/// route them through register-pair arithmetic. We don't include I64/U64 here
+/// because the framework-level effects (disabling GEP folding, fused branches,
+/// cache invalidation) would cause excessive overhead on the common case of
+/// widened I32 arithmetic.
 pub fn is_wide_int_type(ty: IrType) -> bool {
     matches!(ty, IrType::I128 | IrType::U128)
 }

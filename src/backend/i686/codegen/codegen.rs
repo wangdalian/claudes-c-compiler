@@ -813,12 +813,33 @@ impl ArchCodegen for I686Codegen {
         }
     }
 
+    /// Override emit_binop to route I64/U64 through register-pair (eax:edx) arithmetic.
+    /// On i686, I64/U64 are "wide" types that need the same pair-based arithmetic
+    /// as I128/U128 on 64-bit targets. The emit_i128_* methods on i686 implement
+    /// 64-bit operations using 32-bit register pairs.
+    fn emit_binop(&mut self, dest: &Value, op: IrBinOp, lhs: &Operand, rhs: &Operand, ty: IrType) {
+        if matches!(ty, IrType::I64 | IrType::U64) {
+            self.emit_i128_binop(dest, op, lhs, rhs);
+            self.state.reg_cache.invalidate_all();
+            return;
+        }
+        if crate::backend::generation::is_i128_type(ty) {
+            self.emit_i128_binop(dest, op, lhs, rhs);
+            return;
+        }
+        if ty.is_float() {
+            let float_op = crate::backend::cast::classify_float_binop(op)
+                .unwrap_or_else(|| panic!("unsupported float binop: {:?} on type {:?}", op, ty));
+            self.emit_float_binop(dest, float_op, lhs, rhs, ty);
+            return;
+        }
+        self.emit_int_binop(dest, op, lhs, rhs, ty);
+    }
+
     fn emit_int_binop(&mut self, dest: &Value, op: IrBinOp, lhs: &Operand, rhs: &Operand, _ty: IrType) {
-        // On i686, I64/U64 BinOps arrive here and execute as 32-bit operations.
-        // This is correct because the IR widens ALL integer arithmetic to I64
-        // (even for `int` variables) then narrows back to I32 via Cast. Only the
-        // low 32 bits matter for the arithmetic result. True `long long` values
-        // are handled at the ABI boundary (load/store/params/returns).
+        // On i686, only I32/U32 (and smaller) BinOps reach here now.
+        // I64/U64 are intercepted by emit_binop above and routed to
+        // the register-pair (eax:edx) arithmetic in emit_i128_binop.
 
         // Immediate optimization for ALU ops
         if matches!(op, IrBinOp::Add | IrBinOp::Sub | IrBinOp::And | IrBinOp::Or | IrBinOp::Xor) {
@@ -1003,7 +1024,10 @@ impl ArchCodegen for I686Codegen {
                 }
             }
         }
-        // Default path for non-F128 copies
+        // Default path for non-F128 copies (32-bit).
+        // Most I64 values on i686 are widened I32 arithmetic where only
+        // the low 32 bits matter. True long long values are handled
+        // at load/store boundaries where full 8-byte operations are used.
         self.emit_load_operand(src);
         self.emit_store_result(dest);
     }
@@ -1023,16 +1047,25 @@ impl ArchCodegen for I686Codegen {
         match classify_cast(from_ty, to_ty) {
             // --- Casts where F64 is the destination (result needs 8-byte slot) ---
             CastKind::SignedToFloat { to_f64: true, from_ty: src_ty } => {
-                // int → F64: load int into eax, convert via x87, store 8-byte result
-                self.operand_to_eax(src);
-                match src_ty {
-                    IrType::I8 => self.state.emit("    movsbl %al, %eax"),
-                    IrType::I16 => self.state.emit("    movswl %ax, %eax"),
-                    _ => {}
+                // int → F64: load int, convert via x87, store 8-byte result
+                if src_ty == IrType::I64 {
+                    // I64 → F64: load full 64-bit value, use fildq
+                    self.emit_load_acc_pair(src);
+                    self.state.emit("    pushl %edx");
+                    self.state.emit("    pushl %eax");
+                    self.state.emit("    fildq (%esp)");
+                    self.state.emit("    addl $8, %esp");
+                } else {
+                    self.operand_to_eax(src);
+                    match src_ty {
+                        IrType::I8 => self.state.emit("    movsbl %al, %eax"),
+                        IrType::I16 => self.state.emit("    movswl %ax, %eax"),
+                        _ => {}
+                    }
+                    self.state.emit("    pushl %eax");
+                    self.state.emit("    fildl (%esp)");
+                    self.state.emit("    addl $4, %esp");
                 }
-                self.state.emit("    pushl %eax");
-                self.state.emit("    fildl (%esp)");
-                self.state.emit("    addl $4, %esp");
                 // st(0) = F64 result, store to dest's 8-byte slot
                 self.emit_f64_store_from_x87(dest);
                 self.state.reg_cache.invalidate_acc();
@@ -1082,14 +1115,24 @@ impl ArchCodegen for I686Codegen {
 
             // --- Casts where F64 is the source (need to load 8-byte value) ---
             CastKind::FloatToSigned { from_f64: true } => {
-                // F64 → signed int: load full 8-byte F64, convert via x87 fisttpl
                 self.emit_f64_load_to_x87(src);
-                self.state.emit("    subl $4, %esp");
-                self.state.emit("    fisttpl (%esp)");
-                self.state.emit("    movl (%esp), %eax");
-                self.state.emit("    addl $4, %esp");
-                self.state.reg_cache.invalidate_acc();
-                self.store_eax_to(dest);
+                if to_ty == IrType::I64 {
+                    // F64 → I64: use fisttpq for full 64-bit conversion
+                    self.state.emit("    subl $8, %esp");
+                    self.state.emit("    fisttpq (%esp)");
+                    self.state.emit("    movl (%esp), %eax");
+                    self.state.emit("    movl 4(%esp), %edx");
+                    self.state.emit("    addl $8, %esp");
+                    self.emit_store_acc_pair(dest);
+                } else {
+                    // F64 → I32/I16/I8: use fisttpl for 32-bit conversion
+                    self.state.emit("    subl $4, %esp");
+                    self.state.emit("    fisttpl (%esp)");
+                    self.state.emit("    movl (%esp), %eax");
+                    self.state.emit("    addl $4, %esp");
+                    self.state.reg_cache.invalidate_acc();
+                    self.store_eax_to(dest);
+                }
             }
             CastKind::FloatToUnsigned { from_f64: true, to_u64 } => {
                 if to_u64 {
@@ -1220,6 +1263,107 @@ impl ArchCodegen for I686Codegen {
                 self.store_eax_to(dest);
             }
 
+            // --- I64 → F32: use x87 fildq for full 64-bit precision ---
+            CastKind::SignedToFloat { to_f64: false, from_ty: IrType::I64 } => {
+                self.emit_load_acc_pair(src);
+                self.state.emit("    pushl %edx");
+                self.state.emit("    pushl %eax");
+                self.state.emit("    fildq (%esp)");
+                self.state.emit("    fstps (%esp)");
+                self.state.emit("    movl (%esp), %eax");
+                self.state.emit("    addl $8, %esp");
+                self.state.reg_cache.invalidate_acc();
+                self.store_eax_to(dest);
+            }
+            // --- U64 → F32: use x87 with unsigned handling ---
+            CastKind::UnsignedToFloat { to_f64: false, from_u64: true } => {
+                self.emit_load_acc_pair(src);
+                self.state.emit("    pushl %edx");
+                self.state.emit("    pushl %eax");
+                // Check if signed bit is set (value >= 2^63)
+                self.state.emit("    testl %edx, %edx");
+                let big_label = self.state.fresh_label("u64_f32_big");
+                let done_label = self.state.fresh_label("u64_f32_done");
+                self.state.out.emit_jcc_label("    js", &big_label);
+                // Positive: fildq works directly
+                self.state.emit("    fildq (%esp)");
+                self.state.out.emit_jmp_label(&done_label);
+                self.state.out.emit_named_label(&big_label);
+                // Negative signed: fildq gives wrong result, adjust
+                // Split into two halves: (val >> 1) and (val & 1)
+                self.state.emit("    movl (%esp), %eax");
+                self.state.emit("    movl 4(%esp), %edx");
+                self.state.emit("    shrdl $1, %edx, %eax");
+                self.state.emit("    shrl $1, %edx");
+                self.state.emit("    movl 4(%esp), %ecx");
+                self.state.emit("    andl $1, %ecx");
+                self.state.emit("    orl %ecx, %eax");
+                self.state.emit("    movl %eax, (%esp)");
+                self.state.emit("    movl %edx, 4(%esp)");
+                self.state.emit("    fildq (%esp)");
+                self.state.emit("    fadd %st(0), %st(0)");
+                self.state.out.emit_named_label(&done_label);
+                self.state.emit("    fstps (%esp)");
+                self.state.emit("    movl (%esp), %eax");
+                self.state.emit("    addl $8, %esp");
+                self.state.reg_cache.invalidate_acc();
+                self.store_eax_to(dest);
+            }
+            // --- F32 → I64: use x87 fisttpq ---
+            CastKind::FloatToSigned { from_f64: false } if to_ty == IrType::I64 => {
+                self.operand_to_eax(src);
+                self.state.emit("    subl $8, %esp");
+                self.state.emit("    movl %eax, (%esp)");
+                self.state.emit("    flds (%esp)");
+                self.state.emit("    fisttpq (%esp)");
+                self.state.emit("    movl (%esp), %eax");
+                self.state.emit("    movl 4(%esp), %edx");
+                self.state.emit("    addl $8, %esp");
+                self.emit_store_acc_pair(dest);
+                self.state.reg_cache.invalidate_all();
+            }
+            // --- F32 → U64: use x87 fisttpq ---
+            CastKind::FloatToUnsigned { from_f64: false, to_u64: true } => {
+                self.operand_to_eax(src);
+                self.state.emit("    subl $8, %esp");
+                self.state.emit("    movl %eax, (%esp)");
+                self.state.emit("    flds (%esp)");
+                self.state.emit("    fisttpq (%esp)");
+                self.state.emit("    movl (%esp), %eax");
+                self.state.emit("    movl 4(%esp), %edx");
+                self.state.emit("    addl $8, %esp");
+                self.emit_store_acc_pair(dest);
+                self.state.reg_cache.invalidate_all();
+            }
+
+            // --- Same-size cast between I64 and U64: copy all 8 bytes ---
+            CastKind::SignedToUnsignedSameSize { to_ty: IrType::U64 }
+            | CastKind::Noop if matches!((from_ty, to_ty), (IrType::I64, IrType::U64) | (IrType::U64, IrType::I64) | (IrType::I64, IrType::I64) | (IrType::U64, IrType::U64)) => {
+                self.emit_load_acc_pair(src);
+                self.emit_store_acc_pair(dest);
+                self.state.reg_cache.invalidate_all();
+            }
+
+            // --- Widening casts to I64/U64 need full 8-byte store ---
+            CastKind::IntWiden { .. } if matches!(to_ty, IrType::I64 | IrType::U64) => {
+                self.operand_to_eax(src);
+                self.emit_cast_instrs(from_ty, to_ty);
+                // Set high half: sign-extend for signed sources, zero-extend for unsigned
+                if from_ty.is_signed() {
+                    self.state.emit("    cltd"); // sign-extend eax into edx:eax
+                } else {
+                    self.state.emit("    xorl %edx, %edx");
+                }
+                self.emit_store_acc_pair(dest);
+                self.state.reg_cache.invalidate_all();
+            }
+            // --- I64/U64 narrowing to smaller types ---
+            CastKind::IntNarrow { .. } if matches!(from_ty, IrType::I64 | IrType::U64) => {
+                // Load only the low 32 bits (truncation)
+                self.operand_to_eax(src);
+                self.emit_cast_instrs(from_ty, to_ty);
+                self.store_eax_to(dest);
+            }
             // --- All other casts use the default path (emit_load_operand → eax → cast → store) ---
             _ => {
                 self.operand_to_eax(src);
@@ -1502,7 +1646,33 @@ impl ArchCodegen for I686Codegen {
         self.store_eax_to(dest);
     }
 
+    /// Override emit_cmp to route I64/U64 comparisons through register-pair path.
+    /// On i686, 64-bit comparisons need to compare both halves (high word first,
+    /// then low word if equal). The emit_i128_cmp methods implement this correctly.
+    fn emit_cmp(&mut self, dest: &Value, op: IrCmpOp, lhs: &Operand, rhs: &Operand, ty: IrType) {
+        if matches!(ty, IrType::I64 | IrType::U64) {
+            self.emit_i128_cmp(dest, op, lhs, rhs);
+            self.state.reg_cache.invalidate_all();
+            return;
+        }
+        if crate::backend::generation::is_i128_type(ty) {
+            self.emit_i128_cmp(dest, op, lhs, rhs);
+            return;
+        }
+        if ty == IrType::F128 {
+            self.emit_f128_cmp(dest, op, lhs, rhs);
+            return;
+        }
+        if ty.is_float() {
+            self.emit_float_cmp(dest, op, lhs, rhs, ty);
+            return;
+        }
+        self.emit_int_cmp(dest, op, lhs, rhs, ty);
+    }
+
     fn emit_int_cmp(&mut self, dest: &Value, op: IrCmpOp, lhs: &Operand, rhs: &Operand, _ty: IrType) {
+        // Only I32/U32 and smaller comparisons reach here now.
+        // I64/U64 comparisons are intercepted by emit_cmp above.
         self.operand_to_eax(lhs);
         self.operand_to_ecx(rhs);
         self.state.emit("    cmpl %ecx, %eax");
@@ -1557,9 +1727,26 @@ impl ArchCodegen for I686Codegen {
 
     // --- Unary operations ---
 
-    /// Override unary op to handle F64/F128 negation properly on i686.
-    /// The default path uses emit_load_operand which only gives 32 bits for F64.
+    /// Override unary op to handle I64/U64 and F64/F128 properly on i686.
+    /// I64/U64 need register-pair (eax:edx) operations for Neg/Not.
+    /// F64 needs x87 for negation since the accumulator is only 32 bits.
     fn emit_unaryop(&mut self, dest: &Value, op: IrUnaryOp, src: &Operand, ty: IrType) {
+        if matches!(ty, IrType::I64 | IrType::U64) {
+            if op == IrUnaryOp::IsConstant {
+                self.emit_load_operand(&Operand::Const(IrConst::I32(0)));
+                self.emit_store_result(dest);
+                return;
+            }
+            self.emit_load_acc_pair(src);
+            match op {
+                IrUnaryOp::Neg => self.emit_i128_neg(),
+                IrUnaryOp::Not => self.emit_i128_not(),
+                _ => {}
+            }
+            self.emit_store_acc_pair(dest);
+            self.state.reg_cache.invalidate_all();
+            return;
+        }
         if ty == IrType::F64 && op == IrUnaryOp::Neg {
             // F64 negation: load onto x87, negate, store back
             self.emit_f64_load_to_x87(src);
