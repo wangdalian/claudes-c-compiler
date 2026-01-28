@@ -139,6 +139,11 @@ pub(super) struct FunctionBuildState {
     /// The current source span, set before lowering each statement/expression.
     /// Emitted instructions inherit this span for debug info tracking.
     pub current_span: Span,
+    /// Whether this function is a candidate for inlining (always_inline, inline, or static).
+    /// Used by __builtin_constant_p lowering: in non-inline-candidate functions, non-constant
+    /// expressions resolve immediately to 0. In inline candidates, they emit IsConstant
+    /// instructions that can be resolved to 1 after inlining if the argument becomes constant.
+    pub is_inline_candidate: bool,
 }
 
 impl FunctionBuildState {
@@ -169,6 +174,7 @@ impl FunctionBuildState {
             param_alloca_values: Vec::new(),
             instr_spans: Vec::new(),
             current_span: Span::dummy(),
+            is_inline_candidate: false,
         }
     }
 

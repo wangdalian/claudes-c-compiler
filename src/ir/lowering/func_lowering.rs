@@ -41,6 +41,12 @@ impl Lowerer {
         // Clear get_expr_ctype memoization cache: results depend on
         // per-function state (local variables), so cannot span functions.
         self.expr_ctype_cache.borrow_mut().clear();
+        // Mark whether this function is an inline candidate. __builtin_constant_p
+        // in non-inline functions always resolves to 0 for non-constant expressions
+        // at lowering time. In inline candidates, it emits an IsConstant IR instruction
+        // that can be resolved to 1 after inlining if the parameter becomes constant.
+        self.func_mut().is_inline_candidate =
+            func.is_always_inline || func.is_inline || func.is_static;
         self.push_scope();
 
         // Step 1: Compute ABI-adjusted return type

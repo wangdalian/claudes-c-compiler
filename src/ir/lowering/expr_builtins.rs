@@ -388,7 +388,16 @@ impl Lowerer {
                     if self.eval_const_expr(arg).is_some() {
                         return Some(Operand::Const(IrConst::I32(1)));
                     }
-                    // Otherwise emit an IsConstant instruction to be resolved after optimization
+                    // In non-inline-candidate functions (not always_inline, inline, or static),
+                    // non-constant expressions always resolve to 0. Only inline candidates
+                    // need deferred resolution via IsConstant, because after inlining a
+                    // parameter may become constant (e.g., kernel's cpucap_is_possible pattern).
+                    if !self.func().is_inline_candidate {
+                        // Lower the argument expression for side effects, then return 0
+                        self.lower_expr(arg);
+                        return Some(Operand::Const(IrConst::I32(0)));
+                    }
+                    // Emit an IsConstant instruction to be resolved after optimization
                     let src = self.lower_expr(arg);
                     let src_ty = self.get_expr_type(arg);
                     let dest = self.fresh_value();

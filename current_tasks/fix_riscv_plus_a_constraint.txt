@@ -1,0 +1,28 @@
+Task: Fix RISC-V "+A" inline asm constraint providing value instead of address
+Status: in_progress
+Started: 2026-01-28
+
+Description:
+For RISC-V "+A" (read-write address) inline asm constraints used by atomic ops
+(amoand, amoor, amoxor, lr/sc), the synthetic input for the "+" read-write
+mechanism incorrectly emits a Load to get the current VALUE at the address,
+instead of providing the ADDRESS itself.
+
+The "+A" constraint means the inline asm template expects a register holding
+the memory address (formatted as "(reg)" for AMO instructions). When creating
+the synthetic input for "+", the code in stmt_asm.rs only checks
+constraint_is_memory_only() (which doesn't match "A"), so it falls through
+to the generic path that emits a Load instruction - loading the value from
+the memory location instead of keeping the address pointer.
+
+This causes the Linux kernel clear_bit/set_bit/test_and_clear_bit functions
+to crash: the amoand instruction uses the loaded FLAGS VALUE (e.g., 0x2000)
+as a memory ADDRESS, causing a store page fault.
+
+Root cause: mm/debug_vm_pgtable.c triggers kernel panic on RISC-V because
+flush_dcache_folio's clear_bit tries to atomically AND at address 0x2000
+(which is actually the PG_dcache_clean bit value, not an address).
+
+Fix: In stmt_asm.rs, check constraint_needs_address() (which covers both
+memory-only and "A" constraints) instead of just constraint_is_memory_only()
+when deciding whether to emit a Load for the "+A" synthetic input.
