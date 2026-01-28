@@ -1,0 +1,19 @@
+Task: Fix i686 _Complex long double imaginary part offset
+
+Status: in_progress
+
+Problem:
+On i686, long double is 12 bytes (80-bit x87 extended, padded to 12 for alignment).
+_Complex long double should be 24 bytes (2x12), with the imaginary part at offset 12.
+
+However, complex_component_size() in ir/lowering/complex.rs hardcodes 16 for
+ComplexLongDouble (correct for x86-64 where long double is 16 bytes, wrong for i686
+where it's 12 bytes). This causes:
+- Imaginary part stored at offset 16 instead of 12 (4 bytes of gap, losing data)
+- Wrong values read back for imaginary part
+- Affects all complex long double operations: init, return, argument passing
+
+Fix locations:
+1. ir/lowering/complex.rs:33 - complex_component_size() returns 16 → should be 12 on 32-bit
+2. ir/lowering/lvalue.rs:121 - __imag__ lvalue offset hardcoded 16i64 → should be 12i64 on 32-bit
+3. ir/lowering/global_init_bytes.rs:1264 - comp_size hardcoded 16 → should be 12 on 32-bit
