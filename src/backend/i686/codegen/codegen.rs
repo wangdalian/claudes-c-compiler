@@ -1144,7 +1144,22 @@ impl ArchCodegen for I686Codegen {
         let space = calculate_stack_space_common(&mut self.state, func, callee_saved_bytes, |space, alloc_size, align| {
             let effective_align = if align > 0 { align.max(4) } else { 4 };
             let alloc = (alloc_size + 3) & !3; // round up to 4-byte boundary
-            let new_space = ((space + alloc + effective_align - 1) / effective_align) * effective_align;
+            let required = space + alloc;
+            let new_space = if effective_align >= 16 {
+                // On i686, %ebp mod 16 == 8 (ABI: entry %esp is 16-aligned, call
+                // pushes 4-byte return addr, push %ebp pushes another 4 bytes).
+                // For a variable at (%ebp - offset) to be A-byte aligned, we need:
+                //   offset mod A == %ebp mod A == 8  (for A >= 16, power of 2)
+                // Round up `required` to the next value satisfying offset mod A == 8.
+                let bias = 8i64;
+                let a = effective_align;
+                // Compute smallest n >= required such that n mod a == bias
+                let rem = ((required % a) + a) % a; // current remainder (always >= 0)
+                let needed = if rem <= bias { bias - rem } else { a - rem + bias };
+                required + needed
+            } else {
+                ((required + effective_align - 1) / effective_align) * effective_align
+            };
             (-new_space, new_space)
         }, &reg_assigned, cached_liveness);
 

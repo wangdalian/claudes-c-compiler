@@ -282,7 +282,7 @@ impl Lowerer {
                 if is_array && elem_size > 0 {
                     // For struct arrays, elem_size is the actual struct size (from sizeof_type),
                     // whereas base_ty.size() may return Ptr size (8). Use elem_size for structs.
-                    // For long double arrays, elem_size=16 but base_ty=F64 (size=8), so use elem_size.
+                    // For long double arrays, elem_size=12 (i686) or 16 (x86-64), so use elem_size.
                     // For pointer arrays (e.g., char *arr[N]), elem_size=8 (pointer) but
                     // base_ty=I8 (char), so use elem_size when it's larger than base_ty.size().
                     let num_elems = if struct_layout.is_some() || is_long_double_target {
@@ -544,11 +544,7 @@ impl Lowerer {
                     // For multi-dim arrays, flatten nested init lists
                     if array_dim_strides.len() > 1 {
                         let innermost_stride = array_dim_strides.last().copied().unwrap_or(1).max(1);
-                        let total_scalar_elems = if is_long_double_target {
-                            total_size / 16
-                        } else {
-                            total_size / innermost_stride
-                        };
+                        let total_scalar_elems = total_size / innermost_stride;
                         let mut values_flat = vec![self.typed_zero_const(base_ty, is_long_double_target); total_scalar_elems];
                         let mut flat = Vec::with_capacity(total_scalar_elems);
                         self.flatten_global_array_init_bool(items, array_dim_strides, base_ty, &mut flat, is_bool_target);
