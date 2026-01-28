@@ -457,7 +457,8 @@ impl X86Codegen {
                 }
             }
 
-            CastKind::UnsignedToFloat { to_f64, from_u64 } => {
+            CastKind::UnsignedToFloat { to_f64, from_ty } => {
+                let from_u64 = from_ty == IrType::U64;
                 if from_u64 {
                     // Handle U64 values >= 2^63 via shift+round trick
                     let big_label = self.state.fresh_label("u2f_big");

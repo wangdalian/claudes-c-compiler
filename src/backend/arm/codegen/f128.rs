@@ -258,13 +258,23 @@ impl ArmCodegen {
         if let Some(slot) = dest_slot {
             self.emit_load_from_sp("q0", slot.0, "ldr");
         }
-        // Step 4: Call the arithmetic libcall.
+        // Step 4: Call the arithmetic libcall. Result is full f128 in Q0.
         self.state.emit_fmt(format_args!("    bl {}", libcall));
-        // Step 5: Convert result to f64.
+        // Step 5: Store full f128 result to dest slot and track it.
+        // This preserves full precision so subsequent uses (return, compare,
+        // further arithmetic) can reload the exact 128-bit value instead of
+        // going through a lossy f64 roundtrip.
+        if let Some(slot) = dest_slot {
+            self.emit_f128_store_q0_to_slot(slot);
+            self.state.track_f128_self(dest.0);
+        }
+        // Step 6: Convert result to f64 approximation for register data flow.
+        // Only update the accumulator cache; do NOT write back to the slot
+        // (that would overwrite the full-precision f128 with 8 bytes of f64).
         self.state.emit("    bl __trunctfdf2");
         self.state.emit("    fmov x0, d0");
         self.state.reg_cache.invalidate_all();
-        self.store_x0_to(dest);
+        self.state.reg_cache.set_acc(dest.0, false);
     }
 
     /// Negate an F128 value with full precision.

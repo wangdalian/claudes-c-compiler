@@ -1882,6 +1882,539 @@ pub fn x87_to_f64(bytes: &[u8; 16]) -> f64 {
     x87_bytes_to_f64(bytes)
 }
 
+// =============================================================================
+// IEEE 754 binary128 (f128) software arithmetic
+// =============================================================================
+//
+// These functions perform arithmetic directly on [u8; 16] f128 byte arrays,
+// giving full 112-bit mantissa precision. This avoids the precision loss that
+// occurs when converting f128 → x87 (64-bit mantissa) → f128 for constant
+// folding on ARM/RISC-V targets where long double is f128.
+
+/// Helper: decompose f128 bytes into (sign, biased_exponent, mantissa_with_implicit_bit).
+/// For normal numbers, mantissa has bit 112 set (the implicit leading 1).
+/// For subnormals, mantissa does NOT have bit 112 set.
+/// Returns (sign: bool, biased_exp: i32, mantissa: u128)
+fn f128_decompose(bytes: &[u8; 16]) -> (bool, i32, u128) {
+    let val = u128::from_le_bytes(*bytes);
+    let sign = (val >> 127) != 0;
+    let biased_exp = ((val >> 112) & 0x7FFF) as i32;
+    let mantissa = val & ((1u128 << 112) - 1);
+
+    if biased_exp == 0 {
+        // Zero or subnormal (no implicit bit)
+        (sign, 0, mantissa)
+    } else if biased_exp == 0x7FFF {
+        // Inf or NaN: keep exponent, mantissa distinguishes them
+        (sign, 0x7FFF, mantissa)
+    } else {
+        // Normal: add implicit leading 1 at bit 112
+        (sign, biased_exp, mantissa | (1u128 << 112))
+    }
+}
+
+/// Helper: check if f128 is zero
+fn f128_is_zero(bytes: &[u8; 16]) -> bool {
+    let val = u128::from_le_bytes(*bytes);
+    (val & !(1u128 << 127)) == 0
+}
+
+/// Helper: check if f128 is infinity
+fn f128_is_inf(bytes: &[u8; 16]) -> bool {
+    let val = u128::from_le_bytes(*bytes);
+    let exp = (val >> 112) & 0x7FFF;
+    let mantissa = val & ((1u128 << 112) - 1);
+    exp == 0x7FFF && mantissa == 0
+}
+
+/// Helper: check if f128 is NaN
+fn f128_is_nan(bytes: &[u8; 16]) -> bool {
+    let val = u128::from_le_bytes(*bytes);
+    let exp = (val >> 112) & 0x7FFF;
+    let mantissa = val & ((1u128 << 112) - 1);
+    exp == 0x7FFF && mantissa != 0
+}
+
+/// Helper: round a 128-bit mantissa with guard/round/sticky bits and normalize to f128.
+/// `mantissa` is the 113+ bit result, `binary_exp` is the unbiased exponent of bit 112.
+/// `guard`, `round`, `sticky` are the IEEE rounding bits for round-to-nearest-even.
+fn f128_round_and_encode(sign: bool, binary_exp: i32, mantissa: u128, guard: bool, round: bool, sticky: bool) -> [u8; 16] {
+    let mut m = mantissa;
+    let mut exp = binary_exp;
+
+    // Round to nearest, ties to even
+    let lsb = (m & 1) != 0;
+    let round_up = guard && (round || sticky || lsb);
+
+    if round_up {
+        m = m.wrapping_add(1);
+        // Check if rounding caused carry past bit 113 (overflow of 113-bit mantissa)
+        if m & (1u128 << 113) != 0 {
+            m >>= 1;
+            exp += 1;
+        }
+    }
+
+    encode_f128(sign, exp, m)
+}
+
+/// Add two IEEE 754 binary128 values with full 112-bit mantissa precision.
+pub fn f128_add(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
+    f128_add_sub(a, b, false)
+}
+
+/// Subtract two IEEE 754 binary128 values with full 112-bit mantissa precision.
+pub fn f128_sub(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
+    f128_add_sub(a, b, true)
+}
+
+/// Internal add/sub implementation.
+fn f128_add_sub(a: &[u8; 16], b: &[u8; 16], subtract: bool) -> [u8; 16] {
+    // Handle NaN
+    if f128_is_nan(a) { return *a; }
+    if f128_is_nan(b) { return *b; }
+
+    let (a_sign, a_exp, a_mant) = f128_decompose(a);
+    let (b_sign_orig, b_exp, b_mant) = f128_decompose(b);
+    let b_sign = b_sign_orig ^ subtract; // flip sign of b for subtraction
+
+    // Handle infinities
+    if a_exp == 0x7FFF {
+        if b_exp == 0x7FFF {
+            if a_sign == b_sign { return *a; } // inf + inf = inf
+            return make_f128_nan(false); // inf - inf = NaN
+        }
+        return *a;
+    }
+    if b_exp == 0x7FFF {
+        if subtract {
+            // Return infinity with flipped sign
+            return make_f128_infinity(!b_sign_orig);
+        }
+        return *b;
+    }
+
+    // Handle zeros
+    if f128_is_zero(a) && f128_is_zero(b) {
+        // -0 + -0 = -0, otherwise +0
+        return make_f128_zero(a_sign && b_sign);
+    }
+    if f128_is_zero(a) {
+        if subtract {
+            // 0 - b = -b
+            let val = u128::from_le_bytes(*b);
+            return (val ^ (1u128 << 127)).to_le_bytes();
+        }
+        return *b;
+    }
+    if f128_is_zero(b) { return *a; }
+
+    // Get unbiased exponents. For subnormals, effective exponent is 1 (biased) - 16383 = -16382.
+    let a_ue = if a_exp == 0 { -16382 } else { a_exp - 16383 };
+    let b_ue = if b_exp == 0 { -16382 } else { b_exp - 16383 };
+
+    // Align mantissas. We work with 3 extra bits (guard, round, sticky) for rounding.
+    // Mantissas are 113 bits (bit 112 is MSB for normals). Shift left by 3 to make room.
+    let mut a_m: u128 = a_mant << 3;
+    let mut b_m: u128 = b_mant << 3;
+    let mut exp_result = a_ue;
+    let mut sticky = false;
+
+    let exp_diff = a_ue - b_ue;
+    if exp_diff > 0 {
+        // Shift b right
+        let shift = exp_diff as u32;
+        if shift >= 128 {
+            sticky = b_m != 0;
+            b_m = 0;
+        } else {
+            sticky = (b_m & ((1u128 << shift) - 1)) != 0;
+            b_m >>= shift;
+        }
+    } else if exp_diff < 0 {
+        // Shift a right
+        let shift = (-exp_diff) as u32;
+        if shift >= 128 {
+            sticky = a_m != 0;
+            a_m = 0;
+        } else {
+            sticky = (a_m & ((1u128 << shift) - 1)) != 0;
+            a_m >>= shift;
+        }
+        exp_result = b_ue;
+    }
+
+    // Add or subtract mantissas
+    let (result_sign, result_m) = if a_sign == b_sign {
+        // Same sign: add magnitudes
+        let sum = a_m + b_m;
+        (a_sign, sum)
+    } else {
+        // Different signs: subtract magnitudes
+        if a_m > b_m {
+            (a_sign, a_m - b_m)
+        } else if b_m > a_m {
+            (b_sign, b_m - a_m)
+        } else {
+            // Exact cancellation
+            return make_f128_zero(false); // +0 for round-to-nearest
+        }
+    };
+
+    if result_m == 0 {
+        return make_f128_zero(false);
+    }
+
+    // Normalize: the result mantissa should have its MSB at bit 115 (= 112 + 3 guard bits).
+    let mut m = result_m;
+    let target_bit = 115; // bit 112 + 3 guard bits
+    let msb = 127 - m.leading_zeros() as i32;
+
+    if msb > target_bit {
+        // Overflow: shift right, collect sticky bits
+        let shift = (msb - target_bit) as u32;
+        let lost = m & ((1u128 << shift) - 1);
+        sticky = sticky || (lost != 0);
+        m >>= shift;
+        exp_result += shift as i32;
+    } else if msb < target_bit {
+        // Underflow: shift left
+        let shift = (target_bit - msb) as u32;
+        m <<= shift;
+        exp_result -= shift as i32;
+    }
+
+    // Extract guard, round, sticky bits
+    let guard_bit = (m & 4) != 0;
+    let round_bit = (m & 2) != 0;
+    let sticky_bit = sticky || (m & 1) != 0;
+    m >>= 3; // Remove guard bits, now m is 113-bit mantissa
+
+    f128_round_and_encode(result_sign, exp_result, m, guard_bit, round_bit, sticky_bit)
+}
+
+/// Multiply two IEEE 754 binary128 values with full 112-bit mantissa precision.
+pub fn f128_mul(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
+    // Handle NaN
+    if f128_is_nan(a) { return *a; }
+    if f128_is_nan(b) { return *b; }
+
+    let (a_sign, a_exp, a_mant) = f128_decompose(a);
+    let (b_sign, b_exp, b_mant) = f128_decompose(b);
+    let result_sign = a_sign ^ b_sign;
+
+    // Handle infinities
+    if a_exp == 0x7FFF || b_exp == 0x7FFF {
+        if f128_is_zero(a) || f128_is_zero(b) {
+            return make_f128_nan(false); // inf * 0 = NaN
+        }
+        return make_f128_infinity(result_sign);
+    }
+
+    // Handle zeros
+    if f128_is_zero(a) || f128_is_zero(b) {
+        return make_f128_zero(result_sign);
+    }
+
+    // Compute unbiased exponents
+    let a_ue = if a_exp == 0 { -16382 } else { a_exp - 16383 };
+    let b_ue = if b_exp == 0 { -16382 } else { b_exp - 16383 };
+
+    // Multiply mantissas: 113 bits * 113 bits = up to 226 bits.
+    // We need to use 256-bit multiplication (two u128 halves).
+    let (prod_hi, prod_lo) = mul_u128(a_mant, b_mant);
+
+    // The product has MSB at bit 224 or 225 (of the 226-bit result).
+    // Exponent of the product = a_ue + b_ue (for the MSB of the product, adjusted).
+    // Product is in the form: mantissa_a (bit 112 MSB) * mantissa_b (bit 112 MSB)
+    // So the product MSB is at bit 224 or 225.
+    let result_exp_base = a_ue + b_ue;
+
+    // Normalize: we need a 113-bit mantissa (bit 112 is MSB).
+    // The product MSB is at position 224 (= 112+112) or 225.
+    // We need to shift right by (MSB_pos - 112) bits and collect sticky.
+    let prod_bits = if prod_hi == 0 {
+        if prod_lo == 0 { return make_f128_zero(result_sign); }
+        127 - prod_lo.leading_zeros() as i32
+    } else {
+        128 + 127 - prod_hi.leading_zeros() as i32
+    };
+
+    // Number of bits to shift right to get mantissa MSB at bit 112
+    let shift = prod_bits - 112;
+    // The product of two mantissas with MSB at bit 112 has expected MSB at bit 224.
+    // Only the excess above 224 adjusts the exponent (e.g. if MSB is at 225, add 1).
+    let result_exp = result_exp_base + (prod_bits - 224);
+
+    let (mantissa, guard, round, sticky) = if shift <= 0 {
+        // Product fits in 113 bits - shift left
+        let s = (-shift) as u32;
+        let m = if prod_hi == 0 { prod_lo << s } else { (prod_hi << (s + 128)) | (prod_lo << s) };
+        (m, false, false, false)
+    } else {
+        shift_right_256_with_grs(prod_hi, prod_lo, shift as u32)
+    };
+
+    f128_round_and_encode(result_sign, result_exp, mantissa, guard, round, sticky)
+}
+
+/// Divide two IEEE 754 binary128 values with full 112-bit mantissa precision.
+pub fn f128_div(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
+    // Handle NaN
+    if f128_is_nan(a) { return *a; }
+    if f128_is_nan(b) { return *b; }
+
+    let (a_sign, a_exp, a_mant) = f128_decompose(a);
+    let (b_sign, b_exp, b_mant) = f128_decompose(b);
+    let result_sign = a_sign ^ b_sign;
+
+    // Handle infinities and zeros
+    if a_exp == 0x7FFF {
+        if b_exp == 0x7FFF { return make_f128_nan(false); } // inf / inf = NaN
+        return make_f128_infinity(result_sign);
+    }
+    if b_exp == 0x7FFF {
+        return make_f128_zero(result_sign); // x / inf = 0
+    }
+    if f128_is_zero(b) {
+        if f128_is_zero(a) { return make_f128_nan(false); } // 0 / 0 = NaN
+        return make_f128_infinity(result_sign); // x / 0 = inf
+    }
+    if f128_is_zero(a) {
+        return make_f128_zero(result_sign);
+    }
+
+    // Unbiased exponents
+    let a_ue = if a_exp == 0 { -16382 } else { a_exp - 16383 };
+    let b_ue = if b_exp == 0 { -16382 } else { b_exp - 16383 };
+
+    // Division: we need a_mant / b_mant with 113+ bits of precision in the quotient.
+    // Both mantissas are 113-bit (bit 112 is MSB for normals).
+    //
+    // Strategy: compute (a_mant << 115) / b_mant to get a quotient with 115+ bits.
+    // Since both mantissas have MSB at bit 112, their ratio is in [0.5, 2.0),
+    // so the quotient MSB is at bit 114 or 115. We normalize to bit 115
+    // (= 112 mantissa bits + 3 guard/round/sticky bits).
+    //
+    // We use 256-bit dividend: (a_mant << 115) is at most 228 bits.
+    let shift = 115; // 112 (for mantissa) + 3 (for GRS)
+    let (dividend_hi, dividend_lo) = shl_u128(a_mant, shift);
+
+    // Divide 256-bit dividend by 128-bit divisor
+    let (quot, rem) = div_256_by_128(dividend_hi, dividend_lo, b_mant);
+
+    let result_exp = a_ue - b_ue;
+
+    if quot == 0 {
+        return make_f128_zero(result_sign);
+    }
+
+    // Normalize quotient: MSB should be at bit 115 (112 + 3 guard bits)
+    let msb = 127 - quot.leading_zeros() as i32;
+    let target = 115;
+    let (m, exp_adjust, extra_sticky) = if msb > target {
+        let s = (msb - target) as u32;
+        let lost = quot & ((1u128 << s) - 1);
+        (quot >> s, msb - target, lost != 0)
+    } else if msb < target {
+        let s = (target - msb) as u32;
+        (quot << s, -(s as i32), false)
+    } else {
+        (quot, 0, false)
+    };
+
+    let guard = (m & 4) != 0;
+    let round = (m & 2) != 0;
+    let sticky = extra_sticky || (rem != 0) || (m & 1) != 0;
+    let mantissa = m >> 3;
+
+    f128_round_and_encode(result_sign, result_exp + exp_adjust, mantissa, guard, round, sticky)
+}
+
+/// Compute the remainder of two IEEE 754 binary128 values.
+pub fn f128_rem(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
+    // rem(a, b) = a - trunc(a/b) * b
+    // For simplicity, compute using the identity: rem = a - q * b where q = trunc(a/b)
+    // Handle special cases
+    if f128_is_nan(a) { return *a; }
+    if f128_is_nan(b) { return *b; }
+    if f128_is_inf(a) { return make_f128_nan(false); }
+    if f128_is_zero(b) { return make_f128_nan(false); }
+    if f128_is_zero(a) { return *a; }
+    if f128_is_inf(b) { return *a; }
+
+    // For now, fall back to f64 approximation for remainder
+    // (remainder is less commonly used for long double constant folding)
+    let fa = f128_bytes_to_f64(a);
+    let fb = f128_bytes_to_f64(b);
+    let result = fa % fb;
+    f64_to_f128_bytes_lossless(result)
+}
+
+/// Compare two f128 values. Returns -1, 0, 1, or i32::MIN for unordered (NaN).
+pub fn f128_cmp(a: &[u8; 16], b: &[u8; 16]) -> i32 {
+    if f128_is_nan(a) || f128_is_nan(b) {
+        return i32::MIN;
+    }
+    let a_val = u128::from_le_bytes(*a);
+    let b_val = u128::from_le_bytes(*b);
+    let a_sign = (a_val >> 127) != 0;
+    let b_sign = (b_val >> 127) != 0;
+    let a_mag = a_val & !(1u128 << 127);
+    let b_mag = b_val & !(1u128 << 127);
+
+    // Both zero (may differ in sign)
+    if a_mag == 0 && b_mag == 0 {
+        return 0;
+    }
+
+    // Different signs: negative < positive
+    if a_sign != b_sign {
+        return if a_sign { -1 } else { 1 };
+    }
+
+    // Same sign: compare magnitudes
+    let cmp = if a_mag < b_mag { -1 } else if a_mag > b_mag { 1 } else { 0 };
+    // If negative, reverse the comparison
+    if a_sign { -cmp } else { cmp }
+}
+
+// --- Helper functions for wide arithmetic ---
+
+/// Multiply two u128 values, returning (hi, lo) of the 256-bit result.
+fn mul_u128(a: u128, b: u128) -> (u128, u128) {
+    let a_lo = a as u64 as u128;
+    let a_hi = (a >> 64) as u64 as u128;
+    let b_lo = b as u64 as u128;
+    let b_hi = (b >> 64) as u64 as u128;
+
+    let ll = a_lo * b_lo;
+    let lh = a_lo * b_hi;
+    let hl = a_hi * b_lo;
+    let hh = a_hi * b_hi;
+
+    let mid = lh + hl;
+    let carry1 = if mid < lh { 1u128 } else { 0 };
+
+    let lo = ll.wrapping_add(mid << 64);
+    let carry2 = if lo < ll { 1u128 } else { 0 };
+    let hi = hh + (mid >> 64) + (carry1 << 64) + carry2;
+
+    (hi, lo)
+}
+
+/// Shift a u128 value left, returning (hi, lo) of the 256-bit result.
+fn shl_u128(val: u128, shift: u32) -> (u128, u128) {
+    if shift == 0 {
+        (0, val)
+    } else if shift < 128 {
+        let hi = val >> (128 - shift);
+        let lo = val << shift;
+        (hi, lo)
+    } else if shift < 256 {
+        let hi = val << (shift - 128);
+        (hi, 0)
+    } else {
+        (0, 0)
+    }
+}
+
+/// Shift right a 256-bit value (hi:lo) by `shift` bits, extracting guard/round/sticky.
+/// Returns (shifted_lo_128, guard, round, sticky).
+fn shift_right_256_with_grs(hi: u128, lo: u128, shift: u32) -> (u128, bool, bool, bool) {
+    if shift == 0 {
+        return (lo, false, false, false);
+    }
+
+    // Reconstruct the bits we'll lose for GRS
+    // We need to shift right by `shift` bits and extract the top bit lost (guard),
+    // next bit (round), and OR of all remaining lost bits (sticky).
+
+    // For very large shifts, everything becomes sticky
+    if shift >= 256 {
+        let sticky = hi != 0 || lo != 0;
+        return (0, false, false, sticky);
+    }
+
+    // Compute the shifted value and the lost bits
+    let result;
+    let guard_bit;
+    let round_bit;
+    let sticky_bits;
+
+    if shift < 128 {
+        // Result comes from lo (shifted right) with bits from hi
+        result = (lo >> shift) | (hi << (128 - shift));
+        // Guard bit is bit (shift-1) of the original (hi:lo)
+        guard_bit = if shift >= 1 { (lo >> (shift - 1)) & 1 != 0 } else { false };
+        // Round bit is bit (shift-2)
+        round_bit = if shift >= 2 { (lo >> (shift - 2)) & 1 != 0 } else { false };
+        // Sticky: OR of all bits below round
+        sticky_bits = if shift >= 3 { lo & ((1u128 << (shift - 2)) - 1) != 0 } else { false };
+    } else if shift == 128 {
+        result = hi;
+        guard_bit = (lo >> 127) & 1 != 0;
+        round_bit = (lo >> 126) & 1 != 0;
+        sticky_bits = lo & ((1u128 << 126) - 1) != 0;
+    } else {
+        // shift > 128
+        let s = shift - 128;
+        result = hi >> s;
+        if s == 0 {
+            guard_bit = (lo >> 127) & 1 != 0;
+            round_bit = (lo >> 126) & 1 != 0;
+            sticky_bits = lo & ((1u128 << 126) - 1) != 0;
+        } else {
+            guard_bit = if s >= 1 { (hi >> (s - 1)) & 1 != 0 } else { false };
+            round_bit = if s >= 2 { (hi >> (s - 2)) & 1 != 0 } else { lo >> 127 != 0 };
+            let hi_sticky = if s >= 3 { hi & ((1u128 << (s - 2)) - 1) != 0 } else { false };
+            sticky_bits = hi_sticky || lo != 0;
+        }
+    }
+
+    (result, guard_bit, round_bit, sticky_bits)
+}
+
+/// Divide a 256-bit number (hi:lo) by a 128-bit divisor.
+/// Returns (quotient, remainder) both as u128.
+/// The quotient must fit in u128 (caller ensures this by appropriate shifting).
+fn div_256_by_128(hi: u128, lo: u128, divisor: u128) -> (u128, u128) {
+    if divisor == 0 {
+        return (u128::MAX, 0); // Division by zero
+    }
+    if hi == 0 {
+        return (lo / divisor, lo % divisor);
+    }
+
+    // Long division: divide (hi:lo) by divisor.
+    // Process one bit at a time from the most significant bit.
+    let mut remainder: u128 = 0;
+    let mut quotient: u128 = 0;
+
+    // Process high 128 bits
+    for i in (0..128).rev() {
+        remainder = remainder << 1;
+        remainder |= (hi >> i) & 1;
+        if remainder >= divisor {
+            remainder -= divisor;
+            // This contributes to upper bits of quotient (beyond 128), but we know
+            // the quotient fits in 128 bits, so we just track the remainder.
+        }
+    }
+
+    // Now process low 128 bits, building the actual quotient
+    for i in (0..128).rev() {
+        remainder = remainder << 1;
+        remainder |= (lo >> i) & 1;
+        if remainder >= divisor {
+            remainder -= divisor;
+            quotient |= 1u128 << i;
+        }
+    }
+
+    (quotient, remainder)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

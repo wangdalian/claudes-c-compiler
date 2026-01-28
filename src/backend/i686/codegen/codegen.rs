@@ -1145,7 +1145,8 @@ impl ArchCodegen for I686Codegen {
                 self.emit_f64_store_from_x87(dest);
                 self.state.reg_cache.invalidate_acc();
             }
-            CastKind::UnsignedToFloat { to_f64: true, from_u64 } => {
+            CastKind::UnsignedToFloat { to_f64: true, from_ty } => {
+                let from_u64 = from_ty == IrType::U64;
                 // unsigned → F64
                 self.operand_to_eax(src);
                 if from_u64 {
@@ -1392,7 +1393,7 @@ impl ArchCodegen for I686Codegen {
                 self.store_eax_to(dest);
             }
             // --- U64 → F32: use x87 with unsigned handling ---
-            CastKind::UnsignedToFloat { to_f64: false, from_u64: true } => {
+            CastKind::UnsignedToFloat { to_f64: false, from_ty: IrType::U64 } => {
                 self.emit_load_acc_pair(src);
                 self.state.emit("    pushl %edx");
                 self.state.emit("    pushl %eax");
@@ -1532,7 +1533,7 @@ impl ArchCodegen for I686Codegen {
                 self.state.emit("    movd %xmm0, %eax");
             }
 
-            CastKind::UnsignedToFloat { to_f64: false, from_u64: false } => {
+            CastKind::UnsignedToFloat { to_f64: false, .. } => {
                 // U8/U16/U32 -> F32
                 let big_label = self.state.fresh_label("u2f_big");
                 let done_label = self.state.fresh_label("u2f_done");
@@ -1549,16 +1550,6 @@ impl ArchCodegen for I686Codegen {
                 self.state.emit("    popl %eax");
                 self.state.emit("    addl $4, %esp");
                 self.state.out.emit_named_label(&done_label);
-            }
-
-            CastKind::UnsignedToFloat { to_f64: false, from_u64: true } => {
-                // U64 -> F32: use x87
-                self.state.emit("    subl $8, %esp");
-                self.state.emit("    movl %eax, (%esp)");
-                self.state.emit("    fildl (%esp)");
-                self.state.emit("    fstps (%esp)");
-                self.state.emit("    movl (%esp), %eax");
-                self.state.emit("    addl $8, %esp");
             }
 
             CastKind::FloatToSigned { from_f64: false } => {

@@ -12,6 +12,9 @@ use crate::common::fx_hash::FxHashMap;
 
 thread_local! {
     static TARGET_PTR_SIZE: Cell<usize> = const { Cell::new(8) }; // default: LP64
+    /// Whether long double is IEEE binary128 (f128). True for AArch64/RISC-V,
+    /// false for x86/i686 where long double is x87 80-bit.
+    static TARGET_LONG_DOUBLE_IS_F128: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Set the target pointer size for the current thread (4 for i686/ILP32, 8 for LP64).
@@ -28,6 +31,17 @@ pub fn target_ptr_size() -> usize {
 /// Whether the current target is 32-bit (ILP32).
 pub fn target_is_32bit() -> bool {
     target_ptr_size() == 4
+}
+
+/// Set whether the target uses IEEE binary128 for long double (AArch64/RISC-V).
+pub fn set_target_long_double_is_f128(is_f128: bool) {
+    TARGET_LONG_DOUBLE_IS_F128.with(|c| c.set(is_f128));
+}
+
+/// Whether the target uses IEEE binary128 for long double.
+/// True for AArch64/RISC-V, false for x86/i686 (x87 80-bit).
+pub fn target_long_double_is_f128() -> bool {
+    TARGET_LONG_DOUBLE_IS_F128.with(|c| c.get())
 }
 
 /// Return the IR type used for pointer-width integers (I64 on LP64, I32 on ILP32).

@@ -23,9 +23,10 @@ pub enum CastKind {
     /// `from_ty` is the source integer type, needed to sign-extend sub-64-bit values
     /// before conversion (e.g., I32 in rax must be sign-extended to 64 bits).
     SignedToFloat { to_f64: bool, from_ty: IrType },
-    /// Unsigned integer to float. `from_u64` indicates U64 source needing
-    /// special overflow handling on x86.
-    UnsignedToFloat { to_f64: bool, from_u64: bool },
+    /// Unsigned integer to float. `from_ty` is the source unsigned integer type,
+    /// needed for proper zero-extension on RISC-V (where W-suffix instructions
+    /// sign-extend) and for U64 overflow handling on x86.
+    UnsignedToFloat { to_f64: bool, from_ty: IrType },
     /// Float-to-float conversion (F32 <-> F64).
     FloatToFloat { widen: bool },
     /// Integer widening: sign- or zero-extend a smaller type to a larger one.
@@ -109,8 +110,7 @@ pub fn classify_cast_with_f128(from_ty: IrType, to_ty: IrType, f128_is_native: b
         let is_unsigned_src = from_ty.is_unsigned();
         let to_f64 = to_ty == IrType::F64;
         if is_unsigned_src {
-            let from_u64 = from_ty == IrType::U64;
-            return CastKind::UnsignedToFloat { to_f64, from_u64 };
+            return CastKind::UnsignedToFloat { to_f64, from_ty };
         } else {
             return CastKind::SignedToFloat { to_f64, from_ty };
         }

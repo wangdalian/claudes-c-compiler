@@ -141,8 +141,9 @@ fn eval_const_binop_int(op: &BinOp, l: i64, r: i64, is_32bit: bool, is_unsigned:
 
 /// Evaluate a constant floating-point binary operation.
 ///
-/// For LongDouble operands, uses full x87 80-bit precision arithmetic via
-/// inline assembly (on x86-64 hosts) to avoid precision loss from f64 truncation.
+/// For LongDouble operands, uses native f128 software arithmetic on the stored
+/// IEEE binary128 bytes for full 112-bit mantissa precision. This matches the
+/// runtime behavior of __addtf3/__divtf3/etc. on ARM64/RISC-V targets.
 /// For F32/F64, uses native Rust arithmetic.
 ///
 /// Comparison and logical operations always return `IrConst::I64`.
@@ -152,65 +153,118 @@ pub fn eval_const_binop_float(op: &BinOp, lhs: &IrConst, rhs: &IrConst) -> Optio
     let use_long_double = matches!(lhs, IrConst::LongDouble(..)) || matches!(rhs, IrConst::LongDouble(..));
     let use_f32 = matches!(lhs, IrConst::F32(_)) && matches!(rhs, IrConst::F32(_));
 
-    // For long double arithmetic, use x87 precision on the raw bytes.
-    // Constants are stored as f128, converted to x87 for arithmetic, then back to f128.
+    // For long double arithmetic, use precision matching the target:
+    // - ARM64/RISC-V: f128 software arithmetic (full 112-bit mantissa)
+    // - x86/i686: x87 80-bit arithmetic (64-bit mantissa)
     if use_long_double {
-        let la = lhs.x87_bytes();
-        let ra = rhs.x87_bytes();
+        if crate::common::types::target_long_double_is_f128() {
+            // ARM64/RISC-V: full f128 software arithmetic
+            let la = lhs.long_double_bytes().copied().unwrap_or_else(|| {
+                let v = lhs.to_f64().unwrap_or(0.0);
+                long_double::f64_to_f128_bytes_lossless(v)
+            });
+            let ra = rhs.long_double_bytes().copied().unwrap_or_else(|| {
+                let v = rhs.to_f64().unwrap_or(0.0);
+                long_double::f64_to_f128_bytes_lossless(v)
+            });
 
-        match op {
-            BinOp::Add => {
-                let result_x87 = long_double::x87_add(&la, &ra);
-                let approx = long_double::x87_to_f64(&result_x87);
-                Some(IrConst::long_double_with_bytes(approx, long_double::x87_bytes_to_f128_bytes(&result_x87)))
+            match op {
+                BinOp::Add => {
+                    let result = long_double::f128_add(&la, &ra);
+                    let approx = long_double::f128_bytes_to_f64(&result);
+                    Some(IrConst::long_double_with_bytes(approx, result))
+                }
+                BinOp::Sub => {
+                    let result = long_double::f128_sub(&la, &ra);
+                    let approx = long_double::f128_bytes_to_f64(&result);
+                    Some(IrConst::long_double_with_bytes(approx, result))
+                }
+                BinOp::Mul => {
+                    let result = long_double::f128_mul(&la, &ra);
+                    let approx = long_double::f128_bytes_to_f64(&result);
+                    Some(IrConst::long_double_with_bytes(approx, result))
+                }
+                BinOp::Div => {
+                    let result = long_double::f128_div(&la, &ra);
+                    let approx = long_double::f128_bytes_to_f64(&result);
+                    Some(IrConst::long_double_with_bytes(approx, result))
+                }
+                BinOp::Mod => {
+                    let result = long_double::f128_rem(&la, &ra);
+                    let approx = long_double::f128_bytes_to_f64(&result);
+                    Some(IrConst::long_double_with_bytes(approx, result))
+                }
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
+                    let cmp = long_double::f128_cmp(&la, &ra);
+                    let result = match op {
+                        BinOp::Eq => cmp == 0,
+                        BinOp::Ne => cmp != 0,
+                        BinOp::Lt => cmp == -1,
+                        BinOp::Gt => cmp == 1,
+                        BinOp::Le => cmp == -1 || cmp == 0,
+                        BinOp::Ge => cmp == 1 || cmp == 0,
+                        _ => unreachable!(),
+                    };
+                    Some(IrConst::I64(if result { 1 } else { 0 }))
+                }
+                BinOp::LogicalAnd | BinOp::LogicalOr => {
+                    let zero = [0u8; 16];
+                    let l_nonzero = long_double::f128_cmp(&la, &zero) != 0;
+                    let r_nonzero = long_double::f128_cmp(&ra, &zero) != 0;
+                    let result = match op {
+                        BinOp::LogicalAnd => l_nonzero && r_nonzero,
+                        BinOp::LogicalOr => l_nonzero || r_nonzero,
+                        _ => unreachable!(),
+                    };
+                    Some(IrConst::I64(if result { 1 } else { 0 }))
+                }
+                _ => None,
             }
-            BinOp::Sub => {
-                let result_x87 = long_double::x87_sub(&la, &ra);
-                let approx = long_double::x87_to_f64(&result_x87);
-                Some(IrConst::long_double_with_bytes(approx, long_double::x87_bytes_to_f128_bytes(&result_x87)))
+        } else {
+            // x86/i686: x87 80-bit arithmetic
+            let la = lhs.x87_bytes();
+            let ra = rhs.x87_bytes();
+
+            match op {
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                    let result_x87 = match op {
+                        BinOp::Add => long_double::x87_add(&la, &ra),
+                        BinOp::Sub => long_double::x87_sub(&la, &ra),
+                        BinOp::Mul => long_double::x87_mul(&la, &ra),
+                        BinOp::Div => long_double::x87_div(&la, &ra),
+                        BinOp::Mod => long_double::x87_rem(&la, &ra),
+                        _ => unreachable!(),
+                    };
+                    let result_f128 = long_double::x87_bytes_to_f128_bytes(&result_x87);
+                    let approx = long_double::x87_to_f64(&result_x87);
+                    Some(IrConst::long_double_with_bytes(approx, result_f128))
+                }
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
+                    let l = long_double::x87_to_f64(&la);
+                    let r = long_double::x87_to_f64(&ra);
+                    let result = match op {
+                        BinOp::Eq => l == r,
+                        BinOp::Ne => l != r,
+                        BinOp::Lt => l < r,
+                        BinOp::Gt => l > r,
+                        BinOp::Le => l <= r,
+                        BinOp::Ge => l >= r,
+                        _ => unreachable!(),
+                    };
+                    Some(IrConst::I64(if result { 1 } else { 0 }))
+                }
+                BinOp::LogicalAnd | BinOp::LogicalOr => {
+                    let l = long_double::x87_to_f64(&la);
+                    let r = long_double::x87_to_f64(&ra);
+                    let result = match op {
+                        BinOp::LogicalAnd => l != 0.0 && r != 0.0,
+                        BinOp::LogicalOr => l != 0.0 || r != 0.0,
+                        _ => unreachable!(),
+                    };
+                    Some(IrConst::I64(if result { 1 } else { 0 }))
+                }
+                _ => None,
             }
-            BinOp::Mul => {
-                let result_x87 = long_double::x87_mul(&la, &ra);
-                let approx = long_double::x87_to_f64(&result_x87);
-                Some(IrConst::long_double_with_bytes(approx, long_double::x87_bytes_to_f128_bytes(&result_x87)))
-            }
-            BinOp::Div => {
-                let result_x87 = long_double::x87_div(&la, &ra);
-                let approx = long_double::x87_to_f64(&result_x87);
-                Some(IrConst::long_double_with_bytes(approx, long_double::x87_bytes_to_f128_bytes(&result_x87)))
-            }
-            BinOp::Mod => {
-                let result_x87 = long_double::x87_rem(&la, &ra);
-                let approx = long_double::x87_to_f64(&result_x87);
-                Some(IrConst::long_double_with_bytes(approx, long_double::x87_bytes_to_f128_bytes(&result_x87)))
-            }
-            // Comparisons use x87 compare for full precision
-            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
-                let cmp = long_double::x87_cmp(&la, &ra);
-                let result = match op {
-                    BinOp::Eq => cmp == 0,
-                    BinOp::Ne => cmp != 0,
-                    BinOp::Lt => cmp == -1,
-                    BinOp::Gt => cmp == 1,
-                    BinOp::Le => cmp == -1 || cmp == 0,
-                    BinOp::Ge => cmp == 1 || cmp == 0,
-                    _ => unreachable!(),
-                };
-                Some(IrConst::I64(if result { 1 } else { 0 }))
-            }
-            BinOp::LogicalAnd | BinOp::LogicalOr => {
-                // For logical ops, check if values are nonzero using x87 compare with zero
-                let zero = [0u8; 16];
-                let l_nonzero = long_double::x87_cmp(&la, &zero) != 0;
-                let r_nonzero = long_double::x87_cmp(&ra, &zero) != 0;
-                let result = match op {
-                    BinOp::LogicalAnd => l_nonzero && r_nonzero,
-                    BinOp::LogicalOr => l_nonzero || r_nonzero,
-                    _ => unreachable!(),
-                };
-                Some(IrConst::I64(if result { 1 } else { 0 }))
-            }
-            _ => None,
         }
     } else {
         // F32/F64 path: use native Rust arithmetic

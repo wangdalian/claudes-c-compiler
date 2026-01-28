@@ -2333,13 +2333,30 @@ impl ArchCodegen for RiscvCodegen {
                 }
             }
 
-            CastKind::UnsignedToFloat { to_f64, .. } => {
-                if to_f64 {
-                    self.state.emit("    fcvt.d.lu ft0, t0");
-                    self.state.emit("    fmv.x.d t0, ft0");
+            CastKind::UnsignedToFloat { to_f64, from_ty } => {
+                let from_u64 = from_ty == IrType::U64;
+                if from_u64 {
+                    // U64: use 64-bit unsigned conversion
+                    if to_f64 {
+                        self.state.emit("    fcvt.d.lu ft0, t0");
+                        self.state.emit("    fmv.x.d t0, ft0");
+                    } else {
+                        self.state.emit("    fcvt.s.lu ft0, t0");
+                        self.state.emit("    fmv.x.w t0, ft0");
+                    }
                 } else {
-                    self.state.emit("    fcvt.s.lu ft0, t0");
-                    self.state.emit("    fmv.x.w t0, ft0");
+                    // U8/U16/U32: use 32-bit unsigned conversion.
+                    // On RISC-V, W-suffix instructions (sllw, addw, etc.) sign-extend
+                    // the 32-bit result to 64 bits, so a U32 value with bit 31 set
+                    // would have all upper 32 bits set. fcvt.d.wu correctly reads
+                    // only the low 32 bits as unsigned.
+                    if to_f64 {
+                        self.state.emit("    fcvt.d.wu ft0, t0");
+                        self.state.emit("    fmv.x.d t0, ft0");
+                    } else {
+                        self.state.emit("    fcvt.s.wu ft0, t0");
+                        self.state.emit("    fmv.x.w t0, ft0");
+                    }
                 }
             }
 

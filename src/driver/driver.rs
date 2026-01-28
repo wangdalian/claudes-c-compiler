@@ -286,6 +286,9 @@ impl Driver {
         // Set the thread-local target pointer size for type system queries.
         // Must be done before any CType/IrType size computations.
         crate::common::types::set_target_ptr_size(self.target.ptr_size());
+        crate::common::types::set_target_long_double_is_f128(
+            matches!(self.target, Target::Aarch64 | Target::Riscv64)
+        );
 
         // When -m16 or -m32 is passed, we don't support 32-bit/16-bit x86 codegen.
         // Delegate the entire compilation to the system GCC, forwarding all original args.

@@ -497,33 +497,51 @@ fn fold_float_cmp(op: IrCmpOp, lhs: f64, rhs: f64) -> bool {
     }
 }
 
-/// Fold a binary operation on two F128 (long double) constants using x87 80-bit precision.
-/// The constants are stored as f128 bytes (112-bit mantissa), but arithmetic is performed
-/// using x87 FPU which has 64-bit mantissa. The result is stored back as f128.
+/// Fold a binary operation on two F128 (long double) constants.
 ///
-/// Note: const_arith.rs has a similar path in eval_const_binop_float() for the frontend
-/// const evaluator. These are separate because the IR pass operates on IrConst/IrBinOp
-/// while const_arith uses AST BinOp. Both delegate to the same x87_* functions in long_double.rs.
+/// On ARM64/RISC-V (where long double is IEEE binary128), uses full 112-bit mantissa
+/// f128 software arithmetic to match the runtime __addtf3/__subtf3/__multf3/__divtf3.
+///
+/// On x86/i686 (where long double is x87 80-bit), uses x87 arithmetic to match the
+/// runtime x87 FPU behavior.
 fn fold_f128_binop(op: IrBinOp, lhs: &IrConst, rhs: &IrConst) -> Option<IrConst> {
     use crate::common::long_double;
+    use crate::common::types::target_long_double_is_f128;
 
-    // Convert f128 -> x87 for arithmetic
-    let la = lhs.x87_bytes();
-    let ra = rhs.x87_bytes();
+    if target_long_double_is_f128() {
+        // ARM64/RISC-V: full f128 software arithmetic
+        let la = lhs.long_double_bytes()?;
+        let ra = rhs.long_double_bytes()?;
 
-    let result_x87 = match op {
-        IrBinOp::Add => long_double::x87_add(&la, &ra),
-        IrBinOp::Sub => long_double::x87_sub(&la, &ra),
-        IrBinOp::Mul => long_double::x87_mul(&la, &ra),
-        IrBinOp::SDiv | IrBinOp::UDiv => long_double::x87_div(&la, &ra),
-        IrBinOp::SRem | IrBinOp::URem => long_double::x87_rem(&la, &ra),
-        _ => return None,
-    };
+        let result_f128 = match op {
+            IrBinOp::Add => long_double::f128_add(la, ra),
+            IrBinOp::Sub => long_double::f128_sub(la, ra),
+            IrBinOp::Mul => long_double::f128_mul(la, ra),
+            IrBinOp::SDiv | IrBinOp::UDiv => long_double::f128_div(la, ra),
+            IrBinOp::SRem | IrBinOp::URem => long_double::f128_rem(la, ra),
+            _ => return None,
+        };
 
-    // Convert x87 result back to f128 for storage
-    let result_f128 = long_double::x87_bytes_to_f128_bytes(&result_x87);
-    let approx = long_double::x87_to_f64(&result_x87);
-    Some(IrConst::long_double_with_bytes(approx, result_f128))
+        let approx = long_double::f128_bytes_to_f64(&result_f128);
+        Some(IrConst::long_double_with_bytes(approx, result_f128))
+    } else {
+        // x86/i686: x87 80-bit arithmetic
+        let la = lhs.x87_bytes();
+        let ra = rhs.x87_bytes();
+
+        let result_x87 = match op {
+            IrBinOp::Add => long_double::x87_add(&la, &ra),
+            IrBinOp::Sub => long_double::x87_sub(&la, &ra),
+            IrBinOp::Mul => long_double::x87_mul(&la, &ra),
+            IrBinOp::SDiv | IrBinOp::UDiv => long_double::x87_div(&la, &ra),
+            IrBinOp::SRem | IrBinOp::URem => long_double::x87_rem(&la, &ra),
+            _ => return None,
+        };
+
+        let result_f128 = long_double::x87_bytes_to_f128_bytes(&result_x87);
+        let approx = long_double::x87_to_f64(&result_x87);
+        Some(IrConst::long_double_with_bytes(approx, result_f128))
+    }
 }
 
 /// Negate an F128 (long double) constant with full precision by flipping the sign bit.
