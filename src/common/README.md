@@ -4,6 +4,7 @@ Shared data types and utilities used across frontend, IR, and backend.
 
 ## Modules
 
+- **error.rs** - Structured diagnostic infrastructure. `Diagnostic` (severity, message, span, notes), `Severity` (Error/Warning/Note), `DiagnosticEngine` (collects and renders diagnostics with GCC-compatible format and source snippet display). The engine is threaded through the driver -> parser -> sema pipeline. Supports error/warning counting, source line rendering with caret underline, and follow-up notes.
 - **types.rs** - `CType` (C language types), `IrType` (IR types: I8/I16/I32/I64/U*/Ptr/F32/F64), `StructLayout` (computed struct field offsets and sizes). `IrType` includes `.size()`, `.align()`, signedness queries, and type conversion. `CType` provides type query helpers: `is_function_pointer()`, `is_struct_or_union()`, `is_complex()`, `pointee()`, `array_element()`, `func_ptr_return_type(strict)`, and usual arithmetic conversions. `StructLayout` provides `resolve_init_field_idx()` for designated/positional initializer resolution and `has_pointer_fields()` for checking if any field recursively contains pointer/function types.
 - **symbol_table.rs** - Scoped symbol table used by sema and lowering. Push/pop scope, insert/lookup symbols by name.
 - **source.rs** - Source location tracking: `Span`, `SourceLocation`, `SourceManager` for mapping byte offsets back to file/line/column.

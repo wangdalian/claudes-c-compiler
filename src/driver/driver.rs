@@ -1,4 +1,6 @@
 use crate::backend::Target;
+use crate::common::error::DiagnosticEngine;
+use crate::common::source::SourceManager;
 use crate::frontend::preprocessor::Preprocessor;
 use crate::frontend::lexer::Lexer;
 use crate::frontend::parser::Parser;
@@ -6,7 +8,6 @@ use crate::frontend::sema::SemanticAnalyzer;
 use crate::ir::lowering::Lowerer;
 use crate::ir::mem2reg::{promote_allocas, eliminate_phis};
 use crate::passes::run_passes;
-use crate::common::source::SourceManager;
 
 /// Compilation mode - determines where in the pipeline to stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -732,11 +733,19 @@ impl Driver {
         let preprocessed = preprocessor.preprocess(&source);
         if time_phases { eprintln!("[TIME] preprocess: {:.3}s", t0.elapsed().as_secs_f64()); }
 
+        // Create diagnostic engine for structured error/warning reporting
+        let mut diagnostics = DiagnosticEngine::new();
+
+        // Emit preprocessor warnings through diagnostic engine
+        for warn in preprocessor.warnings() {
+            diagnostics.warning_no_span(warn.clone());
+        }
+
         // Check for #error directives
         let pp_errors = preprocessor.errors();
         if !pp_errors.is_empty() {
             for err in pp_errors {
-                eprintln!("error: {}", err);
+                diagnostics.error_no_span(err.clone());
             }
             return Err(format!("{} preprocessor error(s) in {}", pp_errors.len(), input_file));
         }
@@ -755,10 +764,13 @@ impl Driver {
             eprintln!("Lexed {} tokens from {}", tokens.len(), input_file);
         }
 
-        // Parse
+        // Parse -- the diagnostic engine holds the source manager for span
+        // resolution and snippet rendering. It's also set on the parser for
+        // backward-compatible span_to_location() calls.
         let t2 = std::time::Instant::now();
+        diagnostics.set_source_manager(source_manager);
         let mut parser = Parser::new(tokens);
-        parser.set_source_manager(source_manager);
+        parser.set_diagnostics(diagnostics);
         let ast = parser.parse();
         if time_phases { eprintln!("[TIME] parse: {:.3}s", t2.elapsed().as_secs_f64()); }
 
@@ -766,24 +778,31 @@ impl Driver {
             return Err(format!("{}: {} parse error(s)", input_file, parser.error_count));
         }
 
-        // Retrieve source manager for debug info emission (-g)
-        let source_manager = parser.take_source_manager();
+        // Retrieve diagnostic engine (which holds the source manager) for subsequent phases
+        let mut diagnostics = parser.take_diagnostics();
+        // Extract source manager for debug info emission (-g)
+        let source_manager = diagnostics.take_source_manager();
 
         if self.verbose {
             eprintln!("Parsed {} declarations", ast.decls.len());
         }
 
-        // Semantic analysis
+        // Semantic analysis -- pass diagnostic engine to sema
         let t3 = std::time::Instant::now();
         let mut sema = SemanticAnalyzer::new();
+        sema.set_diagnostics(diagnostics);
         if let Err(errors) = sema.analyze(&ast) {
-            for err in &errors {
-                eprintln!("error: {}", err);
-            }
+            // Errors already emitted through diagnostic engine; just report count
             return Err(format!("{} error(s) during semantic analysis", errors.len()));
         }
+        let diagnostics = sema.take_diagnostics();
         let sema_result = sema.into_result();
         if time_phases { eprintln!("[TIME] sema: {:.3}s", t3.elapsed().as_secs_f64()); }
+
+        // Log diagnostic summary if there were any warnings
+        if self.verbose && diagnostics.warning_count() > 0 {
+            eprintln!("{} warning(s) generated", diagnostics.warning_count());
+        }
 
         // Lower to IR (target-aware for ABI-specific lowering decisions)
         // Pass sema's TypeContext, function signatures, and expression type annotations

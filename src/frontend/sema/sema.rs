@@ -15,6 +15,7 @@
 //! This pass does NOT reject programs with type errors (yet); it collects
 //! information for the lowerer. Full type checking is TODO.
 
+use crate::common::error::DiagnosticEngine;
 use crate::common::symbol_table::{Symbol, SymbolTable, StorageClass};
 use crate::common::type_builder;
 use crate::common::types::{AddressSpace, CType, FunctionType, StructLayout};
@@ -95,6 +96,8 @@ pub struct SemanticAnalyzer {
     anon_struct_counter: Cell<usize>,
     /// Collected semantic errors (e.g., type errors).
     errors: Vec<String>,
+    /// Structured diagnostic engine for error/warning reporting.
+    diagnostics: DiagnosticEngine,
 }
 
 impl SemanticAnalyzer {
@@ -105,6 +108,7 @@ impl SemanticAnalyzer {
             enum_counter: 0,
             anon_struct_counter: Cell::new(0),
             errors: Vec::new(),
+            diagnostics: DiagnosticEngine::new(),
         };
         // Pre-populate with common implicit declarations
         analyzer.declare_implicit_functions();
@@ -148,6 +152,16 @@ impl SemanticAnalyzer {
     /// Get a reference to the analysis results.
     pub fn result(&self) -> &SemaResult {
         &self.result
+    }
+
+    /// Set a pre-configured diagnostic engine on the analyzer.
+    pub fn set_diagnostics(&mut self, engine: DiagnosticEngine) {
+        self.diagnostics = engine;
+    }
+
+    /// Take the diagnostic engine back from the analyzer.
+    pub fn take_diagnostics(&mut self) -> DiagnosticEngine {
+        std::mem::take(&mut self.diagnostics)
     }
 
     // === Function analysis ===
@@ -723,9 +737,10 @@ impl SemanticAnalyzer {
                 let key = expr as *const Expr as usize;
                 if let Some(ctype) = self.result.expr_types.get(&key) {
                     if !ctype.is_integer() {
-                        self.errors.push(
-                            "switch quantity is not an integer".to_string()
-                        );
+                        let msg = "switch quantity is not an integer";
+                        // TODO: Remove legacy errors Vec once fully migrated to DiagnosticEngine
+                        self.errors.push(msg.to_string());
+                        self.diagnostics.error_no_span(msg);
                     }
                 }
                 self.analyze_stmt(body);
@@ -776,7 +791,7 @@ impl SemanticAnalyzer {
                     && name != "__func__" && name != "__FUNCTION__"
                     && name != "__PRETTY_FUNCTION__"
                 {
-                    eprintln!("warning: '{}' undeclared", name);
+                    self.diagnostics.warning_no_span(format!("'{}' undeclared", name));
                 }
             }
             Expr::FunctionCall(callee, args, _) => {
@@ -788,7 +803,7 @@ impl SemanticAnalyzer {
                         && self.symbol_table.lookup(name).is_none()
                     {
                         // Implicit function declaration (C89 style) - register it
-                        eprintln!("warning: implicit declaration of function '{}'", name);
+                        self.diagnostics.warning_no_span(format!("implicit declaration of function '{}'", name));
                         let func_info = FunctionInfo {
                             name: name.clone(),
                             return_type: CType::Int, // implicit return int

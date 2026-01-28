@@ -1,31 +1,28 @@
-LOW PRIORITY: Add structured error infrastructure (DiagnosticEngine)
+LOW PRIORITY: Structured error infrastructure follow-ups
 
-Current state (partially addressed):
-- Parser errors now include file:line:col via SourceManager + preprocessor line markers
-- Preprocessor emits GCC-style # linenum "filename" markers at #include boundaries
-- SourceManager builds a line map from these markers for span resolution
-- SourceManager::get_source_line() is ready for snippet rendering
+COMPLETED (2026-01-28):
+- Created DiagnosticEngine in common/error.rs with Diagnostic, Severity, source snippets
+- Wired into parser: all 4 eprintln! error sites replaced with emit_error()
+- Wired into sema: errors and warnings go through DiagnosticEngine
+- Wired into preprocessor: #warning collected as warnings (not bare eprintln!)
+- Driver threads DiagnosticEngine through parser -> sema pipeline
+- Source snippet rendering with caret/underline using SourceManager::get_source_line()
+- GCC-compatible output format: "file:line:col: error: message"
 
-Remaining patterns still using bare eprintln! without structured diagnostics:
-1. Parser: still uses eprintln! (now with location prefix) + manual error_count
-2. Sema: eprintln! immediately + push to Vec<String> that nobody reads
-3. Preprocessor: #error pushed to Vec<String>; #warning to eprintln!
-4. IR lowering: standalone eprintln! with no buffering
-
-What to do (incremental):
-1. Create a DiagnosticEngine in common/ -- Diagnostic with severity, message, span,
-   optional notes. Support emit(), print_all(), has_errors(), error_count().
-2. Wire it into the driver -- create one instance, thread it through each phase
-3. Have the parser emit Diagnostics instead of eprintln! (locations already work)
-4. Have sema emit Diagnostics instead of eprintln! + warnings Vec
-5. Have the preprocessor report errors through DiagnosticEngine
-6. Have the driver check for errors after each phase and print_all at the end
-7. Add source-snippet rendering to Diagnostic::emit() -- extract the source line
-   from SourceManager (get_source_line is ready), print a caret/underline under span
+REMAINING FOLLOW-UPS:
+1. Add spans to sema errors/warnings (currently use error_no_span/warning_no_span)
+2. Add spans to preprocessor errors (#error directives)
+3. Wire DiagnosticEngine into IR lowering phase (standalone eprintln! with no buffering)
+4. Add -Werror support (treat warnings as errors)
+5. Add -Wall, -Wno-* flag granularity for warning categories
+6. Add error codes (like GCC's -Werror=... or Clang's -W...)
+7. Remove the legacy `errors: Vec<String>` from sema (currently kept for backward compat)
+8. Consider adding "note:" follow-up messages for context (e.g., "previous declaration was here")
 
 Key files:
+- src/common/error.rs (DiagnosticEngine, Diagnostic, Severity)
 - src/common/source.rs (SourceManager with line map, get_source_line for snippets)
-- src/frontend/parser/parser.rs (eprintln! with location prefix)
-- src/frontend/sema/sema.rs (eprintln! + warnings Vec)
-- src/frontend/preprocessor/preprocessor.rs (errors Vec, eprintln! for #warning)
-- src/driver/driver.rs (creates SourceManager, passes to parser)
+- src/frontend/parser/parser.rs (uses emit_error/emit_warning)
+- src/frontend/sema/sema.rs (uses diagnostics.error_no_span/warning_no_span)
+- src/frontend/preprocessor/preprocessor.rs (collects errors and warnings Vecs)
+- src/driver/driver.rs (creates and threads DiagnosticEngine through phases)

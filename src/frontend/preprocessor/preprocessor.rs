@@ -25,6 +25,8 @@ pub struct Preprocessor {
     pub(super) includes: Vec<String>,
     pub(super) filename: String,
     pub(super) errors: Vec<String>,
+    /// Collected preprocessor warnings (e.g., #warning directives).
+    pub(super) warnings: Vec<String>,
     /// Include search paths (from -I flags)
     pub(super) include_paths: Vec<PathBuf>,
     /// System include paths (default search paths)
@@ -63,6 +65,7 @@ impl Preprocessor {
             includes: Vec::new(),
             filename: String::new(),
             errors: Vec::new(),
+            warnings: Vec::new(),
             include_paths: Vec::new(),
             system_include_paths: Self::default_system_include_paths(),
             include_stack: Vec::new(),
@@ -407,6 +410,11 @@ impl Preprocessor {
         &self.errors
     }
 
+    /// Get preprocessing warnings.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
     /// Define a macro from a command-line -D flag.
     /// Takes a name and value (e.g., name="FOO", value="1").
     pub fn define_macro(&mut self, name: &str, value: &str) {
@@ -559,8 +567,8 @@ impl Preprocessor {
                 self.errors.push(format!("#error {}", expanded));
             }
             "warning" => {
-                // GCC extension, emit as warning to stderr
-                eprintln!("warning: #warning {}", rest);
+                // GCC extension, collect warning for structured diagnostic output
+                self.warnings.push(format!("#warning {}", rest));
             }
             "line" => {
                 self.handle_line_directive(rest, line_num);

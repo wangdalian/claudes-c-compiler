@@ -10,6 +10,7 @@
 // Each module adds methods to the Parser struct via `impl Parser` blocks.
 // Methods are pub(super) so they can be called across modules within the parser.
 
+use crate::common::error::DiagnosticEngine;
 use crate::common::fx_hash::{FxHashMap, FxHashSet};
 use crate::common::source::{Span, SourceManager};
 use crate::common::types::AddressSpace;
@@ -143,6 +144,8 @@ pub struct Parser {
     pub error_count: usize,
     /// Source manager for resolving spans to file:line:col in error messages.
     source_manager: Option<SourceManager>,
+    /// Structured diagnostic engine for error/warning reporting with source snippets.
+    pub(super) diagnostics: DiagnosticEngine,
     /// Map of enum constant names to their integer values.
     /// Populated as enum definitions are parsed, so that later constant expressions
     /// (e.g., in __attribute__((aligned(1 << ENUM_CONST)))) can resolve them.
@@ -163,31 +166,67 @@ impl Parser {
             pragma_default_visibility: None,
             error_count: 0,
             source_manager: None,
+            diagnostics: DiagnosticEngine::new(),
             enum_constants: FxHashMap::default(),
         }
     }
 
     /// Set the source manager for resolving spans to file:line:col in errors.
+    /// Note: the driver typically sets the SM on the DiagnosticEngine instead
+    /// (via set_diagnostics), so this is mainly for backward compatibility.
     pub fn set_source_manager(&mut self, sm: SourceManager) {
         self.source_manager = Some(sm);
     }
 
     /// Take the source manager back from the parser (transfers ownership).
+    /// Checks the parser's own field first, then the diagnostic engine.
     /// Used by the driver to pass the source manager to the backend for
     /// debug info (.file/.loc) emission when compiling with -g.
     pub fn take_source_manager(&mut self) -> Option<SourceManager> {
-        self.source_manager.take()
+        self.source_manager.take().or_else(|| self.diagnostics.take_source_manager())
+    }
+
+    /// Set a pre-configured diagnostic engine on the parser.
+    /// Called by the driver after setting up the source manager on the engine.
+    pub fn set_diagnostics(&mut self, engine: DiagnosticEngine) {
+        self.diagnostics = engine;
+    }
+
+    /// Take the diagnostic engine back from the parser (transfers ownership).
+    /// The driver uses this to continue using the same engine across phases.
+    pub fn take_diagnostics(&mut self) -> DiagnosticEngine {
+        std::mem::take(&mut self.diagnostics)
     }
 
     /// Format a location prefix for error messages from a span.
     /// Returns "file:line:col: " if source manager is available, "" otherwise.
+    /// Checks both the parser's own source_manager and the diagnostic engine's.
+    /// Kept for use by parser extensions and future diagnostic improvements.
+    #[allow(dead_code)]
     pub(super) fn span_to_location(&self, span: Span) -> String {
         if let Some(ref sm) = self.source_manager {
+            let loc = sm.resolve_span(span);
+            format!("{}:{}:{}: ", loc.file, loc.line, loc.column)
+        } else if let Some(sm) = self.diagnostics.source_manager() {
             let loc = sm.resolve_span(span);
             format!("{}:{}:{}: ", loc.file, loc.line, loc.column)
         } else {
             String::new()
         }
+    }
+
+    /// Emit a parse error at the given span. Updates error_count and prints
+    /// the error with source location and snippet (if source manager is set).
+    pub(super) fn emit_error(&mut self, message: impl Into<String>, span: Span) {
+        self.error_count += 1;
+        self.diagnostics.error(message, span);
+    }
+
+    /// Emit a parse warning at the given span.
+    /// Not yet used; available for adding parser warnings (e.g., implicit conversions).
+    #[allow(dead_code)]
+    pub(super) fn emit_warning(&mut self, message: impl Into<String>, span: Span) {
+        self.diagnostics.warning(message, span);
     }
 
     /// Standard C typedef names commonly provided by system headers.
@@ -241,9 +280,8 @@ impl Parser {
             } else {
                 // Report error for unrecognized token at top level
                 if !matches!(self.peek(), TokenKind::Semicolon | TokenKind::Eof) {
-                    self.error_count += 1;
-                    let loc = self.span_to_location(self.peek_span());
-                    eprintln!("{}error: expected declaration, got {:?}", loc, self.peek());
+                    let span = self.peek_span();
+                    self.emit_error(format!("expected declaration, got {:?}", self.peek()), span);
                 }
                 self.advance();
             }
@@ -290,20 +328,7 @@ impl Parser {
             span
         } else {
             let span = self.peek_span();
-            // Show context around error
-            let start = if self.pos > 20 { self.pos - 20 } else { 0 };
-            let end = std::cmp::min(self.pos + 5, self.tokens.len());
-            let _context: Vec<_> = self.tokens[start..end].iter().map(|t| {
-                match &t.kind {
-                    TokenKind::Identifier(name) => format!("Id({})", name),
-                    TokenKind::IntLiteral(v) => format!("Int({})", v),
-                    TokenKind::StringLiteral(s) => format!("Str({})", s),
-                    other => format!("{:?}", other),
-                }
-            }).collect();
-            let loc = self.span_to_location(span);
-            eprintln!("{}error: expected {:?}, got {:?}", loc, expected, self.peek());
-            self.error_count += 1;
+            self.emit_error(format!("expected {:?}, got {:?}", expected, self.peek()), span);
             span
         }
     }
