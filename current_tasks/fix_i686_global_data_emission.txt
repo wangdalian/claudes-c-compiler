@@ -1,0 +1,17 @@
+Task: Fix i686 global data emission for 64-bit and 128-bit types
+Status: in_progress
+Started: 2026-01-28
+
+Description:
+On i686, the global data emission code in backend/common.rs uses PtrDirective::Long
+(.long = 4 bytes) for all data sizes. This truncates 64-bit values:
+
+1. IrConst::F64: emits `.long <64-bit-value>` which truncates to 32 bits.
+   All global doubles read as 0 or corrupt values.
+2. emit_int_data for I64/U64: same truncation issue for 64-bit integers.
+3. IrConst::I128: emits two `.long` (8 bytes) instead of four (16 bytes).
+4. IrConst::LongDouble x86 path: the `lo` u64 also gets truncated.
+
+Fix: When ptr_dir.is_32bit(), split 64-bit values into two .long directives
+(low 32 bits first, then high 32 bits) for little-endian correctness.
+Split 128-bit values into four .long directives.
