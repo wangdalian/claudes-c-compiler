@@ -348,15 +348,30 @@ impl Lowerer {
             self.func_meta.sigs.get(name)
                 .or_else(|| self.func_meta.ptr_sigs.get(name))
         );
+
+        // When calling through a complex expression (e.g., struct member function
+        // pointer like stats->compute_stats(...)), sig will be None because there
+        // is no named function to look up. In that case, try to extract parameter
+        // type information from the callee expression's CType so that implicit
+        // argument conversions (e.g., int -> double) are performed correctly.
+        let inferred_from_ctype = if sig.is_none() {
+            self.extract_fn_ptr_param_info(func)
+        } else {
+            None
+        };
+
         // If the signature has an empty parameter list (unprototyped function like `int f()`),
         // all arguments need default argument promotions (float->double, char/short->int).
         let is_unprototyped = sig.map_or(false, |s| s.param_types.is_empty());
-        let param_types: Option<Vec<IrType>> = sig.map(|s| s.param_types.clone()).filter(|v| !v.is_empty());
-        let param_ctypes: Option<Vec<CType>> = sig.map(|s| s.param_ctypes.clone()).filter(|v| !v.is_empty());
-        let param_bool_flags: Option<Vec<bool>> = sig.map(|s| s.param_bool_flags.clone()).filter(|v| !v.is_empty());
+        let param_types: Option<Vec<IrType>> = sig.map(|s| s.param_types.clone()).filter(|v| !v.is_empty())
+            .or_else(|| inferred_from_ctype.as_ref().map(|(pt, _, _, _)| pt.clone()).filter(|v| !v.is_empty()));
+        let param_ctypes: Option<Vec<CType>> = sig.map(|s| s.param_ctypes.clone()).filter(|v| !v.is_empty())
+            .or_else(|| inferred_from_ctype.as_ref().map(|(_, pc, _, _)| pc.clone()).filter(|v| !v.is_empty()));
+        let param_bool_flags: Option<Vec<bool>> = sig.map(|s| s.param_bool_flags.clone()).filter(|v| !v.is_empty())
+            .or_else(|| inferred_from_ctype.as_ref().map(|(_, _, pb, _)| pb.clone()).filter(|v| !v.is_empty()));
         let pre_call_variadic = func_name.map_or(false, |name|
             self.is_function_variadic(name)
-        );
+        ) || inferred_from_ctype.as_ref().map_or(false, |(_, _, _, variadic)| *variadic);
 
         let mut arg_types = Vec::with_capacity(args.len());
         let arg_vals: Vec<Operand> = args.iter().enumerate().map(|(i, a)| {
@@ -725,5 +740,24 @@ impl Lowerer {
             CType::ComplexLongDouble => IrType::F128,
             other => IrType::from_ctype(other),
         }
+    }
+
+    /// Extract parameter type information from a function pointer expression's CType.
+    /// This is used as a fallback when the callee is a complex expression (e.g.,
+    /// struct member function pointer like `stats->compute_stats(...)`) and we
+    /// don't have a named function signature to look up.
+    ///
+    /// Returns `Some((param_types, param_ctypes, param_bool_flags))` if the
+    /// callee's CType is a function pointer with known parameter types.
+    fn extract_fn_ptr_param_info(&self, func_expr: &Expr) -> Option<(Vec<IrType>, Vec<CType>, Vec<bool>, bool)> {
+        let ctype = self.get_expr_ctype(func_expr)?;
+        let ft = ctype.get_function_type()?;
+        if ft.params.is_empty() {
+            return None; // Unprototyped function - no parameter info
+        }
+        let param_types: Vec<IrType> = ft.params.iter().map(|(ct, _)| IrType::from_ctype(ct)).collect();
+        let param_ctypes: Vec<CType> = ft.params.iter().map(|(ct, _)| ct.clone()).collect();
+        let param_bool_flags: Vec<bool> = ft.params.iter().map(|(ct, _)| matches!(ct, CType::Bool)).collect();
+        Some((param_types, param_ctypes, param_bool_flags, ft.variadic))
     }
 }

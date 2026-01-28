@@ -1154,6 +1154,25 @@ impl CType {
         matches!(self, CType::Pointer(inner, _) if matches!(inner.as_ref(), CType::Function(_)))
     }
 
+    /// Extract the FunctionType from a function pointer or function type.
+    /// Handles up to two levels of pointer indirection (e.g., Pointer(Pointer(Function)))
+    /// to support pointer-to-function-pointer types used in indirect call expressions.
+    /// Returns None if this is not a function or function pointer type.
+    pub fn get_function_type(&self) -> Option<&FunctionType> {
+        match self {
+            CType::Function(ft) => Some(ft),
+            CType::Pointer(inner, _) => match inner.as_ref() {
+                CType::Function(ft) => Some(ft),
+                CType::Pointer(inner2, _) => match inner2.as_ref() {
+                    CType::Function(ft) => Some(ft),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Get the pointee type if this is a Pointer.
     pub fn pointee(&self) -> Option<&CType> {
         match self {
