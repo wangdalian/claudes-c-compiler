@@ -903,8 +903,7 @@ impl ArchCodegen for I686Codegen {
             self.emit_f64_load_to_x87(lhs);
             self.emit_f64_load_to_x87(rhs);
             // x87 stack: st(0)=rhs, st(1)=lhs
-            // faddp/fmulp: st(1) = st(1) op st(0), pop st(0)
-            // fsubp/fdivp: st(1) = st(1) op st(0), pop st(0) (lhs - rhs / lhs / rhs)
+            // fsubrp/fdivrp: st(1) = st(1) op st(0), pop (correct order for lhs-rhs)
             emit!(self.state, "    f{}p %st, %st(1)", mnemonic);
             // Result is in st(0), store to dest's 8-byte stack slot
             self.emit_f64_store_from_x87(dest);
@@ -925,8 +924,15 @@ impl ArchCodegen for I686Codegen {
             self.state.reg_cache.invalidate_acc();
             return;
         }
-        // F32: use default path (SSE via eax)
-        let mnemonic = self.emit_float_binop_mnemonic(op);
+        // F32: use SSE with standard mnemonics (sub, div, add, mul).
+        // Load order: lhs→eax→ecx, rhs→eax. In emit_float_binop_impl,
+        // ecx→xmm0 (lhs), eax→xmm1 (rhs), so subss %xmm1,%xmm0 = lhs-rhs.
+        let mnemonic = match op {
+            crate::backend::cast::FloatOp::Add => "add",
+            crate::backend::cast::FloatOp::Sub => "sub",
+            crate::backend::cast::FloatOp::Mul => "mul",
+            crate::backend::cast::FloatOp::Div => "div",
+        };
         self.emit_load_operand(lhs);
         self.emit_acc_to_secondary();
         self.emit_load_operand(rhs);
@@ -934,31 +940,38 @@ impl ArchCodegen for I686Codegen {
         self.emit_store_result(dest);
     }
 
+    /// Override to return x87-appropriate mnemonics for fsubp/fdivp.
+    ///
+    /// x87 stack: st(0)=rhs, st(1)=lhs (loaded in that order).
+    /// We want lhs OP rhs, i.e., st(1) OP st(0).
+    ///
+    /// GAS AT&T syntax has a historical quirk where fsubp/fdivp with two
+    /// explicit operands swap the subtraction/division order:
+    ///   fsubp  %st, %st(1) → st(1) = st(0) - st(1)  (reversed!)
+    ///   fsubrp %st, %st(1) → st(1) = st(1) - st(0)  (the order we want)
+    /// Same applies to fdivp vs fdivrp.
+    /// faddp and fmulp are commutative so order doesn't matter.
+    ///
+    /// For F32 (SSE), the emit_float_binop_impl uses swapped xmm registers
+    /// to compensate, so these mnemonics are only correct for x87 paths.
     fn emit_float_binop_mnemonic(&self, op: crate::backend::cast::FloatOp) -> &'static str {
         match op {
             crate::backend::cast::FloatOp::Add => "add",
-            crate::backend::cast::FloatOp::Sub => "sub",
+            crate::backend::cast::FloatOp::Sub => "subr",
             crate::backend::cast::FloatOp::Mul => "mul",
-            crate::backend::cast::FloatOp::Div => "div",
+            crate::backend::cast::FloatOp::Div => "divr",
         }
     }
 
     fn emit_float_binop_impl(&mut self, mnemonic: &str, ty: IrType) {
-        // Use SSE for F32, x87 for F64 (handled via emit_float_binop override)
+        // F32: Use SSE. F64/F128 are handled by emit_float_binop override (x87).
+        // Load order: lhs→ecx, rhs→eax. Put lhs in xmm0, rhs in xmm1 so that
+        // subss/divss %xmm1, %xmm0 computes xmm0 = lhs - rhs (correct order).
         if ty == IrType::F32 {
-            self.state.emit("    movd %ecx, %xmm1");
-            self.state.emit("    movd %eax, %xmm0");
+            self.state.emit("    movd %ecx, %xmm0");
+            self.state.emit("    movd %eax, %xmm1");
             emit!(self.state, "    {}ss %xmm1, %xmm0", mnemonic);
             self.state.emit("    movd %xmm0, %eax");
-        } else if ty == IrType::F64 {
-            // F64 binops are handled by emit_float_binop override which uses x87.
-            // This path shouldn't normally be reached for F64, but handle it defensively.
-            // The x87 stack should have: st(0)=rhs, st(1)=lhs after the override loads.
-            emit!(self.state, "    f{}p %st, %st(1)", mnemonic);
-        } else if ty == IrType::F128 {
-            // F128 (x87 long double) - use x87 directly
-            // Both operands should already be on x87 stack from the load path
-            emit!(self.state, "    f{}p %st, %st(1)", mnemonic);
         }
         self.state.reg_cache.invalidate_acc();
     }
