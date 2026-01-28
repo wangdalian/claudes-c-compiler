@@ -1024,10 +1024,49 @@ impl ArchCodegen for I686Codegen {
                 }
             }
         }
-        // Default path for non-F128 copies (32-bit).
-        // Most I64 values on i686 are widened I32 arithmetic where only
-        // the low 32 bits matter. True long long values are handled
-        // at load/store boundaries where full 8-byte operations are used.
+
+        // Wide values (F64, I64/U64) on i686 need 8-byte copies.
+        // The 32-bit accumulator (eax) can only hold 4 bytes, so we must
+        // copy both halves of the 64-bit value.
+        let is_wide = match src {
+            Operand::Value(v) => self.state.is_wide_value(v.0),
+            Operand::Const(IrConst::F64(_)) => true,
+            Operand::Const(IrConst::I64(_)) => true,
+            _ => false,
+        };
+        if is_wide {
+            if let Some(dest_slot) = self.state.get_slot(dest.0) {
+                match src {
+                    Operand::Value(v) => {
+                        if let Some(src_slot) = self.state.get_slot(v.0) {
+                            // Copy 8 bytes: two 32-bit moves
+                            emit!(self.state, "    movl {}(%ebp), %eax", src_slot.0);
+                            emit!(self.state, "    movl %eax, {}(%ebp)", dest_slot.0);
+                            emit!(self.state, "    movl {}(%ebp), %eax", src_slot.0 + 4);
+                            emit!(self.state, "    movl %eax, {}(%ebp)", dest_slot.0 + 4);
+                        }
+                    }
+                    Operand::Const(IrConst::F64(val)) => {
+                        let bits = val.to_bits();
+                        let lo = bits as u32;
+                        let hi = (bits >> 32) as u32;
+                        emit!(self.state, "    movl ${}, {}(%ebp)", lo as i32, dest_slot.0);
+                        emit!(self.state, "    movl ${}, {}(%ebp)", hi as i32, dest_slot.0 + 4);
+                    }
+                    Operand::Const(IrConst::I64(val)) => {
+                        let lo = *val as u32;
+                        let hi = (*val >> 32) as u32;
+                        emit!(self.state, "    movl ${}, {}(%ebp)", lo as i32, dest_slot.0);
+                        emit!(self.state, "    movl ${}, {}(%ebp)", hi as i32, dest_slot.0 + 4);
+                    }
+                    _ => unreachable!(),
+                }
+                self.state.reg_cache.invalidate_all();
+                return;
+            }
+        }
+
+        // Default path for non-F128, non-wide copies (32-bit values).
         self.emit_load_operand(src);
         self.emit_store_result(dest);
     }

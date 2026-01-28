@@ -129,6 +129,92 @@ pub fn allocate_registers(
     // standard accumulator path (e.g., store_rax_to on x86, store_t0_to on RISC-V).
     let mut eligible: FxHashSet<u32> = FxHashSet::default();
 
+    // Track values whose types don't fit in a single GPR (floats, i128, and
+    // on 32-bit targets: i64/u64). Copy instructions that chain from these
+    // values must also be excluded from register allocation.
+    let mut non_gpr_values: FxHashSet<u32> = FxHashSet::default();
+
+    // Helper closure to check if a type is unsuitable for GPR allocation
+    let is_non_gpr_type = |ty: &IrType| -> bool {
+        ty.is_float() || ty.is_long_double()
+            || matches!(ty, IrType::I128 | IrType::U128)
+            || (is_32bit && matches!(ty, IrType::I64 | IrType::U64))
+    };
+
+    // First pass: collect non-GPR values from typed instructions
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            match inst {
+                Instruction::BinOp { dest, ty, .. }
+                | Instruction::UnaryOp { dest, ty, .. } => {
+                    if is_non_gpr_type(ty) {
+                        non_gpr_values.insert(dest.0);
+                    }
+                }
+                Instruction::Cast { dest, to_ty, from_ty, .. } => {
+                    if is_non_gpr_type(to_ty) || is_non_gpr_type(from_ty) {
+                        non_gpr_values.insert(dest.0);
+                    }
+                }
+                Instruction::Load { dest, ty, .. } => {
+                    if is_non_gpr_type(ty) {
+                        non_gpr_values.insert(dest.0);
+                    }
+                }
+                Instruction::Call { dest: Some(dest), return_type, .. }
+                | Instruction::CallIndirect { dest: Some(dest), return_type, .. } => {
+                    if is_non_gpr_type(return_type) {
+                        non_gpr_values.insert(dest.0);
+                    }
+                }
+                Instruction::Select { dest, ty, .. } => {
+                    if is_non_gpr_type(ty) {
+                        non_gpr_values.insert(dest.0);
+                    }
+                }
+                Instruction::AtomicLoad { dest, ty, .. }
+                | Instruction::AtomicRmw { dest, ty, .. }
+                | Instruction::AtomicCmpxchg { dest, ty, .. } => {
+                    if is_non_gpr_type(ty) {
+                        non_gpr_values.insert(dest.0);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Propagate non-GPR status through Copy chains: if a Copy's source is a
+    // non-GPR value, the dest is also non-GPR. Iterate until fixpoint since
+    // Copies can chain (Copy a->b, Copy b->c).
+    loop {
+        let mut changed = false;
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                if let Instruction::Copy { dest, src } = inst {
+                    if non_gpr_values.contains(&dest.0) {
+                        continue;
+                    }
+                    let src_is_non_gpr = match src {
+                        Operand::Value(v) => non_gpr_values.contains(&v.0),
+                        Operand::Const(IrConst::F32(_)) | Operand::Const(IrConst::F64(_))
+                        | Operand::Const(IrConst::LongDouble(..))
+                        | Operand::Const(IrConst::I128(_)) => true,
+                        Operand::Const(IrConst::I64(_)) if is_32bit => true,
+                        _ => false,
+                    };
+                    if src_is_non_gpr {
+                        non_gpr_values.insert(dest.0);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
     for (block_idx, block) in func.blocks.iter().enumerate() {
         // Get the loop weight for this block (default 1 if no loop info available).
         let weight: u64 = if block_idx < block_loop_weight.len() {
@@ -144,10 +230,7 @@ pub fn allocate_registers(
             match inst {
                 Instruction::BinOp { dest, ty, .. }
                 | Instruction::UnaryOp { dest, ty, .. } => {
-                    if !ty.is_float() && !ty.is_long_double()
-                        && !matches!(ty, IrType::I128 | IrType::U128)
-                        // On 32-bit targets, I64/U64 values don't fit in a single register
-                        && !(is_32bit && matches!(ty, IrType::I64 | IrType::U64)) {
+                    if !is_non_gpr_type(ty) {
                         eligible.insert(dest.0);
                     }
                 }
@@ -155,21 +238,12 @@ pub fn allocate_registers(
                     eligible.insert(dest.0);
                 }
                 Instruction::Cast { dest, to_ty, from_ty, .. } => {
-                    if !to_ty.is_float() && !to_ty.is_long_double()
-                        && !from_ty.is_float() && !from_ty.is_long_double()
-                        && !matches!(to_ty, IrType::I128 | IrType::U128)
-                        && !matches!(from_ty, IrType::I128 | IrType::U128)
-                        // On 32-bit targets, I64/U64 values don't fit in a single register
-                        && !(is_32bit && (matches!(to_ty, IrType::I64 | IrType::U64)
-                                       || matches!(from_ty, IrType::I64 | IrType::U64))) {
+                    if !is_non_gpr_type(to_ty) && !is_non_gpr_type(from_ty) {
                         eligible.insert(dest.0);
                     }
                 }
                 Instruction::Load { dest, ty, .. } => {
-                    if !ty.is_float() && !ty.is_long_double()
-                        && !matches!(ty, IrType::I128 | IrType::U128)
-                        // On 32-bit targets, I64/U64 values don't fit in a single register
-                        && !(is_32bit && matches!(ty, IrType::I64 | IrType::U64)) {
+                    if !is_non_gpr_type(ty) {
                         eligible.insert(dest.0);
                     }
                 }
@@ -177,17 +251,10 @@ pub fn allocate_registers(
                     eligible.insert(dest.0);
                 }
                 Instruction::Copy { dest, src } => {
-                    // Copy instructions (often from phi elimination) are eligible
-                    // unless the source is a float, long double, or i128 constant
-                    // (these use different register paths).
-                    let is_ineligible = matches!(src,
-                        Operand::Const(IrConst::F32(_)) | Operand::Const(IrConst::F64(_)) |
-                        Operand::Const(IrConst::LongDouble(..)) | Operand::Const(IrConst::I128(_))
-                    );
-                    // On 32-bit, also exclude I64 constants
-                    let is_ineligible = is_ineligible ||
-                        (is_32bit && matches!(src, Operand::Const(IrConst::I64(_))));
-                    if !is_ineligible {
+                    // Copy instructions are eligible unless the source produces a
+                    // non-GPR value (float, i128, or i64 on 32-bit). We check both
+                    // constant types and propagated non-GPR status from Value sources.
+                    if !non_gpr_values.contains(&dest.0) {
                         eligible.insert(dest.0);
                     }
                 }
@@ -202,16 +269,12 @@ pub fn allocate_registers(
                 // across subsequent calls would otherwise each consume an 8-byte
                 // stack slot.
                 Instruction::Call { dest: Some(dest), return_type, .. } => {
-                    if !return_type.is_float() && !return_type.is_long_double()
-                        && !matches!(return_type, IrType::I128 | IrType::U128)
-                        && !(is_32bit && matches!(return_type, IrType::I64 | IrType::U64)) {
+                    if !is_non_gpr_type(return_type) {
                         eligible.insert(dest.0);
                     }
                 }
                 Instruction::CallIndirect { dest: Some(dest), return_type, .. } => {
-                    if !return_type.is_float() && !return_type.is_long_double()
-                        && !matches!(return_type, IrType::I128 | IrType::U128)
-                        && !(is_32bit && matches!(return_type, IrType::I64 | IrType::U64)) {
+                    if !is_non_gpr_type(return_type) {
                         eligible.insert(dest.0);
                     }
                 }
@@ -219,9 +282,7 @@ pub fn allocate_registers(
                 // (cmov on x86, csel on ARM, branch on RISC-V) and stores via
                 // store_rax_to/store_t0_to. Eligible unless float/i128.
                 Instruction::Select { dest, ty, .. } => {
-                    if !ty.is_float() && !ty.is_long_double()
-                        && !matches!(ty, IrType::I128 | IrType::U128)
-                        && !(is_32bit && matches!(ty, IrType::I64 | IrType::U64)) {
+                    if !is_non_gpr_type(ty) {
                         eligible.insert(dest.0);
                     }
                 }
@@ -239,25 +300,19 @@ pub fn allocate_registers(
                 // Atomic operations store their results via store_rax_to/store_t0_to.
                 // AtomicLoad loads a value from memory atomically.
                 Instruction::AtomicLoad { dest, ty, .. } => {
-                    if !ty.is_float() && !ty.is_long_double()
-                        && !matches!(ty, IrType::I128 | IrType::U128)
-                        && !(is_32bit && matches!(ty, IrType::I64 | IrType::U64)) {
+                    if !is_non_gpr_type(ty) {
                         eligible.insert(dest.0);
                     }
                 }
                 // AtomicRmw performs read-modify-write and returns old value.
                 Instruction::AtomicRmw { dest, ty, .. } => {
-                    if !ty.is_float() && !ty.is_long_double()
-                        && !matches!(ty, IrType::I128 | IrType::U128)
-                        && !(is_32bit && matches!(ty, IrType::I64 | IrType::U64)) {
+                    if !is_non_gpr_type(ty) {
                         eligible.insert(dest.0);
                     }
                 }
                 // AtomicCmpxchg returns old value or bool via accumulator.
                 Instruction::AtomicCmpxchg { dest, ty, .. } => {
-                    if !ty.is_float() && !ty.is_long_double()
-                        && !matches!(ty, IrType::I128 | IrType::U128)
-                        && !(is_32bit && matches!(ty, IrType::I64 | IrType::U64)) {
+                    if !is_non_gpr_type(ty) {
                         eligible.insert(dest.0);
                     }
                 }

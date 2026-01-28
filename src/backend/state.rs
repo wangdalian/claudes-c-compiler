@@ -88,6 +88,11 @@ pub struct CodegenState {
     pub alloca_alignments: FxHashMap<u32, usize>,
     /// Values that are 128-bit integers (need 16-byte copy).
     pub i128_values: FxHashSet<u32>,
+    /// Values that are 64-bit types on 32-bit targets (F64, I64/U64).
+    /// These values don't fit in a single 32-bit GPR and need special
+    /// copy handling (e.g., x87 fldl/fstpl for F64, two-word copy for I64).
+    /// Only populated on i686; empty on 64-bit targets.
+    pub wide_values: FxHashSet<u32>,
     /// Counter for generating unique labels (e.g., memcpy loops).
     label_counter: u32,
     /// Whether position-independent code (PIC) generation is enabled.
@@ -181,6 +186,7 @@ impl CodegenState {
             alloca_types: FxHashMap::default(),
             alloca_alignments: FxHashMap::default(),
             i128_values: FxHashSet::default(),
+            wide_values: FxHashSet::default(),
             label_counter: 0,
             pic_mode: false,
             local_symbols: FxHashSet::default(),
@@ -260,6 +266,7 @@ impl CodegenState {
         self.alloca_types.clear();
         self.alloca_alignments.clear();
         self.i128_values.clear();
+        self.wide_values.clear();
         self.has_dyn_alloca = false;
         self.reg_cache.invalidate_all();
         self.f128_direct_slots.clear();
@@ -282,6 +289,12 @@ impl CodegenState {
 
     pub fn is_i128_value(&self, v: u32) -> bool {
         self.i128_values.contains(&v)
+    }
+
+    /// Check if a value is a "wide" type on 32-bit targets (F64, I64, U64).
+    /// These need multi-word copy handling instead of the 32-bit accumulator path.
+    pub fn is_wide_value(&self, v: u32) -> bool {
+        self.wide_values.contains(&v)
     }
 
     /// Track that `dest_id` was loaded from `source_id` at the given byte offset.

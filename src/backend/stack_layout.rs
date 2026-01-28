@@ -941,6 +941,17 @@ pub fn calculate_stack_space_common(
                     state.i128_values.insert(dest.0);
                 }
 
+                // On 32-bit targets, track values wider than 32 bits (F64, I64/U64)
+                // so that copy operations can use appropriate multi-word handling
+                // instead of the default 32-bit accumulator path.
+                if crate::common::types::target_is_32bit() {
+                    let is_wide = matches!(inst.result_type(),
+                        Some(IrType::F64) | Some(IrType::I64) | Some(IrType::U64));
+                    if is_wide {
+                        state.wide_values.insert(dest.0);
+                    }
+                }
+
                 // Skip stack slot allocation for values assigned to registers.
                 // These values will live in callee-saved registers and never
                 // need a stack slot, saving significant frame space.

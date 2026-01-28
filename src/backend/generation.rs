@@ -907,6 +907,17 @@ fn generate_instruction(cg: &mut dyn ArchCodegen, inst: &Instruction, gep_fold_m
                 cg.emit_copy_i128(dest, src);
                 cg.state().reg_cache.invalidate_all();
             } else {
+                // Propagate wide value status through Copy chains on 32-bit targets.
+                // If the source is a wide value (F64, I64, U64), the dest is too.
+                let is_wide = match src {
+                    Operand::Value(v) => cg.state_ref().is_wide_value(v.0),
+                    Operand::Const(IrConst::F64(_)) => crate::common::types::target_is_32bit(),
+                    Operand::Const(IrConst::I64(_)) => crate::common::types::target_is_32bit(),
+                    _ => false,
+                };
+                if is_wide {
+                    cg.state().wide_values.insert(dest.0);
+                }
                 // Copy: use emit_copy_value which may emit a direct register-to-register
                 // copy if the backend supports it, avoiding the accumulator roundtrip.
                 cg.emit_copy_value(dest, src);
