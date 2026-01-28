@@ -1,0 +1,16 @@
+Task: Fix Dependency Tracking (-M/-MD/-MMD)
+
+Status: in_progress
+
+Problem:
+The -MD/-MMD dependency file output doesn't track actually-included headers.
+The preprocessor processes #include directives but doesn't collect the set of
+included files. The driver's write_dep_file() method only writes "output: input\n"
+without any header dependencies, making Make/build system integration broken.
+
+Plan:
+1. Add included-file tracking to the preprocessor (collect all files opened via #include)
+2. Pass the collected header list from preprocessor through the pipeline to the driver
+3. Update write_dep_file() to emit all included headers in the dependency output
+4. Support -M (deps only, no compile), -MM (skip system headers), -MP (phony targets)
+5. Ensure the Linux kernel build still works with the improved dependency output
