@@ -467,7 +467,7 @@ impl InlineAsmEmitter for X86Codegen {
         Self::substitute_x86_asm_operands(line, &op_regs, &op_names, &op_is_memory, &op_mem_addrs, &op_types, gcc_to_internal, goto_labels, &op_imm_values, &op_imm_symbols)
     }
 
-    fn store_output_from_reg(&mut self, op: &AsmOperand, ptr: &Value, _constraint: &str) {
+    fn store_output_from_reg(&mut self, op: &AsmOperand, ptr: &Value, _constraint: &str, _all_output_regs: &[&str]) {
         if matches!(op.kind, AsmOperandKind::Memory) {
             return;
         }

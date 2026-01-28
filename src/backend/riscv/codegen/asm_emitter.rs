@@ -242,7 +242,7 @@ impl InlineAsmEmitter for RiscvCodegen {
         result
     }
 
-    fn store_output_from_reg(&mut self, op: &AsmOperand, ptr: &Value, _constraint: &str) {
+    fn store_output_from_reg(&mut self, op: &AsmOperand, ptr: &Value, _constraint: &str, all_output_regs: &[&str]) {
         match &op.kind {
             AsmOperandKind::Memory => return,
             AsmOperandKind::Address => return, // AMO/LR/SC wrote through the pointer
@@ -252,9 +252,15 @@ impl InlineAsmEmitter for RiscvCodegen {
                     if self.state.is_alloca(ptr.0) {
                         self.emit_store_to_s0(&reg, slot.0, "fsd");
                     } else {
-                        // Non-alloca: slot holds a pointer, store through it
-                        self.state.emit_fmt(format_args!("    ld t0, {}(s0)", slot.0));
-                        self.state.emit_fmt(format_args!("    fsd {}, 0(t0)", reg));
+                        // Non-alloca: slot holds a pointer, store through it.
+                        // Pick a scratch register not used by any output operand.
+                        let candidates = ["t0", "t1", "t2", "t3", "t4", "t5", "t6"];
+                        let scratch = candidates.iter()
+                            .find(|&&c| !all_output_regs.contains(&c))
+                            .copied()
+                            .unwrap_or("t0");
+                        self.state.emit_fmt(format_args!("    ld {}, {}(s0)", scratch, slot.0));
+                        self.state.emit_fmt(format_args!("    fsd {}, 0({})", reg, scratch));
                     }
                 }
             }
@@ -264,8 +270,13 @@ impl InlineAsmEmitter for RiscvCodegen {
                     if self.state.is_alloca(ptr.0) {
                         self.emit_store_to_s0(&reg, slot.0, "sd");
                     } else {
-                        // Non-alloca: slot holds a pointer, store through it
-                        let scratch = if reg != "t0" { "t0" } else { "t1" };
+                        // Non-alloca: slot holds a pointer, store through it.
+                        // Pick a scratch register not used by any output operand.
+                        let candidates = ["t0", "t1", "t2", "t3", "t4", "t5", "t6"];
+                        let scratch = candidates.iter()
+                            .find(|&&c| !all_output_regs.contains(&c))
+                            .copied()
+                            .unwrap_or(if reg != "t0" { "t0" } else { "t1" });
                         self.state.emit_fmt(format_args!("    ld {}, {}(s0)", scratch, slot.0));
                         self.state.emit_fmt(format_args!("    sd {}, 0({})", reg, scratch));
                     }

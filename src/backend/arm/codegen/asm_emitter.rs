@@ -258,7 +258,7 @@ impl InlineAsmEmitter for ArmCodegen {
         result
     }
 
-    fn store_output_from_reg(&mut self, op: &AsmOperand, ptr: &Value, _constraint: &str) {
+    fn store_output_from_reg(&mut self, op: &AsmOperand, ptr: &Value, _constraint: &str, all_output_regs: &[&str]) {
         if matches!(op.kind, AsmOperandKind::Memory) {
             return;
         }
@@ -283,8 +283,15 @@ impl InlineAsmEmitter for ArmCodegen {
             } else if self.state.is_alloca(ptr.0) {
                 self.emit_store_to_sp(reg, slot.0, "str");
             } else {
-                // Non-alloca: slot holds a pointer, store through it
-                let scratch = if reg != "x9" { "x9" } else { "x10" };
+                // Non-alloca: slot holds a pointer, store through it.
+                // Pick a scratch register that doesn't conflict with ANY output register,
+                // not just the current one. This prevents clobbering other outputs that
+                // haven't been stored yet.
+                let candidates = ["x9", "x10", "x11", "x12", "x13", "x14", "x15"];
+                let scratch = candidates.iter()
+                    .find(|&&c| !all_output_regs.contains(&c))
+                    .copied()
+                    .unwrap_or(if reg != "x9" { "x9" } else { "x10" });
                 self.emit_load_from_sp(scratch, slot.0, "ldr");
                 self.state.emit_fmt(format_args!("    str {}, [{}]", reg, scratch));
             }

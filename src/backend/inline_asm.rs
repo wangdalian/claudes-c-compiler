@@ -129,7 +129,9 @@ pub trait InlineAsmEmitter {
     fn substitute_template_line(&self, line: &str, operands: &[AsmOperand], gcc_to_internal: &[usize], operand_types: &[IrType], goto_labels: &[(String, BlockId)]) -> String;
 
     /// Store an output register value back to its stack slot after the asm executes.
-    fn store_output_from_reg(&mut self, op: &AsmOperand, ptr: &Value, constraint: &str);
+    /// `all_output_regs` contains the register names of ALL output operands, used to
+    /// avoid clobbering other output registers when picking scratch registers.
+    fn store_output_from_reg(&mut self, op: &AsmOperand, ptr: &Value, constraint: &str, all_output_regs: &[&str]);
 
     /// Resolve memory operand addresses that require indirection (non-alloca pointers).
     /// `excluded` contains registers claimed by specific-register constraints,
@@ -676,9 +678,14 @@ pub fn emit_inline_asm_common_impl(
     }
 
     // Phase 4: Store output register values back to their stack slots
+    // Collect all output register names to avoid clobbering when picking scratch registers.
+    let all_output_regs: Vec<&str> = outputs.iter().enumerate()
+        .filter(|(_, (c, _, _))| c.contains('=') || c.contains('+'))
+        .map(|(i, _)| operands[i].reg.as_str())
+        .collect();
     for (i, (constraint, ptr, _)) in outputs.iter().enumerate() {
         if constraint.contains('=') || constraint.contains('+') {
-            emitter.store_output_from_reg(&operands[i], ptr, constraint);
+            emitter.store_output_from_reg(&operands[i], ptr, constraint, &all_output_regs);
         }
     }
 }
