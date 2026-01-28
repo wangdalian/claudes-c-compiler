@@ -1,0 +1,8 @@
+Fix vector type handling in multiple areas:
+1. Pointer dereference of vectors (pointee_is_no_load missing Vector)
+2. Global vector variable initialization (emit element-sized data, not pointer-sized)
+3. Array-of-vectors global initialization (flatten vector compound literals)
+4. Array subscript returning vector type (skip Load for aggregate vectors)
+5. Array-of-vectors element access stride (peel_pointer_elem_size for Vector)
+
+Status: in_progress
