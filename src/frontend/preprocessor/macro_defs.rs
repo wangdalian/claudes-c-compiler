@@ -217,7 +217,7 @@ impl MacroTable {
                         if prev.is_ascii_digit() {
                             true
                         } else if prev == b'.' && rlen >= 2 && result_bytes[rlen - 2].is_ascii_digit() {
-                            true
+                            is_ppnumber_context(result_bytes, rlen - 2)
                         } else if (prev == b'+' || prev == b'-') && rlen >= 3
                             && matches!(result_bytes[rlen - 2], b'e' | b'E' | b'p' | b'P') {
                             is_ppnumber_context(result_bytes, rlen - 3)
