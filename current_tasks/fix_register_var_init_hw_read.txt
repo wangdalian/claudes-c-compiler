@@ -1,0 +1,21 @@
+Fix local register variable reads for initialized variables
+
+Status: in_progress
+
+Problem:
+Commit 3c5ad0a made ALL local register variable reads go through
+read_global_register(), which reads the hardware register. But for
+variables like `register long x8 __asm__("x8") = n;` (with an initializer),
+the intent is NOT to read the hardware register. The initializer stores
+to the alloca but the read bypasses it and reads the hw register instead.
+
+This causes ARM musl to hang because __syscall1() uses:
+  register long x8 __asm__("x8") = n;  // syscall number
+  register long x0 __asm__("x0") = a;  // arg
+Both get their values from the hw register (uninitialized junk) rather
+than from the initializer values.
+
+Fix:
+Track whether a local register variable has an initializer. If it does,
+read from the alloca (normal path). Only read the hardware register for
+uninitialized register variables (like `register unsigned long tp __asm__("tp");`).
