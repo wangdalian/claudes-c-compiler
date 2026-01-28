@@ -181,11 +181,13 @@ impl Lowerer {
         self.target == Target::Aarch64
     }
 
-    /// Returns true if the target uses x86 style packed _Complex float ABI
+    /// Returns true if the target uses x86-64 style packed _Complex float ABI
     /// (two F32s packed into a single F64/xmm register).
     /// Returns false for ARM/RISC-V which pass _Complex float as two separate F32 registers.
+    /// Returns false for i686 where _Complex float is passed/returned as a struct (8 bytes
+    /// in eax:edx or on the stack), not packed into an XMM register.
     pub(super) fn uses_packed_complex_float(&self) -> bool {
-        self.target == Target::X86_64 || self.target == Target::I686
+        self.target == Target::X86_64
     }
 
     /// Returns true if the target packs _Complex float into a single 8-byte value
@@ -206,12 +208,31 @@ impl Lowerer {
     }
 
     /// Returns true if the target returns _Complex long double via register pairs
-    /// (x87 st(0)/st(1) on x86) rather than via sret hidden pointer.
-    /// On x86-64/i686: true (COMPLEX_X87 class, returned in st(0) and st(1)).
+    /// (x87 st(0)/st(1) on x86-64) rather than via sret hidden pointer.
+    /// On x86-64: true (COMPLEX_X87 class, returned in st(0) and st(1)).
+    /// On i686: false (24 bytes > 8-byte reg pair; uses sret hidden pointer like GCC).
     /// On ARM64: false (returned via decomposition into q0/q1, handled separately).
     /// On RISC-V: false (returned via sret hidden pointer).
     pub(super) fn returns_complex_long_double_in_regs(&self) -> bool {
-        self.target == Target::X86_64 || self.target == Target::I686
+        self.target == Target::X86_64
+    }
+
+    /// Returns true if the target decomposes _Complex double into two separate
+    /// FP scalar arguments/returns (real, imag) rather than passing as a struct.
+    /// On x86-64: true (xmm0/xmm1 for return, separate XMM regs for params).
+    /// On ARM64: true (d0/d1 for return, separate FP regs for params).
+    /// On RISC-V: true (fa0/fa1 for return, separate FP regs for params).
+    /// On i686: false (16 bytes > 8; uses sret for return, struct-on-stack for params).
+    pub(super) fn decomposes_complex_double(&self) -> bool {
+        self.target != Target::I686
+    }
+
+    /// Returns true if the target decomposes _Complex float into two separate
+    /// FP scalar arguments rather than passing as a struct.
+    /// On i686: false (8 bytes fits in eax:edx for return, passed as struct on stack).
+    /// On all 64-bit targets: true (decomposed into two FP register args).
+    pub(super) fn decomposes_complex_float(&self) -> bool {
+        self.target != Target::I686
     }
 
     /// Look up the shared type metadata for a variable by name.
@@ -610,28 +631,43 @@ impl Lowerer {
 
         // Compute return type, wrapping with pointer levels if needed
         let mut ret_ty = IrType::from_ctype(&full_ret_ctype);
-        // Complex return types need special IR type overrides:
-        // _Complex double: real in first FP register (F64), imag in second
-        // _Complex float:
-        //   x86-64: packed two F32 in one xmm register -> F64
-        //   ARM/RISC-V: real in first FP register -> F32, imag in second FP register
+        // Complex return types need special IR type overrides based on target ABI:
+        //
+        // x86-64:
+        //   _Complex double: real in xmm0 (F64), imag in xmm1 -> IR ret type F64
+        //   _Complex float: packed two F32 in xmm0 as F64 -> IR ret type F64
+        //   _Complex long double: real in x87 st(0) -> IR ret type F128
+        //
+        // ARM64/RISC-V:
+        //   _Complex double: real in d0 (F64), imag in d1 -> IR ret type F64
+        //   _Complex float: real in s0 (F32), imag in s1 -> IR ret type F32
+        //
+        // i686:
+        //   _Complex float (8 bytes): packed in eax:edx -> IR ret type I64
+        //   _Complex double (16 bytes): sret hidden pointer (ret_ty stays Ptr)
+        //   _Complex long double (24 bytes): sret hidden pointer (ret_ty stays Ptr)
         if ptr_count == 0 {
-            if matches!(full_ret_ctype, CType::ComplexLongDouble) && self.is_x86() {
+            if matches!(full_ret_ctype, CType::ComplexLongDouble) && self.is_x86() && self.returns_complex_long_double_in_regs() {
                 // x86-64: _Complex long double returns real part in x87 st(0)
                 ret_ty = IrType::F128;
-            } else if matches!(full_ret_ctype, CType::ComplexDouble) {
+            } else if matches!(full_ret_ctype, CType::ComplexDouble) && self.decomposes_complex_double() {
+                // x86-64/ARM64/RISC-V: _Complex double returns real in FP reg
                 ret_ty = IrType::F64;
             } else if matches!(full_ret_ctype, CType::ComplexFloat) {
                 if self.uses_packed_complex_float() {
+                    // x86-64: packed two F32 in one xmm register as F64
                     ret_ty = IrType::F64;
-                } else {
+                } else if self.decomposes_complex_float() {
+                    // ARM64/RISC-V: real in first FP register as F32
                     ret_ty = IrType::F32;
+                } else {
+                    // i686: _Complex float (8 bytes) fits in eax:edx, pack as I64
+                    ret_ty = IrType::I64;
                 }
-            } else if matches!(full_ret_ctype, CType::ComplexLongDouble) && self.returns_complex_long_double_in_regs() {
-                // x86-64: _Complex long double returned via x87 st(0)/st(1)
-                // IR return type is F128 (real part); imag part via SetReturnF128Second
-                ret_ty = IrType::F128;
             }
+            // i686: ComplexDouble (16 bytes) and ComplexLongDouble (24 bytes) keep
+            // ret_ty = IrType::Ptr (the default from_ctype mapping for complex types).
+            // They will be handled via sret below.
         }
 
         // Track CType for pointer-returning functions
@@ -671,11 +707,18 @@ impl Lowerer {
             }
             if matches!(full_ret_ctype, CType::ComplexLongDouble) {
                 // On x86-64, _Complex long double is returned via x87 st(0)/st(1),
-                // not via hidden pointer (sret). On other targets, use sret.
+                // not via hidden pointer (sret). On i686 and other targets, use sret.
                 if !self.returns_complex_long_double_in_regs() {
                     let size = self.sizeof_type(ret_type_spec);
                     sret_size = Some(size);
                 }
+            }
+            // On i686, _Complex double (16 bytes) exceeds the 8-byte register pair
+            // (eax:edx), so it must use sret (hidden pointer return).
+            // On 64-bit targets, _Complex double is returned in two FP registers.
+            if matches!(full_ret_ctype, CType::ComplexDouble) && !self.decomposes_complex_double() {
+                let size = full_ret_ctype.size();
+                sret_size = Some(size);
             }
         }
 
@@ -724,8 +767,12 @@ impl Lowerer {
         // Collect per-parameter struct sizes for by-value struct passing ABI.
         // ComplexLongDouble is included as a struct on platforms that don't decompose it
         // (x86-64, RISC-V) since it's passed like a struct (on stack / by reference).
+        // On i686, ComplexDouble (16 bytes) and ComplexFloat (8 bytes) are also passed
+        // as structs on the stack since they aren't decomposed into separate FP args.
         // Transparent unions are excluded — they are passed as their first member.
         let decomposes_cld = self.decomposes_complex_long_double();
+        let decomposes_cd = self.decomposes_complex_double();
+        let decomposes_cf = self.decomposes_complex_float();
         let param_struct_sizes: Vec<Option<usize>> = params.iter().map(|p| {
             let ctype = self.type_spec_to_ctype(&p.type_spec);
             if self.is_type_struct_or_union(&p.type_spec) && !self.is_transparent_union(&p.type_spec) {
@@ -735,6 +782,10 @@ impl Lowerer {
                 Some(self.sizeof_type(&p.type_spec))
             } else if !decomposes_cld && matches!(ctype, CType::ComplexLongDouble) {
                 Some(self.sizeof_type(&p.type_spec))
+            } else if !decomposes_cd && matches!(ctype, CType::ComplexDouble) {
+                Some(CType::ComplexDouble.size())
+            } else if !decomposes_cf && matches!(ctype, CType::ComplexFloat) {
+                Some(CType::ComplexFloat.size())
             } else {
                 None
             }

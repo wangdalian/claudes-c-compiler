@@ -124,11 +124,14 @@ impl Lowerer {
         // Complex return types need special IR type overrides (same as register_function_meta)
         if ptr_count == 0 {
             let ret_ctype = self.type_spec_to_ctype(ret_type_spec);
-            if matches!(ret_ctype, CType::ComplexDouble) {
+            if matches!(ret_ctype, CType::ComplexDouble) && self.decomposes_complex_double() {
                 ret_ty = IrType::F64;
             } else if matches!(ret_ctype, CType::ComplexFloat) {
                 if self.uses_packed_complex_float() {
                     ret_ty = IrType::F64;
+                } else if !self.decomposes_complex_float() {
+                    // i686: _Complex float (8 bytes) packed in eax:edx as I64
+                    ret_ty = IrType::I64;
                 } else {
                     ret_ty = IrType::F32;
                 }
@@ -184,8 +187,16 @@ impl Lowerer {
                 }
             }
             if matches!(ret_ct, CType::ComplexLongDouble) {
-                let size = self.sizeof_type(ret_type_spec);
-                sret_size = Some(size);
+                // On x86-64, _Complex long double returns via st(0)/st(1), no sret needed.
+                // On all other targets (including i686), use sret.
+                if !self.returns_complex_long_double_in_regs() {
+                    let size = self.sizeof_type(ret_type_spec);
+                    sret_size = Some(size);
+                }
+            }
+            // On i686, _Complex double (16 bytes) exceeds 8-byte reg pair, needs sret.
+            if matches!(ret_ct, CType::ComplexDouble) && !self.decomposes_complex_double() {
+                sret_size = Some(ret_ct.size());
             }
         }
 
@@ -199,6 +210,8 @@ impl Lowerer {
             self.type_spec_to_ctype(&p.type_spec)
         }).collect();
         let decomposes_cld = self.decomposes_complex_long_double();
+        let decomposes_cd = self.decomposes_complex_double();
+        let decomposes_cf = self.decomposes_complex_float();
         let param_struct_sizes: Vec<Option<usize>> = params.iter().map(|p| {
             let ctype = self.type_spec_to_ctype(&p.type_spec);
             if self.is_type_struct_or_union(&p.type_spec) {
@@ -208,6 +221,10 @@ impl Lowerer {
                 Some(self.sizeof_type(&p.type_spec))
             } else if !decomposes_cld && matches!(ctype, CType::ComplexLongDouble) {
                 Some(self.sizeof_type(&p.type_spec))
+            } else if !decomposes_cd && matches!(ctype, CType::ComplexDouble) {
+                Some(CType::ComplexDouble.size())
+            } else if !decomposes_cf && matches!(ctype, CType::ComplexFloat) {
+                Some(CType::ComplexFloat.size())
             } else {
                 None
             }

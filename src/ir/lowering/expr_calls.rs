@@ -188,11 +188,14 @@ impl Lowerer {
                 if let Some(sig) = self.func_meta.sigs.get(name.as_str()) {
                     if !sig.param_ctypes.is_empty() {
                         let decomposes_cld = self.decomposes_complex_long_double();
+                        let decomposes_cd = self.decomposes_complex_double();
+                        let decomposes_cf = self.decomposes_complex_float();
                         sig.param_ctypes.iter().map(|ct| {
                             match ct {
-                                CType::ComplexDouble => 2,
-                                // Fixed ComplexFloat params are always decomposed into 2 FP regs
-                                CType::ComplexFloat if !self.uses_packed_complex_float() => 2,
+                                CType::ComplexDouble if decomposes_cd => 2,
+                                // Fixed ComplexFloat params are decomposed into 2 FP regs
+                                // on 64-bit targets (not x86-64 packed, not i686 struct)
+                                CType::ComplexFloat if decomposes_cf && !self.uses_packed_complex_float() => 2,
                                 CType::ComplexLongDouble if decomposes_cld => 2,
                                 _ => 1,
                             }
@@ -281,6 +284,8 @@ impl Lowerer {
 
     /// Handle complex return types (ComplexFloat, ComplexDouble, ComplexLongDouble).
     /// Returns Some(result) if the return was complex, None otherwise.
+    /// Note: on i686, ComplexDouble and ComplexLongDouble use sret (handled before this),
+    /// so this function only needs to handle ComplexFloat on i686.
     fn handle_complex_return(&mut self, dest: Value, ret_ct: &CType) -> Option<Operand> {
         match ret_ct {
             CType::ComplexFloat => {
@@ -290,6 +295,13 @@ impl Lowerer {
                     let alloca = self.fresh_value();
                     self.emit(Instruction::Alloca { dest: alloca, ty: IrType::Ptr, size: 8, align: 0, volatile: false });
                     self.emit(Instruction::Store { val: Operand::Value(dest), ptr: alloca, ty: IrType::F64 , seg_override: AddressSpace::Default });
+                    Some(Operand::Value(alloca))
+                } else if !self.decomposes_complex_float() {
+                    // i686: two packed F32 returned in eax:edx as I64
+                    // Store the raw 8 bytes (two F32s) into an alloca
+                    let alloca = self.fresh_value();
+                    self.emit(Instruction::Alloca { dest: alloca, ty: IrType::Ptr, size: 8, align: 0, volatile: false });
+                    self.emit(Instruction::Store { val: Operand::Value(dest), ptr: alloca, ty: IrType::I64 , seg_override: AddressSpace::Default });
                     Some(Operand::Value(alloca))
                 } else {
                     // ARM/RISC-V: real F32 in first FP reg (dest), imag F32 in second FP reg
@@ -310,8 +322,9 @@ impl Lowerer {
                     Some(Operand::Value(alloca))
                 }
             }
-            CType::ComplexDouble => {
-                // _Complex double: real in xmm0 (dest), imag in xmm1 (second return)
+            CType::ComplexDouble if self.decomposes_complex_double() => {
+                // x86-64/ARM64/RISC-V: _Complex double: real in first FP reg (dest),
+                // imag in second FP reg (second return)
                 let imag_val = self.fresh_value();
                 self.emit(Instruction::GetReturnF64Second { dest: imag_val });
                 let alloca = self.fresh_value();
@@ -518,15 +531,29 @@ impl Lowerer {
                 }
                 // Fall back to expression-based inference for unregistered types
                 let ctype = self.get_expr_ctype(a);
+                let decomposes_cd = self.decomposes_complex_double();
+                let decomposes_cf = self.decomposes_complex_float();
                 match ctype {
                     Some(CType::Vector(_, total_size)) => Some(total_size),
-                    Some(CType::ComplexLongDouble) if !decomposes_cld => Some(32),
+                    Some(CType::ComplexLongDouble) if !decomposes_cld => {
+                        Some(CType::ComplexLongDouble.size())
+                    }
+                    // i686: ComplexDouble (16 bytes) and ComplexFloat (8 bytes) are
+                    // passed as structs on the stack when not decomposed.
+                    Some(CType::ComplexDouble) if !decomposes_cd => {
+                        Some(CType::ComplexDouble.size())
+                    }
+                    Some(CType::ComplexFloat) if !decomposes_cf => {
+                        Some(CType::ComplexFloat.size())
+                    }
                     _ => None,
                 }
             }).collect()
         } else {
             // Infer from argument expressions
             let decomposes_cld = self.decomposes_complex_long_double();
+            let decomposes_cd = self.decomposes_complex_double();
+            let decomposes_cf = self.decomposes_complex_float();
             args.iter().enumerate().map(|(i, a)| {
                 // If Stage A already converted this complex argument to a scalar
                 // (e.g., complex-to-bool or complex-to-real), the value is no
@@ -543,7 +570,14 @@ impl Lowerer {
                         Some(total_size) // Vector types are passed by value like structs
                     }
                     Some(CType::ComplexLongDouble) if !decomposes_cld => {
-                        Some(32) // 2 x 16-byte long double components
+                        Some(CType::ComplexLongDouble.size())
+                    }
+                    // i686: ComplexDouble and ComplexFloat passed as structs on stack
+                    Some(CType::ComplexDouble) if !decomposes_cd => {
+                        Some(CType::ComplexDouble.size())
+                    }
+                    Some(CType::ComplexFloat) if !decomposes_cf => {
+                        Some(CType::ComplexFloat.size())
                     }
                     _ => None,
                 }
@@ -790,19 +824,32 @@ impl Lowerer {
     /// Complex types return in FP registers (F64 for both ComplexFloat and ComplexDouble),
     /// not as Ptr which is what IrType::from_ctype gives.
     fn func_return_ir_type(ret_ctype: &CType, _returns_cld_in_regs: bool) -> IrType {
+        let is_32bit = crate::common::types::target_is_32bit();
         match ret_ctype {
-            // Complex float: on x86-64, both F32 parts packed into xmm0 as F64
-            // On ARM/RISC-V, real part in first FP reg as F32
-            CType::ComplexFloat => IrType::F64,
-            // Complex double: real part in xmm0 as F64
-            CType::ComplexDouble => IrType::F64,
-            // Complex long double: on x86-64 returns via x87 st(0)/st(1), real part as F128.
-            // On other targets this is handled via sret before reaching this point.
-            CType::ComplexLongDouble => IrType::F128,
+            // Complex float:
+            //   x86-64: both F32 parts packed into xmm0 as F64
+            //   ARM/RISC-V: real part in first FP reg as F32
+            //   i686: both F32 parts packed into eax:edx as I64
+            CType::ComplexFloat => {
+                if is_32bit { IrType::I64 } else { IrType::F64 }
+            }
+            // Complex double:
+            //   x86-64/ARM64/RISC-V: real part in first FP reg as F64
+            //   i686: 16 bytes, uses sret (shouldn't reach here, but default to Ptr)
+            CType::ComplexDouble => {
+                if is_32bit { IrType::Ptr } else { IrType::F64 }
+            }
+            // Complex long double:
+            //   x86-64: returns via x87 st(0)/st(1), real part as F128
+            //   i686: 24 bytes, uses sret (shouldn't reach here, but default to Ptr)
+            //   Other targets: handled via sret before reaching this point
+            CType::ComplexLongDouble => {
+                if is_32bit { IrType::Ptr } else { IrType::F128 }
+            }
             // On 32-bit targets, small struct/union returns (≤8 bytes, not sret) are
             // packed as I64 and returned in eax:edx. Use I64 so the backend knows to
             // save both halves of the register pair after the call.
-            CType::Struct(_) | CType::Union(_) if crate::common::types::target_is_32bit() => IrType::I64,
+            CType::Struct(_) | CType::Union(_) if is_32bit => IrType::I64,
             other => IrType::from_ctype(other),
         }
     }

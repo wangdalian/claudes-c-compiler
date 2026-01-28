@@ -145,6 +145,12 @@ impl Lowerer {
                 // on x86-64/RISC-V it's passed as a struct (on stack / by reference).
                 if matches!(param_ctype, CType::ComplexLongDouble) && !decompose_cld {
                     // Fall through to struct handling below
+                } else if matches!(param_ctype, CType::ComplexDouble) && !self.decomposes_complex_double() {
+                    // i686: _Complex double (16 bytes) is passed as a struct on the stack.
+                    // Fall through to struct handling below.
+                } else if matches!(param_ctype, CType::ComplexFloat) && !self.decomposes_complex_float() {
+                    // i686: _Complex float (8 bytes) is passed as a struct on the stack.
+                    // Fall through to struct handling below.
                 } else if matches!(param_ctype, CType::ComplexFloat) && self.uses_packed_complex_float() {
                     // x86-64: _Complex float packed into single F64
                     let ir_idx = params.len();
@@ -152,7 +158,7 @@ impl Lowerer {
                     param_kinds.push(ParamKind::ComplexFloatPacked(ir_idx));
                     continue;
                 } else {
-                    // Decompose into two FP params (ComplexFloat/ComplexDouble on all,
+                    // Decompose into two FP params (ComplexFloat/ComplexDouble on 64-bit,
                     // ComplexLongDouble on ARM64 only)
                     let comp_ty = Self::complex_component_ir_type(&param_ctype);
                     let real_idx = params.len();
@@ -165,13 +171,17 @@ impl Lowerer {
             }
 
             // Struct/union/vector parameter (pass by value), including ComplexLongDouble
-            // on x86-64/RISC-V where it's not decomposed.
+            // on x86-64/RISC-V where it's not decomposed, and ComplexDouble/ComplexFloat
+            // on i686 where they are passed as structs on the stack.
             // Transparent unions are passed as their first member (a pointer),
             // not as a by-value aggregate, so struct_size is None for them.
             // Vector types (e.g. __attribute__((vector_size(N)))) are passed by value
             // like structs: the data is copied into the callee's stack slot.
+            let is_complex_as_struct = matches!(param_ctype, CType::ComplexLongDouble)
+                || (matches!(param_ctype, CType::ComplexDouble) && !self.decomposes_complex_double())
+                || (matches!(param_ctype, CType::ComplexFloat) && !self.decomposes_complex_float());
             if self.is_type_struct_or_union(&param.type_spec)
-                || matches!(param_ctype, CType::ComplexLongDouble)
+                || is_complex_as_struct
                 || param_ctype.is_vector()
             {
                 let ir_idx = params.len();

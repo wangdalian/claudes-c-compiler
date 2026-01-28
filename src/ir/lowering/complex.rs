@@ -1041,21 +1041,25 @@ impl Lowerer {
                 continue;
             }
 
-            // On ARM/RISC-V (non-variadic), ComplexFloat is decomposed like ComplexDouble.
-            // ComplexLongDouble is only decomposed on ARM64 (HFA in Q regs);
-            // on x86-64 it goes on stack, on RISC-V it goes by reference.
+            // On 64-bit targets, complex types are decomposed into (real, imag) scalar pairs:
+            // - ComplexFloat: decomposed on ARM/RISC-V (not x86-64 where it's packed)
+            // - ComplexDouble: decomposed on all 64-bit targets
+            // - ComplexLongDouble: only decomposed on ARM64 (HFA in Q regs)
+            // On i686, no complex types are decomposed (all passed as structs on the stack).
             let decomposes_cld = self.decomposes_complex_long_double();
+            let decomposes_cd = self.decomposes_complex_double();
+            let decomposes_cf = self.decomposes_complex_float();
             let should_decompose = match ctype {
-                Some(CType::ComplexFloat) => !uses_packed_cf,
-                Some(CType::ComplexDouble) => true,
+                Some(CType::ComplexFloat) => decomposes_cf && !uses_packed_cf,
+                Some(CType::ComplexDouble) => decomposes_cd,
                 Some(CType::ComplexLongDouble) => decomposes_cld,
                 Some(_) => false,
                 None => {
                     if *ty == IrType::Ptr && i < args.len() {
                         let arg_ct = self.expr_ctype(&args[i]);
                         match arg_ct {
-                            CType::ComplexFloat => !uses_packed_cf,
-                            CType::ComplexDouble => true,
+                            CType::ComplexFloat => decomposes_cf && !uses_packed_cf,
+                            CType::ComplexDouble => decomposes_cd,
                             CType::ComplexLongDouble => decomposes_cld,
                             _ => false,
                         }

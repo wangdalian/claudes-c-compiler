@@ -254,6 +254,11 @@ impl Lowerer {
                     let packed = self.fresh_value();
                     self.emit(Instruction::Load { dest: packed, ptr: src_ptr, ty: IrType::F64 , seg_override: AddressSpace::Default });
                     return Some(Operand::Value(packed));
+                } else if !self.decomposes_complex_float() {
+                    // i686: load packed 8 bytes as I64 for eax:edx register return
+                    let packed = self.fresh_value();
+                    self.emit(Instruction::Load { dest: packed, ptr: src_ptr, ty: IrType::I64 , seg_override: AddressSpace::Default });
+                    return Some(Operand::Value(packed));
                 } else {
                     // ARM/RISC-V: return real in first FP reg (F32), imag in second FP reg (F32)
                     let real = self.load_complex_real(src_ptr, rct);
@@ -338,7 +343,12 @@ impl Lowerer {
         if rct_clone == CType::ComplexFloat && !self.func_meta.sigs.get(&fname).and_then(|s| s.sret_size).is_some() {
             let ptr = self.operand_to_value(complex_val);
             if self.uses_packed_complex_float() {
-                // x86-64: pack into I64 for one XMM register return
+                // x86-64: pack into F64 for one XMM register return
+                let packed = self.fresh_value();
+                self.emit(Instruction::Load { dest: packed, ptr, ty: IrType::F64 , seg_override: AddressSpace::Default });
+                return Some(Operand::Value(packed));
+            } else if !self.decomposes_complex_float() {
+                // i686: pack into I64 for eax:edx register return
                 let packed = self.fresh_value();
                 self.emit(Instruction::Load { dest: packed, ptr, ty: IrType::I64 , seg_override: AddressSpace::Default });
                 return Some(Operand::Value(packed));
