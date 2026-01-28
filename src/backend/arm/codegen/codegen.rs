@@ -3432,14 +3432,17 @@ impl ArchCodegen for ArmCodegen {
                 // Call __floatunditf: u64 in x0 -> f128 in q0.
                 self.state.emit("    bl __floatunditf");
             }
-            // Result f128 is in Q0.
-            // Convert to f64 and store normally. Full precision is not preserved
-            // for cast results (no source alloca to track); when f128 is later
-            // needed, __extenddftf2 will reconstruct from the f64.
+            // Result f128 is in Q0. Store the full 16-byte value to dest slot
+            // to preserve full precision (avoids lossy f64 round-trip).
+            self.state.reg_cache.invalidate_all();
+            if let Some(slot) = self.state.get_slot(dest.0) {
+                self.emit_f128_store_q0_to_slot(slot);
+                self.state.track_f128_self(dest.0);
+            }
+            // Produce f64 approximation for register-based data flow only.
             self.state.emit("    bl __trunctfdf2");
             self.state.emit("    fmov x0, d0");
-            self.state.reg_cache.invalidate_all();
-            self.store_x0_to(dest);
+            self.state.reg_cache.set_acc(dest.0, false);
             return;
         }
 
@@ -3475,11 +3478,17 @@ impl ArchCodegen for ArmCodegen {
                 self.state.emit("    fmov d0, x0");
                 self.state.emit("    bl __extenddftf2");
             }
-            // Result f128 in Q0. Convert to f64 and store normally.
+            // Result f128 in Q0. Store the full 16-byte value to dest slot
+            // to preserve full precision (avoids lossy f64 round-trip).
+            self.state.reg_cache.invalidate_all();
+            if let Some(slot) = self.state.get_slot(dest.0) {
+                self.emit_f128_store_q0_to_slot(slot);
+                self.state.track_f128_self(dest.0);
+            }
+            // Produce f64 approximation for register-based data flow only.
             self.state.emit("    bl __trunctfdf2");
             self.state.emit("    fmov x0, d0");
-            self.state.reg_cache.invalidate_all();
-            self.store_x0_to(dest);
+            self.state.reg_cache.set_acc(dest.0, false);
             return;
         }
 
