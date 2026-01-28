@@ -1,0 +1,20 @@
+Task: Refactor ParsedDeclAttrs to use packed u32 bitfield
+
+Status: in_progress
+
+Problem:
+ParsedDeclAttrs in src/frontend/parser/parser.rs has 18 separate boolean fields
+(parsing_typedef, parsing_static, parsing_extern, parsing_thread_local, parsing_inline,
+parsing_const, parsing_volatile, parsing_constructor, parsing_destructor, parsing_weak,
+parsing_used, parsing_gnu_inline, parsing_always_inline, parsing_noinline, parsing_noreturn,
+parsing_error_attr, parsing_transparent_union, parsing_fastcall) implemented as individual
+bool fields. This is the same "attribute explosion" antipattern that was already fixed for
+FunctionAttributes and Declaration in ast.rs, which use packed u16 bitfields.
+
+Plan:
+1. Replace 18 bool fields with a private `flags: u32` bitfield and a `parsed_decl_attr_flag` module
+2. Add inline getter/setter methods (is_typedef/set_typedef, etc.) matching existing patterns
+3. Update all usage sites across parser.rs, declarations.rs, types.rs, expressions.rs, declarators.rs
+4. Non-boolean fields (Option<String>, Option<usize>, etc.) remain unchanged
+5. Add custom Debug impl that shows unpacked flag values
+6. Verify no regressions with test suite
