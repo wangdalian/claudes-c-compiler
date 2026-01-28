@@ -1,0 +1,17 @@
+Task: Migrate backend/common.rs assemble_with_extra to TempFile RAII guard
+
+Status: in_progress
+
+Problem:
+backend/common.rs::assemble_with_extra() uses manual temp file creation and
+cleanup for .s assembly files, while the codebase already has a TempFile RAII
+guard in common/temp_files.rs. The manual pattern:
+- Duplicates unique-ID generation logic (own AtomicU64 counter + PID)
+- Leaks temp .s files if the assembler command fails (cmd.output() error)
+- Checks CCC_KEEP_ASM env var twice (once for path, once for cleanup)
+
+Fix:
+1. Replace manual temp file path generation with TempFile::new()
+2. Use TempFile::set_keep() for CCC_KEEP_ASM debug mode
+3. Handle the special case where CCC_KEEP_ASM puts the .s file next to output
+4. Let RAII Drop handle cleanup, even on error paths
