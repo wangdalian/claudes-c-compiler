@@ -461,6 +461,42 @@ impl I686Codegen {
         }
     }
 
+    /// Copy a wide (64-bit) operand into a destination's stack slot.
+    /// Used by emit_select for I64/U64/F64 values that need 8-byte copies.
+    fn emit_wide_copy_to_slot(&mut self, dest: &Value, src: &Operand) {
+        if let Some(dest_slot) = self.state.get_slot(dest.0) {
+            match src {
+                Operand::Value(v) => {
+                    if let Some(src_slot) = self.state.get_slot(v.0) {
+                        emit!(self.state, "    movl {}(%ebp), %eax", src_slot.0);
+                        emit!(self.state, "    movl %eax, {}(%ebp)", dest_slot.0);
+                        emit!(self.state, "    movl {}(%ebp), %eax", src_slot.0 + 4);
+                        emit!(self.state, "    movl %eax, {}(%ebp)", dest_slot.0 + 4);
+                    }
+                }
+                Operand::Const(IrConst::F64(val)) => {
+                    let bits = val.to_bits();
+                    let lo = bits as u32;
+                    let hi = (bits >> 32) as u32;
+                    emit!(self.state, "    movl ${}, {}(%ebp)", lo as i32, dest_slot.0);
+                    emit!(self.state, "    movl ${}, {}(%ebp)", hi as i32, dest_slot.0 + 4);
+                }
+                Operand::Const(IrConst::I64(val)) => {
+                    let lo = *val as u32;
+                    let hi = (*val >> 32) as u32;
+                    emit!(self.state, "    movl ${}, {}(%ebp)", lo as i32, dest_slot.0);
+                    emit!(self.state, "    movl ${}, {}(%ebp)", hi as i32, dest_slot.0 + 4);
+                }
+                _ => {
+                    // For other constant types, use the 32-bit path as fallback
+                    self.emit_load_operand(src);
+                    self.emit_store_result(dest);
+                }
+            }
+            self.state.reg_cache.invalidate_all();
+        }
+    }
+
     /// Load an operand into a named register.
     #[allow(dead_code)]
     fn operand_to_reg(&mut self, op: &Operand, reg: &str) {
@@ -1100,6 +1136,49 @@ impl ArchCodegen for I686Codegen {
         // Default path for non-F128, non-wide copies (32-bit values).
         self.emit_load_operand(src);
         self.emit_store_result(dest);
+    }
+
+    /// Override emit_select to handle 64-bit types on i686.
+    /// The default emit_select uses emit_load_operand/emit_store_result which only
+    /// move 32 bits via eax. For I64/U64/F64 we need to copy all 8 bytes.
+    fn emit_select(&mut self, dest: &Value, cond: &Operand, true_val: &Operand, false_val: &Operand, ty: IrType) {
+        let is_wide = matches!(ty, IrType::I64 | IrType::U64 | IrType::F64);
+        if !is_wide {
+            // Non-wide types: use the default branch-based select via accumulator
+            let label_id = self.state.next_label_id();
+            let true_label = format!(".Lsel_true_{}", label_id);
+            let end_label = format!(".Lsel_end_{}", label_id);
+            self.emit_load_operand(cond);
+            self.emit_branch_nonzero(&true_label);
+            self.emit_load_operand(false_val);
+            self.emit_store_result(dest);
+            self.emit_branch(&end_label);
+            self.state.emit_fmt(format_args!("{}:", true_label));
+            self.emit_load_operand(true_val);
+            self.emit_store_result(dest);
+            self.state.emit_fmt(format_args!("{}:", end_label));
+            return;
+        }
+
+        // Wide (64-bit) select: branch and copy 8 bytes per path
+        let label_id = self.state.next_label_id();
+        let true_label = format!(".Lsel_true_{}", label_id);
+        let end_label = format!(".Lsel_end_{}", label_id);
+
+        // Load condition and branch
+        self.emit_load_operand(cond);
+        self.emit_branch_nonzero(&true_label);
+
+        // False path: copy 8-byte false_val to dest
+        self.emit_wide_copy_to_slot(dest, false_val);
+        self.emit_branch(&end_label);
+
+        // True path: copy 8-byte true_val to dest
+        self.state.emit_fmt(format_args!("{}:", true_label));
+        self.emit_wide_copy_to_slot(dest, true_val);
+
+        // End
+        self.state.emit_fmt(format_args!("{}:", end_label));
     }
 
     /// Override emit_cast to handle F64 source/destination specially on i686.
