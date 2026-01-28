@@ -1,0 +1,23 @@
+Task: Fix i686 64-bit bitfield store/load sign extension
+Status: in_progress
+
+Problem:
+When storing a 32-bit constant (like -1) into a 64-bit bitfield on i686,
+the emit_load_acc_pair function zero-extends the value into edx instead of
+sign-extending it. This causes:
+  - `signed long long int a:64; z.a = -1;` to store 0x00000000FFFFFFFF
+    instead of 0xFFFFFFFFFFFFFFFF
+  - Reading z.a back gives 4294967295 instead of -1
+
+The bug is in emit_load_acc_pair's fallback `_ =>` arm which does
+`xorl %edx, %edx` for unknown operand types, when it should sign-extend
+for I32 constants.
+
+Also need to handle IrConst::I32 explicitly in emit_load_acc_pair to
+produce proper sign extension into the eax:edx pair.
+
+Fix: Add explicit IrConst::I32 handling in emit_load_acc_pair to
+sign-extend the value into the eax:edx pair.
+
+Files to modify:
+- src/backend/i686/codegen/codegen.rs (emit_load_acc_pair)
