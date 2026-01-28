@@ -116,11 +116,7 @@ impl Lowerer {
                 if let Some(lv) = self.lower_lvalue(inner) {
                     let addr = self.lvalue_addr(&lv);
                     let inner_ct = self.expr_ctype(inner);
-                    let comp_size = match inner_ct {
-                        CType::ComplexFloat => 4i64,
-                        CType::ComplexLongDouble => 16i64,
-                        _ => 8i64, // ComplexDouble
-                    };
+                    let comp_size = Self::complex_component_size(&inner_ct) as i64;
                     let imag_addr = self.fresh_value();
                     self.emit(Instruction::GetElementPtr {
                         dest: imag_addr,

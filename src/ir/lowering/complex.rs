@@ -7,7 +7,8 @@
 //! Layout:
 //!   - _Complex float:       [f32 real, f32 imag] = 8 bytes, align 4
 //!   - _Complex double:      [f64 real, f64 imag] = 16 bytes, align 8
-//!   - _Complex long double: [f128 real, f128 imag] = 32 bytes, align 16
+//!   - _Complex long double: [f128 real, f128 imag] = 32 bytes, align 16 (x86-64)
+//!                                                    24 bytes, align 4  (i686)
 
 use crate::frontend::parser::ast::*;
 use crate::ir::ir::*;
@@ -26,11 +27,13 @@ impl Lowerer {
     }
 
     /// Get the component size in bytes for a complex type.
+    /// On i686, long double is 12 bytes (80-bit x87 padded to 12); on x86-64 it's 16 bytes.
     pub(super) fn complex_component_size(ctype: &CType) -> usize {
+        use crate::common::types::target_is_32bit;
         match ctype {
             CType::ComplexFloat => 4,
             CType::ComplexDouble => 8,
-            CType::ComplexLongDouble => 16,
+            CType::ComplexLongDouble => if target_is_32bit() { 12 } else { 16 },
             _ => 8,
         }
     }

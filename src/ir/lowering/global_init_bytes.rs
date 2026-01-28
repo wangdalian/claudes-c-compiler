@@ -1258,12 +1258,7 @@ impl Lowerer {
         complex_ctype: &CType,
         init: &Initializer,
     ) {
-        let comp_size = match complex_ctype {
-            CType::ComplexFloat => 4,
-            CType::ComplexDouble => 8,
-            CType::ComplexLongDouble => 16,
-            _ => 8,
-        };
+        let comp_size = Self::complex_component_size(complex_ctype);
 
         // Try to extract (real, imag) from the initializer
         let (real, imag) = match init {
