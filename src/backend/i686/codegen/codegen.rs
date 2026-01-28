@@ -1692,6 +1692,62 @@ impl ArchCodegen for I686Codegen {
         emit!(self.state, "    jne {}", label);
     }
 
+    /// Override conditional branch to handle 64-bit types (I64/U64/F64) on i686.
+    ///
+    /// The default path calls emit_load_operand (which only loads 32 bits into eax)
+    /// then emit_branch_nonzero (which only tests eax). For 64-bit values, the high
+    /// 32 bits are ignored, causing incorrect results. For example:
+    /// - `if (1.0)` with F64 1.0 = 0x3FF0_0000_0000_0000: low 32 bits are zero → false!
+    /// - `if (0x100000000LL)`: low 32 bits are zero → false!
+    ///
+    /// Fix: detect 64-bit operands and test both halves (OR low|high, then test).
+    fn emit_cond_branch_blocks(&mut self, cond: &Operand, true_block: BlockId, false_block: BlockId) {
+        let true_label = true_block.as_label();
+
+        match cond {
+            // 64-bit constant: evaluate at compile time
+            Operand::Const(IrConst::I64(v)) => {
+                if *v != 0 {
+                    emit!(self.state, "    jmp {}", true_label);
+                } else {
+                    self.emit_branch_to_block(false_block);
+                }
+                return;
+            }
+            Operand::Const(IrConst::F64(f)) => {
+                if f.to_bits() != 0 {
+                    emit!(self.state, "    jmp {}", true_label);
+                } else {
+                    self.emit_branch_to_block(false_block);
+                }
+                return;
+            }
+            // 64-bit value on stack: load both halves and OR together
+            Operand::Value(v) if self.state.is_wide_value(v.0) => {
+                if let Some(slot) = self.state.get_slot(v.0) {
+                    // Load low 32 bits, OR with high 32 bits
+                    emit!(self.state, "    movl {}(%ebp), %eax", slot.0);
+                    emit!(self.state, "    orl {}(%ebp), %eax", slot.0 + 4);
+                    emit!(self.state, "    jne {}", true_label);
+                    self.emit_branch_to_block(false_block);
+                    self.state.reg_cache.invalidate_acc();
+                } else {
+                    // Fallback: load to eax (32-bit truncation, shouldn't happen for wide values)
+                    self.operand_to_eax(cond);
+                    self.emit_branch_nonzero(&true_label);
+                    self.emit_branch_to_block(false_block);
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        // Default path for 32-bit and smaller types
+        self.emit_load_operand(cond);
+        self.emit_branch_nonzero(&true_label);
+        self.emit_branch_to_block(false_block);
+    }
+
     fn emit_jump_indirect(&mut self) {
         self.state.emit("    jmp *%eax");
     }

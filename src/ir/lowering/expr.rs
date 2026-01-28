@@ -32,6 +32,16 @@ impl Lowerer {
             let result = self.emit_cmp_val(IrCmpOp::Ne, val, zero, IrType::F128);
             return Operand::Value(result);
         }
+        if crate::common::types::target_is_32bit() && float_ty == IrType::F64 {
+            // On i686 (ILP32), the I64 bit-masking approach doesn't work because
+            // the result is a 64-bit integer that gets truncated to 32 bits when
+            // tested in conditional branches and comparisons. Use a proper F64
+            // comparison against zero instead, which handles -0.0 correctly
+            // (IEEE 754: +0.0 == -0.0) and NaN (unordered → truthy via setp).
+            let zero = Operand::Const(IrConst::F64(0.0));
+            let result = self.emit_cmp_val(IrCmpOp::Ne, val, zero, IrType::F64);
+            return Operand::Value(result);
+        }
         let (abs_mask, _, _, _, _) = Self::fp_masks(float_ty);
         let result = self.emit_binop_val(IrBinOp::And, val, Operand::Const(IrConst::I64(abs_mask)), IrType::I64);
         Operand::Value(result)
@@ -49,7 +59,21 @@ impl Lowerer {
         }
         let expr_ty = self.infer_expr_type(expr);
         let val = self.lower_expr(expr);
-        self.mask_float_sign_for_truthiness(val, expr_ty)
+        let val = self.mask_float_sign_for_truthiness(val, expr_ty);
+
+        // On i686 (ILP32), 64-bit integer condition values (I64/U64 from long long
+        // expressions) don't fit in a single 32-bit register. Reduce them to a
+        // boolean (I8) via comparison against zero so that downstream CondBranch
+        // and comparisons in short-circuit evaluation only need 32-bit values.
+        // F64 conditions are already handled above by mask_float_sign_for_truthiness
+        // which emits an F64 != 0.0 comparison on i686.
+        if crate::common::types::target_is_32bit() && matches!(expr_ty, IrType::I64 | IrType::U64) {
+            let zero = Operand::Const(IrConst::I64(0));
+            let result = self.emit_cmp_val(IrCmpOp::Ne, val, zero, IrType::I64);
+            return Operand::Value(result);
+        }
+
+        val
     }
 
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Operand {
