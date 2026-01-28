@@ -152,8 +152,8 @@ impl Parser {
     pub(super) fn parse_cast_expr(&mut self) -> Expr {
         if matches!(self.peek(), TokenKind::LParen) {
             let save = self.pos;
-            let save_typedef = self.parsing_typedef;
-            let save_const = self.parsing_const;
+            let save_typedef = self.attrs.parsing_typedef;
+            let save_const = self.attrs.parsing_const;
             self.advance();
             if self.is_type_specifier() {
                 if let Some(type_spec) = self.parse_type_specifier() {
@@ -165,18 +165,18 @@ impl Parser {
                         if matches!(self.peek(), TokenKind::LBrace) {
                             let init = self.parse_initializer();
                             let lit = Expr::CompoundLiteral(result_type, Box::new(init), span);
-                            self.parsing_const = save_const;
+                            self.attrs.parsing_const = save_const;
                             return self.parse_postfix_ops(lit);
                         }
                         let expr = self.parse_cast_expr();
-                        self.parsing_const = save_const;
+                        self.attrs.parsing_const = save_const;
                         return Expr::Cast(result_type, Box::new(expr), span);
                     }
                 }
             }
             self.pos = save;
-            self.parsing_typedef = save_typedef;
-            self.parsing_const = save_const;
+            self.attrs.parsing_typedef = save_typedef;
+            self.attrs.parsing_const = save_const;
         }
         self.parse_unary_expr()
     }
@@ -285,22 +285,22 @@ impl Parser {
         self.advance(); // consume 'sizeof'
         if matches!(self.peek(), TokenKind::LParen) {
             let save = self.pos;
-            let save_typedef = self.parsing_typedef;
-            let save_const = self.parsing_const;
+            let save_typedef = self.attrs.parsing_typedef;
+            let save_const = self.attrs.parsing_const;
             self.advance();
             if self.is_type_specifier() {
                 if let Some(ts) = self.parse_type_specifier() {
                     let result_type = self.parse_abstract_declarator_suffix(ts);
                     if matches!(self.peek(), TokenKind::RParen) {
                         self.expect(&TokenKind::RParen);
-                        self.parsing_const = save_const;
+                        self.attrs.parsing_const = save_const;
                         return Expr::Sizeof(Box::new(SizeofArg::Type(result_type)), span);
                     }
                 }
             }
             self.pos = save;
-            self.parsing_typedef = save_typedef;
-            self.parsing_const = save_const;
+            self.attrs.parsing_typedef = save_typedef;
+            self.attrs.parsing_const = save_const;
         }
         let expr = self.parse_unary_expr();
         Expr::Sizeof(Box::new(SizeofArg::Expr(expr)), span)
@@ -621,8 +621,8 @@ impl Parser {
             }
             // Save and reset parsing_const before parsing each association type,
             // so we can detect whether `const` appeared in the type specifier.
-            let saved_const = self.parsing_const;
-            self.parsing_const = false;
+            let saved_const = self.attrs.parsing_const;
+            self.attrs.parsing_const = false;
             let (type_spec, is_const) = if matches!(self.peek(), TokenKind::Default) {
                 self.advance();
                 (None, false)
@@ -632,14 +632,14 @@ impl Parser {
                     // For `const int *`, parsing_const is true after parse_type_specifier
                     // (from the `const` keyword), and the `*` is applied in
                     // parse_abstract_declarator_suffix. This means the pointee is const.
-                    let base_const = self.parsing_const;
+                    let base_const = self.attrs.parsing_const;
                     let full_type = self.parse_abstract_declarator_suffix(ts);
                     (Some(full_type), base_const)
                 } else {
                     (None, false)
                 }
             };
-            self.parsing_const = saved_const;
+            self.attrs.parsing_const = saved_const;
             self.expect(&TokenKind::Colon);
             let expr = self.parse_assignment_expr();
             associations.push(GenericAssociation { type_spec, expr, is_const });

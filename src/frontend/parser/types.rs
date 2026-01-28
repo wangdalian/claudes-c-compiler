@@ -46,11 +46,11 @@ impl Parser {
                 // Qualifiers
                 TokenKind::Const => {
                     self.advance();
-                    self.parsing_const = true;
+                    self.attrs.parsing_const = true;
                 }
                 TokenKind::Volatile => {
                     self.advance();
-                    self.parsing_volatile = true;
+                    self.attrs.parsing_volatile = true;
                 }
                 TokenKind::Restrict
                 | TokenKind::Register
@@ -59,16 +59,16 @@ impl Parser {
                 }
                 TokenKind::Noreturn => {
                     self.advance();
-                    self.parsing_noreturn = true;
+                    self.attrs.parsing_noreturn = true;
                 }
                 // GCC named address space qualifiers (__seg_gs / __seg_fs)
                 TokenKind::SegGs => {
                     self.advance();
-                    self.parsing_address_space = AddressSpace::SegGs;
+                    self.attrs.parsing_address_space = AddressSpace::SegGs;
                 }
                 TokenKind::SegFs => {
                     self.advance();
-                    self.parsing_address_space = AddressSpace::SegFs;
+                    self.attrs.parsing_address_space = AddressSpace::SegFs;
                 }
                 // __auto_type - GCC extension: type inferred from initializer
                 TokenKind::AutoType => {
@@ -77,25 +77,25 @@ impl Parser {
                 }
                 TokenKind::Inline => {
                     self.advance();
-                    self.parsing_inline = true;
+                    self.attrs.parsing_inline = true;
                 }
                 // Storage classes
                 TokenKind::Static => {
                     self.advance();
-                    self.parsing_static = true;
+                    self.attrs.parsing_static = true;
                 }
                 TokenKind::Extern => {
                     self.advance();
-                    self.parsing_extern = true;
+                    self.attrs.parsing_extern = true;
                 }
                 TokenKind::Typedef => {
                     self.advance();
-                    self.parsing_typedef = true;
+                    self.attrs.parsing_typedef = true;
                 }
                 // Thread-local storage class (__thread / _Thread_local)
                 TokenKind::ThreadLocal => {
                     self.advance();
-                    self.parsing_thread_local = true;
+                    self.attrs.parsing_thread_local = true;
                 }
                 // _Complex modifier
                 TokenKind::Complex => {
@@ -108,9 +108,9 @@ impl Parser {
                     let (_, aligned, mk, _) = self.parse_gcc_attributes();
                     mode_kind = mode_kind.or(mk);
                     if let Some(a) = aligned {
-                        self.parsed_alignas = Some(self.parsed_alignas.map_or(a, |prev| prev.max(a)));
+                        self.attrs.parsed_alignas = Some(self.attrs.parsed_alignas.map_or(a, |prev| prev.max(a)));
                     }
-                    // parse_gcc_attributes already sets self.parsing_constructor/destructor
+                    // parse_gcc_attributes already sets self.attrs.parsing_constructor/destructor
                 }
                 TokenKind::Extension => {
                     self.advance();
@@ -127,7 +127,7 @@ impl Parser {
                 TokenKind::Alignas => {
                     self.advance();
                     if let Some(align) = self.parse_alignas_argument() {
-                        self.parsed_alignas = Some(self.parsed_alignas.map_or(align, |prev| prev.max(align)));
+                        self.attrs.parsed_alignas = Some(self.attrs.parsed_alignas.map_or(align, |prev| prev.max(align)));
                     }
                 }
                 // Type specifier tokens
@@ -274,19 +274,19 @@ impl Parser {
                     TokenKind::Char => { self.advance(); *has_char = true; }
                     TokenKind::Complex => { self.advance(); *has_complex = true; }
                     TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict => { self.advance(); }
-                    TokenKind::SegGs => { self.advance(); self.parsing_address_space = AddressSpace::SegGs; }
-                    TokenKind::SegFs => { self.advance(); self.parsing_address_space = AddressSpace::SegFs; }
-                    TokenKind::Static => { self.advance(); self.parsing_static = true; }
-                    TokenKind::Extern => { self.advance(); self.parsing_extern = true; }
+                    TokenKind::SegGs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegGs; }
+                    TokenKind::SegFs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegFs; }
+                    TokenKind::Static => { self.advance(); self.attrs.parsing_static = true; }
+                    TokenKind::Extern => { self.advance(); self.attrs.parsing_extern = true; }
                     TokenKind::Auto | TokenKind::Register => { self.advance(); }
-                    TokenKind::ThreadLocal => { self.advance(); self.parsing_thread_local = true; }
-                    TokenKind::Noreturn => { self.advance(); self.parsing_noreturn = true; }
-                    TokenKind::Inline => { self.advance(); self.parsing_inline = true; }
+                    TokenKind::ThreadLocal => { self.advance(); self.attrs.parsing_thread_local = true; }
+                    TokenKind::Noreturn => { self.advance(); self.attrs.parsing_noreturn = true; }
+                    TokenKind::Inline => { self.advance(); self.attrs.parsing_inline = true; }
                     TokenKind::Attribute => {
                         let (_, aligned, mk, _) = self.parse_gcc_attributes();
                         *mode_kind = mode_kind.or(mk);
                         if let Some(a) = aligned {
-                            self.parsed_alignas = Some(self.parsed_alignas.map_or(a, |prev| prev.max(a)));
+                            self.attrs.parsed_alignas = Some(self.attrs.parsed_alignas.map_or(a, |prev| prev.max(a)));
                         }
                     }
                     TokenKind::Extension => { self.advance(); }
@@ -299,14 +299,14 @@ impl Parser {
                 match self.peek() {
                     TokenKind::Complex => { self.advance(); *has_complex = true; }
                     TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict => { self.advance(); }
-                    TokenKind::SegGs => { self.advance(); self.parsing_address_space = AddressSpace::SegGs; }
-                    TokenKind::SegFs => { self.advance(); self.parsing_address_space = AddressSpace::SegFs; }
-                    TokenKind::Static => { self.advance(); self.parsing_static = true; }
-                    TokenKind::Extern => { self.advance(); self.parsing_extern = true; }
+                    TokenKind::SegGs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegGs; }
+                    TokenKind::SegFs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegFs; }
+                    TokenKind::Static => { self.advance(); self.attrs.parsing_static = true; }
+                    TokenKind::Extern => { self.advance(); self.attrs.parsing_extern = true; }
                     TokenKind::Auto | TokenKind::Register => { self.advance(); }
-                    TokenKind::ThreadLocal => { self.advance(); self.parsing_thread_local = true; }
-                    TokenKind::Noreturn => { self.advance(); self.parsing_noreturn = true; }
-                    TokenKind::Inline => { self.advance(); self.parsing_inline = true; }
+                    TokenKind::ThreadLocal => { self.advance(); self.attrs.parsing_thread_local = true; }
+                    TokenKind::Noreturn => { self.advance(); self.attrs.parsing_noreturn = true; }
+                    TokenKind::Inline => { self.advance(); self.attrs.parsing_inline = true; }
                     TokenKind::Extension => { self.advance(); }
                     _ => break,
                 }
@@ -318,14 +318,14 @@ impl Parser {
                     TokenKind::Long => { self.advance(); *long_count += 1; }
                     TokenKind::Complex => { self.advance(); *has_complex = true; }
                     TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict => { self.advance(); }
-                    TokenKind::SegGs => { self.advance(); self.parsing_address_space = AddressSpace::SegGs; }
-                    TokenKind::SegFs => { self.advance(); self.parsing_address_space = AddressSpace::SegFs; }
-                    TokenKind::Static => { self.advance(); self.parsing_static = true; }
-                    TokenKind::Extern => { self.advance(); self.parsing_extern = true; }
+                    TokenKind::SegGs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegGs; }
+                    TokenKind::SegFs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegFs; }
+                    TokenKind::Static => { self.advance(); self.attrs.parsing_static = true; }
+                    TokenKind::Extern => { self.advance(); self.attrs.parsing_extern = true; }
                     TokenKind::Auto | TokenKind::Register => { self.advance(); }
-                    TokenKind::ThreadLocal => { self.advance(); self.parsing_thread_local = true; }
-                    TokenKind::Noreturn => { self.advance(); self.parsing_noreturn = true; }
-                    TokenKind::Inline => { self.advance(); self.parsing_inline = true; }
+                    TokenKind::ThreadLocal => { self.advance(); self.attrs.parsing_thread_local = true; }
+                    TokenKind::Noreturn => { self.advance(); self.attrs.parsing_noreturn = true; }
+                    TokenKind::Inline => { self.advance(); self.attrs.parsing_inline = true; }
                     TokenKind::Extension => { self.advance(); }
                     _ => break,
                 }
@@ -403,9 +403,9 @@ impl Parser {
             // Field types may contain `const` (e.g., `const int *p`), and without
             // this save/restore the const from field types leaks into the outer
             // declaration, incorrectly marking non-const variables as const.
-            let saved_const = self.parsing_const;
+            let saved_const = self.attrs.parsing_const;
             let f = self.parse_struct_fields();
-            self.parsing_const = saved_const;
+            self.attrs.parsing_const = saved_const;
             Some(f)
         } else {
             None
@@ -490,38 +490,38 @@ impl Parser {
                 }
                 TokenKind::Static => {
                     self.advance();
-                    self.parsing_static = true;
+                    self.attrs.parsing_static = true;
                 }
                 TokenKind::Extern => {
                     self.advance();
-                    self.parsing_extern = true;
+                    self.attrs.parsing_extern = true;
                 }
                 TokenKind::Auto | TokenKind::Register => {
                     self.advance();
                 }
                 TokenKind::ThreadLocal => {
                     self.advance();
-                    self.parsing_thread_local = true;
+                    self.attrs.parsing_thread_local = true;
                 }
                 TokenKind::Noreturn => {
                     self.advance();
-                    self.parsing_noreturn = true;
+                    self.attrs.parsing_noreturn = true;
                 }
                 TokenKind::Inline => {
                     self.advance();
-                    self.parsing_inline = true;
+                    self.attrs.parsing_inline = true;
                 }
                 TokenKind::Attribute => {
                     let (_, aligned, _, _) = self.parse_gcc_attributes();
                     if let Some(a) = aligned {
-                        self.parsed_alignas = Some(self.parsed_alignas.map_or(a, |prev| prev.max(a)));
+                        self.attrs.parsed_alignas = Some(self.attrs.parsed_alignas.map_or(a, |prev| prev.max(a)));
                     }
                 }
                 TokenKind::Extension => {
                     self.advance();
                 }
-                TokenKind::SegGs => { self.advance(); self.parsing_address_space = AddressSpace::SegGs; }
-                TokenKind::SegFs => { self.advance(); self.parsing_address_space = AddressSpace::SegFs; }
+                TokenKind::SegGs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegGs; }
+                TokenKind::SegFs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegFs; }
                 _ => break,
             }
         }
@@ -541,7 +541,7 @@ impl Parser {
             if let Some(type_spec) = self.parse_type_specifier() {
                 if matches!(self.peek(), TokenKind::Semicolon) {
                     // Anonymous field (e.g., anonymous struct/union)
-                    let alignment = self.parsed_alignas.take();
+                    let alignment = self.attrs.parsed_alignas.take();
                     fields.push(StructFieldDecl { type_spec, name: None, bit_width: None, derived: Vec::new(), alignment });
                 } else {
                     self.parse_struct_field_declarators(&type_spec, &mut fields);
@@ -566,7 +566,7 @@ impl Parser {
         fields: &mut Vec<StructFieldDecl>,
     ) {
         // Capture _Alignas value that was parsed during type specifier parsing
-        let mut alignas_from_type = self.parsed_alignas.take();
+        let mut alignas_from_type = self.attrs.parsed_alignas.take();
 
         // Consume post-type qualifiers that may appear between type and declarator
         // in struct field declarations: e.g., "char _Alignas(32) c;"
@@ -637,8 +637,8 @@ impl Parser {
                 TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict => {
                     self.advance();
                 }
-                TokenKind::SegGs => { self.advance(); self.parsing_address_space = AddressSpace::SegGs; }
-                TokenKind::SegFs => { self.advance(); self.parsing_address_space = AddressSpace::SegFs; }
+                TokenKind::SegGs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegGs; }
+                TokenKind::SegFs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegFs; }
                 TokenKind::Alignas => {
                     self.advance();
                     if let Some(align) = self.parse_alignas_argument() {
@@ -804,7 +804,7 @@ impl Parser {
         while self.consume_if(&TokenKind::Star) {
             // Capture any address space qualifier that preceded the '*'
             // (e.g., __seg_gs in "typeof(var) __seg_gs *")
-            let addr_space = std::mem::take(&mut self.parsing_address_space);
+            let addr_space = std::mem::take(&mut self.attrs.parsing_address_space);
             result_type = TypeSpecifier::Pointer(Box::new(result_type), addr_space);
             self.skip_cv_qualifiers();
         }

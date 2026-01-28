@@ -45,6 +45,79 @@ impl ModeKind {
     }
 }
 
+/// Accumulated storage-class specifiers, type qualifiers, and GCC attributes
+/// parsed during declaration/type-specifier processing.
+///
+/// These fields are set by `parse_type_specifier` and `parse_gcc_attribute` as
+/// keywords/attributes are encountered, then consumed and reset by declaration
+/// builders in `declarations.rs`. Grouping them into a single struct replaces
+/// 26 scattered fields on `Parser`, enabling bulk reset via `Default::default()`
+/// and making the "set then consume" lifecycle explicit.
+#[derive(Default)]
+pub(super) struct ParsedDeclAttrs {
+    // --- Storage-class specifiers ---
+    /// `typedef` keyword encountered.
+    pub parsing_typedef: bool,
+    /// `static` keyword encountered.
+    pub parsing_static: bool,
+    /// `extern` keyword encountered.
+    pub parsing_extern: bool,
+    /// `_Thread_local` or `__thread` encountered.
+    pub parsing_thread_local: bool,
+    /// `inline` keyword encountered.
+    pub parsing_inline: bool,
+
+    // --- Type qualifiers ---
+    /// `const` qualifier encountered.
+    pub parsing_const: bool,
+    /// `volatile` qualifier encountered.
+    pub parsing_volatile: bool,
+    /// `__seg_gs` or `__seg_fs` qualifier encountered.
+    pub parsing_address_space: AddressSpace,
+
+    // --- GCC function attributes ---
+    /// `__attribute__((constructor))` encountered.
+    pub parsing_constructor: bool,
+    /// `__attribute__((destructor))` encountered.
+    pub parsing_destructor: bool,
+    /// `__attribute__((weak))` encountered.
+    pub parsing_weak: bool,
+    /// `__attribute__((used))` encountered.
+    pub parsing_used: bool,
+    /// `__attribute__((gnu_inline))` encountered.
+    pub parsing_gnu_inline: bool,
+    /// `__attribute__((always_inline))` encountered.
+    pub parsing_always_inline: bool,
+    /// `__attribute__((noinline))` encountered.
+    pub parsing_noinline: bool,
+    /// `__attribute__((noreturn))` or `_Noreturn` encountered.
+    pub parsing_noreturn: bool,
+    /// `__attribute__((error("...")))` encountered.
+    pub parsing_error_attr: bool,
+    /// `__attribute__((transparent_union))` encountered.
+    pub parsing_transparent_union: bool,
+
+    // --- GCC attributes with values ---
+    /// `__attribute__((alias("target")))` target symbol name.
+    pub parsing_alias_target: Option<String>,
+    /// `__attribute__((visibility("...")))` visibility string.
+    pub parsing_visibility: Option<String>,
+    /// `__attribute__((section("...")))` section name.
+    pub parsing_section: Option<String>,
+    /// `__attribute__((cleanup(func)))` cleanup function name.
+    pub parsing_cleanup_fn: Option<String>,
+    /// `__attribute__((vector_size(N)))` total vector size in bytes.
+    pub parsing_vector_size: Option<usize>,
+
+    // --- Alignment ---
+    /// `_Alignas(N)` or `__attribute__((aligned(N)))` value.
+    pub parsed_alignas: Option<usize>,
+    /// `_Alignas(type)` type specifier (for deferred alignment resolution).
+    pub parsed_alignas_type: Option<TypeSpecifier>,
+    /// `__attribute__((aligned(sizeof(type))))` type (for deferred sizeof).
+    pub parsed_alignment_sizeof_type: Option<TypeSpecifier>,
+}
+
 /// Recursive descent parser for C.
 pub struct Parser {
     pub(super) tokens: Vec<Token>,
@@ -52,64 +125,9 @@ pub struct Parser {
     pub(super) typedefs: FxHashSet<String>,
     /// Typedef names shadowed by local variable declarations in the current scope.
     pub(super) shadowed_typedefs: FxHashSet<String>,
-    /// Set to true when parse_type_specifier encounters a `typedef` keyword.
-    pub(super) parsing_typedef: bool,
-    /// Set to true when parse_type_specifier encounters a `static` keyword.
-    pub(super) parsing_static: bool,
-    /// Set to true when parse_type_specifier encounters an `extern` keyword.
-    pub(super) parsing_extern: bool,
-    /// Set to true when parse_type_specifier encounters `_Thread_local` or `__thread`.
-    pub(super) parsing_thread_local: bool,
-    /// Set to true when parse_type_specifier encounters an `inline` keyword.
-    pub(super) parsing_inline: bool,
-    /// Set to true when parse_type_specifier encounters a `const` qualifier.
-    pub(super) parsing_const: bool,
-    /// Set to true when parse_type_specifier encounters a `volatile` qualifier.
-    pub(super) parsing_volatile: bool,
-    /// Set to true when parse_type_specifier encounters __attribute__((constructor)).
-    pub(super) parsing_constructor: bool,
-    /// Set to true when parse_type_specifier encounters __attribute__((destructor)).
-    pub(super) parsing_destructor: bool,
-    /// Set to true when __attribute__((transparent_union)) is encountered on a typedef.
-    pub(super) parsing_transparent_union: bool,
-    /// Set to true when __attribute__((weak)) is encountered on a declaration.
-    pub(super) parsing_weak: bool,
-    /// Set when __attribute__((alias("target"))) is encountered; holds the target symbol name.
-    pub(super) parsing_alias_target: Option<String>,
-    /// Set when __attribute__((visibility("..."))) is encountered; holds the visibility string.
-    pub(super) parsing_visibility: Option<String>,
-    /// Set when __attribute__((section("..."))) is encountered; holds the section name.
-    pub(super) parsing_section: Option<String>,
-    /// Set to true when __attribute__((error("..."))) is encountered.
-    /// Functions with this attribute are compile-time error traps: calls to them
-    /// should be treated as unreachable (they're linker error assertions).
-    pub(super) parsing_error_attr: bool,
-    /// Set to true when __attribute__((noreturn)) or _Noreturn is encountered.
-    /// Calls to noreturn functions are followed by unreachable.
-    pub(super) parsing_noreturn: bool,
-    /// Set to true when __attribute__((gnu_inline)) is encountered.
-    /// Forces GNU89 inline semantics: extern inline = no external definition emitted.
-    pub(super) parsing_gnu_inline: bool,
-    /// Set to true when __attribute__((always_inline)) is encountered.
-    /// Functions with this attribute must always be inlined and should not be
-    /// emitted as standalone functions.
-    pub(super) parsing_always_inline: bool,
-    /// Set to true when __attribute__((noinline)) is encountered.
-    /// Functions with this attribute must never be inlined.
-    pub(super) parsing_noinline: bool,
-    /// Set when __attribute__((cleanup(func))) is encountered; holds the cleanup function name.
-    /// The cleanup function is called with a pointer to the variable when it goes out of scope.
-    pub(super) parsing_cleanup_fn: Option<String>,
-    /// Set when parse_type_specifier or consume_post_type_qualifiers encounters _Alignas(N).
-    /// Consumed and reset by callers that need it (e.g., struct field parsing).
-    pub(super) parsed_alignas: Option<usize>,
-    /// When _Alignas takes a type argument, store the type specifier so the lowerer can
-    /// resolve typedefs and compute the correct alignment (the parser can't resolve typedefs).
-    pub(super) parsed_alignas_type: Option<TypeSpecifier>,
-    /// When `__attribute__((aligned(sizeof(type))))` is used, the parser may not accurately
-    /// compute sizeof for struct/union types.  Store the type here so sema/lowerer can
-    /// recompute sizeof with full layout information.
-    pub(super) parsed_alignment_sizeof_type: Option<TypeSpecifier>,
+    /// Accumulated declaration attributes from the current parse_type_specifier pass.
+    /// Reset at the start of each top-level or local declaration.
+    pub(super) attrs: ParsedDeclAttrs,
     /// Stack for #pragma pack alignment values.
     /// Current effective alignment is the last element (or None for default).
     pub(super) pragma_pack_stack: Vec<Option<usize>>,
@@ -125,15 +143,6 @@ pub struct Parser {
     pub error_count: usize,
     /// Source manager for resolving spans to file:line:col in error messages.
     source_manager: Option<SourceManager>,
-    /// Set to true when __attribute__((used)) is encountered.
-    /// Prevents dead code elimination of the symbol even if unreferenced.
-    pub(super) parsing_used: bool,
-    /// Set when __attribute__((vector_size(N))) is encountered on a typedef.
-    /// Holds the total vector size in bytes. Consumed during typedef processing.
-    pub(super) parsing_vector_size: Option<usize>,
-    /// Set to the address space when __seg_gs or __seg_fs qualifier is encountered.
-    /// Reset after being consumed by pointer type construction.
-    pub(super) parsing_address_space: AddressSpace,
     /// Map of enum constant names to their integer values.
     /// Populated as enum definitions are parsed, so that later constant expressions
     /// (e.g., in __attribute__((aligned(1 << ENUM_CONST)))) can resolve them.
@@ -147,38 +156,13 @@ impl Parser {
             pos: 0,
             typedefs: Self::builtin_typedefs(),
             shadowed_typedefs: FxHashSet::default(),
-            parsing_typedef: false,
-            parsing_static: false,
-            parsing_extern: false,
-            parsing_thread_local: false,
-            parsing_inline: false,
-            parsing_const: false,
-            parsing_volatile: false,
-            parsing_constructor: false,
-            parsing_destructor: false,
-            parsing_transparent_union: false,
-            parsing_weak: false,
-            parsing_alias_target: None,
-            parsing_visibility: None,
-            parsing_section: None,
-            parsing_error_attr: false,
-            parsing_noreturn: false,
-            parsing_gnu_inline: false,
-            parsing_always_inline: false,
-            parsing_noinline: false,
-            parsing_cleanup_fn: None,
-            parsed_alignas: None,
-            parsed_alignas_type: None,
-            parsed_alignment_sizeof_type: None,
+            attrs: ParsedDeclAttrs::default(),
             pragma_pack_stack: Vec::new(),
             pragma_pack_align: None,
             pragma_visibility_stack: Vec::new(),
             pragma_default_visibility: None,
             error_count: 0,
             source_manager: None,
-            parsing_used: false,
-            parsing_vector_size: None,
-            parsing_address_space: AddressSpace::Default,
             enum_constants: FxHashMap::default(),
         }
     }
@@ -360,11 +344,11 @@ impl Parser {
                 }
                 TokenKind::SegGs => {
                     self.advance();
-                    self.parsing_address_space = AddressSpace::SegGs;
+                    self.attrs.parsing_address_space = AddressSpace::SegGs;
                 }
                 TokenKind::SegFs => {
                     self.advance();
-                    self.parsing_address_space = AddressSpace::SegFs;
+                    self.attrs.parsing_address_space = AddressSpace::SegFs;
                 }
                 _ => break,
             }
@@ -419,7 +403,7 @@ impl Parser {
     pub(super) fn skip_gcc_extensions(&mut self) {
         let (_, aligned, _, _) = self.parse_gcc_attributes();
         if let Some(a) = aligned {
-            self.parsed_alignas = Some(self.parsed_alignas.map_or(a, |prev| prev.max(a)));
+            self.attrs.parsed_alignas = Some(self.attrs.parsed_alignas.map_or(a, |prev| prev.max(a)));
         }
     }
 
@@ -443,14 +427,14 @@ impl Parser {
                             loop {
                                 match self.peek() {
                                     TokenKind::Identifier(name) if name == "constructor" || name == "__constructor__" => {
-                                        self.parsing_constructor = true;
+                                        self.attrs.parsing_constructor = true;
                                         self.advance();
                                         if matches!(self.peek(), TokenKind::LParen) {
                                             self.skip_balanced_parens();
                                         }
                                     }
                                     TokenKind::Identifier(name) if name == "destructor" || name == "__destructor__" => {
-                                        self.parsing_destructor = true;
+                                        self.attrs.parsing_destructor = true;
                                         self.advance();
                                         if matches!(self.peek(), TokenKind::LParen) {
                                             self.skip_balanced_parens();
@@ -473,11 +457,11 @@ impl Parser {
                                         self.advance();
                                     }
                                     TokenKind::Identifier(name) if name == "transparent_union" || name == "__transparent_union__" => {
-                                        self.parsing_transparent_union = true;
+                                        self.attrs.parsing_transparent_union = true;
                                         self.advance();
                                     }
                                     TokenKind::Identifier(name) if name == "weak" || name == "__weak__" => {
-                                        self.parsing_weak = true;
+                                        self.attrs.parsing_weak = true;
                                         self.advance();
                                     }
                                     TokenKind::Identifier(name) if name == "alias" || name == "__alias__" => {
@@ -491,7 +475,7 @@ impl Parser {
                                                 self.advance();
                                             }
                                             if !result.is_empty() {
-                                                self.parsing_alias_target = Some(result);
+                                                self.attrs.parsing_alias_target = Some(result);
                                             }
                                             // consume )
                                             if matches!(self.peek(), TokenKind::RParen) {
@@ -510,7 +494,7 @@ impl Parser {
                                                 self.advance();
                                             }
                                             if !result.is_empty() {
-                                                self.parsing_visibility = Some(result);
+                                                self.attrs.parsing_visibility = Some(result);
                                             }
                                             if matches!(self.peek(), TokenKind::RParen) {
                                                 self.advance();
@@ -528,7 +512,7 @@ impl Parser {
                                                 self.advance();
                                             }
                                             if !result.is_empty() {
-                                                self.parsing_section = Some(result);
+                                                self.attrs.parsing_section = Some(result);
                                             }
                                             if matches!(self.peek(), TokenKind::RParen) {
                                                 self.advance();
@@ -541,7 +525,7 @@ impl Parser {
                                         // These are GCC compile-time assertion mechanisms: if a call to
                                         // such a function survives to codegen, GCC emits a compile error.
                                         // The Linux kernel uses this for __compiletime_error() traps.
-                                        self.parsing_error_attr = true;
+                                        self.attrs.parsing_error_attr = true;
                                         self.advance();
                                         // Skip the ("message") argument
                                         if matches!(self.peek(), TokenKind::LParen) {
@@ -555,25 +539,25 @@ impl Parser {
                                         }
                                     }
                                     TokenKind::Identifier(name) if name == "noreturn" => {
-                                        self.parsing_noreturn = true;
+                                        self.attrs.parsing_noreturn = true;
                                         self.advance();
                                     }
                                     // __noreturn__ is tokenized as TokenKind::Noreturn by the lexer,
                                     // so handle the keyword form here in addition to the identifier "noreturn".
                                     TokenKind::Noreturn => {
-                                        self.parsing_noreturn = true;
+                                        self.attrs.parsing_noreturn = true;
                                         self.advance();
                                     }
                                     TokenKind::Identifier(name) if name == "gnu_inline" || name == "__gnu_inline__" => {
-                                        self.parsing_gnu_inline = true;
+                                        self.attrs.parsing_gnu_inline = true;
                                         self.advance();
                                     }
                                     TokenKind::Identifier(name) if name == "always_inline" || name == "__always_inline__" => {
-                                        self.parsing_always_inline = true;
+                                        self.attrs.parsing_always_inline = true;
                                         self.advance();
                                     }
                                     TokenKind::Identifier(name) if name == "noinline" || name == "__noinline__" => {
-                                        self.parsing_noinline = true;
+                                        self.attrs.parsing_noinline = true;
                                         self.advance();
                                     }
                                     TokenKind::Identifier(name) if name == "cleanup" || name == "__cleanup__" => {
@@ -582,7 +566,7 @@ impl Parser {
                                         if matches!(self.peek(), TokenKind::LParen) {
                                             self.advance(); // consume (
                                             if let TokenKind::Identifier(func_name) = self.peek() {
-                                                self.parsing_cleanup_fn = Some(func_name.clone());
+                                                self.attrs.parsing_cleanup_fn = Some(func_name.clone());
                                                 self.advance();
                                             }
                                             if matches!(self.peek(), TokenKind::RParen) {
@@ -628,7 +612,7 @@ impl Parser {
                                             let expr = self.parse_assignment_expr();
                                             let enums = if self.enum_constants.is_empty() { None } else { Some(&self.enum_constants) };
                                             if let Some(size) = Self::eval_const_int_expr_with_enums(&expr, enums) {
-                                                self.parsing_vector_size = Some(size as usize);
+                                                self.attrs.parsing_vector_size = Some(size as usize);
                                             }
                                             if matches!(self.peek(), TokenKind::RParen) {
                                                 self.advance();
@@ -636,7 +620,7 @@ impl Parser {
                                         }
                                     }
                                     TokenKind::Identifier(name) if name == "used" || name == "__used__" => {
-                                        self.parsing_used = true;
+                                        self.attrs.parsing_used = true;
                                         self.advance();
                                     }
                                     TokenKind::Identifier(name) if name == "address_space" || name == "__address_space__" => {
@@ -647,11 +631,11 @@ impl Parser {
                                             match self.peek() {
                                                 TokenKind::SegGs => {
                                                     self.advance();
-                                                    self.parsing_address_space = AddressSpace::SegGs;
+                                                    self.attrs.parsing_address_space = AddressSpace::SegGs;
                                                 }
                                                 TokenKind::SegFs => {
                                                     self.advance();
-                                                    self.parsing_address_space = AddressSpace::SegFs;
+                                                    self.attrs.parsing_address_space = AddressSpace::SegFs;
                                                 }
                                                 _ => {
                                                     // Unknown address space, skip
@@ -736,8 +720,8 @@ impl Parser {
                     if let Some(a) = attr_aligned {
                         aligned = Some(aligned.map_or(a, |prev| prev.max(a)));
                     }
-                    if self.parsing_constructor { is_constructor = true; }
-                    if self.parsing_destructor { is_destructor = true; }
+                    if self.attrs.parsing_constructor { is_constructor = true; }
+                    if self.attrs.parsing_destructor { is_destructor = true; }
                 }
                 TokenKind::Extension => {
                     self.advance();
@@ -932,7 +916,7 @@ impl Parser {
         // uses a conservative default for struct/union types).
         if let Expr::Sizeof(ref arg, _) = expr {
             if let SizeofArg::Type(ref ts) = **arg {
-                self.parsed_alignment_sizeof_type = Some(ts.clone());
+                self.attrs.parsed_alignment_sizeof_type = Some(ts.clone());
             }
         }
         let enums = if self.enum_constants.is_empty() { None } else { Some(&self.enum_constants) };
@@ -948,7 +932,7 @@ impl Parser {
         }
         // Try type-name first using save/restore
         let save = self.pos;
-        let save_typedef = self.parsing_typedef;
+        let save_typedef = self.attrs.parsing_typedef;
         self.advance(); // consume (
         if self.is_type_specifier() {
             if let Some(ts) = self.parse_type_specifier() {
@@ -957,14 +941,14 @@ impl Parser {
                     self.advance(); // consume )
                     // Save the type specifier so the lowerer can resolve typedefs
                     // and compute accurate alignment (parser can't resolve typedefs).
-                    self.parsed_alignas_type = Some(result_type.clone());
+                    self.attrs.parsed_alignas_type = Some(result_type.clone());
                     return Some(Self::alignof_type_spec(&result_type));
                 }
             }
         }
         // Backtrack and try as constant expression
         self.pos = save;
-        self.parsing_typedef = save_typedef;
+        self.attrs.parsing_typedef = save_typedef;
         self.advance(); // consume (
         let expr = self.parse_assignment_expr();
         if matches!(self.peek(), TokenKind::RParen) {

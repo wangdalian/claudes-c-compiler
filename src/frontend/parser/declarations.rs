@@ -12,32 +12,12 @@ use crate::common::source::Span;
 use crate::common::types::AddressSpace;
 use crate::frontend::lexer::token::TokenKind;
 use super::ast::*;
-use super::parser::{ModeKind, Parser};
+use super::parser::{ModeKind, ParsedDeclAttrs, Parser};
 
 impl Parser {
     pub(super) fn parse_external_decl(&mut self) -> Option<ExternalDecl> {
-        // Reset storage class and attribute flags before parsing
-        self.parsing_typedef = false;
-        self.parsing_static = false;
-        self.parsing_extern = false;
-        self.parsing_thread_local = false;
-        self.parsing_inline = false;
-        self.parsing_const = false;
-        self.parsing_volatile = false;
-        self.parsing_constructor = false;
-        self.parsing_destructor = false;
-        self.parsing_weak = false;
-        self.parsing_used = false;
-        self.parsing_alias_target = None;
-        self.parsing_visibility = None;
-        self.parsing_section = None;
-        self.parsing_error_attr = false;
-        self.parsing_noreturn = false;
-        self.parsing_cleanup_fn = None;
-        self.parsing_gnu_inline = false;
-        self.parsing_always_inline = false;
-        self.parsing_noinline = false;
-        self.parsing_address_space = AddressSpace::Default;
+        // Reset all declaration-level flags before parsing the next declaration.
+        self.attrs = ParsedDeclAttrs::default();
 
         self.skip_gcc_extensions();
 
@@ -99,8 +79,8 @@ impl Parser {
         let type_spec = self.parse_type_specifier()?;
 
         // Capture constructor/destructor from type-level attributes
-        let type_level_ctor = self.parsing_constructor;
-        let type_level_dtor = self.parsing_destructor;
+        let type_level_ctor = self.attrs.parsing_constructor;
+        let type_level_dtor = self.attrs.parsing_destructor;
 
         // Bare type with no declarator (e.g., struct definition)
         if self.at_eof() || matches!(self.peek(), TokenKind::Semicolon) {
@@ -108,19 +88,19 @@ impl Parser {
             return Some(ExternalDecl::Declaration(Declaration {
                 type_spec,
                 declarators: Vec::new(),
-                is_static: self.parsing_static,
-                is_extern: self.parsing_extern,
-                is_typedef: self.parsing_typedef,
-                is_const: self.parsing_const,
-                is_volatile: self.parsing_volatile,
+                is_static: self.attrs.parsing_static,
+                is_extern: self.attrs.parsing_extern,
+                is_typedef: self.attrs.parsing_typedef,
+                is_const: self.attrs.parsing_const,
+                is_volatile: self.attrs.parsing_volatile,
                 is_common: false,
-                is_thread_local: self.parsing_thread_local,
+                is_thread_local: self.attrs.parsing_thread_local,
                 is_transparent_union: false,
                 alignment: None,
                 alignas_type: None,
                 alignment_sizeof_type: None,
-                address_space: self.parsing_address_space,
-                vector_size: self.parsing_vector_size.take(),
+                address_space: self.attrs.parsing_address_space,
+                vector_size: self.attrs.parsing_vector_size.take(),
                 span: start,
             }));
         }
@@ -134,27 +114,27 @@ impl Parser {
         let is_common = decl_common || post_common;
         // Merge alignment from _Alignas (type specifier), declarator attrs, and post-declarator attrs.
         // Per C11, alignment can only increase (6.7.5), so take the maximum.
-        let mut merged_alignment = self.parsed_alignas.take();
-        let alignas_type = self.parsed_alignas_type.take();
-        let alignment_sizeof_type = self.parsed_alignment_sizeof_type.take();
+        let mut merged_alignment = self.attrs.parsed_alignas.take();
+        let alignas_type = self.attrs.parsed_alignas_type.take();
+        let alignment_sizeof_type = self.attrs.parsed_alignment_sizeof_type.take();
         for a in [decl_aligned, post_aligned].iter().copied().flatten() {
             merged_alignment = Some(merged_alignment.map_or(a, |prev| prev.max(a)));
         }
         // Merge all sources of constructor/destructor: type-level attrs, declarator-level attrs, post-declarator attrs
-        let is_constructor = type_level_ctor || self.parsing_constructor || post_ctor;
-        let is_destructor = type_level_dtor || self.parsing_destructor || post_dtor;
+        let is_constructor = type_level_ctor || self.attrs.parsing_constructor || post_ctor;
+        let is_destructor = type_level_dtor || self.attrs.parsing_destructor || post_dtor;
         // Capture alias/weak/visibility/section/error attributes
-        let is_weak = self.parsing_weak;
-        let alias_target = self.parsing_alias_target.take();
+        let is_weak = self.attrs.parsing_weak;
+        let alias_target = self.attrs.parsing_alias_target.take();
         // Use explicit __attribute__((visibility(...))) if present, otherwise fall back
         // to the current #pragma GCC visibility default (if any).
-        let visibility = self.parsing_visibility.take()
+        let visibility = self.attrs.parsing_visibility.take()
             .or_else(|| self.pragma_default_visibility.clone());
-        let section = self.parsing_section.take();
-        let is_error_attr = self.parsing_error_attr;
-        let is_noreturn = self.parsing_noreturn;
-        let cleanup_fn = self.parsing_cleanup_fn.take();
-        let is_used = self.parsing_used;
+        let section = self.attrs.parsing_section.take();
+        let is_error_attr = self.attrs.parsing_error_attr;
+        let is_noreturn = self.attrs.parsing_noreturn;
+        let cleanup_fn = self.attrs.parsing_cleanup_fn.take();
+        let is_used = self.attrs.parsing_used;
 
         // Apply __attribute__((mode(...))): transform type to specified bit-width
         let type_spec = if let Some(mk) = mode_kind {
@@ -189,7 +169,7 @@ impl Parser {
         is_weak: bool,
         is_used: bool,
     ) -> Option<ExternalDecl> {
-        self.parsing_typedef = false; // function defs are never typedefs
+        self.attrs.parsing_typedef = false; // function defs are never typedefs
         let (params, variadic) = if let Some(DerivedDeclarator::Function(p, v)) = derived.last() {
             (p.clone(), *v)
         } else {
@@ -204,12 +184,12 @@ impl Parser {
             params
         };
 
-        let is_static = self.parsing_static;
-        let is_inline = self.parsing_inline;
-        let is_extern = self.parsing_extern;
-        let is_gnu_inline = self.parsing_gnu_inline;
-        let is_always_inline = self.parsing_always_inline;
-        let is_noinline = self.parsing_noinline;
+        let is_static = self.attrs.parsing_static;
+        let is_inline = self.attrs.parsing_inline;
+        let is_extern = self.attrs.parsing_extern;
+        let is_gnu_inline = self.attrs.parsing_gnu_inline;
+        let is_always_inline = self.attrs.parsing_always_inline;
+        let is_noinline = self.attrs.parsing_noinline;
 
         // Build return type from derived declarators
         let return_type = self.build_return_type(type_spec, &derived);
@@ -473,32 +453,32 @@ impl Parser {
             declarators.last_mut().unwrap().attrs.is_destructor = true;
         }
         // Merge weak/alias/visibility from post-declarator attributes
-        if self.parsing_weak {
+        if self.attrs.parsing_weak {
             declarators.last_mut().unwrap().attrs.is_weak = true;
         }
-        if let Some(ref target) = self.parsing_alias_target {
+        if let Some(ref target) = self.attrs.parsing_alias_target {
             declarators.last_mut().unwrap().attrs.alias_target = Some(target.clone());
         }
-        if let Some(ref vis) = self.parsing_visibility {
+        if let Some(ref vis) = self.attrs.parsing_visibility {
             declarators.last_mut().unwrap().attrs.visibility = Some(vis.clone());
         }
-        if let Some(ref sect) = self.parsing_section {
+        if let Some(ref sect) = self.attrs.parsing_section {
             declarators.last_mut().unwrap().attrs.section = Some(sect.clone());
         }
-        if let Some(ref cleanup) = self.parsing_cleanup_fn {
+        if let Some(ref cleanup) = self.attrs.parsing_cleanup_fn {
             declarators.last_mut().unwrap().attrs.cleanup_fn = Some(cleanup.clone());
         }
-        if self.parsing_used {
+        if self.attrs.parsing_used {
             declarators.last_mut().unwrap().attrs.is_used = true;
         }
-        self.parsing_weak = false;
-        self.parsing_alias_target = None;
-        self.parsing_visibility = None;
-        self.parsing_section = None;
-        self.parsing_error_attr = false;
-        self.parsing_noreturn = false;
-        self.parsing_cleanup_fn = None;
-        self.parsing_used = false;
+        self.attrs.parsing_weak = false;
+        self.attrs.parsing_alias_target = None;
+        self.attrs.parsing_visibility = None;
+        self.attrs.parsing_section = None;
+        self.attrs.parsing_error_attr = false;
+        self.attrs.parsing_noreturn = false;
+        self.attrs.parsing_cleanup_fn = None;
+        self.attrs.parsing_used = false;
         is_common = is_common || extra_common;
         if let Some(a) = extra_aligned {
             alignment = Some(alignment.map_or(a, |prev| prev.max(a)));
@@ -509,24 +489,24 @@ impl Parser {
             let (dname, dderived) = self.parse_declarator();
             let (d_ctor, d_dtor, _, d_common, _, d_asm_reg) = self.parse_asm_and_attributes();
             is_common = is_common || d_common;
-            let d_weak = self.parsing_weak;
-            let d_alias = self.parsing_alias_target.take();
-            let d_vis = self.parsing_visibility.take()
+            let d_weak = self.attrs.parsing_weak;
+            let d_alias = self.attrs.parsing_alias_target.take();
+            let d_vis = self.attrs.parsing_visibility.take()
                 .or_else(|| self.pragma_default_visibility.clone());
             // Per-declarator section attribute overrides, otherwise inherit from
             // the declaration-level attribute (e.g. __attribute__((section(".x"))) int a, b;)
-            let d_section = self.parsing_section.take().or_else(|| section.clone());
-            let d_cleanup_fn = self.parsing_cleanup_fn.take();
-            let d_used = self.parsing_used;
-            self.parsing_weak = false;
-            self.parsing_used = false;
+            let d_section = self.attrs.parsing_section.take().or_else(|| section.clone());
+            let d_cleanup_fn = self.attrs.parsing_cleanup_fn.take();
+            let d_used = self.attrs.parsing_used;
+            self.attrs.parsing_weak = false;
+            self.attrs.parsing_used = false;
             let dinit = if self.consume_if(&TokenKind::Assign) {
                 Some(self.parse_initializer())
             } else {
                 None
             };
-            let d_error_attr = self.parsing_error_attr;
-            let d_noreturn = self.parsing_noreturn;
+            let d_error_attr = self.attrs.parsing_error_attr;
+            let d_noreturn = self.attrs.parsing_noreturn;
             declarators.push(InitDeclarator {
                 name: dname.unwrap_or_default(),
                 derived: dderived,
@@ -556,55 +536,60 @@ impl Parser {
         }
 
         // Register typedef names
-        let is_typedef = self.parsing_typedef;
-        let is_transparent_union = self.parsing_transparent_union;
-        self.parsing_transparent_union = false;
+        let is_typedef = self.attrs.parsing_typedef;
+        let is_transparent_union = self.attrs.parsing_transparent_union;
+        self.attrs.parsing_transparent_union = false;
         self.register_typedefs(&declarators);
 
         self.expect(&TokenKind::Semicolon);
         Some(ExternalDecl::Declaration(Declaration {
             type_spec,
             declarators,
-            is_static: self.parsing_static,
-            is_extern: self.parsing_extern,
+            is_static: self.attrs.parsing_static,
+            is_extern: self.attrs.parsing_extern,
             is_typedef,
-            is_const: self.parsing_const,
-            is_volatile: self.parsing_volatile,
+            is_const: self.attrs.parsing_const,
+            is_volatile: self.attrs.parsing_volatile,
             is_common,
-            is_thread_local: self.parsing_thread_local,
+            is_thread_local: self.attrs.parsing_thread_local,
             is_transparent_union,
             alignment,
             alignas_type,
             alignment_sizeof_type,
-            address_space: self.parsing_address_space,
-            vector_size: self.parsing_vector_size.take(),
+            address_space: self.attrs.parsing_address_space,
+            vector_size: self.attrs.parsing_vector_size.take(),
             span: start,
         }))
     }
 
     pub(super) fn parse_local_declaration(&mut self) -> Option<Declaration> {
         let start = self.peek_span();
-        self.parsing_static = false;
-        self.parsing_extern = false;
-        self.parsing_thread_local = false;
-        self.parsing_typedef = false;
-        self.parsing_inline = false;
-        self.parsing_const = false;
-        self.parsing_volatile = false;
-        self.parsing_address_space = AddressSpace::Default;
+        // Selective reset: only storage-class/qualifier flags need clearing here.
+        // GCC attribute flags (constructor, weak, etc.) may carry over from the
+        // type-specifier parse that already ran before we entered this path.
+        // parse_external_decl does a full `attrs = default()` because it starts
+        // a completely new declaration context.
+        self.attrs.parsing_static = false;
+        self.attrs.parsing_extern = false;
+        self.attrs.parsing_thread_local = false;
+        self.attrs.parsing_typedef = false;
+        self.attrs.parsing_inline = false;
+        self.attrs.parsing_const = false;
+        self.attrs.parsing_volatile = false;
+        self.attrs.parsing_address_space = AddressSpace::Default;
         let type_spec = self.parse_type_specifier()?;
 
         self.consume_post_type_qualifiers();
 
-        let is_static = self.parsing_static;
-        let is_extern = self.parsing_extern;
+        let is_static = self.attrs.parsing_static;
+        let is_extern = self.attrs.parsing_extern;
 
         let mut declarators = Vec::new();
 
         // Handle bare type with semicolon (struct/enum/union definition)
         if matches!(self.peek(), TokenKind::Semicolon) {
             self.advance();
-            return Some(Declaration { type_spec, declarators, is_static, is_extern, is_typedef: self.parsing_typedef, is_const: self.parsing_const, is_volatile: self.parsing_volatile, is_common: false, is_thread_local: self.parsing_thread_local, is_transparent_union: false, alignment: None, alignas_type: None, alignment_sizeof_type: None, address_space: self.parsing_address_space, vector_size: self.parsing_vector_size.take(), span: start });
+            return Some(Declaration { type_spec, declarators, is_static, is_extern, is_typedef: self.attrs.parsing_typedef, is_const: self.attrs.parsing_const, is_volatile: self.attrs.parsing_volatile, is_common: false, is_thread_local: self.attrs.parsing_thread_local, is_transparent_union: false, alignment: None, alignas_type: None, alignment_sizeof_type: None, address_space: self.attrs.parsing_address_space, vector_size: self.attrs.parsing_vector_size.take(), span: start });
         }
 
         let mut mode_kind: Option<ModeKind> = None;
@@ -612,8 +597,8 @@ impl Parser {
         loop {
             let (name, derived, decl_mode, _, decl_aligned) = self.parse_declarator_with_attrs();
             let (skip_mode, skip_aligned, skip_asm_reg) = self.skip_asm_and_attributes();
-            let local_cleanup_fn = self.parsing_cleanup_fn.take();
-            let local_section = self.parsing_section.take();
+            let local_cleanup_fn = self.attrs.parsing_cleanup_fn.take();
+            let local_section = self.attrs.parsing_section.take();
             mode_kind = mode_kind.or(decl_mode).or(skip_mode);
             // Merge alignment from declarator and post-declarator attributes
             for a in [decl_aligned, skip_aligned].iter().copied().flatten() {
@@ -653,15 +638,15 @@ impl Parser {
         };
 
         // Register typedef names or shadow them for variable declarations
-        let is_typedef = self.parsing_typedef;
-        if self.parsing_typedef {
+        let is_typedef = self.attrs.parsing_typedef;
+        if self.attrs.parsing_typedef {
             for decl in &declarators {
                 if !decl.name.is_empty() {
                     self.typedefs.insert(decl.name.clone());
                     self.shadowed_typedefs.remove(&decl.name);
                 }
             }
-            self.parsing_typedef = false;
+            self.attrs.parsing_typedef = false;
         } else {
             for decl in &declarators {
                 if !decl.name.is_empty() && self.typedefs.contains(&decl.name) {
@@ -673,14 +658,14 @@ impl Parser {
         self.expect(&TokenKind::Semicolon);
         // Merge alignment from _Alignas (captured in parsed_alignas during type specifier parsing)
         // with alignment from __attribute__((aligned(N))) on declarators
-        if let Some(a) = self.parsed_alignas.take() {
+        if let Some(a) = self.attrs.parsed_alignas.take() {
             alignment = Some(alignment.map_or(a, |prev| prev.max(a)));
         }
-        let alignas_type = self.parsed_alignas_type.take();
-        let alignment_sizeof_type = self.parsed_alignment_sizeof_type.take();
-        let is_transparent_union = self.parsing_transparent_union;
-        self.parsing_transparent_union = false;
-        Some(Declaration { type_spec, declarators, is_static, is_extern, is_typedef, is_const: self.parsing_const, is_volatile: self.parsing_volatile, is_common: false, is_thread_local: self.parsing_thread_local, is_transparent_union, alignment, alignas_type, alignment_sizeof_type, address_space: self.parsing_address_space, vector_size: self.parsing_vector_size.take(), span: start })
+        let alignas_type = self.attrs.parsed_alignas_type.take();
+        let alignment_sizeof_type = self.attrs.parsed_alignment_sizeof_type.take();
+        let is_transparent_union = self.attrs.parsing_transparent_union;
+        self.attrs.parsing_transparent_union = false;
+        Some(Declaration { type_spec, declarators, is_static, is_extern, is_typedef, is_const: self.attrs.parsing_const, is_volatile: self.attrs.parsing_volatile, is_common: false, is_thread_local: self.attrs.parsing_thread_local, is_transparent_union, alignment, alignas_type, alignment_sizeof_type, address_space: self.attrs.parsing_address_space, vector_size: self.attrs.parsing_vector_size.take(), span: start })
     }
 
     /// Parse an initializer: either a braced initializer list or a single expression.
@@ -872,25 +857,25 @@ impl Parser {
     pub(super) fn consume_post_type_qualifiers(&mut self) {
         loop {
             match self.peek() {
-                TokenKind::Typedef => { self.advance(); self.parsing_typedef = true; }
-                TokenKind::Static => { self.advance(); self.parsing_static = true; }
-                TokenKind::Extern => { self.advance(); self.parsing_extern = true; }
-                TokenKind::Const => { self.advance(); self.parsing_const = true; }
-                TokenKind::Volatile => { self.advance(); self.parsing_volatile = true; }
+                TokenKind::Typedef => { self.advance(); self.attrs.parsing_typedef = true; }
+                TokenKind::Static => { self.advance(); self.attrs.parsing_static = true; }
+                TokenKind::Extern => { self.advance(); self.attrs.parsing_extern = true; }
+                TokenKind::Const => { self.advance(); self.attrs.parsing_const = true; }
+                TokenKind::Volatile => { self.advance(); self.attrs.parsing_volatile = true; }
                 TokenKind::Restrict
                 | TokenKind::Inline | TokenKind::Register | TokenKind::Auto => { self.advance(); }
-                TokenKind::SegGs => { self.advance(); self.parsing_address_space = AddressSpace::SegGs; }
-                TokenKind::SegFs => { self.advance(); self.parsing_address_space = AddressSpace::SegFs; }
+                TokenKind::SegGs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegGs; }
+                TokenKind::SegFs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegFs; }
                 TokenKind::Alignas => {
                     self.advance();
                     if let Some(align) = self.parse_alignas_argument() {
-                        self.parsed_alignas = Some(self.parsed_alignas.map_or(align, |prev| prev.max(align)));
+                        self.attrs.parsed_alignas = Some(self.attrs.parsed_alignas.map_or(align, |prev| prev.max(align)));
                     }
                 }
                 TokenKind::Attribute => {
                     let (_, aligned, _, _) = self.parse_gcc_attributes();
                     if let Some(a) = aligned {
-                        self.parsed_alignas = Some(self.parsed_alignas.map_or(a, |prev| prev.max(a)));
+                        self.attrs.parsed_alignas = Some(self.attrs.parsed_alignas.map_or(a, |prev| prev.max(a)));
                     }
                 }
                 TokenKind::Extension => { self.advance(); }
@@ -901,13 +886,13 @@ impl Parser {
 
     /// Register typedef names from declarators, if parsing_typedef is set.
     fn register_typedefs(&mut self, declarators: &[InitDeclarator]) {
-        if self.parsing_typedef {
+        if self.attrs.parsing_typedef {
             for decl in declarators {
                 if !decl.name.is_empty() {
                     self.typedefs.insert(decl.name.clone());
                 }
             }
-            self.parsing_typedef = false;
+            self.attrs.parsing_typedef = false;
         }
     }
 
