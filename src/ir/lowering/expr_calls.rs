@@ -13,15 +13,37 @@ use crate::common::types::{AddressSpace, IrType, CType};
 use super::lowering::Lowerer;
 
 impl Lowerer {
-    /// Classify a struct return size into sret (>16 bytes) or two-register (9-16 bytes).
+    /// Classify a struct return size into sret (hidden pointer) or two-register return.
     /// Returns (sret_size, two_reg_size).
-    fn classify_struct_return(size: usize) -> (Option<usize>, Option<usize>) {
-        if size > 16 {
-            (Some(size), None)
-        } else if size > 8 {
-            (None, Some(size))
+    ///
+    /// On x86-64/arm/riscv (64-bit targets):
+    ///   - size > 16: sret (hidden pointer)
+    ///   - 9-16 bytes: two-register return (packed into I128, returned in rax:rdx / x0:x1 / a0:a1)
+    ///   - 1-8 bytes: small struct (packed into I64, returned in rax / x0 / a0)
+    ///
+    /// On i686 (32-bit target):
+    ///   - size > 8: sret (hidden pointer) — eax:edx is only 8 bytes total
+    ///   - 1-8 bytes: small struct (packed into I64, returned in eax:edx)
+    ///   - No two-register (I128) return path — register pair is only 8 bytes
+    pub(super) fn classify_struct_return(size: usize) -> (Option<usize>, Option<usize>) {
+        let ptr_size = crate::common::types::target_ptr_size();
+        if ptr_size <= 4 {
+            // 32-bit target (i686): register pair (eax:edx) is 8 bytes
+            // Structs > 8 bytes must use sret. No two-register (I128) path.
+            if size > 8 {
+                (Some(size), None)
+            } else {
+                (None, None)
+            }
         } else {
-            (None, None)
+            // 64-bit target: register pair is 16 bytes
+            if size > 16 {
+                (Some(size), None)
+            } else if size > 8 {
+                (None, Some(size))
+            } else {
+                (None, None)
+            }
         }
     }
 
@@ -568,6 +590,20 @@ impl Lowerer {
                     if sig.and_then(|s| s.two_reg_ret_size).is_some() {
                         ret_ty = IrType::I128;
                     }
+                    // On 32-bit targets, small struct returns (≤8 bytes) are packed
+                    // as I64 and returned in eax:edx. The Call instruction needs I64
+                    // as return type so the backend saves both register halves.
+                    if crate::common::types::target_is_32bit() {
+                        if let Some(s) = sig {
+                            if s.sret_size.is_none() && s.two_reg_ret_size.is_none() {
+                                if let Some(ref rc) = s.return_ctype {
+                                    if rc.is_struct_or_union() {
+                                        ret_ty = IrType::I64;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     self.emit(Instruction::Call {
                         dest: Some(dest), func: call_name,
                         args: arg_vals, arg_types, return_type: ret_ty, is_variadic, num_fixed_args,
@@ -745,6 +781,10 @@ impl Lowerer {
             // Complex long double: on x86-64 returns via x87 st(0)/st(1), real part as F128.
             // On other targets this is handled via sret before reaching this point.
             CType::ComplexLongDouble => IrType::F128,
+            // On 32-bit targets, small struct/union returns (≤8 bytes, not sret) are
+            // packed as I64 and returned in eax:edx. Use I64 so the backend knows to
+            // save both halves of the register pair after the call.
+            CType::Struct(_) | CType::Union(_) if crate::common::types::target_is_32bit() => IrType::I64,
             other => IrType::from_ctype(other),
         }
     }

@@ -92,6 +92,10 @@ pub fn allocate_registers(
     // any atomic instruction, which caused massive stack frames (e.g., 19KB for
     // the kernel's ___slab_alloc) and kernel stack overflows.
 
+    // On 32-bit targets, I64/U64 values need two registers (eax:edx) and cannot
+    // be allocated to a single callee-saved register. Exclude them from eligibility.
+    let is_32bit = crate::common::types::target_is_32bit();
+
     // Liveness analysis now uses backward dataflow iteration to correctly
     // handle loops (values live across back-edges have their intervals extended).
     let liveness = compute_live_intervals(func);
@@ -141,7 +145,9 @@ pub fn allocate_registers(
                 Instruction::BinOp { dest, ty, .. }
                 | Instruction::UnaryOp { dest, ty, .. } => {
                     if !ty.is_float() && !ty.is_long_double()
-                        && !matches!(ty, IrType::I128 | IrType::U128) {
+                        && !matches!(ty, IrType::I128 | IrType::U128)
+                        // On 32-bit targets, I64/U64 values don't fit in a single register
+                        && !(is_32bit && matches!(ty, IrType::I64 | IrType::U64)) {
                         eligible.insert(dest.0);
                     }
                 }
@@ -152,13 +158,18 @@ pub fn allocate_registers(
                     if !to_ty.is_float() && !to_ty.is_long_double()
                         && !from_ty.is_float() && !from_ty.is_long_double()
                         && !matches!(to_ty, IrType::I128 | IrType::U128)
-                        && !matches!(from_ty, IrType::I128 | IrType::U128) {
+                        && !matches!(from_ty, IrType::I128 | IrType::U128)
+                        // On 32-bit targets, I64/U64 values don't fit in a single register
+                        && !(is_32bit && (matches!(to_ty, IrType::I64 | IrType::U64)
+                                       || matches!(from_ty, IrType::I64 | IrType::U64))) {
                         eligible.insert(dest.0);
                     }
                 }
                 Instruction::Load { dest, ty, .. } => {
                     if !ty.is_float() && !ty.is_long_double()
-                        && !matches!(ty, IrType::I128 | IrType::U128) {
+                        && !matches!(ty, IrType::I128 | IrType::U128)
+                        // On 32-bit targets, I64/U64 values don't fit in a single register
+                        && !(is_32bit && matches!(ty, IrType::I64 | IrType::U64)) {
                         eligible.insert(dest.0);
                     }
                 }
@@ -173,6 +184,9 @@ pub fn allocate_registers(
                         Operand::Const(IrConst::F32(_)) | Operand::Const(IrConst::F64(_)) |
                         Operand::Const(IrConst::LongDouble(..)) | Operand::Const(IrConst::I128(_))
                     );
+                    // On 32-bit, also exclude I64 constants
+                    let is_ineligible = is_ineligible ||
+                        (is_32bit && matches!(src, Operand::Const(IrConst::I64(_))));
                     if !is_ineligible {
                         eligible.insert(dest.0);
                     }
@@ -189,13 +203,15 @@ pub fn allocate_registers(
                 // stack slot.
                 Instruction::Call { dest: Some(dest), return_type, .. } => {
                     if !return_type.is_float() && !return_type.is_long_double()
-                        && !matches!(return_type, IrType::I128 | IrType::U128) {
+                        && !matches!(return_type, IrType::I128 | IrType::U128)
+                        && !(is_32bit && matches!(return_type, IrType::I64 | IrType::U64)) {
                         eligible.insert(dest.0);
                     }
                 }
                 Instruction::CallIndirect { dest: Some(dest), return_type, .. } => {
                     if !return_type.is_float() && !return_type.is_long_double()
-                        && !matches!(return_type, IrType::I128 | IrType::U128) {
+                        && !matches!(return_type, IrType::I128 | IrType::U128)
+                        && !(is_32bit && matches!(return_type, IrType::I64 | IrType::U64)) {
                         eligible.insert(dest.0);
                     }
                 }
@@ -204,7 +220,8 @@ pub fn allocate_registers(
                 // store_rax_to/store_t0_to. Eligible unless float/i128.
                 Instruction::Select { dest, ty, .. } => {
                     if !ty.is_float() && !ty.is_long_double()
-                        && !matches!(ty, IrType::I128 | IrType::U128) {
+                        && !matches!(ty, IrType::I128 | IrType::U128)
+                        && !(is_32bit && matches!(ty, IrType::I64 | IrType::U64)) {
                         eligible.insert(dest.0);
                     }
                 }
@@ -223,21 +240,24 @@ pub fn allocate_registers(
                 // AtomicLoad loads a value from memory atomically.
                 Instruction::AtomicLoad { dest, ty, .. } => {
                     if !ty.is_float() && !ty.is_long_double()
-                        && !matches!(ty, IrType::I128 | IrType::U128) {
+                        && !matches!(ty, IrType::I128 | IrType::U128)
+                        && !(is_32bit && matches!(ty, IrType::I64 | IrType::U64)) {
                         eligible.insert(dest.0);
                     }
                 }
                 // AtomicRmw performs read-modify-write and returns old value.
                 Instruction::AtomicRmw { dest, ty, .. } => {
                     if !ty.is_float() && !ty.is_long_double()
-                        && !matches!(ty, IrType::I128 | IrType::U128) {
+                        && !matches!(ty, IrType::I128 | IrType::U128)
+                        && !(is_32bit && matches!(ty, IrType::I64 | IrType::U64)) {
                         eligible.insert(dest.0);
                     }
                 }
                 // AtomicCmpxchg returns old value or bool via accumulator.
                 Instruction::AtomicCmpxchg { dest, ty, .. } => {
                     if !ty.is_float() && !ty.is_long_double()
-                        && !matches!(ty, IrType::I128 | IrType::U128) {
+                        && !matches!(ty, IrType::I128 | IrType::U128)
+                        && !(is_32bit && matches!(ty, IrType::I64 | IrType::U64)) {
                         eligible.insert(dest.0);
                     }
                 }

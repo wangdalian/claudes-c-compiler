@@ -1546,11 +1546,31 @@ impl ArchCodegen for I686Codegen {
         }
     }
 
+    fn emit_call_store_result(&mut self, dest: &Value, return_type: IrType) {
+        if return_type == IrType::I64 || return_type == IrType::U64 {
+            // I64/U64 returned in eax:edx on i686 — save both halves
+            if let Some(slot) = self.state.get_slot(dest.0) {
+                emit!(self.state, "    movl %eax, {}(%ebp)", slot.0);
+                emit!(self.state, "    movl %edx, {}(%ebp)", slot.0 + 4);
+            }
+            self.state.reg_cache.invalidate_acc();
+        } else if crate::backend::generation::is_i128_type(return_type) {
+            self.emit_call_store_i128_result(dest);
+        } else if return_type.is_long_double() {
+            self.emit_call_store_f128_result(dest);
+        } else if return_type == IrType::F32 {
+            self.emit_call_move_f32_to_acc();
+            self.emit_store_result(dest);
+        } else if return_type.is_float() {
+            self.emit_call_move_f64_to_acc();
+            self.emit_store_result(dest);
+        } else {
+            self.emit_store_result(dest);
+        }
+    }
+
     fn emit_call_store_i128_result(&mut self, dest: &Value) {
-        // i686: i128 return value in eax:edx (low:high of low 64 bits)
-        // Actually i686 ABI returns 64-bit values in eax:edx
-        // For i128, it's typically returned via hidden pointer (sret)
-        // TODO: proper i128 return handling
+        // i686: only low 64 bits (eax:edx) stored here. Full i128 uses sret.
         if let Some(slot) = self.state.get_slot(dest.0) {
             emit!(self.state, "    movl %eax, {}(%ebp)", slot.0);
             emit!(self.state, "    movl %edx, {}(%ebp)", slot.0 + 4);
@@ -1583,6 +1603,22 @@ impl ArchCodegen for I686Codegen {
     // --- Return ---
 
     fn current_return_type(&self) -> IrType { self.current_return_type }
+
+    fn emit_return(&mut self, val: Option<&Operand>, frame_size: i64) {
+        if let Some(val) = val {
+            let ret_ty = self.current_return_type;
+            // I64/U64 returns on i686: load both halves into eax:edx.
+            // This is used for small struct returns (5-8 bytes packed as I64)
+            // and for long long return values.
+            if ret_ty == IrType::I64 || ret_ty == IrType::U64 {
+                self.emit_load_acc_pair(val);
+                self.emit_epilogue_and_ret(frame_size);
+                return;
+            }
+        }
+        // Delegate all other cases (I128, F32, F64, F128, scalar int) to default
+        crate::backend::traits::emit_return_default(self, val, frame_size);
+    }
 
     fn emit_return_i128_to_regs(&mut self) {
         // eax:edx already holds the low 64 bits
@@ -1621,6 +1657,74 @@ impl ArchCodegen for I686Codegen {
     }
 
     // --- Typed store/load ---
+
+    /// Override emit_load for I64/U64: load 8 bytes via eax:edx pair, then store both halves.
+    fn emit_load(&mut self, dest: &Value, ptr: &Value, ty: IrType) {
+        if ty == IrType::I64 || ty == IrType::U64 {
+            let addr = self.state.resolve_slot_addr(ptr.0);
+            if let Some(addr) = addr {
+                match addr {
+                    crate::backend::state::SlotAddr::OverAligned(slot, id) => {
+                        self.emit_alloca_aligned_addr(slot, id);
+                        // Load 8 bytes from (%ecx)
+                        self.state.emit("    movl (%ecx), %eax");
+                        self.state.emit("    movl 4(%ecx), %edx");
+                    }
+                    crate::backend::state::SlotAddr::Direct(slot) => {
+                        emit!(self.state, "    movl {}(%ebp), %eax", slot.0);
+                        emit!(self.state, "    movl {}(%ebp), %edx", slot.0 + 4);
+                    }
+                    crate::backend::state::SlotAddr::Indirect(slot) => {
+                        self.emit_load_ptr_from_slot(slot, ptr.0);
+                        self.state.emit("    movl (%ecx), %eax");
+                        self.state.emit("    movl 4(%ecx), %edx");
+                    }
+                }
+                // Store the full 8-byte value to dest's slot
+                self.emit_store_acc_pair(dest);
+            }
+            return;
+        }
+        crate::backend::traits::emit_load_default(self, dest, ptr, ty);
+    }
+
+    /// Override emit_store for I64/U64: store 8 bytes via eax:edx pair.
+    fn emit_store(&mut self, val: &Operand, ptr: &Value, ty: IrType) {
+        if ty == IrType::I64 || ty == IrType::U64 {
+            let addr = self.state.resolve_slot_addr(ptr.0);
+            // Load 8-byte value into eax:edx
+            self.emit_load_acc_pair(val);
+            if let Some(addr) = addr {
+                match addr {
+                    crate::backend::state::SlotAddr::OverAligned(slot, id) => {
+                        self.state.emit("    pushl %edx");
+                        self.state.emit("    pushl %eax");
+                        self.emit_alloca_aligned_addr(slot, id);
+                        self.state.emit("    popl %eax");
+                        self.state.emit("    movl %eax, (%ecx)");
+                        self.state.emit("    popl %edx");
+                        self.state.emit("    movl %edx, 4(%ecx)");
+                    }
+                    crate::backend::state::SlotAddr::Direct(slot) => {
+                        emit!(self.state, "    movl %eax, {}(%ebp)", slot.0);
+                        emit!(self.state, "    movl %edx, {}(%ebp)", slot.0 + 4);
+                    }
+                    crate::backend::state::SlotAddr::Indirect(slot) => {
+                        self.state.emit("    pushl %edx");
+                        self.state.emit("    pushl %eax");
+                        self.emit_load_ptr_from_slot(slot, ptr.0);
+                        self.state.emit("    popl %eax");
+                        self.state.emit("    movl %eax, (%ecx)");
+                        self.state.emit("    popl %edx");
+                        self.state.emit("    movl %edx, 4(%ecx)");
+                    }
+                }
+            }
+            self.state.reg_cache.invalidate_acc();
+            return;
+        }
+        crate::backend::traits::emit_store_default(self, val, ptr, ty);
+    }
 
     fn store_instr_for_type(&self, ty: IrType) -> &'static str {
         self.mov_store_for_type(ty)
@@ -2012,6 +2116,13 @@ impl ArchCodegen for I686Codegen {
                 if let Some(slot) = self.state.get_slot(v.0) {
                     emit!(self.state, "    movl {}(%ebp), %eax", slot.0);
                     emit!(self.state, "    movl {}(%ebp), %edx", slot.0 + 4);
+                } else if let Some(phys) = self.reg_assignments.get(&v.0).copied() {
+                    // Register-allocated value: only 32-bit register available.
+                    // This should only happen for I32-sized values in i128 context;
+                    // I64 values should be excluded from register allocation on i686.
+                    let reg = phys_reg_name(phys);
+                    emit!(self.state, "    movl %{}, %eax", reg);
+                    self.state.emit("    xorl %edx, %edx");
                 }
             }
             Operand::Const(IrConst::I128(v)) => {

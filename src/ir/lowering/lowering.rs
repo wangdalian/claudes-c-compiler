@@ -619,11 +619,9 @@ impl Lowerer {
         if ptr_count == 0 {
             if full_ret_ctype.is_struct_or_union() {
                 let size = self.sizeof_type(ret_type_spec);
-                if size > 16 {
-                    sret_size = Some(size);
-                } else if size > 8 {
-                    two_reg_ret_size = Some(size);
-                }
+                let (s, t) = Self::classify_struct_return(size);
+                sret_size = s;
+                two_reg_ret_size = t;
             }
             if matches!(full_ret_ctype, CType::ComplexLongDouble) {
                 // On x86-64, _Complex long double is returned via x87 st(0)/st(1),

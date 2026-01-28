@@ -67,7 +67,8 @@ impl Lowerer {
     /// Try to handle return via sret (hidden pointer for large structs/complex).
     /// Returns Some(operand) if this is an sret return, None otherwise.
     fn try_sret_return(&mut self, e: &Expr, sret_alloca: Value) -> Option<Operand> {
-        // Large struct return (> 16 bytes)
+        // Large struct return via hidden pointer (sret).
+        // Threshold is target-dependent: > 8 bytes on 32-bit, > 16 bytes on 64-bit.
         // struct_value_size may return Some(0) for FunctionCall/Conditional expressions
         // where CType::size() returns 0 for Struct/Union types. Fall back to the
         // current function's sret_size from sig metadata.
@@ -83,7 +84,8 @@ impl Lowerer {
                 }
             }
         }
-        if struct_size > 16 {
+        let sret_threshold = if crate::common::types::target_is_32bit() { 8 } else { 16 };
+        if struct_size > sret_threshold {
             let src_addr = self.get_struct_base_addr(e);
             let sret_ptr = self.fresh_value();
             self.emit(Instruction::Load { dest: sret_ptr, ptr: sret_alloca, ty: IrType::Ptr , seg_override: AddressSpace::Default });
@@ -157,6 +159,11 @@ impl Lowerer {
                     }
                 }
             }
+        }
+        // Two-register return: 9-16 bytes on 64-bit targets only.
+        // On 32-bit targets, there is no two-register (I128) return path.
+        if crate::common::types::target_is_32bit() {
+            return None;
         }
         if struct_size <= 8 || struct_size > 16 {
             return None;
