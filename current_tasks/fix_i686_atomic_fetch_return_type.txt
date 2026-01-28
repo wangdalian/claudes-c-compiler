@@ -1,0 +1,16 @@
+Task: Fix i686 64-bit atomic fetch return value truncation
+
+Problem:
+On i686, __atomic_fetch_xor (and other atomic fetch builtins) on long long types
+return a truncated 32-bit value instead of the full 64-bit result.
+
+Root cause: get_call_return_type() in expr_types.rs falls through to
+target_int_ir_type() = I32 for atomic builtins because they're not in
+builtin_return_type(). The assignment then inserts a spurious IntWiden cast
+(cltd) from I32 to I64, destroying the upper 32 bits of the atomic result.
+
+Fix: Make get_call_return_type() aware of polymorphic atomic builtins by
+deriving their return type from the first argument's pointee type.
+
+Affects: compiler_suite_0055_0578, compiler_suite_0055_0717, and likely
+project-level failures in libsodium/mbedtls that use 64-bit atomics.
