@@ -1,0 +1,19 @@
+Task: Fix ARM long double (128-bit) stack argument passing with function call arguments
+
+Status: in_progress
+
+Bug: When calling a function with more than 8 long double parameters on AArch64,
+the 9th+ parameters (which must go on the stack) are passed as zero when the argument
+values come from function call results.
+
+Root cause: The codegen for stack-passed long double arguments appears to load only
+64 bits (ldr x0) of the 128-bit long double value instead of 128 bits (ldr q0),
+and routes through a double conversion (__extenddftf2) instead of directly storing
+the quad-precision value to the stack argument area.
+
+Test case:
+  long double g(long double p0, ..., long double p8) { return p8; }
+  long double f(long double p) { return p + p; }
+  // g(f(1.0L), ..., f(1.0L)) - 9th param arrives as 0.0
+
+Affects: compiler_suite_0094_0061 (tests 13-22), possibly other tests
