@@ -145,7 +145,10 @@ impl GlobalInit {
     pub fn byte_size(&self) -> usize {
         match self {
             GlobalInit::Scalar(_) => 1,
-            GlobalInit::GlobalAddr(_) | GlobalInit::GlobalAddrOffset(_, _) => 8,
+            // Use target pointer size: 4 bytes on i686, 8 bytes on 64-bit targets
+            GlobalInit::GlobalAddr(_) | GlobalInit::GlobalAddrOffset(_, _) => {
+                crate::common::types::target_ptr_size()
+            }
             GlobalInit::Compound(inner) => inner.len(),
             GlobalInit::Array(vals) => vals.len(),
             GlobalInit::Zero => 0,
@@ -157,12 +160,15 @@ impl GlobalInit {
     }
 
     /// Returns the total number of bytes that will be emitted for this initializer.
-    /// Unlike `byte_size()`, this correctly accounts for GlobalAddr entries (8 bytes each)
-    /// inside Compound initializers.
+    /// Unlike `byte_size()`, this correctly accounts for GlobalAddr entries
+    /// (pointer-sized: 4 bytes on i686, 8 bytes on 64-bit) inside Compound initializers.
     pub fn emitted_byte_size(&self) -> usize {
         match self {
             GlobalInit::Scalar(_) => 1,
-            GlobalInit::GlobalAddr(_) | GlobalInit::GlobalAddrOffset(_, _) => 8,
+            // Use target pointer size: 4 bytes on i686, 8 bytes on 64-bit targets
+            GlobalInit::GlobalAddr(_) | GlobalInit::GlobalAddrOffset(_, _) => {
+                crate::common::types::target_ptr_size()
+            }
             GlobalInit::Compound(inner) => inner.iter().map(|e| e.emitted_byte_size()).sum(),
             GlobalInit::Array(vals) => vals.len(),
             GlobalInit::Zero => 0,
