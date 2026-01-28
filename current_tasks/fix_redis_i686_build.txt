@@ -1,0 +1,16 @@
+Fix Redis i686 build failure
+
+Problem: Redis fails to build on i686 because:
+1. i686-linux-gnu-g++ is not available in the Docker environment
+2. libstdc++.so symlink is missing for i686
+
+Redis depends on fast_float (a C++ library) and links with -lstdc++.
+The verify script derives CXX=i686-linux-gnu-g++ from the compiler name,
+but this binary doesn't exist and there's no package for it.
+
+Fix: Update scripts/setup_i686_cross.sh to create:
+1. An i686-linux-gnu-g++ wrapper script that substitutes C fallbacks for
+   known C++ dependencies (fast_float_strtod -> strtod wrapper)
+2. A libstdc++.so symlink in /usr/i686-linux-gnu/lib/
+
+Status: in_progress

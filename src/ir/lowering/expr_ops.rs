@@ -427,11 +427,9 @@ impl Lowerer {
         // for packed _Complex float on x86-64), creating a mismatch. Force Ptr as
         // the common type when either branch is complex to avoid corrupting pointer
         // values with float casts.
-        let result_is_complex = {
-            let then_ct = self.expr_ctype(then_expr);
-            let else_ct = self.expr_ctype(else_expr);
-            then_ct.is_complex() || else_ct.is_complex()
-        };
+        let then_ct = self.expr_ctype(then_expr);
+        let else_ct = self.expr_ctype(else_expr);
+        let result_is_complex = then_ct.is_complex() || else_ct.is_complex();
 
         // Constant-fold the condition at lowering time. If the condition is a
         // compile-time constant (e.g., sizeof(x)==4, __builtin_constant_p(v)),
@@ -445,7 +443,9 @@ impl Lowerer {
             if is_true {
                 let then_val = self.lower_expr(then_expr);
                 if result_is_complex {
-                    return then_val;
+                    // Convert to the common complex type if the branch types differ
+                    let common_ct = self.common_complex_type(&then_ct, &else_ct);
+                    return self.convert_to_complex(then_val, &then_ct, &common_ct);
                 }
                 let then_ty = if self.expr_is_pointer(then_expr) { IrType::Ptr } else { self.get_expr_type(then_expr) };
                 let else_ty = if self.expr_is_pointer(else_expr) { IrType::Ptr } else { self.get_expr_type(else_expr) };
@@ -454,7 +454,9 @@ impl Lowerer {
             } else {
                 let else_val = self.lower_expr(else_expr);
                 if result_is_complex {
-                    return else_val;
+                    // Convert to the common complex type if the branch types differ
+                    let common_ct = self.common_complex_type(&then_ct, &else_ct);
+                    return self.convert_to_complex(else_val, &else_ct, &common_ct);
                 }
                 let then_ty = if self.expr_is_pointer(then_expr) { IrType::Ptr } else { self.get_expr_type(then_expr) };
                 let else_ty = if self.expr_is_pointer(else_expr) { IrType::Ptr } else { self.get_expr_type(else_expr) };
@@ -467,12 +469,20 @@ impl Lowerer {
 
         // For complex types, both branches produce Ptr values; use Ptr as the
         // alloca/store/load type so we don't emit bogus int-to-float casts.
+        // When the branch types differ, convert each to the common complex type.
         if result_is_complex {
+            let common_ct = self.common_complex_type(&then_ct, &else_ct);
             return self.emit_ternary_branch(
                 cond_val,
                 IrType::Ptr,
-                |s| s.lower_expr(then_expr),
-                |s| s.lower_expr(else_expr),
+                |s| {
+                    let v = s.lower_expr(then_expr);
+                    s.convert_to_complex(v, &then_ct, &common_ct)
+                },
+                |s| {
+                    let v = s.lower_expr(else_expr);
+                    s.convert_to_complex(v, &else_ct, &common_ct)
+                },
             );
         }
 
@@ -505,23 +515,24 @@ impl Lowerer {
 
         // Complex types always lower to Ptr; avoid type mismatch with function
         // call return types (e.g., F64 for packed _Complex float).
-        let result_is_complex = {
-            let cond_ct = self.expr_ctype(cond);
-            let else_ct = self.expr_ctype(else_expr);
-            cond_ct.is_complex() || else_ct.is_complex()
-        };
+        let cond_ct = self.expr_ctype(cond);
+        let else_ct = self.expr_ctype(else_expr);
+        let result_is_complex = cond_ct.is_complex() || else_ct.is_complex();
 
         if result_is_complex {
             // Complex condition: convert to bool via (real != 0) || (imag != 0)
-            let cond_ct = self.expr_ctype(cond);
+            let common_ct = self.common_complex_type(&cond_ct, &else_ct);
             let cond_ptr = self.operand_to_value(cond_val.clone());
             let cond_bool_op = self.lower_complex_to_bool(cond_ptr, &cond_ct);
             let cond_bool_val = self.operand_to_value(cond_bool_op);
             return self.emit_ternary_branch(
                 Operand::Value(cond_bool_val),
                 IrType::Ptr,
-                |_s| cond_val.clone(),
-                |s| s.lower_expr(else_expr),
+                |s| s.convert_to_complex(cond_val.clone(), &cond_ct, &common_ct),
+                |s| {
+                    let v = s.lower_expr(else_expr);
+                    s.convert_to_complex(v, &else_ct, &common_ct)
+                },
             );
         }
 

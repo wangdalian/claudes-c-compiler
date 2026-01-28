@@ -184,13 +184,18 @@ impl Lowerer {
         // Determine the target label's scope depth (populated by prescan_label_depths).
         // Only emit cleanup calls for scopes being exited by the goto, i.e. scopes
         // deeper than the target label's scope depth.
+        let current_depth = self.func().scope_stack.len();
         let target_depth = self.func().user_label_depths
             .get(label)
             .copied()
             // Fallback: if the label depth is unknown (shouldn't happen after prescan),
             // conservatively clean up all scopes.
             .unwrap_or(0);
-        let cleanups = self.collect_scope_cleanup_vars_above_depth(target_depth);
+        // Clamp target_depth to the current scope depth. If the goto jumps into a
+        // deeper or same-level scope (target_depth >= current_depth), no cleanup is
+        // needed. If jumping out to a shallower scope, clean up the exited scopes.
+        let cleanup_depth = target_depth.min(current_depth);
+        let cleanups = self.collect_scope_cleanup_vars_above_depth(cleanup_depth);
         self.emit_cleanup_calls(&cleanups);
         // If the function has VLA declarations, restore the saved stack pointer before
         // jumping. This ensures VLA stack space is reclaimed on backward jumps (e.g.,

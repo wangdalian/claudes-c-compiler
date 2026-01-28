@@ -149,7 +149,7 @@ impl InlineAsmEmitter for RiscvCodegen {
         }
     }
 
-    fn load_input_to_reg(&mut self, op: &AsmOperand, val: &Operand, constraint: &str) {
+    fn load_input_to_reg(&mut self, op: &AsmOperand, val: &Operand, _constraint: &str) {
         let reg = &op.reg;
         let is_fp = matches!(op.kind, AsmOperandKind::FpReg);
         let is_addr = matches!(op.kind, AsmOperandKind::Address);
@@ -165,7 +165,11 @@ impl InlineAsmEmitter for RiscvCodegen {
                         _ => c.to_i64().unwrap_or(0),
                     };
                     self.state.emit_fmt(format_args!("    li t5, {}", imm));
-                    if constraint.contains('f') && !constraint.contains("64") {
+                    // Use fmv.w.x for 32-bit floats, fmv.d.x for 64-bit doubles.
+                    // The decision must be based on the actual operand type, not the
+                    // constraint string (which is just "f" for both float and double).
+                    let is_f32 = matches!(c, IrConst::F32(_)) || op.operand_type == IrType::F32;
+                    if is_f32 {
                         self.state.emit_fmt(format_args!("    fmv.w.x {}, t5", reg));
                     } else {
                         self.state.emit_fmt(format_args!("    fmv.d.x {}, t5", reg));
@@ -189,7 +193,9 @@ impl InlineAsmEmitter for RiscvCodegen {
                         // allocated memory, not the contents.
                         self.emit_addi_s0(reg, slot.0);
                     } else if is_fp {
-                        self.emit_load_from_s0(reg, slot.0, "fld");
+                        // Use flw for F32, fld for F64/other
+                        let load_op = if op.operand_type == IrType::F32 { "flw" } else { "fld" };
+                        self.emit_load_from_s0(reg, slot.0, load_op);
                     } else {
                         self.emit_load_from_s0(reg, slot.0, "ld");
                     }
@@ -212,7 +218,9 @@ impl InlineAsmEmitter for RiscvCodegen {
                     }
                 }
                 AsmOperandKind::FpReg => {
-                    self.emit_load_from_s0(&reg, slot.0, "fld");
+                    // Use flw for F32, fld for F64/other
+                    let load_op = if op.operand_type == IrType::F32 { "flw" } else { "fld" };
+                    self.emit_load_from_s0(&reg, slot.0, load_op);
                 }
                 AsmOperandKind::Memory => {} // No preload for memory
                 _ => {
@@ -260,9 +268,11 @@ impl InlineAsmEmitter for RiscvCodegen {
             AsmOperandKind::Address => return, // AMO/LR/SC wrote through the pointer
             AsmOperandKind::FpReg => {
                 let reg = op.reg.clone();
+                // Use fsw for F32, fsd for F64/other
+                let store_op = if op.operand_type == IrType::F32 { "fsw" } else { "fsd" };
                 if let Some(slot) = self.state.get_slot(ptr.0) {
                     if self.state.is_alloca(ptr.0) {
-                        self.emit_store_to_s0(&reg, slot.0, "fsd");
+                        self.emit_store_to_s0(&reg, slot.0, store_op);
                     } else {
                         // Non-alloca: slot holds a pointer, store through it.
                         // Pick a scratch register not used by any output operand.
@@ -273,7 +283,7 @@ impl InlineAsmEmitter for RiscvCodegen {
                             .unwrap_or("t0");
                         // Use emit_load_from_s0 to handle large stack offsets (>2047)
                         self.emit_load_from_s0(scratch, slot.0, "ld");
-                        self.state.emit_fmt(format_args!("    fsd {}, 0({})", reg, scratch));
+                        self.state.emit_fmt(format_args!("    {} {}, 0({})", store_op, reg, scratch));
                     }
                 }
             }

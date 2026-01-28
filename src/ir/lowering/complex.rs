@@ -531,20 +531,20 @@ impl Lowerer {
             }
             Expr::Conditional(_, then_expr, else_expr, _) => {
                 let then_ct = self.expr_ctype(then_expr);
-                if then_ct.is_complex() {
-                    then_ct
+                let else_ct = self.expr_ctype(else_expr);
+                if then_ct.is_complex() || else_ct.is_complex() {
+                    self.common_complex_type(&then_ct, &else_ct)
                 } else {
-                    let else_ct = self.expr_ctype(else_expr);
-                    if else_ct.is_complex() { else_ct } else { then_ct }
+                    then_ct
                 }
             }
             Expr::GnuConditional(cond, else_expr, _) => {
                 let cond_ct = self.expr_ctype(cond);
-                if cond_ct.is_complex() {
-                    cond_ct
+                let else_ct = self.expr_ctype(else_expr);
+                if cond_ct.is_complex() || else_ct.is_complex() {
+                    self.common_complex_type(&cond_ct, &else_ct)
                 } else {
-                    let else_ct = self.expr_ctype(else_expr);
-                    if else_ct.is_complex() { else_ct } else { cond_ct }
+                    cond_ct
                 }
             }
             Expr::MemberAccess(base, field, _) => {
