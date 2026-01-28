@@ -1,0 +1,17 @@
+Task: Fix RISC-V inline asm "f" constraint using wrong FP instruction width
+Status: in_progress
+
+Bug: The RISC-V backend's inline assembly emitter used constraint-string-based
+logic to choose between fmv.w.x (32-bit float) and fmv.d.x (64-bit double)
+when loading FP constants. Since the "f" constraint is used for both float and
+double, all FP constants were loaded with fmv.w.x, truncating 64-bit doubles
+to 32 bits and producing NaN results.
+
+Same issue affected:
+- load_input_to_reg (Const path): fmv.w.x vs fmv.d.x
+- load_input_to_reg (Value path): fld vs flw
+- preload_readwrite_output: fld vs flw
+- store_output_from_reg: fsd vs fsw
+
+Fix: Use operand_type (IrType::F32 vs F64) to select the correct instruction
+width in all four code paths.
