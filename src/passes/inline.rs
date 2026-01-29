@@ -100,20 +100,27 @@ const MAX_STATIC_NONINLINE_INSTRUCTIONS: usize = 30;
 /// Maximum blocks for a `static` (non-`inline`) function to be eligible.
 const MAX_STATIC_NONINLINE_BLOCKS: usize = 4;
 
-/// Budget for non-always_inline callees that use the relaxed inlining path
-/// (exceeds_normal_limits). Limits total instructions inlined from these
-/// callees to prevent stack frame bloat. CCC spills every SSA value to
-/// stack (~8 bytes each), so excessive inlining creates frames that overflow
-/// the kernel's 16KB stack.
+/// Budget for always_inline callees per caller. This budget is ONLY consumed
+/// by true __attribute__((always_inline)) callees that exceed the "small"
+/// threshold (> MAX_SMALL_INLINE_INSTRUCTIONS or > MAX_SMALL_INLINE_BLOCKS).
+/// Non-always_inline callees use the separate budget_remaining, ensuring they
+/// can never starve always_inline functions of budget. This separation prevents
+/// section mismatch errors (e.g., idle_init → fork_idle) that occur when
+/// always_inline functions fail to inline.
 ///
-/// Note: True __attribute__((always_inline)) callees bypass this budget
-/// entirely — they are always inlined per C semantics. Only non-always_inline
-/// callees that happen to exceed normal limits (but fit relaxed limits) are
-/// subject to this budget. This separation is critical: without it, a large
-/// non-always_inline callee (e.g., find_next_bit with 77 instructions) can
-/// deplete the budget and prevent true always_inline callees (e.g., idle_init)
-/// from being inlined, causing section mismatch errors in the kernel.
-const MAX_ALWAYS_INLINE_BUDGET_PER_CALLER: usize = 100;
+/// When the caller has a section attribute (e.g., .init.text), always_inline
+/// callees bypass this budget entirely. This is critical for kernel __init
+/// functions like intel_pmu_init that call hundreds of always_inline helpers
+/// referencing .init.rodata — not inlining them causes modpost errors.
+///
+/// Small always_inline callees (≤ MAX_SMALL_INLINE_INSTRUCTIONS) don't consume
+/// this budget because they have negligible impact and must be inlined for
+/// linker correctness (inline asm "i" constraints, undefined symbols).
+///
+/// Set to 2000 to accommodate deep always_inline chains while still preventing
+/// catastrophic stack bloat in functions without section attributes (e.g.,
+/// shrink_folio_list with 200+ always_inline calls).
+const MAX_ALWAYS_INLINE_BUDGET_PER_CALLER: usize = 2000;
 
 /// Hard cap on caller instruction count. When a caller exceeds this threshold,
 /// even always_inline inlining is stopped (except for tiny callees that must be
@@ -329,31 +336,33 @@ pub fn run(module: &mut IrModule) -> usize {
                     // use the normal budget (budget_remaining). This ensures they
                     // don't consume the always_inline budget.
                     if callee_data.is_always_inline {
-                        // always_inline functions MUST be inlined unconditionally.
-                        // This is a C semantic requirement: __attribute__((always_inline))
-                        // means the compiler must always inline the function. Not doing
-                        // so causes:
-                        // 1. Section mismatch errors: standalone always_inline bodies
-                        //    in .text reference .init.text symbols (e.g., idle_init
-                        //    referencing fork_idle in the kernel's smpboot.c)
-                        // 2. Linker errors: dead code elimination depends on inlining
-                        //    chains being complete (e.g., system_supports_sve() ->
-                        //    alternative_has_cap_unlikely() -> cpucap_is_possible()
-                        //    must all be inlined to constant-fold away references to
-                        //    undefined symbols like sve_load_state when CONFIG_ARM64_SVE
-                        //    is not set)
-                        // 3. Incorrect codegen: __builtin_constant_p depends on arguments
-                        //    becoming visible as constants after inlining
+                        // always_inline callees use a separate, larger budget
+                        // (always_inline_budget_remaining) that is NOT shared
+                        // with non-always_inline callees. This prevents a large
+                        // non-always_inline callee from starving always_inline.
                         //
-                        // The always_inline budget is still consumed for accounting
-                        // purposes (to limit non-always_inline inlining when the caller
-                        // grows large), but it does NOT prevent always_inline functions
-                        // from being inlined.
+                        // When the caller has a section attribute (e.g., .init.text),
+                        // always_inline callees bypass the budget entirely. This is
+                        // critical for kernel correctness: init functions like
+                        // intel_pmu_init (.init.text) call hundreds of always_inline
+                        // helpers that reference .init.rodata. If these aren't inlined,
+                        // they appear as standalone .text functions with cross-section
+                        // references, causing modpost section mismatch errors. GCC
+                        // always inlines these regardless of function size.
+                        //
+                        // For callers WITHOUT section attributes, enforce the budget
+                        // to prevent stack overflow from deeply-nested always_inline
+                        // chains (e.g., shrink_folio_list with 200+ calls).
+                        if !caller_has_section {
+                            let is_tiny = callee_inst_count <= MAX_TINY_INLINE_INSTRUCTIONS
+                                && callee_data.blocks.len() <= 1;
+                            if !is_tiny && callee_inst_count > always_inline_budget_remaining {
+                                continue;
+                            }
+                        }
                     } else {
-                        // Non-always_inline callees use budget_remaining
-                        // regardless of whether they exceed normal limits.
-                        // The always_inline budget is reserved exclusively
-                        // for true always_inline callees.
+                        // Non-always_inline callees use budget_remaining.
+                        // They never consume the always_inline budget.
                         if callee_inst_count > budget_remaining {
                             continue;
                         }
@@ -403,7 +412,20 @@ pub fn run(module: &mut IrModule) -> usize {
                 let callee_is_always_inline = callee_map.get(&site.callee_name)
                     .map(|d| d.is_always_inline).unwrap_or(false);
                 if callee_is_always_inline {
-                    always_inline_budget_remaining = always_inline_budget_remaining.saturating_sub(callee_inst_count);
+                    // Don't deduct small callees from the always_inline budget.
+                    // Small callees (≤20 instructions) have negligible individual
+                    // impact and are always inlined regardless of budget (handled
+                    // in the first pass). Not counting them preserves budget for
+                    // larger always_inline callees that actually matter (e.g.,
+                    // intel_pmu_init_glc at 211 instructions needs to be inlined
+                    // into intel_pmu_init to avoid section mismatches).
+                    let callee_blocks = callee_map.get(&site.callee_name)
+                        .map(|d| d.blocks.len()).unwrap_or(0);
+                    let is_small = callee_inst_count <= MAX_SMALL_INLINE_INSTRUCTIONS
+                        && callee_blocks <= MAX_SMALL_INLINE_BLOCKS;
+                    if !is_small {
+                        always_inline_budget_remaining = always_inline_budget_remaining.saturating_sub(callee_inst_count);
+                    }
                 } else {
                     budget_remaining = budget_remaining.saturating_sub(callee_inst_count);
                 }

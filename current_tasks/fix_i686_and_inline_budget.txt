@@ -1,0 +1,32 @@
+Task: Fix i686 codegen bugs, x86 inline asm LEA truncation, and always_inline budget management
+Status: in_progress
+
+Three related fixes:
+
+1. Always_inline budget: section-aware bypass
+   - Separated always_inline budget from non-always_inline budget
+   - Callers with section attributes (e.g., .init.text) bypass always_inline budget entirely
+   - Small always_inline callees don't consume budget
+   - Increased budget to 2000 instructions
+   - Fixes: kernel section mismatch errors (idle_init → fork_idle, intel_pmu_init, etc.)
+
+2. i686 constant shift stack leak and >= 64 handling
+   - Added emit_i128_prep_shift_lhs override to avoid pushing dummy RHS onto stack
+   - Added >= 64 shift amount handling for shl_const, lshr_const, ashr_const
+   - Fixes: stack corruption/leak in 64-bit constant shifts on i686
+
+3. x86 inline asm LEA register width
+   - Convert 32-bit register names to 64-bit for alloca LEA in inline asm
+   - Prevents address truncation when register constraint is 32-bit (e.g., "edi" → "rdi")
+
+Files modified:
+- src/passes/inline.rs
+- src/backend/i686/codegen/codegen.rs
+- src/backend/x86/codegen/asm_emitter.rs
+
+Verification:
+- x86 unit tests: 2990/2990 (100.0%)
+- ARM unit tests: 2856/2868 (99.6%)
+- RISC-V unit tests: 2857/2859 (99.9%)
+- i686 unit tests: 2731/2737 (99.8%) — improved from 2730/2737
+- Projects: 46/48 passed (mbedtls i686 transient, tcc i686 pre-existing)

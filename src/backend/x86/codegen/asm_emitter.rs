@@ -387,12 +387,18 @@ impl InlineAsmEmitter for X86Codegen {
                         // Alloca values represent the stack address of the variable.
                         // Use LEA to compute the address, not MOV which would
                         // load the contents stored at that address.
+                        // Must use 64-bit register for LEA since stack addresses
+                        // are 64 bits. If `reg` is a sub-64-bit name (e.g., "edi"
+                        // from `register uint32_t x asm("edi")`), convert to the
+                        // 64-bit equivalent to avoid truncating the address.
+                        let reg64 = Self::reg_to_64(reg);
+                        let lea_reg: &str = if reg64.as_str() != reg { &reg64 } else { reg };
                         if let Some(align) = self.state.alloca_over_align(v.0) {
-                            self.state.out.emit_instr_rbp_reg("    leaq", slot.0, reg);
-                            self.state.out.emit_instr_imm_reg("    addq", (align - 1) as i64, reg);
-                            self.state.out.emit_instr_imm_reg("    andq", -(align as i64), reg);
+                            self.state.out.emit_instr_rbp_reg("    leaq", slot.0, lea_reg);
+                            self.state.out.emit_instr_imm_reg("    addq", (align - 1) as i64, lea_reg);
+                            self.state.out.emit_instr_imm_reg("    andq", -(align as i64), lea_reg);
                         } else {
-                            self.state.out.emit_instr_rbp_reg("    leaq", slot.0, reg);
+                            self.state.out.emit_instr_rbp_reg("    leaq", slot.0, lea_reg);
                         }
                     } else {
                         // Non-alloca values: load the value from the stack slot.

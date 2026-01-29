@@ -4629,6 +4629,13 @@ impl ArchCodegen for I686Codegen {
         self.emit_load_acc_pair(lhs);
     }
 
+    fn emit_i128_prep_shift_lhs(&mut self, lhs: &Operand) {
+        // For constant-amount shifts, only load LHS into eax:edx.
+        // Do NOT push a dummy RHS onto the stack — the const shift functions
+        // don't pop it, which would cause a stack leak.
+        self.emit_load_acc_pair(lhs);
+    }
+
     fn emit_i128_add(&mut self) {
         self.state.emit("    addl (%esp), %eax");
         self.state.emit("    adcl 4(%esp), %edx");
@@ -4760,10 +4767,14 @@ impl ArchCodegen for I686Codegen {
 
     fn emit_i128_shl_const(&mut self, amount: u32) {
         if amount == 0 { return; }
-        if amount >= 32 {
+        if amount >= 64 {
+            // Shifting 64-bit value left by >= 64: result is zero
+            self.state.emit("    xorl %eax, %eax");
+            self.state.emit("    xorl %edx, %edx");
+        } else if amount >= 32 {
             self.state.emit("    movl %eax, %edx");
             self.state.emit("    xorl %eax, %eax");
-            if amount > 32 && amount < 64 {
+            if amount > 32 {
                 emit!(self.state, "    shll ${}, %edx", amount - 32);
             }
         } else {
@@ -4774,10 +4785,14 @@ impl ArchCodegen for I686Codegen {
 
     fn emit_i128_lshr_const(&mut self, amount: u32) {
         if amount == 0 { return; }
-        if amount >= 32 {
+        if amount >= 64 {
+            // Shifting 64-bit value right by >= 64: result is zero
+            self.state.emit("    xorl %eax, %eax");
+            self.state.emit("    xorl %edx, %edx");
+        } else if amount >= 32 {
             self.state.emit("    movl %edx, %eax");
             self.state.emit("    xorl %edx, %edx");
-            if amount > 32 && amount < 64 {
+            if amount > 32 {
                 emit!(self.state, "    shrl ${}, %eax", amount - 32);
             }
         } else {
@@ -4788,10 +4803,14 @@ impl ArchCodegen for I686Codegen {
 
     fn emit_i128_ashr_const(&mut self, amount: u32) {
         if amount == 0 { return; }
-        if amount >= 32 {
+        if amount >= 64 {
+            // Arithmetic right shift by >= 64: result is sign-extended
+            self.state.emit("    sarl $31, %edx");
+            self.state.emit("    movl %edx, %eax");
+        } else if amount >= 32 {
             self.state.emit("    movl %edx, %eax");
             self.state.emit("    sarl $31, %edx");
-            if amount > 32 && amount < 64 {
+            if amount > 32 {
                 emit!(self.state, "    sarl ${}, %eax", amount - 32);
             }
         } else {
