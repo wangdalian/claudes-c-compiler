@@ -1,0 +1,14 @@
+Task: Fix _Alignof for typedef types in compile-time constant evaluation
+
+Problem: _Static_assert(_Alignof(int8_t) == 1, "...") fails because the parser's
+compile-time constant evaluator returns ptr_size (8) for typedef names instead of
+returning None (unknown). This causes wasm3 and potentially other projects to fail.
+
+The root cause is that parser-level alignof_type_spec() returns a concrete wrong
+value for TypedefName instead of indicating it can't resolve the type.
+
+Fix: Create try_alignof_type_spec() (like try_sizeof_type_spec()) that returns
+Option<usize>, returning None for TypedefName. Use this in _Static_assert
+evaluation so unresolvable types are silently accepted (deferred to sema).
+
+Status: in_progress
