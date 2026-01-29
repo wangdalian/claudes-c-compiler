@@ -605,10 +605,6 @@ impl Driver {
             matches!(self.target, Target::Aarch64 | Target::Riscv64)
         );
 
-        // When targeting i686, fixup mquickjs generated headers if they were
-        // built for 64-bit. This must happen before any compilation starts.
-        self.fixup_mquickjs_headers_for_i686();
-
         // When -m16 or -m32 is passed, we don't support 32-bit/16-bit x86 codegen.
         // Delegate the entire compilation to the system GCC, forwarding all original args.
         // This is needed for the Linux kernel's boot/realmode code which uses -m16.
@@ -1069,79 +1065,6 @@ impl Driver {
             let input_name = if input_file == "-" { "<stdin>" } else { input_file };
             let content = format!("{}: {}\n", output_file, input_name);
             let _ = std::fs::write(&dep_path, content);
-        }
-    }
-
-    /// When targeting i686, check if the CWD contains mquickjs host tool binaries
-    /// that generated 64-bit stdlib headers. If so, regenerate them with `-m32` to
-    /// produce 32-bit (uint32_t) tables matching the i686 JSWord size.
-    ///
-    /// The mquickjs build system generates stdlib tables using a host tool. When
-    /// cross-compiling from x86-64 to i686, the host tool defaults to 64-bit
-    /// (uint64_t) tables, but the i686 runtime accesses them through uint32_t
-    /// pointers. Passing `-m32` to the host tool produces correct 32-bit tables.
-    ///
-    /// TODO: Remove this mquickjs-specific workaround once the verify script
-    /// (verify_mquickjs.py) passes CONFIG_X86_32=y for i686 builds, or the
-    /// mquickjs Makefile auto-detects cross-compilation from the CC name.
-    fn fixup_mquickjs_headers_for_i686(&self) {
-        use std::path::Path;
-
-        if !matches!(self.target, Target::I686) {
-            return;
-        }
-
-        let stdlib_header = Path::new("mqjs_stdlib.h");
-        let stdlib_tool = Path::new("mqjs_stdlib");
-        if !stdlib_header.exists() || !stdlib_tool.exists() {
-            return;
-        }
-
-        // Check if the header has uint64_t tables (wrong for 32-bit target)
-        let content = match std::fs::read_to_string(stdlib_header) {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        if !content.contains("uint64_t") {
-            return; // Already 32-bit or unknown format
-        }
-
-        // Regenerate headers with -m32 flag
-        if self.verbose {
-            eprintln!("ccc-i686: regenerating mquickjs headers with -m32 for 32-bit target");
-        }
-
-        // mqjs_stdlib.h
-        if let Ok(output) = std::process::Command::new("./mqjs_stdlib")
-            .args(["-m32"])
-            .output()
-        {
-            if output.status.success() {
-                let _ = std::fs::write("mqjs_stdlib.h", &output.stdout);
-            }
-        }
-
-        // mquickjs_atom.h
-        if let Ok(output) = std::process::Command::new("./mqjs_stdlib")
-            .args(["-a", "-m32"])
-            .output()
-        {
-            if output.status.success() {
-                let _ = std::fs::write("mquickjs_atom.h", &output.stdout);
-            }
-        }
-
-        // example_stdlib.h (if the tool exists)
-        let example_tool = Path::new("example_stdlib");
-        if example_tool.exists() {
-            if let Ok(output) = std::process::Command::new("./example_stdlib")
-                .args(["-m32"])
-                .output()
-            {
-                if output.status.success() {
-                    let _ = std::fs::write("example_stdlib.h", &output.stdout);
-                }
-            }
         }
     }
 

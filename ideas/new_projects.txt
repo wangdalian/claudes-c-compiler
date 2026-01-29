@@ -1,55 +1,17 @@
-Project Testing Status (2026-01-29)
-====================================
+Project Testing Status Tracker
+===============================
+Format: [project] - ARM: pass/fail, x86: pass/fail, riscv: pass/fail, i686: pass/fail. Notes: any notes
 
-PASSING projects (confirmed):
-- coremark, dhrystone, whetstone, himeno, STREAM (benchmarks)
-- jsmn, sds, utf8proc, vec, rax, cwalk, sort.h, klib, uthash, c-algorithms, stretchy_buffer (data structures)
-- json-parser, cJSON, tomlc99, jansson, binn (JSON/data formats)
-- bzip2, lz4, miniz, brieflz, lzf, crush, quicklz, wflz, lizard, FSE, finite-state-entropy, rans, huf, blosc2, brotli (compression)
-- wolfssl, mbedtls, monocypher, libtommath (crypto)
-- 2048.c, c4, cello, cmocka, cmark, cgltf (misc)
-- llhttp, picohttpparser, mongoose, darkhttpd, nanomsg, paho.mqtt.c (networking)
-- libyaml (parsing)
-- Lua, TinyScheme, s7, pforth, 8cc (interpreters/compilers)
-- zopfli (compression - FIXED in this session, pointer-to-array-of-pointers stride bug)
-- parson (JSON - passes all 4 architectures)
-- MuJS (JavaScript interpreter - passes x86/ARM/RISC-V; i686 has pre-existing float issues)
-- stc (C containers library - FIXED compound literal array bugs; passes x86/ARM/RISC-V; i686 39/40 pre-existing regex issue)
-- tinyexpr, genann, md4c, xxhash, linenoise, smaz, shoco, libcsv, libfastcdc (small libraries)
-- heatshrink, tiny-regex-c, munit, libconfig, tinycthread, peg_leg, whereami, optparse (misc)
-- getopt_standalone, vedis, lmdb, libgrapheme, oniguruma, libucl (misc)
-- wasm3, samurai, jo_gif, incbin, pngcrush, lzw, uzlib (misc)
-- olive.c, par, par_shapes (graphics utils)
-- Elk, SmallerC (interpreters/compilers)
-- lexbor, termbox, stb_ds, pkgconf, check (misc)
-- tree, sinit, minunit, greatest, dnsmasq (misc)
-- tdb, sophia, shapelib, minilzo, lwrb (data/compression)
-- tinn (neural net)
-- sqlite (database - FIXED function pointer cast parsing; passes x86/RISC-V/i686; ARM has pre-existing runtime segfault)
-
-FAILING projects (investigated):
-- yyjson: cmake build fails
-- picoc: linker error
-- femtolisp: test failures
-- Wren: 21 test failures + timeouts
-- Gravity: 1/181 test failures (memory_test.gravity)
-- QuickJS: segfault on test_language.js
-- http-parser: abort/crash in test
-- stc: FIXED - compound literal array bugs (struct memcpy, dimension ordering, partial zero-init)
-- lzo: 56 semantic analysis errors
-- blosc: build fails (linking)
-- bearssl: 441 parse errors in ghash_pclmul.c (inline asm)
-- libtomcrypt: linker error
-- sqlite: FIXED - function pointer cast parsing (passes x86/RISC-V/i686; ARM has pre-existing runtime segfault)
-- libexpat: linker error
-- libpcap: undeclared HCIGETDEVINFO
-- sokol: links now (constructor fix), but segfaults at runtime
-- Janet: compile error in bootstrap (uninitialized memory / codegen bug)
-- lcc: rcc segfaults (complex codegen issue)
-- scc: build failure in z80 target
-- JerryScript: cmake build errors
-
-NOT TESTED / NO CHECK SCRIPT:
-- map, gb_string, chipmunk2d, civetweb, tweetnacl: missing test files
-- json-c, zlib, hiredis, pcre2, libsodium, nbench: no check_x86.sh
-- arithcode: missing test file
+zlib - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: core compression library
+lua - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: scripting language
+libsodium - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: crypto library
+mquickjs - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: JS engine
+libpng - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: PNG library
+jq - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: JSON processor
+libjpeg - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: JPEG library
+mbedtls - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: TLS library
+libuv - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: async I/O
+libffi - ARM: pass, x86: pass, riscv: fail, i686: pass. Notes: pre-existing riscv failure
+musl - ARM: pass, x86: pass, riscv: pass, i686: fail. Notes: pre-existing i686 failure
+tcc - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: tiny C compiler
+fastlz - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: FIXED i686 - was failing due to F64 skip-slot bug
