@@ -1,0 +1,21 @@
+Fix narrow pass incorrectly truncating 64-bit comparison constants to 32-bit
+=============================================================================
+
+The narrow optimization pass (passes/narrow.rs Phase 6) incorrectly narrows
+Cmp instructions when one operand is a zero-extended U32 value and the other
+is an I64 constant whose upper 32 bits are non-zero.
+
+Example: comparing unsigned long (U32 zero-extended to U64) with constant
+18446744073709551606ul (I64(-10), which is U64(0xFFFFFFFF_FFFFFFF6)).
+The narrow pass sees that -10 fits in i32::MIN..u32::MAX range and narrows
+the comparison to U32, effectively truncating the constant to 0xFFFFFFF6
+(4294967286). This makes the comparison succeed when it shouldn't.
+
+Fix: In Phase 6 Cmp narrowing, when the source is zero-extended (unsigned),
+require that constant values have zero upper bits (i.e., 0 <= val <= u32::MAX
+as unsigned). When the source is sign-extended (signed), require that the
+constant fits in the signed range of the narrow type.
+
+This affects i686 most because 32-bit targets have many U32-to-U64 promotions
+for comparisons involving unsigned long vs unsigned long long, but the fix
+is correct for all architectures.
