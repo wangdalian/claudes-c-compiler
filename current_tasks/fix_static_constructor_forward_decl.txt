@@ -1,0 +1,15 @@
+Fix static constructor/destructor functions not being emitted when
+__attribute__((constructor)) is on a forward declaration rather than
+the function definition.
+
+The bug: when a function is declared as:
+  static void f(void) __attribute__((constructor));
+  static void f(void) { ... }
+
+The constructor attribute is on the forward declaration, not the
+definition. The lowering pass skipped the function as unreferenced
+dead code because:
+1. The FunctionDef node didn't have the constructor flag
+2. The reference collector didn't treat constructors as roots
+
+This affects the utest.h pattern used by sokol tests and other projects.
