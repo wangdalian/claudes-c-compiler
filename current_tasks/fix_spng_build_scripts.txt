@@ -1,0 +1,11 @@
+Status: in_progress
+
+Task: Fix spng check_x86.sh build script
+
+The spng x86 check script uses CMake which fails because CMake's FindZLIB
+cannot locate the zlib library when using our compiler (ccc-x86 doesn't report
+implicit library directories to CMake). The other arch scripts (arm, i686, riscv)
+use direct compilation with miniz and work fine.
+
+Fix: Rewrite check_x86.sh to use the same pattern as the other arch scripts -
+direct compilation with miniz instead of CMake.
