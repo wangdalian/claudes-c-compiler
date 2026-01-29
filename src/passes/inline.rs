@@ -702,13 +702,13 @@ fn trace_operand_to_const(
                         Instruction::BinOp { op: bin_op, lhs, rhs, .. } => {
                             let l = trace_operand_to_const(lhs, value_defs, alloca_stores, depth + 1)?;
                             let r = trace_operand_to_const(rhs, value_defs, alloca_stores, depth + 1)?;
-                            return eval_binop(*bin_op, l, r);
+                            return bin_op.eval_i64(l, r);
                         }
                         // Comparisons: try to evaluate both sides
                         Instruction::Cmp { op: cmp_op, lhs, rhs, .. } => {
                             let l = trace_operand_to_const(lhs, value_defs, alloca_stores, depth + 1)?;
                             let r = trace_operand_to_const(rhs, value_defs, alloca_stores, depth + 1)?;
-                            return Some(eval_cmpop(*cmp_op, l, r));
+                            return Some(if cmp_op.eval_i64(l, r) { 1 } else { 0 });
                         }
                         _ => return None,
                     }
@@ -719,54 +719,6 @@ fn trace_operand_to_const(
             None
         }
     }
-}
-
-/// Evaluate a binary operation on two constant i64 values.
-fn eval_binop(op: IrBinOp, l: i64, r: i64) -> Option<i64> {
-    Some(match op {
-        IrBinOp::Add => l.wrapping_add(r),
-        IrBinOp::Sub => l.wrapping_sub(r),
-        IrBinOp::Mul => l.wrapping_mul(r),
-        IrBinOp::And => l & r,
-        IrBinOp::Or => l | r,
-        IrBinOp::Xor => l ^ r,
-        IrBinOp::Shl => l.wrapping_shl(r as u32),
-        IrBinOp::AShr => l.wrapping_shr(r as u32),
-        IrBinOp::LShr => (l as u64).wrapping_shr(r as u32) as i64,
-        IrBinOp::SDiv => {
-            if r == 0 { return None; }
-            l.wrapping_div(r)
-        }
-        IrBinOp::UDiv => {
-            if r == 0 { return None; }
-            ((l as u64).wrapping_div(r as u64)) as i64
-        }
-        IrBinOp::SRem => {
-            if r == 0 { return None; }
-            l.wrapping_rem(r)
-        }
-        IrBinOp::URem => {
-            if r == 0 { return None; }
-            ((l as u64).wrapping_rem(r as u64)) as i64
-        }
-    })
-}
-
-/// Evaluate a comparison operation, returning 1 (true) or 0 (false).
-fn eval_cmpop(op: IrCmpOp, l: i64, r: i64) -> i64 {
-    let result = match op {
-        IrCmpOp::Eq => l == r,
-        IrCmpOp::Ne => l != r,
-        IrCmpOp::Slt => l < r,
-        IrCmpOp::Sle => l <= r,
-        IrCmpOp::Sgt => l > r,
-        IrCmpOp::Sge => l >= r,
-        IrCmpOp::Ult => (l as u64) < (r as u64),
-        IrCmpOp::Ule => (l as u64) <= (r as u64),
-        IrCmpOp::Ugt => (l as u64) > (r as u64),
-        IrCmpOp::Uge => (l as u64) >= (r as u64),
-    };
-    if result { 1 } else { 0 }
 }
 
 /// Debug validation: check that every Value used as an operand is defined by some instruction.

@@ -195,8 +195,8 @@ The lowerer uses sema's function signatures in two ways:
 1. **Pre-population**: `known_functions` is seeded from sema's function map at construction time
 2. **Fallback CType resolution**: `register_function_meta` uses sema's CType as source-of-truth
    for return types and param CTypes instead of re-deriving from AST. Expression type inference
-   (`get_expr_ctype`, `get_call_return_type`, `get_function_return_ctype`) falls back to
-   sema_functions when the lowerer's own `func_meta.sigs` doesn't have the info.
+   (`get_expr_ctype`, `get_call_return_type`) falls back to sema_functions when the
+   lowerer's own `func_meta.sigs` doesn't have the info.
 
 Note: The lowerer's `FuncSig` contains ABI-adjusted information (IrType, sret_size, param_struct_sizes)
 that sema doesn't compute. Sema provides C-level CTypes; the lowerer adds target-specific ABI details.

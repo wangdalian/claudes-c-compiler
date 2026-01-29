@@ -412,76 +412,24 @@ impl Lowerer {
         Operand::Value(result)
     }
 
-    /// Determine the CType of an expression.
-    /// This is needed for complex number operations to know the complex variant.
+    /// Determine the CType of an expression, with complex-type-aware overrides.
+    ///
+    /// Delegates to `get_expr_ctype` for most expressions, but adds handling for
+    /// complex-specific patterns that `get_expr_ctype` doesn't cover:
+    /// - `__builtin_complex`: return type depends on argument type
+    /// - `conj/conjf/conjl`: return type matches argument, not function signature
+    /// - Arithmetic on complex operands: uses `common_complex_type` for promotion
+    /// - Conditionals with complex branches: complex-aware type resolution
     pub(super) fn expr_ctype(&self, expr: &Expr) -> CType {
+        // Handle complex-specific cases that get_expr_ctype doesn't cover
         match expr {
-            Expr::ImaginaryLiteral(_, _) => CType::ComplexDouble,
-            Expr::ImaginaryLiteralF32(_, _) => CType::ComplexFloat,
-            Expr::ImaginaryLiteralLongDouble(_, _, _) => CType::ComplexLongDouble,
-            Expr::FloatLiteral(_, _) => CType::Double,
-            Expr::FloatLiteralF32(_, _) => CType::Float,
-            Expr::FloatLiteralLongDouble(_, _, _) => CType::LongDouble,
-            Expr::IntLiteral(_, _) | Expr::CharLiteral(_, _) => CType::Int,
-            Expr::UIntLiteral(_, _) => CType::UInt,
-            Expr::LongLiteral(_, _) => CType::Long,
-            Expr::ULongLiteral(_, _) => CType::ULong,
-            Expr::LongLongLiteral(_, _) => CType::LongLong,
-            Expr::ULongLongLiteral(_, _) => CType::ULongLong,
-            Expr::Identifier(name, _) => {
-                self.get_var_ctype(name)
-            }
-            Expr::UnaryOp(UnaryOp::RealPart, inner, _) | Expr::UnaryOp(UnaryOp::ImagPart, inner, _) => {
-                let inner_ct = self.expr_ctype(inner);
-                inner_ct.complex_component_type()
-            }
-            Expr::UnaryOp(UnaryOp::Neg, inner, _) | Expr::UnaryOp(UnaryOp::Plus, inner, _) => {
-                let inner_ct = self.expr_ctype(inner);
-                // Per C11 6.5.3.3, unary +/- perform integer promotion on their operand.
-                // e.g. -(unsigned short) has type int, not unsigned short.
-                if inner_ct.is_integer() {
-                    inner_ct.integer_promoted()
-                } else {
-                    inner_ct
-                }
-            }
-            Expr::Cast(type_spec, _, _) => {
-                self.type_spec_to_ctype(type_spec)
-            }
-            Expr::BinaryOp(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div
-                | BinOp::Mod | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor
-                | BinOp::Shl | BinOp::Shr), lhs, rhs, _) => {
+            Expr::BinaryOp(BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div, lhs, rhs, _) => {
                 let lt = self.expr_ctype(lhs);
                 let rt = self.expr_ctype(rhs);
-                // Per GCC vector extensions, vector binops produce a vector result.
-                if lt.is_vector() {
-                    return lt;
+                if lt.is_complex() || rt.is_complex() {
+                    return self.common_complex_type(&lt, &rt);
                 }
-                if rt.is_vector() {
-                    return rt;
-                }
-                // Complex and float type promotion only applies to arithmetic ops.
-                if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div) {
-                    // Determine the result type for arithmetic involving complex operands.
-                    // Per C11 6.3.1.8, when mixing complex and real types, the result type
-                    // is determined by applying usual arithmetic conversions to the
-                    // corresponding real type of the complex and the other operand's type.
-                    // e.g., _Complex float + double => _Complex double
-                    if lt.is_complex() || rt.is_complex() {
-                        return self.common_complex_type(&lt, &rt);
-                    }
-                    // Neither is complex: return the wider floating type or the left type
-                    if matches!(lt, CType::LongDouble) || matches!(rt, CType::LongDouble) {
-                        return CType::LongDouble;
-                    }
-                    if matches!(lt, CType::Double) || matches!(rt, CType::Double) {
-                        return CType::Double;
-                    }
-                    if matches!(lt, CType::Float) || matches!(rt, CType::Float) {
-                        return CType::Float;
-                    }
-                }
-                lt
+                // Fall through to get_expr_ctype for non-complex arithmetic
             }
             Expr::FunctionCall(callee, args, _) => {
                 if let Expr::Identifier(name, _) = callee.as_ref() {
@@ -497,13 +445,8 @@ impl Lowerer {
                         }
                         return CType::ComplexDouble;
                     }
-                    // conj/conjf/conjl are lowered as builtins that preserve the
-                    // argument's complex type.  The registered function signature
-                    // always says "returns ComplexDouble" (the C prototype for
-                    // conj()), but the builtin implementation produces a result
-                    // whose type matches the argument.  Derive the return type
-                    // from the argument so that subsequent arithmetic sees the
-                    // correct width.
+                    // conj/conjf/conjl preserve the argument's complex type, but
+                    // the registered function signature always says ComplexDouble.
                     if matches!(name.as_str(), "conj" | "conjf" | "conjl"
                         | "__builtin_conj" | "__builtin_conjf" | "__builtin_conjl") {
                         if let Some(first_arg) = args.first() {
@@ -513,168 +456,29 @@ impl Lowerer {
                             }
                         }
                     }
-                    // Check if this is a function pointer variable rather than a direct function
-                    if self.is_func_ptr_variable(name) {
-                        self.get_func_ptr_return_ctype(callee.as_ref())
-                            .unwrap_or_else(|| self.get_function_return_ctype(name))
-                    } else {
-                        self.get_function_return_ctype(name)
-                    }
-                } else {
-                    // For indirect calls through non-identifier function pointers
-                    self.get_func_ptr_return_ctype(callee.as_ref())
-                        .unwrap_or(CType::Int)
                 }
-            }
-            Expr::Assign(lhs, _, _) | Expr::CompoundAssign(_, lhs, _, _) => {
-                self.expr_ctype(lhs)
+                // Fall through to get_expr_ctype for other function calls
             }
             Expr::Conditional(_, then_expr, else_expr, _) => {
                 let then_ct = self.expr_ctype(then_expr);
                 let else_ct = self.expr_ctype(else_expr);
                 if then_ct.is_complex() || else_ct.is_complex() {
-                    self.common_complex_type(&then_ct, &else_ct)
-                } else {
-                    then_ct
+                    return self.common_complex_type(&then_ct, &else_ct);
                 }
+                // Fall through to get_expr_ctype for non-complex conditionals
             }
             Expr::GnuConditional(cond, else_expr, _) => {
                 let cond_ct = self.expr_ctype(cond);
                 let else_ct = self.expr_ctype(else_expr);
                 if cond_ct.is_complex() || else_ct.is_complex() {
-                    self.common_complex_type(&cond_ct, &else_ct)
-                } else {
-                    cond_ct
+                    return self.common_complex_type(&cond_ct, &else_ct);
                 }
+                // Fall through to get_expr_ctype for non-complex conditionals
             }
-            Expr::MemberAccess(base, field, _) => {
-                // Try to resolve struct field type
-                let base_ct = self.expr_ctype(base);
-                self.resolve_field_type(&base_ct, field)
-            }
-            Expr::PointerMemberAccess(base, field, _) => {
-                let base_ct = self.expr_ctype(base);
-                if let CType::Pointer(inner, _) = &base_ct {
-                    self.resolve_field_type(inner, field)
-                } else {
-                    CType::Int
-                }
-            }
-            Expr::Deref(inner, _) => {
-                let inner_ct = self.expr_ctype(inner);
-                match inner_ct {
-                    CType::Pointer(pointee, _) => *pointee,
-                    // Arrays decay to pointers, so *array yields the element type
-                    CType::Array(elem, _) => *elem,
-                    _ => CType::Int,
-                }
-            }
-            Expr::ArraySubscript(base, _, _) => {
-                let base_ct = self.expr_ctype(base);
-                match base_ct {
-                    CType::Array(elem, _) | CType::Pointer(elem, _) => *elem,
-                    _ => CType::Int,
-                }
-            }
-            Expr::Comma(_, rhs, _) => self.expr_ctype(rhs),
-            Expr::CompoundLiteral(type_spec, _, _) => {
-                self.type_spec_to_ctype(type_spec)
-            }
-            Expr::VaArg(_, type_spec, _) => {
-                self.type_spec_to_ctype(type_spec)
-            }
-            Expr::StmtExpr(compound, _) => {
-                // Statement expression: type is the type of the last expression in the block
-                if let Some(last) = compound.items.last() {
-                    if let BlockItem::Statement(Stmt::Expr(Some(expr))) = last {
-                        return self.expr_ctype(expr);
-                    }
-                }
-                CType::Int
-            }
-            Expr::AddressOf(inner, _) => {
-                let inner_ct = self.expr_ctype(inner);
-                CType::Pointer(Box::new(inner_ct), AddressSpace::Default)
-            }
-            _ => {
-                // Fallback: try get_expr_ctype for more precise type info
-                if let Some(ct) = self.get_expr_ctype(expr) {
-                    return ct;
-                }
-                CType::Int
-            }
+            _ => {}
         }
-    }
-
-    /// Get variable's CType from symbol table.
-    pub(super) fn get_var_ctype(&self, name: &str) -> CType {
-        // Check var_ctypes (explicit tracking for complex vars)
-        if let Some(ctype) = self.func_state.as_ref().and_then(|fs| fs.var_ctypes.get(name)) {
-            return ctype.clone();
-        }
-        // Check locals/globals shared VarInfo
-        if let Some(vi) = self.lookup_var_info(name) {
-            if let Some(ref ct) = vi.c_type {
-                return ct.clone();
-            }
-        }
-        CType::Int
-    }
-
-    /// Get a function's return CType.
-    pub(super) fn get_function_return_ctype(&self, name: &str) -> CType {
-        // Check complex return types first
-        if let Some(ctype) = self.types.func_return_ctypes.get(name) {
-            return ctype.clone();
-        }
-        // Check pointer/struct return CTypes and derive from IR return type
-        let sig = self.func_meta.sigs.get(name);
-        if let Some(ctype) = sig.and_then(|s| s.return_ctype.as_ref()) {
-            return ctype.clone();
-        }
-        // Fall back to sema's function signatures when lowerer's ABI-adjusted info
-        // is unavailable (sema has accurate C-level CTypes for all declared functions)
-        if let Some(func_info) = self.sema_functions.get(name) {
-            return func_info.return_type.clone();
-        }
-        if let Some(&ir_ty) = sig.map(|s| &s.return_type) {
-            return match ir_ty {
-                IrType::F32 => CType::Float,
-                IrType::F64 => CType::Double,
-                IrType::F128 => CType::LongDouble,
-                IrType::I8 => CType::Char,
-                IrType::U8 => CType::UChar,
-                IrType::I16 => CType::Short,
-                IrType::U16 => CType::UShort,
-                IrType::I32 => CType::Int,
-                IrType::U32 => CType::UInt,
-                IrType::I64 => if crate::common::types::target_is_32bit() { CType::LongLong } else { CType::Long },
-                IrType::U64 => if crate::common::types::target_is_32bit() { CType::ULongLong } else { CType::ULong },
-                IrType::Ptr => CType::Pointer(Box::new(CType::Void), AddressSpace::Default),
-                _ => CType::Int,
-            };
-        }
-        CType::Int
-    }
-
-    /// Resolve struct field type, searching recursively through anonymous
-    /// struct/union members (C11 6.7.2.1p13: members of anonymous structs/unions
-    /// are accessible as direct members of the containing type).
-    fn resolve_field_type(&self, struct_type: &CType, field: &str) -> CType {
-        match struct_type {
-            CType::Struct(key) | CType::Union(key) => {
-                let layouts = self.types.borrow_struct_layouts();
-                if let Some(layout) = layouts.get(&**key) {
-                    // Use field_offset which already handles recursive lookup
-                    // through anonymous struct/union members
-                    if let Some((_, ty)) = layout.field_offset(field, &*layouts) {
-                        return ty;
-                    }
-                }
-                CType::Int
-            }
-            _ => CType::Int,
-        }
+        // Delegate to the general-purpose CType inference (lowerer + sema fallback)
+        self.get_expr_ctype(expr).unwrap_or(CType::Int)
     }
 
     /// Determine the common complex type for binary operations.

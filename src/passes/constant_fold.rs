@@ -153,7 +153,7 @@ fn try_fold_with_map(inst: &Instruction, const_map: &[Option<ConstMapEntry>]) ->
                 let rc = resolve_const(rhs, const_map)?;
                 let l = lc.to_i128()?;
                 let r = rc.to_i128()?;
-                let result = fold_binop_i128(*op, l, r)?;
+                let result = op.eval_i128(l, r)?;
                 return Some(Instruction::Copy {
                     dest: *dest,
                     src: Operand::Const(IrConst::I128(result)),
@@ -280,7 +280,7 @@ fn try_fold_with_map(inst: &Instruction, const_map: &[Option<ConstMapEntry>]) ->
                 }
                 let l = as_f64_const_mapped(lhs, const_map)?;
                 let r = as_f64_const_mapped(rhs, const_map)?;
-                let result = fold_float_cmp(*op, l, r);
+                let result = op.eval_f64(l, r);
                 return Some(Instruction::Copy {
                     dest: *dest,
                     src: Operand::Const(IrConst::I32(result as i32)),
@@ -483,20 +483,6 @@ fn fold_float_unaryop(op: IrUnaryOp, src: f64) -> Option<f64> {
     }
 }
 
-/// Evaluate a comparison on two constant floats.
-/// Uses IEEE 754 comparison semantics (NaN comparisons return false for ordered ops).
-fn fold_float_cmp(op: IrCmpOp, lhs: f64, rhs: f64) -> bool {
-    match op {
-        IrCmpOp::Eq => lhs == rhs,
-        IrCmpOp::Ne => lhs != rhs,
-        // For floats, we use ordered comparisons (signed variants)
-        IrCmpOp::Slt | IrCmpOp::Ult => lhs < rhs,
-        IrCmpOp::Sle | IrCmpOp::Ule => lhs <= rhs,
-        IrCmpOp::Sgt | IrCmpOp::Ugt => lhs > rhs,
-        IrCmpOp::Sge | IrCmpOp::Uge => lhs >= rhs,
-    }
-}
-
 /// Fold a binary operation on two F128 (long double) constants.
 ///
 /// On ARM64/RISC-V (where long double is IEEE binary128), uses full 112-bit mantissa
@@ -641,38 +627,6 @@ fn try_fold_float_cast_mapped(dest: Value, src: &Operand, from_ty: IrType, to_ty
     Some(Instruction::Copy {
         dest,
         src: Operand::Const(result),
-    })
-}
-
-/// Evaluate a binary operation on two constant 128-bit integers.
-/// Uses native Rust i128/u128 arithmetic for full precision.
-fn fold_binop_i128(op: IrBinOp, lhs: i128, rhs: i128) -> Option<i128> {
-    Some(match op {
-        IrBinOp::Add => lhs.wrapping_add(rhs),
-        IrBinOp::Sub => lhs.wrapping_sub(rhs),
-        IrBinOp::Mul => lhs.wrapping_mul(rhs),
-        IrBinOp::SDiv => {
-            if rhs == 0 { return None; }
-            lhs.wrapping_div(rhs)
-        }
-        IrBinOp::UDiv => {
-            if rhs == 0 { return None; }
-            (lhs as u128).wrapping_div(rhs as u128) as i128
-        }
-        IrBinOp::SRem => {
-            if rhs == 0 { return None; }
-            lhs.wrapping_rem(rhs)
-        }
-        IrBinOp::URem => {
-            if rhs == 0 { return None; }
-            (lhs as u128).wrapping_rem(rhs as u128) as i128
-        }
-        IrBinOp::And => lhs & rhs,
-        IrBinOp::Or => lhs | rhs,
-        IrBinOp::Xor => lhs ^ rhs,
-        IrBinOp::Shl => lhs.wrapping_shl(rhs as u32),
-        IrBinOp::AShr => lhs.wrapping_shr(rhs as u32),
-        IrBinOp::LShr => (lhs as u128).wrapping_shr(rhs as u32) as i128,
     })
 }
 
@@ -1042,17 +996,17 @@ mod tests {
     #[test]
     fn test_fold_float_cmp_neg_zero_eq() {
         // -0.0 == 0.0 is true (IEEE 754)
-        assert!(fold_float_cmp(IrCmpOp::Eq, -0.0, 0.0));
+        assert!(IrCmpOp::Eq.eval_f64(-0.0, 0.0));
     }
 
     #[test]
     fn test_fold_float_cmp_nan_ne() {
         // NaN != NaN is true (IEEE 754)
-        assert!(fold_float_cmp(IrCmpOp::Ne, f64::NAN, f64::NAN));
+        assert!(IrCmpOp::Ne.eval_f64(f64::NAN, f64::NAN));
         // NaN == NaN is false
-        assert!(!fold_float_cmp(IrCmpOp::Eq, f64::NAN, f64::NAN));
+        assert!(!IrCmpOp::Eq.eval_f64(f64::NAN, f64::NAN));
         // NaN < 1.0 is false
-        assert!(!fold_float_cmp(IrCmpOp::Slt, f64::NAN, 1.0));
+        assert!(!IrCmpOp::Slt.eval_f64(f64::NAN, 1.0));
     }
 
     #[test]
