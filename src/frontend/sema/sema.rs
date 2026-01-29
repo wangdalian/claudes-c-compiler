@@ -482,14 +482,14 @@ impl SemanticAnalyzer {
                     if let Some(designator) = item.designators.first() {
                         match designator {
                             Designator::Index(idx_expr) => {
-                                if let Some(idx) = Self::eval_designator_index(idx_expr) {
+                                if let Some(idx) = self.eval_designator_index(idx_expr) {
                                     current_idx = idx;
                                     fields_consumed = 0;
                                 }
                             }
                             Designator::Range(_lo, hi) => {
                                 // GNU range designator [lo ... hi]: size determined by hi
-                                if let Some(idx) = Self::eval_designator_index(hi) {
+                                if let Some(idx) = self.eval_designator_index(hi) {
                                     current_idx = idx;
                                     fields_consumed = 0;
                                 }
@@ -594,15 +594,17 @@ impl SemanticAnalyzer {
     }
 
     /// Try to evaluate a designator index expression as a usize.
-    /// Handles integer and char literals. Returns None for complex
-    /// constant expressions; the lowering phase handles those cases.
-    // TODO: extend to handle const expressions (e.g., enum values, sizeof)
-    fn eval_designator_index(expr: &Expr) -> Option<usize> {
+    /// Handles integer and char literals, and falls back to the full
+    /// constant expression evaluator for enum values, sizeof, etc.
+    fn eval_designator_index(&self, expr: &Expr) -> Option<usize> {
         match expr {
             Expr::IntLiteral(n, _) | Expr::LongLiteral(n, _) | Expr::LongLongLiteral(n, _) => Some(*n as usize),
             Expr::UIntLiteral(n, _) | Expr::ULongLiteral(n, _) | Expr::ULongLongLiteral(n, _) => Some(*n as usize),
             Expr::CharLiteral(n, _) => Some(*n as usize),
-            _ => None,
+            _ => {
+                let val = self.eval_const_expr(expr)?;
+                if val >= 0 { Some(val as usize) } else { None }
+            }
         }
     }
 
