@@ -1,8 +1,0 @@
-Style cleanup: fix compiler warnings, dead code, docs, and code quality
-
-1. Fix 2 compiler warnings (unused variables in regalloc.rs, i686/codegen.rs)
-2. Remove _-prefix from variables that are actually used (~5 cases)
-3. Remove #[allow(dead_code)] attributes and delete truly dead code
-4. Fix documentation inaccuracies in READMEs (dumpversion, test count, sema description, etc.)
-5. Add context messages to bare unreachable!() calls
-6. Clean up outdated ideas files
