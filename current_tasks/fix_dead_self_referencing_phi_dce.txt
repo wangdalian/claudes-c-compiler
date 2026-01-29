@@ -1,0 +1,29 @@
+Task: Fix DCE to remove dead self-referencing phi nodes from promoted inlined allocas
+
+Status: in_progress
+
+Problem: The Linux kernel crashes during boot in init_scattered_cpuid_features
+with a NULL pointer dereference. The function has two inlined cpuid calls inside
+a loop. After inlining cpuid_count() and promoting its parameter allocas via
+mem2reg, dead phi nodes are created at the loop header for the parameter
+pointer values. These phis have self-referencing incoming values
+(phi V: [entry: 0, backedge: V]) which prevents DCE from removing them
+because the self-reference keeps the use count at 1.
+
+The dead phi's copies (writing 0 from the entry/continue paths) corrupt the
+inline asm output pointer stack slots via Tier 2 liveness packing, causing
+NULL pointer dereferences when the cpuid output values are stored through
+these corrupted pointers.
+
+Root cause: In dce.rs, the use-count based DCE doesn't handle self-referencing
+phi nodes. A phi that only references itself has use_count=1 (from its own
+incoming value), so DCE considers it "live" even though no other instruction
+uses it. This causes dead phi copies to be emitted during phi elimination,
+which overwrite inline asm output pointer slots.
+
+Fix: Make DCE not count self-references when building phi use counts.
+When a phi's incoming value is its own dest, that use should be excluded
+from the use count. This allows the phi to be recognized as dead (use_count=0)
+and removed, preventing the corrupting copies from being emitted.
+
+Impact: Fixes x86 defconfig kernel boot (NULL deref in init_scattered_cpuid_features).
