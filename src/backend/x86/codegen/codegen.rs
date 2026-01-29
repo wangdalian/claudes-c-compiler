@@ -2863,11 +2863,19 @@ impl ArchCodegen for X86Codegen {
     }
 
     fn emit_tls_global_addr(&mut self, dest: &Value, name: &str) {
-        // Local Exec TLS model for x86-64:
-        // movq %fs:0, %rax      ; load thread pointer
-        // leaq x@TPOFF(%rax), %rax  ; add TLS offset of x
-        self.state.emit("    movq %fs:0, %rax");
-        self.state.emit_fmt(format_args!("    leaq {}@TPOFF(%rax), %rax", name));
+        if self.state.pic_mode {
+            // Initial Exec TLS model for x86-64 (PIC/shared libraries):
+            // movq x@GOTTPOFF(%rip), %rax  ; load TLS offset from GOT
+            // addq %fs:0, %rax              ; add thread pointer
+            self.state.emit_fmt(format_args!("    movq {}@GOTTPOFF(%rip), %rax", name));
+            self.state.emit("    addq %fs:0, %rax");
+        } else {
+            // Local Exec TLS model for x86-64 (non-PIC executables):
+            // movq %fs:0, %rax      ; load thread pointer
+            // leaq x@TPOFF(%rax), %rax  ; add TLS offset of x
+            self.state.emit("    movq %fs:0, %rax");
+            self.state.emit_fmt(format_args!("    leaq {}@TPOFF(%rax), %rax", name));
+        }
         self.store_rax_to(dest);
     }
 

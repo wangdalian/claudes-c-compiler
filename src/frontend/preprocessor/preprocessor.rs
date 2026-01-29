@@ -308,8 +308,22 @@ impl Preprocessor {
                 *pending_newlines = 1;
             } else {
                 let expanded = self.macros.expand_line(line);
-                output.push_str(&expanded);
-                output.push('\n');
+                // After expansion, check if the expanded result ends with a
+                // function-like macro name. This handles chained macros like:
+                //   #define STEP1(x) x STEP2
+                //   #define STEP2(y) y STEP3
+                //   STEP1(int)    <- expands to "int STEP2"
+                //   (foo)         <- should be STEP2's argument
+                // The original source line doesn't end with a func-like macro,
+                // but the expanded result does. We need to accumulate the next
+                // line so STEP2 can find its '(' argument.
+                if self.ends_with_funclike_macro(&expanded) {
+                    *pending_line = line.to_string();
+                    *pending_newlines = 1;
+                } else {
+                    output.push_str(&expanded);
+                    output.push('\n');
+                }
             }
         } else {
             // Check if this continuation line starts with '(' (after whitespace)
@@ -323,13 +337,19 @@ impl Preprocessor {
                 // Was accumulating for unbalanced parens
                 if !Self::has_unbalanced_parens(pending_line) || *pending_newlines > MAX_PENDING_NEWLINES {
                     let expanded = self.macros.expand_line(pending_line);
-                    output.push_str(&expanded);
-                    output.push('\n');
-                    for _ in 1..*pending_newlines {
+                    // Check if the expanded result ends with a function-like macro
+                    // that needs args from the next line (chained macros).
+                    if self.ends_with_funclike_macro(&expanded) && *pending_newlines <= MAX_PENDING_NEWLINES {
+                        // Don't clear pending_line - keep accumulating
+                    } else {
+                        output.push_str(&expanded);
                         output.push('\n');
+                        for _ in 1..*pending_newlines {
+                            output.push('\n');
+                        }
+                        pending_line.clear();
+                        *pending_newlines = 0;
                     }
-                    pending_line.clear();
-                    *pending_newlines = 0;
                 }
             } else {
                 // Was accumulating for trailing function-like macro name.
@@ -340,13 +360,19 @@ impl Preprocessor {
                 } else {
                     // Parens balanced or next line didn't start with '(' - expand now.
                     let expanded = self.macros.expand_line(pending_line);
-                    output.push_str(&expanded);
-                    output.push('\n');
-                    for _ in 1..*pending_newlines {
+                    // Check if the expanded result itself ends with a function-like
+                    // macro name that needs args from the next line (chained macros).
+                    if self.ends_with_funclike_macro(&expanded) && *pending_newlines <= MAX_PENDING_NEWLINES {
+                        // Don't clear pending_line - keep accumulating
+                    } else {
+                        output.push_str(&expanded);
                         output.push('\n');
+                        for _ in 1..*pending_newlines {
+                            output.push('\n');
+                        }
+                        pending_line.clear();
+                        *pending_newlines = 0;
                     }
-                    pending_line.clear();
-                    *pending_newlines = 0;
                 }
             }
         }

@@ -656,6 +656,29 @@ impl Lowerer {
                     }
                     return None;
                 }
+                // Handle (&global)->field.subfield pattern:
+                // PointerMemberAccess(AddressOf(Identifier("global")), "field")
+                // This is equivalent to global.field so treat it as a member chain entry
+                Expr::PointerMemberAccess(base, field, _) => {
+                    fields.push(field.clone());
+                    // The base must be &global_identifier
+                    match base.as_ref() {
+                        Expr::AddressOf(inner, _) => {
+                            match inner.as_ref() {
+                                Expr::Identifier(name, _) => {
+                                    let global_name = self.resolve_to_global_name(name)?;
+                                    let ginfo = self.globals.get(&global_name)?;
+                                    let base_offset: i64 = 0;
+                                    let start_layout = ginfo.struct_layout.clone()?;
+                                    return self.apply_field_chain_offsets(&global_name, base_offset, &start_layout, &fields);
+                                }
+                                _ => return None,
+                            }
+                        }
+                        // Also handle identifier directly (e.g., ptr->field where ptr is a global pointer)
+                        _ => return None,
+                    }
+                }
                 _ => return None,
             }
         }

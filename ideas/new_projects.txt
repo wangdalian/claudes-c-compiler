@@ -9,13 +9,14 @@ mquickjs - ARM: pass, x86: pass, riscv: pass, i686: fail. Notes: JS engine, pre-
 libpng - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: PNG library
 jq - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: JSON processor
 libjpeg - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: JPEG library
-mbedtls - ARM: pass, x86: fail, riscv: fail, i686: pass. Notes: TLS library, pre-existing x86 and riscv failures
+mbedtls - ARM: pass, x86: fail, riscv: pass, i686: pass. Notes: TLS library, pre-existing x86 failure, riscv now passes
 libuv - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: async I/O
 libffi - ARM: pass, x86: pass, riscv: fail, i686: pass. Notes: pre-existing riscv failure
 musl - ARM: pass, x86: pass, riscv: pass, i686: fail. Notes: pre-existing i686 failure
 tcc - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: tiny C compiler
 fastlz - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: FIXED i686 - was failing due to F64 skip-slot bug
-mruby - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: FIXED - build scripts rewrote to not need ruby/rake (was setup_deps failure)
-spng - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: PNG library. x86 script needs direct compile instead of CMake (see diff below)
+mruby - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: FIXED - build scripts rewrote to not need ruby/rake
+spng - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: PNG library
 mupdf - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: FIXED - preprocessor #include inside multi-line expression
-squashfuse - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: FIXED - was failing due to linker arg ordering (--whole-archive before .a)
+squashfuse - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: FIXED - was failing due to linker arg ordering
+SWI-Prolog - ARM: fail, x86: fail, riscv: fail, i686: fail. Notes: x86 compiles but crashes at boot (runtime codegen bug), needs GMP=OFF. Fixed preprocessor chained macros, TLS PIC model, and static init address-of bugs.
