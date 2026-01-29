@@ -1,0 +1,20 @@
+Task: Remove dead code (unused struct fields, enum variants, functions, methods)
+
+Status: in_progress
+
+Goal: Remove all dead code that produces compiler warnings. This includes:
+- Unused struct fields (Symbol.storage_class/span/is_defined, FunctionInfo.name/is_defined,
+  CompoundStmt.span, Parser.source_manager, IrFunction.stack_size, IrParam.name,
+  MacroDef.is_predefined, LivenessResult.num_points, CfgAnalysis.label_to_idx,
+  ParamClass size fields, SysvStructRegClass gp_count)
+- Unused enum variants (StorageClass::Register/Typedef, TypeSpecifier::Signed/Unsigned,
+  BuiltinKind::ConstantI64)
+- Unused functions/methods (set_werror_all, warning_config, source_manager, warning_no_span,
+  Span::merge, get_content, get_filename, for_struct, for_union, align, struct_key,
+  to_complex, pointee, array_element, to_signed, includes, result,
+  builtin_to_libc_name, num_rows, has_relocations, emit_add_imm_to_x17,
+  set_source_manager, take_source_manager, sizeof_type_spec, phys_reg_name default)
+- Mark test-only code with #[cfg(test)] (IrFunction::new, ivsr_function, from_vecs_usize)
+
+Approach: Remove truly dead code, gate test-only code with #[cfg(test)].
+Zero functional changes.
