@@ -1,7 +1,23 @@
 //! Stack layout: slot assignment, alloca coalescing, and regalloc helpers.
 //!
-//! This module contains the stack space calculation infrastructure:
-//! - `calculate_stack_space_common`: three-tier stack slot allocation
+//! ## Architecture
+//!
+//! Stack space calculation uses a three-tier allocation scheme:
+//!
+//! - **Tier 1**: Allocas get permanent, non-shared slots (addressable memory).
+//!   Exception: non-escaping single-block allocas use Tier 3 sharing.
+//!
+//! - **Tier 2**: Multi-block non-alloca SSA temporaries use liveness-based packing.
+//!   Values with non-overlapping live intervals share the same stack slot,
+//!   using a greedy interval coloring algorithm via a min-heap.
+//!
+//! - **Tier 3**: Single-block non-alloca values use block-local coalescing with
+//!   intra-block greedy slot reuse. Each block has its own pool; pools from
+//!   different blocks overlap since only one block executes at a time.
+//!
+//! ## Key functions
+//!
+//! - `calculate_stack_space_common`: orchestrates the three-tier allocation
 //! - `compute_coalescable_allocas`: escape analysis for alloca coalescing
 //! - `collect_inline_asm_callee_saved`: shared ASM clobber scan
 //! - `run_regalloc_and_merge_clobbers`: register allocator + clobber merge
@@ -17,11 +33,55 @@ use super::liveness::{
     for_each_operand_in_terminator, compute_live_intervals,
 };
 
+// ── Helper structs for slot allocation ────────────────────────────────────
+
+/// A block-local slot whose final offset is deferred until after all tiers
+/// have computed their space requirements. The final offset is:
+/// `non_local_space + block_offset`.
+struct DeferredSlot {
+    dest_id: u32,
+    size: i64,
+    align: i64,
+    block_offset: i64,
+}
+
+/// Multi-block value pending Tier 2 liveness-based packing.
+struct MultiBlockValue {
+    dest_id: u32,
+    slot_size: i64,
+}
+
+/// Block-local non-alloca value pending Tier 3 intra-block reuse.
+struct BlockLocalValue {
+    dest_id: u32,
+    slot_size: i64,
+    block_idx: usize,
+}
+
+/// Intermediate state passed between phases of `calculate_stack_space_common`.
+struct StackLayoutContext {
+    /// Whether coalescing and multi-tier allocation is enabled (num_blocks >= 2).
+    coalesce: bool,
+    /// Per-value use-block map: value_id -> list of block indices where used.
+    use_blocks_map: FxHashMap<u32, Vec<usize>>,
+    /// Value ID -> defining block index.
+    def_block: FxHashMap<u32, usize>,
+    /// Values defined in multiple blocks (from phi elimination).
+    multi_def_values: FxHashSet<u32>,
+    /// Copy alias map: dest_id -> root_id (values sharing the same stack slot).
+    copy_alias: FxHashMap<u32, u32>,
+    /// All value IDs referenced as operands in the function body.
+    used_values: FxHashSet<u32>,
+    /// Dead parameter allocas (unused params, skip slot allocation).
+    dead_param_allocas: FxHashSet<u32>,
+    /// Alloca coalescing analysis results.
+    coalescable_allocas: CoalescableAllocas,
+}
+
+// ── Value use-block map ───────────────────────────────────────────────────
+
 /// Compute the "use-block map" for all values in the function.
 /// For each value, records the set of block indices where that value is referenced.
-/// This is used to determine:
-/// - For entry-block allocas: which blocks reference the alloca pointer
-/// - For non-alloca values: whether the value is used outside its defining block
 ///
 /// Phi node operands are attributed to their SOURCE block (not the Phi's block).
 /// This is critical for coalescing in dispatch-style code (switch/computed goto):
@@ -81,6 +141,8 @@ fn compute_value_use_blocks(func: &IrFunction) -> FxHashMap<u32, Vec<usize>> {
     uses
 }
 
+// ── Alloca coalescability ─────────────────────────────────────────────────
+
 /// Result of alloca coalescability analysis.
 struct CoalescableAllocas {
     /// Single-block allocas: alloca ID -> the single block index where it's used.
@@ -135,12 +197,59 @@ fn compute_coalescable_allocas(
     // Track use blocks for each alloca: alloca_id -> set of block indices where used.
     let mut alloca_use_blocks: FxHashMap<u32, Vec<usize>> = FxHashMap::default();
 
-    // First pass: build GEP chain map and detect escapes.
+    // Helper: record a use of an alloca (or GEP-derived value) in a block.
+    let record_alloca_use = |val_id: u32, block_idx: usize,
+                              alloca_set: &FxHashSet<u32>,
+                              gep_to_alloca: &FxHashMap<u32, u32>,
+                              alloca_use_blocks: &mut FxHashMap<u32, Vec<usize>>| {
+        let root = if alloca_set.contains(&val_id) {
+            Some(val_id)
+        } else {
+            gep_to_alloca.get(&val_id).copied()
+        };
+        if let Some(root_id) = root {
+            let blocks = alloca_use_blocks.entry(root_id).or_insert_with(Vec::new);
+            if blocks.last() != Some(&block_idx) {
+                blocks.push(block_idx);
+            }
+        }
+    };
+
+    // Helper: mark an alloca (or GEP-derived) value as escaped.
+    let mark_escaped = |val_id: u32, block_idx: usize,
+                         alloca_set: &FxHashSet<u32>,
+                         gep_to_alloca: &FxHashMap<u32, u32>,
+                         escaped: &mut FxHashSet<u32>,
+                         alloca_use_blocks: &mut FxHashMap<u32, Vec<usize>>| {
+        if alloca_set.contains(&val_id) {
+            escaped.insert(val_id);
+            let blocks = alloca_use_blocks.entry(val_id).or_insert_with(Vec::new);
+            if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
+        } else if let Some(&root) = gep_to_alloca.get(&val_id) {
+            escaped.insert(root);
+            let blocks = alloca_use_blocks.entry(root).or_insert_with(Vec::new);
+            if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
+        }
+    };
+
+    // Helper: mark an operand's value as escaped if it's an alloca.
+    let mark_operand_escaped = |op: &Operand, alloca_set: &FxHashSet<u32>,
+                                 gep_to_alloca: &FxHashMap<u32, u32>,
+                                 escaped: &mut FxHashSet<u32>| {
+        if let Operand::Value(v) = op {
+            if alloca_set.contains(&v.0) {
+                escaped.insert(v.0);
+            } else if let Some(&root) = gep_to_alloca.get(&v.0) {
+                escaped.insert(root);
+            }
+        }
+    };
+
+    // Scan all instructions for escape conditions and alloca use sites.
     for (block_idx, block) in func.blocks.iter().enumerate() {
         for inst in &block.instructions {
             // Build GEP -> root alloca mapping
             if let Instruction::GetElementPtr { dest, base, .. } = inst {
-                // Check if the base is an alloca or a GEP derived from an alloca
                 let root = if alloca_set.contains(&base.0) {
                     Some(base.0)
                 } else {
@@ -148,199 +257,79 @@ fn compute_coalescable_allocas(
                 };
                 if let Some(root_alloca) = root {
                     gep_to_alloca.insert(dest.0, root_alloca);
-                    // Record this use of the alloca
-                    let blocks = alloca_use_blocks.entry(root_alloca).or_insert_with(Vec::new);
-                    if blocks.last() != Some(&block_idx) {
-                        blocks.push(block_idx);
-                    }
+                    record_alloca_use(dest.0, block_idx, &alloca_set, &gep_to_alloca, &mut alloca_use_blocks);
                 }
             }
 
-            // Check for alloca/GEP-derived values used in various instructions.
-            // Alloca pointers passed to calls are marked as escaped since the
-            // callee may store the pointer in a data structure that outlives the call.
             match inst {
                 Instruction::Call { info, .. } | Instruction::CallIndirect { info, .. } => {
-                    // Mark allocas passed as call arguments as escaped.
-                    // The callee may store the pointer in a data structure that
-                    // outlives the call (e.g. Lua GC roots, linked lists, callbacks).
-                    // Coalescing such allocas with others can cause memory corruption.
+                    // Callee may store the pointer, so alloca args escape.
                     for arg in &info.args {
                         if let Operand::Value(v) = arg {
-                            if alloca_set.contains(&v.0) {
-                                escaped.insert(v.0);
-                                let blocks = alloca_use_blocks.entry(v.0).or_insert_with(Vec::new);
-                                if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                            } else if let Some(&root) = gep_to_alloca.get(&v.0) {
-                                escaped.insert(root);
-                                let blocks = alloca_use_blocks.entry(root).or_insert_with(Vec::new);
-                                if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                            }
+                            mark_escaped(v.0, block_idx, &alloca_set, &gep_to_alloca, &mut escaped, &mut alloca_use_blocks);
                         }
                     }
                 }
-                // Store: if the alloca's VALUE is stored (not as ptr), address escapes
                 Instruction::Store { val, ptr, .. } => {
-                    if let Operand::Value(v) = val {
-                        if alloca_set.contains(&v.0) {
-                            escaped.insert(v.0);
-                        } else if let Some(&root) = gep_to_alloca.get(&v.0) {
-                            escaped.insert(root);
-                        }
-                    }
-                    // Record use of alloca as ptr (non-escaping use)
-                    if alloca_set.contains(&ptr.0) {
-                        let blocks = alloca_use_blocks.entry(ptr.0).or_insert_with(Vec::new);
-                        if blocks.last() != Some(&block_idx) {
-                            blocks.push(block_idx);
-                        }
-                    } else if let Some(&root) = gep_to_alloca.get(&ptr.0) {
-                        let blocks = alloca_use_blocks.entry(root).or_insert_with(Vec::new);
-                        if blocks.last() != Some(&block_idx) {
-                            blocks.push(block_idx);
-                        }
-                    }
+                    // Storing alloca's VALUE means address escapes.
+                    mark_operand_escaped(val, &alloca_set, &gep_to_alloca, &mut escaped);
+                    // Using alloca as ptr is non-escaping.
+                    record_alloca_use(ptr.0, block_idx, &alloca_set, &gep_to_alloca, &mut alloca_use_blocks);
                 }
-                // Load: record use of alloca as ptr (non-escaping use)
                 Instruction::Load { ptr, .. } => {
-                    if alloca_set.contains(&ptr.0) {
-                        let blocks = alloca_use_blocks.entry(ptr.0).or_insert_with(Vec::new);
-                        if blocks.last() != Some(&block_idx) {
-                            blocks.push(block_idx);
-                        }
-                    } else if let Some(&root) = gep_to_alloca.get(&ptr.0) {
-                        let blocks = alloca_use_blocks.entry(root).or_insert_with(Vec::new);
-                        if blocks.last() != Some(&block_idx) {
-                            blocks.push(block_idx);
-                        }
-                    }
+                    record_alloca_use(ptr.0, block_idx, &alloca_set, &gep_to_alloca, &mut alloca_use_blocks);
                 }
-                // Memcpy: record use of alloca as dest/src (non-escaping use)
                 Instruction::Memcpy { dest, src, .. } => {
                     for v in [dest, src] {
-                        if alloca_set.contains(&v.0) {
-                            let blocks = alloca_use_blocks.entry(v.0).or_insert_with(Vec::new);
-                            if blocks.last() != Some(&block_idx) {
-                                blocks.push(block_idx);
-                            }
-                        } else if let Some(&root) = gep_to_alloca.get(&v.0) {
-                            let blocks = alloca_use_blocks.entry(root).or_insert_with(Vec::new);
-                            if blocks.last() != Some(&block_idx) {
-                                blocks.push(block_idx);
-                            }
-                        }
+                        record_alloca_use(v.0, block_idx, &alloca_set, &gep_to_alloca, &mut alloca_use_blocks);
                     }
                 }
-                // InlineAsm: alloca inputs are conservatively marked as escaped.
-                // Inline asm with register constraints ("=r", "r", tied "0"/"1"/etc.)
-                // can transfer an alloca's address into an output register, which may
-                // then be used in later blocks to read/write the alloca's memory.
-                // If the alloca were coalesced into a block-local pool (Tier 3), its
-                // stack space would be shared with temporaries from other blocks,
-                // corrupting the alloca's data when accessed through the output pointer.
-                //
-                // Example: `asm("" : "=r"(out) : "0"(arr))` makes out alias arr;
-                // later blocks reading *out would see corrupted data if arr's slot
-                // was reused. Marking as escaped gives the alloca a permanent Tier 1
-                // slot that persists across all blocks.
+                // Inline asm: conservatively escape alloca inputs/outputs since register
+                // constraints can transfer addresses into output registers, which may be
+                // used in later blocks.
                 Instruction::InlineAsm { outputs, inputs, .. } => {
                     for (_, v, _) in outputs {
-                        if alloca_set.contains(&v.0) {
-                            escaped.insert(v.0);
-                            let blocks = alloca_use_blocks.entry(v.0).or_insert_with(Vec::new);
-                            if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                        } else if let Some(&root) = gep_to_alloca.get(&v.0) {
-                            escaped.insert(root);
-                            let blocks = alloca_use_blocks.entry(root).or_insert_with(Vec::new);
-                            if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                        }
+                        mark_escaped(v.0, block_idx, &alloca_set, &gep_to_alloca, &mut escaped, &mut alloca_use_blocks);
                     }
                     for (_, op, _) in inputs {
                         if let Operand::Value(v) = op {
-                            if alloca_set.contains(&v.0) {
-                                escaped.insert(v.0);
-                                let blocks = alloca_use_blocks.entry(v.0).or_insert_with(Vec::new);
-                                if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                            } else if let Some(&root) = gep_to_alloca.get(&v.0) {
-                                escaped.insert(root);
-                                let blocks = alloca_use_blocks.entry(root).or_insert_with(Vec::new);
-                                if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                            }
+                            mark_escaped(v.0, block_idx, &alloca_set, &gep_to_alloca, &mut escaped, &mut alloca_use_blocks);
                         }
                     }
                 }
-                // Intrinsic: record uses (intrinsics like memset/memcpy just operate
-                // on the pointer during execution, they don't store it)
                 Instruction::Intrinsic { dest_ptr, args, .. } => {
                     if let Some(dp) = dest_ptr {
-                        if alloca_set.contains(&dp.0) {
-                            let blocks = alloca_use_blocks.entry(dp.0).or_insert_with(Vec::new);
-                            if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                        } else if let Some(&root) = gep_to_alloca.get(&dp.0) {
-                            let blocks = alloca_use_blocks.entry(root).or_insert_with(Vec::new);
-                            if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                        }
+                        record_alloca_use(dp.0, block_idx, &alloca_set, &gep_to_alloca, &mut alloca_use_blocks);
                     }
                     for arg in args {
                         if let Operand::Value(v) = arg {
-                            if alloca_set.contains(&v.0) {
-                                let blocks = alloca_use_blocks.entry(v.0).or_insert_with(Vec::new);
-                                if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                            } else if let Some(&root) = gep_to_alloca.get(&v.0) {
-                                let blocks = alloca_use_blocks.entry(root).or_insert_with(Vec::new);
-                                if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                            }
+                            record_alloca_use(v.0, block_idx, &alloca_set, &gep_to_alloca, &mut alloca_use_blocks);
                         }
                     }
                 }
-                // Atomic ops: if alloca is used as ptr, record use. If used as val, it escapes.
                 Instruction::AtomicRmw { ptr, val, .. } => {
-                    if let Operand::Value(v) = val {
-                        if alloca_set.contains(&v.0) { escaped.insert(v.0); }
-                        else if let Some(&root) = gep_to_alloca.get(&v.0) { escaped.insert(root); }
-                    }
+                    mark_operand_escaped(val, &alloca_set, &gep_to_alloca, &mut escaped);
                     if let Operand::Value(v) = ptr {
-                        if alloca_set.contains(&v.0) {
-                            let blocks = alloca_use_blocks.entry(v.0).or_insert_with(Vec::new);
-                            if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                        }
+                        record_alloca_use(v.0, block_idx, &alloca_set, &gep_to_alloca, &mut alloca_use_blocks);
                     }
                 }
                 Instruction::AtomicCmpxchg { ptr, expected, desired, .. } => {
                     for op in [expected, desired] {
-                        if let Operand::Value(v) = op {
-                            if alloca_set.contains(&v.0) { escaped.insert(v.0); }
-                            else if let Some(&root) = gep_to_alloca.get(&v.0) { escaped.insert(root); }
-                        }
+                        mark_operand_escaped(op, &alloca_set, &gep_to_alloca, &mut escaped);
                     }
                     if let Operand::Value(v) = ptr {
-                        if alloca_set.contains(&v.0) {
-                            let blocks = alloca_use_blocks.entry(v.0).or_insert_with(Vec::new);
-                            if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                        }
+                        record_alloca_use(v.0, block_idx, &alloca_set, &gep_to_alloca, &mut alloca_use_blocks);
                     }
                 }
                 Instruction::AtomicLoad { ptr, .. } => {
                     if let Operand::Value(v) = ptr {
-                        if alloca_set.contains(&v.0) {
-                            let blocks = alloca_use_blocks.entry(v.0).or_insert_with(Vec::new);
-                            if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                        } else if let Some(&root) = gep_to_alloca.get(&v.0) {
-                            let blocks = alloca_use_blocks.entry(root).or_insert_with(Vec::new);
-                            if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                        }
+                        record_alloca_use(v.0, block_idx, &alloca_set, &gep_to_alloca, &mut alloca_use_blocks);
                     }
                 }
                 Instruction::AtomicStore { ptr, val, .. } => {
-                    if let Operand::Value(v) = val {
-                        if alloca_set.contains(&v.0) { escaped.insert(v.0); }
-                        else if let Some(&root) = gep_to_alloca.get(&v.0) { escaped.insert(root); }
-                    }
+                    mark_operand_escaped(val, &alloca_set, &gep_to_alloca, &mut escaped);
                     if let Operand::Value(v) = ptr {
-                        if alloca_set.contains(&v.0) {
-                            let blocks = alloca_use_blocks.entry(v.0).or_insert_with(Vec::new);
-                            if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
-                        }
+                        record_alloca_use(v.0, block_idx, &alloca_set, &gep_to_alloca, &mut alloca_use_blocks);
                     }
                 }
                 // VaStart/VaEnd/VaCopy/VaArg: conservatively escape
@@ -360,36 +349,23 @@ fn compute_coalescable_allocas(
                 // Cast/Copy/BinOp/Cmp/Select/UnaryOp: if alloca value used as operand, it escapes
                 // (these compute on the address value, which means it could be stored later)
                 Instruction::Cast { src, .. } | Instruction::Copy { src, .. } | Instruction::UnaryOp { src, .. } => {
-                    if let Operand::Value(v) = src {
-                        if alloca_set.contains(&v.0) { escaped.insert(v.0); }
-                        else if let Some(&root) = gep_to_alloca.get(&v.0) { escaped.insert(root); }
-                    }
+                    mark_operand_escaped(src, &alloca_set, &gep_to_alloca, &mut escaped);
                 }
                 Instruction::BinOp { lhs, rhs, .. } | Instruction::Cmp { lhs, rhs, .. } => {
                     for op in [lhs, rhs] {
-                        if let Operand::Value(v) = op {
-                            if alloca_set.contains(&v.0) { escaped.insert(v.0); }
-                            else if let Some(&root) = gep_to_alloca.get(&v.0) { escaped.insert(root); }
-                        }
+                        mark_operand_escaped(op, &alloca_set, &gep_to_alloca, &mut escaped);
                     }
                 }
                 Instruction::Select { cond, true_val, false_val, .. } => {
                     for op in [cond, true_val, false_val] {
-                        if let Operand::Value(v) = op {
-                            if alloca_set.contains(&v.0) { escaped.insert(v.0); }
-                            else if let Some(&root) = gep_to_alloca.get(&v.0) { escaped.insert(root); }
-                        }
+                        mark_operand_escaped(op, &alloca_set, &gep_to_alloca, &mut escaped);
                     }
                 }
                 Instruction::Phi { incoming, .. } => {
                     for (op, _) in incoming {
-                        if let Operand::Value(v) = op {
-                            if alloca_set.contains(&v.0) { escaped.insert(v.0); }
-                            else if let Some(&root) = gep_to_alloca.get(&v.0) { escaped.insert(root); }
-                        }
+                        mark_operand_escaped(op, &alloca_set, &gep_to_alloca, &mut escaped);
                     }
                 }
-                // Other instructions that don't use allocas
                 _ => {}
             }
         }
@@ -432,6 +408,8 @@ fn compute_coalescable_allocas(
     CoalescableAllocas { single_block, dead }
 }
 
+// ── Inline asm callee-saved scanning ──────────────────────────────────────
+
 /// Scan inline-asm instructions for callee-saved register usage.
 ///
 /// Iterates over all inline-asm instructions in `func`, checking output/input
@@ -472,6 +450,8 @@ pub fn collect_inline_asm_callee_saved(
         }
     }
 }
+
+// ── Register allocation helpers ───────────────────────────────────────────
 
 /// Run register allocation and merge ASM-clobbered callee-saved registers.
 ///
@@ -525,20 +505,11 @@ pub fn filter_available_regs(
     available
 }
 
+// ── Main stack space calculation ──────────────────────────────────────────
+
 /// Shared stack space calculation: iterates over all instructions, assigns stack
 /// slots for allocas and value results. Arch-specific offset direction is handled
 /// by the `assign_slot` closure.
-///
-/// Allocas may be coalesced if their address never escapes and all uses are in a
-/// single basic block. Non-escaping single-block allocas share stack space with
-/// allocas from other blocks (block-local coalescing).
-///
-/// Non-alloca SSA temporaries may be coalesced: values defined and used only
-/// within a single basic block (including the entry block) share stack space
-/// with temporaries from other blocks. This dramatically reduces frame size for
-/// functions with large switch statements (e.g., bison parsers, Lua's VM
-/// interpreter) where thousands of case blocks each produce many block-local
-/// temporaries that never coexist.
 ///
 /// `initial_offset`: starting offset (e.g., 0 for x86, 16 for ARM/RISC-V to skip saved regs)
 /// `assign_slot`: maps (current_space, raw_alloca_size, alignment) -> (slot_offset, new_space)
@@ -552,35 +523,79 @@ pub fn calculate_stack_space_common(
 ) -> i64 {
     let num_blocks = func.blocks.len();
 
-    // Enable block-local coalescing (Tier 3) for all multi-block functions.
-    // Enable liveness-based packing (Tier 2) for all multi-block functions.
-    //
-    // Tier 3 is safe for all functions: single-block values share stack space
-    // across different blocks since only one block's values are live at a time.
-    // Tier 2 uses liveness intervals to pack multi-block values into shared slots;
-    // values with non-overlapping live intervals share the same stack slot.
-    //
-    // Both tiers are enabled for any function with >= 2 blocks. Even small
-    // functions benefit: a 3-block function with 20 intermediates can save
-    // 100+ bytes of frame space by sharing slots. This is critical for
-    // recursive functions where per-frame savings compound (e.g., PostgreSQL
-    // plpgsql recursion triggers stack depth limit with large frames) and for
-    // kernel functions that expand macros creating many short-lived multi-block
-    // intermediates (e.g., list_for_each_entry_safe, spin_lock).
+    // Enable coalescing and multi-tier allocation for any multi-block function.
+    // Even small functions benefit: a 3-block function with 20 intermediates can
+    // save 100+ bytes. Critical for recursive functions (PostgreSQL plpgsql) and
+    // kernel functions with macro-expanded short-lived intermediates.
     let coalesce = num_blocks >= 2;
-    let enable_tier2 = num_blocks >= 2;
 
-    // Build use-block map: for each value, which blocks reference it.
+    // Phase 1: Build analysis context (use-blocks, def-blocks, used values,
+    //          dead param allocas, alloca coalescability, copy aliases).
+    let ctx = build_layout_context(func, coalesce, reg_assigned);
+
+    // Tell CodegenState which values are register-assigned so that
+    // resolve_slot_addr can return a dummy Indirect slot for them.
+    state.reg_assigned_values = reg_assigned.clone();
+
+    // Phase 2: Classify all instructions into the three tiers.
+    let mut non_local_space = initial_offset;
+    let mut deferred_slots: Vec<DeferredSlot> = Vec::new();
+    let mut multi_block_values: Vec<MultiBlockValue> = Vec::new();
+    let mut block_local_values: Vec<BlockLocalValue> = Vec::new();
+    let mut block_space: FxHashMap<usize, i64> = FxHashMap::default();
+    let mut max_block_local_space: i64 = 0;
+
+    classify_instructions(
+        state, func, &ctx, &assign_slot, reg_assigned,
+        &mut non_local_space, &mut deferred_slots, &mut multi_block_values,
+        &mut block_local_values, &mut block_space, &mut max_block_local_space,
+    );
+
+    // Phase 3: Tier 3 — block-local greedy slot reuse.
+    assign_tier3_block_local_slots(
+        func, &ctx, coalesce,
+        &block_local_values, &mut deferred_slots,
+        &mut block_space, &mut max_block_local_space, &assign_slot,
+    );
+
+    // Phase 4: Tier 2 — liveness-based packing for multi-block values.
+    assign_tier2_liveness_packed_slots(
+        state, coalesce, cached_liveness, func,
+        &multi_block_values, &mut non_local_space, &assign_slot,
+    );
+
+    // Phase 5: Finalize deferred block-local slots by adding the global base offset.
+    let total_space = finalize_deferred_slots(
+        state, &deferred_slots, non_local_space, max_block_local_space, &assign_slot,
+    );
+
+    // Phase 6: Resolve copy aliases (propagate slots from root to aliased values).
+    resolve_copy_aliases(state, &ctx.copy_alias);
+
+    // Phase 7: Propagate wide-value status through Copy chains (32-bit targets only).
+    propagate_wide_values(state, func, &ctx.copy_alias);
+
+    total_space
+}
+
+// ── Phase 1: Build analysis context ───────────────────────────────────────
+
+/// Build all the analysis data needed by the three-tier slot allocator.
+/// This includes use-block maps, definition tracking, copy coalescing analysis,
+/// dead param detection, and alloca coalescability.
+fn build_layout_context(
+    func: &IrFunction,
+    coalesce: bool,
+    reg_assigned: &FxHashSet<u32>,
+) -> StackLayoutContext {
+    // Build use-block map
     let mut use_blocks_map = if coalesce {
         compute_value_use_blocks(func)
     } else {
         FxHashMap::default()
     };
 
-    // Map from value ID -> the block where it's defined.
-    // After phi elimination, a single-phi destination can be defined via Copy
-    // in multiple predecessor blocks. Track these multi-definition values so
-    // they are never misclassified as block-local (Tier 3).
+    // Build def-block map and identify multi-definition values (phi elimination).
     let mut def_block: FxHashMap<u32, usize> = FxHashMap::default();
     let mut multi_def_values: FxHashSet<u32> = FxHashSet::default();
     if coalesce {
@@ -598,243 +613,26 @@ pub fn calculate_stack_space_common(
         }
     }
 
-    // Three-tier allocation:
-    // Tier 1: Allocas get permanent slots (addressable memory).
-    // Tier 2: Multi-block non-alloca values use liveness-based packing: values
-    //         with non-overlapping live intervals share the same stack slot.
-    // Tier 3: Single-block non-alloca values use block-local coalescing (as before).
+    // Collect all Value IDs referenced as operands (for dead value/param detection).
+    let used_values = collect_used_values(func);
 
-    struct DeferredSlot {
-        dest_id: u32,
-        size: i64,
-        align: i64,
-        block_offset: i64,
-    }
+    // Detect dead parameter allocas.
+    let dead_param_allocas = find_dead_param_allocas(func, &used_values);
 
-    // Multi-block value pending liveness-based packing.
-    struct MultiBlockValue {
-        dest_id: u32,
-        slot_size: i64,
-    }
-
-    // Block-local non-alloca value pending intra-block reuse.
-    struct BlockLocalValue {
-        dest_id: u32,
-        slot_size: i64,
-        block_idx: usize,
-    }
-
-    // Collect ALL Value IDs referenced as operands anywhere in the function body.
-    // Used for both dead param alloca detection and dead value elimination.
-    let used_values: FxHashSet<u32> = {
-        let mut used: FxHashSet<u32> = FxHashSet::default();
-        for block in &func.blocks {
-            for inst in &block.instructions {
-                for_each_operand_in_instruction(inst, |op| {
-                    if let Operand::Value(v) = op { used.insert(v.0); }
-                });
-                for_each_value_use_in_instruction(inst, |v| { used.insert(v.0); });
-            }
-            for_each_operand_in_terminator(&block.terminator, |op| {
-                if let Operand::Value(v) = op { used.insert(v.0); }
-            });
-        }
-        used
-    };
-
-    // Dead param alloca detection: find param allocas whose Value IDs are never
-    // used in any instruction or terminator. These represent function parameters
-    // that are completely unused in the function body, so we can skip allocating
-    // stack space for them and skip storing incoming register values.
-    //
-    // However, if a ParamRef instruction exists for a given param index, the
-    // corresponding param alloca must NOT be marked dead: emit_store_params needs
-    // to save the incoming register to the alloca slot, because emit_param_ref
-    // may read from ABI registers that get clobbered during emit_store_params
-    // (e.g., x0 is used as scratch during float/stack param storage on ARM).
-    // Keeping the alloca alive ensures emit_store_params stores the register
-    // value safely before it can be clobbered.
-    let dead_param_allocas: FxHashSet<u32> = {
-        let mut dead = FxHashSet::default();
-        if !func.param_alloca_values.is_empty() {
-            // Collect param indices referenced by ParamRef instructions
-            let mut paramref_indices: FxHashSet<usize> = FxHashSet::default();
-            for block in &func.blocks {
-                for inst in &block.instructions {
-                    if let Instruction::ParamRef { param_idx, .. } = inst {
-                        paramref_indices.insert(*param_idx);
-                    }
-                }
-            }
-            for (idx, pv) in func.param_alloca_values.iter().enumerate() {
-                if !used_values.contains(&pv.0) && !paramref_indices.contains(&idx) {
-                    dead.insert(pv.0);
-                }
-            }
-        }
-        dead
-    };
-
-    // Tell CodegenState which values are register-assigned so that
-    // resolve_slot_addr can return a dummy Indirect slot for them.
-    state.reg_assigned_values = reg_assigned.clone();
-
-    // Alloca coalescing: identify allocas whose address never escapes and whose
-    // uses are confined to a single basic block. These can share stack space with
-    // allocas from other blocks (block-local coalescing), dramatically reducing
-    // frame size for functions with many inlined helper calls.
-    //
-    // An alloca is "non-escaping" if:
-    // - Its Value is never used as a call/callindirect argument
-    // - Its Value is never stored as a value (only used as ptr in load/store/gep/memcpy)
-    // - Its Value is never used in inline asm inputs
-    // - Its Value is never returned or used in terminators
-    // - No GEP derived from it has any of the above escape conditions
-    //
-    // A non-escaping alloca is "single-block" if all uses of it (and all GEPs
-    // derived from it) are in the same basic block.
-    let coalescable_allocas: CoalescableAllocas = if coalesce {
+    // Alloca coalescability analysis.
+    let coalescable_allocas = if coalesce {
         compute_coalescable_allocas(func, &dead_param_allocas, &func.param_alloca_values)
     } else {
         CoalescableAllocas { single_block: FxHashMap::default(), dead: FxHashSet::default() }
     };
 
-    // ── Copy coalescing ──────────────────────────────────────────────
-    // When we see `dest = Copy src_value`, dest and src can share the same
-    // stack slot if their live ranges don't interfere. This eliminates a
-    // separate slot allocation and makes the Copy a harmless self-move.
-    //
-    // Safety: we only coalesce when the Copy is the SOLE use of the source
-    // value. This guarantees the source is dead after the Copy, so sharing
-    // the slot cannot corrupt any other reader of the source. This avoids
-    // the "lost copy" problem in phi parallel copy groups (e.g., swap patterns).
-    let mut copy_alias: FxHashMap<u32, u32> = FxHashMap::default();
-    {
-        // Count uses of each value across all instructions (as operands).
-        let mut use_count: FxHashMap<u32, u32> = FxHashMap::default();
-        for block in &func.blocks {
-            for inst in &block.instructions {
-                super::liveness::for_each_operand_in_instruction(inst, |op| {
-                    if let Operand::Value(v) = op {
-                        *use_count.entry(v.0).or_insert(0) += 1;
-                    }
-                });
-                super::liveness::for_each_value_use_in_instruction(inst, |v| {
-                    *use_count.entry(v.0).or_insert(0) += 1;
-                });
-            }
-            // Also count uses in terminators.
-            super::liveness::for_each_operand_in_terminator(&block.terminator, |op| {
-                if let Operand::Value(v) = op {
-                    *use_count.entry(v.0).or_insert(0) += 1;
-                }
-            });
-        }
+    // Copy coalescing analysis.
+    let copy_alias = build_copy_alias_map(
+        func, &def_block, &multi_def_values, reg_assigned, &use_blocks_map,
+    );
 
-        // Collect all Copy instructions where src is a Value (not a constant)
-        // and the Copy is the sole use of the source.
-        let mut raw_aliases: Vec<(u32, u32)> = Vec::new();
-        for block in &func.blocks {
-            for inst in &block.instructions {
-                if let Instruction::Copy { dest, src: Operand::Value(src_val) } = inst {
-                    let d = dest.0;
-                    let s = src_val.0;
-                    // Exclude values that cannot safely share a slot:
-                    // - multi-def values (defined in multiple blocks by phi elimination)
-                    // - register-assigned values (no stack slot)
-                    if multi_def_values.contains(&d) || multi_def_values.contains(&s) {
-                        continue;
-                    }
-                    if reg_assigned.contains(&d) || reg_assigned.contains(&s) {
-                        continue;
-                    }
-                    // Only coalesce if Copy is the sole use of the source.
-                    // This guarantees source is dead after Copy, preventing
-                    // the lost-copy problem in phi parallel copy groups.
-                    if use_count.get(&s).copied().unwrap_or(0) != 1 {
-                        continue;
-                    }
-                    // Only coalesce if the dest's uses are confined to the
-                    // same block as the source's definition. Cross-block
-                    // aliasing is unsafe because the root's liveness interval
-                    // (used by Tier 2 packing) and block-local classification
-                    // (Tier 3) don't account for the alias's uses in other
-                    // blocks, causing stack slot collisions.
-                    if let Some(&src_def_blk) = def_block.get(&s) {
-                        if let Some(dest_use_blocks) = use_blocks_map.get(&d) {
-                            let cross_block = dest_use_blocks.iter().any(|&b| b != src_def_blk);
-                            if cross_block {
-                                continue;
-                            }
-                        }
-                    }
-                    raw_aliases.push((d, s));
-                }
-            }
-        }
-        // Build alias map with transitive resolution: follow chains to find root.
-        // E.g., if A copies B and B copies C, both A and B alias to C.
-        // Safety limit on chain depth to guard against pathological cycles in the alias graph.
-        // In well-formed IR, chains are short (typically < 5); 100 is a generous upper bound.
-        const MAX_ALIAS_CHAIN_DEPTH: usize = 100;
-        for (dest_id, src_id) in raw_aliases {
-            // Find root of src.
-            let mut root = src_id;
-            let mut depth = 0;
-            while let Some(&parent) = copy_alias.get(&root) {
-                root = parent;
-                depth += 1;
-                if depth > MAX_ALIAS_CHAIN_DEPTH { break; }
-            }
-            // Don't alias to self.
-            if root != dest_id {
-                copy_alias.insert(dest_id, root);
-            }
-        }
-        // Remove aliases where the root is an alloca (alloca slots are special).
-        // We must check this after chain resolution since the root might be an alloca
-        // even if the direct src isn't.
-        let alloca_ids: FxHashSet<u32> = func.blocks.iter()
-            .flat_map(|b| b.instructions.iter())
-            .filter_map(|inst| {
-                if let Instruction::Alloca { dest, .. } = inst { Some(dest.0) } else { None }
-            })
-            .collect();
-        copy_alias.retain(|dest_id, root_id| {
-            !alloca_ids.contains(root_id) && !alloca_ids.contains(dest_id)
-        });
-
-        // Remove copy aliases for values used as InlineAsm output pointers.
-        // InlineAsm Phase 4 reads output pointer values from stack slots AFTER
-        // the asm instruction executes. If an output pointer value is copy-aliased,
-        // it shares the root's stack slot. But the root's lifetime ends at the
-        // Copy instruction (before the InlineAsm), so the slot may be reused for
-        // another value (e.g., an input operand) between the Copy and the InlineAsm.
-        // Phase 4 then reads the corrupted slot, causing miscompilation.
-        // Breaking the alias forces the output pointer to get its own slot with
-        // a lifetime that correctly extends past the InlineAsm instruction.
-        let mut asm_output_ptrs: FxHashSet<u32> = FxHashSet::default();
-        for block in &func.blocks {
-            for inst in &block.instructions {
-                if let Instruction::InlineAsm { outputs, .. } = inst {
-                    for (_, v, _) in outputs {
-                        asm_output_ptrs.insert(v.0);
-                    }
-                }
-            }
-        }
-        if !asm_output_ptrs.is_empty() {
-            copy_alias.retain(|dest_id, _| !asm_output_ptrs.contains(dest_id));
-        }
-    }
-
-    // ── Propagate copy-alias uses into use_blocks_map ─────────────────
-    // When `dest = Copy src` and dest is aliased to root, dest's uses
-    // effectively become uses of root (since they share the same stack slot).
-    // Without this propagation, root might be classified as block-local
-    // (Tier 3) based only on its own uses, but dest's uses in other blocks
-    // would cause a stack slot collision when different blocks' Tier 3 pools
-    // share the same physical memory.
+    // Propagate copy-alias uses into use_blocks_map so that root values account
+    // for their aliases' use sites when deciding block-local vs. multi-block.
     if coalesce && !copy_alias.is_empty() {
         for (&dest_id, &root_id) in &copy_alias {
             if let Some(dest_blocks) = use_blocks_map.get(&dest_id).cloned() {
@@ -848,530 +646,720 @@ pub fn calculate_stack_space_common(
         }
     }
 
-    // Determine if a non-alloca value can be assigned to a block-local pool slot.
-    // Returns Some(def_block_idx) if the value is defined and used only within a
-    // single block (including the entry block), making it safe to share stack
-    // space with values from other blocks (since only one block executes at a time).
-    let coalescable_group = |val_id: u32| -> Option<usize> {
-        if !coalesce {
-            return None;
+    StackLayoutContext {
+        coalesce,
+        use_blocks_map,
+        def_block,
+        multi_def_values,
+        copy_alias,
+        used_values,
+        dead_param_allocas,
+        coalescable_allocas,
+    }
+}
+
+/// Collect all Value IDs referenced as operands anywhere in the function body.
+fn collect_used_values(func: &IrFunction) -> FxHashSet<u32> {
+    let mut used: FxHashSet<u32> = FxHashSet::default();
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            for_each_operand_in_instruction(inst, |op| {
+                if let Operand::Value(v) = op { used.insert(v.0); }
+            });
+            for_each_value_use_in_instruction(inst, |v| { used.insert(v.0); });
         }
-        // Values defined in multiple blocks (from phi elimination) must use
-        // liveness-based packing (Tier 2), never block-local coalescing (Tier 3).
-        if multi_def_values.contains(&val_id) {
-            return None;
-        }
-        if let Some(&def_blk) = def_block.get(&val_id) {
-            if let Some(blocks) = use_blocks_map.get(&val_id) {
-                let mut unique: Vec<usize> = blocks.clone();
-                unique.sort_unstable();
-                unique.dedup();
+        for_each_operand_in_terminator(&block.terminator, |op| {
+            if let Operand::Value(v) = op { used.insert(v.0); }
+        });
+    }
+    used
+}
 
-                if unique.is_empty() {
-                    return Some(def_blk); // Dead value, safe to coalesce.
+/// Find param allocas whose Value IDs are never used in any instruction or terminator.
+/// These represent completely unused function parameters.
+///
+/// Exception: if a ParamRef instruction exists for a given param index, the
+/// corresponding param alloca must NOT be marked dead. emit_store_params needs
+/// to save the incoming register to the alloca slot because emit_param_ref
+/// may read from ABI registers that get clobbered during emit_store_params.
+fn find_dead_param_allocas(func: &IrFunction, used_values: &FxHashSet<u32>) -> FxHashSet<u32> {
+    let mut dead = FxHashSet::default();
+    if !func.param_alloca_values.is_empty() {
+        let mut paramref_indices: FxHashSet<usize> = FxHashSet::default();
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                if let Instruction::ParamRef { param_idx, .. } = inst {
+                    paramref_indices.insert(*param_idx);
                 }
-
-                // Single-block value (defined and used in the same block).
-                // Safe to share a pool slot: each block gets its own pool, and
-                // pools from different blocks share the same stack offset because
-                // only one block executes at a time.
-                // This includes entry block (def_blk == 0) values that are purely
-                // local to the entry block -- these are common intermediate results
-                // (sign extensions, casts, arithmetic) that don't cross block
-                // boundaries and can safely share pool slots.
-                if unique.len() == 1 && unique[0] == def_blk {
-                    return Some(def_blk);
-                }
-
-            } else {
-                return Some(def_blk); // No uses - dead value.
             }
         }
-        None
-    };
+        for (idx, pv) in func.param_alloca_values.iter().enumerate() {
+            if !used_values.contains(&pv.0) && !paramref_indices.contains(&idx) {
+                dead.insert(pv.0);
+            }
+        }
+    }
+    dead
+}
 
-    let mut non_local_space = initial_offset;
-    let mut deferred_slots: Vec<DeferredSlot> = Vec::new();
-    let mut multi_block_values: Vec<MultiBlockValue> = Vec::new();
-    let mut block_local_values: Vec<BlockLocalValue> = Vec::new();
+// ── Copy coalescing ───────────────────────────────────────────────────────
 
-    // Per-block running space counter for block-local values.
-    // Indexed by block index, holds the current accumulated space for that block.
-    let mut block_space: FxHashMap<usize, i64> = FxHashMap::default();
-    let mut max_block_local_space: i64 = 0;
-
-    // Track which value IDs have already been collected for slot allocation.
-    // Multi-def values (from phi elimination) are defined in multiple blocks,
-    // so without dedup each definition would be collected separately, wasting
-    // slots in the Tier 2 packer.
-    let mut collected_values: FxHashSet<u32> = FxHashSet::default();
-
-    for (_block_idx, block) in func.blocks.iter().enumerate() {
+/// Build the copy alias map: dest_id -> root_id for Copy instructions where
+/// dest and src can share the same stack slot.
+///
+/// Safety: only coalesces when the Copy is the SOLE use of the source value,
+/// guaranteeing the source is dead after the Copy (avoids the "lost copy"
+/// problem in phi parallel copy groups).
+fn build_copy_alias_map(
+    func: &IrFunction,
+    def_block: &FxHashMap<u32, usize>,
+    multi_def_values: &FxHashSet<u32>,
+    reg_assigned: &FxHashSet<u32>,
+    use_blocks_map: &FxHashMap<u32, Vec<usize>>,
+) -> FxHashMap<u32, u32> {
+    // Count uses of each value across all instructions.
+    let mut use_count: FxHashMap<u32, u32> = FxHashMap::default();
+    for block in &func.blocks {
         for inst in &block.instructions {
-            if let Instruction::Alloca { dest, size, ty, align, .. } = inst {
-                let effective_align = *align;
-                let extra = if effective_align > 16 { effective_align - 1 } else { 0 };
-                let raw_size = if *size == 0 { crate::common::types::target_ptr_size() as i64 } else { *size as i64 };
-
-                state.alloca_values.insert(dest.0);
-                state.alloca_types.insert(dest.0, *ty);
-                if effective_align > 16 {
-                    state.alloca_alignments.insert(dest.0, effective_align);
+            for_each_operand_in_instruction(inst, |op| {
+                if let Operand::Value(v) = op {
+                    *use_count.entry(v.0).or_insert(0) += 1;
                 }
+            });
+            for_each_value_use_in_instruction(inst, |v| {
+                *use_count.entry(v.0).or_insert(0) += 1;
+            });
+        }
+        for_each_operand_in_terminator(&block.terminator, |op| {
+            if let Operand::Value(v) = op {
+                *use_count.entry(v.0).or_insert(0) += 1;
+            }
+        });
+    }
 
-                // Skip stack slot allocation for dead param allocas.
-                // The alloca is still registered in alloca_values/alloca_types so
-                // the backend recognizes it as an alloca, but no stack slot is
-                // assigned. get_slot() will return None, causing emit_store_params
-                // to skip storing the incoming register value for this parameter.
-                if dead_param_allocas.contains(&dest.0) {
+    // Collect Copy instructions eligible for aliasing.
+    let mut raw_aliases: Vec<(u32, u32)> = Vec::new();
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            if let Instruction::Copy { dest, src: Operand::Value(src_val) } = inst {
+                let d = dest.0;
+                let s = src_val.0;
+                // Exclude multi-def values and register-assigned values.
+                if multi_def_values.contains(&d) || multi_def_values.contains(&s) {
                     continue;
                 }
-
-                // Skip stack slot allocation for dead non-param allocas.
-                // These are allocas from inlined functions whose variables are
-                // never actually used. No code references them, so no slot needed.
-                if coalescable_allocas.dead.contains(&dest.0) {
+                if reg_assigned.contains(&d) || reg_assigned.contains(&s) {
                     continue;
                 }
-
-                // Check if this alloca can be coalesced.
-                // Over-aligned allocas (> 16) are excluded because their
-                // alignment padding complicates coalescing.
-                if effective_align <= 16 {
-                    // Single-block allocas: use block-local coalescing (Tier 3).
-                    if let Some(&use_block) = coalescable_allocas.single_block.get(&dest.0) {
-                        let alloca_size = raw_size + extra as i64;
-                        let alloca_align = *align as i64;
-                        let bs = block_space.entry(use_block).or_insert(0);
-                        let before = *bs;
-                        let (_, new_space) = assign_slot(*bs, alloca_size, alloca_align);
-                        *bs = new_space;
-                        if new_space > max_block_local_space {
-                            max_block_local_space = new_space;
+                // Only coalesce if Copy is the sole use of the source.
+                if use_count.get(&s).copied().unwrap_or(0) != 1 {
+                    continue;
+                }
+                // Only coalesce if dest's uses are in the same block as source's definition.
+                // Cross-block aliasing is unsafe: the root's liveness interval doesn't
+                // account for the alias's uses in other blocks.
+                if let Some(&src_def_blk) = def_block.get(&s) {
+                    if let Some(dest_use_blocks) = use_blocks_map.get(&d) {
+                        if dest_use_blocks.iter().any(|&b| b != src_def_blk) {
+                            continue;
                         }
-                        deferred_slots.push(DeferredSlot {
-                            dest_id: dest.0, size: alloca_size, align: alloca_align,
-                            block_offset: before,
-                        });
-                        continue;
-                    }
-                    // Multi-block non-escaping allocas get permanent slots below.
-                }
-
-                // Non-coalescable allocas get permanent slots (escaped or
-                // multi-block non-escaping allocas that span multiple blocks).
-                let (slot, new_space) = assign_slot(non_local_space, raw_size + extra as i64, *align as i64);
-                state.value_locations.insert(dest.0, StackSlot(slot));
-                non_local_space = new_space;
-            } else if let Some(dest) = inst.dest() {
-                let is_i128 = matches!(inst.result_type(), Some(IrType::I128) | Some(IrType::U128));
-                let is_f128 = matches!(inst.result_type(), Some(IrType::F128));
-                // 8-byte slots for most values (covers I64/F64 on i686), 16-byte for i128/f128.
-                let slot_size: i64 = if is_i128 || is_f128 { 16 } else { 8 };
-
-                if is_i128 {
-                    state.i128_values.insert(dest.0);
-                }
-
-                // On 32-bit targets, track values wider than 32 bits (F64, I64/U64)
-                // so that copy operations can use appropriate multi-word handling
-                // instead of the default 32-bit accumulator path.
-                if crate::common::types::target_is_32bit() {
-                    let is_wide = matches!(inst.result_type(),
-                        Some(IrType::F64) | Some(IrType::I64) | Some(IrType::U64));
-                    if is_wide {
-                        state.wide_values.insert(dest.0);
                     }
                 }
-
-                // Skip stack slot allocation for values assigned to registers.
-                // These values will live in callee-saved registers and never
-                // need a stack slot, saving significant frame space.
-                if reg_assigned.contains(&dest.0) {
-                    continue;
-                }
-
-                // Skip stack slot allocation for dead values (defined but never
-                // used as an operand). These are leftovers from DCE not catching
-                // all dead code, or side-effect-free instructions whose results
-                // are unused. Skipping their slots saves 8 bytes each, which
-                // compounds significantly in recursive functions.
-                //
-                // This is safe because store_rax_to / store_t0_to already check
-                // get_slot() and gracefully skip the store when no slot exists.
-                // The instruction still executes (preserving side effects for
-                // calls), but the result simply isn't persisted to the stack.
-                if !used_values.contains(&dest.0) {
-                    continue;
-                }
-
-                // Skip slot allocation for copy-aliased values.
-                // These will get the same slot as their root after all slots are assigned.
-                // Don't alias i128/f128 values (16-byte slots) to avoid size mismatches.
-                if !is_i128 && !is_f128 && copy_alias.contains_key(&dest.0) {
-                    continue;
-                }
-
-                // Dedup: multi-def values (phi results) appear in multiple blocks.
-                // Without this check, each definition would allocate a separate slot,
-                // wasting frame space (up to 3x for 3-way phi merges).
-                if !collected_values.insert(dest.0) {
-                    continue;
-                }
-
-                if let Some(target_blk) = coalescable_group(dest.0) {
-                    block_local_values.push(BlockLocalValue {
-                        dest_id: dest.0,
-                        slot_size,
-                        block_idx: target_blk,
-                    });
-                } else {
-                    // Collect multi-block values for liveness-based packing.
-                    multi_block_values.push(MultiBlockValue {
-                        dest_id: dest.0,
-                        slot_size,
-                    });
-                }
+                raw_aliases.push((d, s));
             }
         }
     }
 
-    // Tier 3 intra-block reuse for block-local non-alloca values.
-    // Within a single block, values have short lifetimes (defined at one instruction,
-    // last used a few instructions later). By tracking when each value is last used,
-    // we can reuse its stack slot for later values, dramatically reducing frame size.
-    // This is critical for functions like blake2s_compress_generic where macro expansion
-    // creates thousands of short-lived intermediates in a single loop body block.
-    if !block_local_values.is_empty() && coalesce {
-        // Pre-compute per-block last-use instruction index for block-local values.
-        // For each value, last_use[value_id] = instruction index of last use in its block.
-        let block_local_set: FxHashSet<u32> = block_local_values.iter().map(|v| v.dest_id).collect();
-        let mut last_use: FxHashMap<u32, usize> = FxHashMap::default();
-        let mut def_inst_idx: FxHashMap<u32, usize> = FxHashMap::default();
+    // Build alias map with transitive resolution: follow chains to find root.
+    // Safety limit on chain depth guards against pathological cycles.
+    const MAX_ALIAS_CHAIN_DEPTH: usize = 100;
+    let mut copy_alias: FxHashMap<u32, u32> = FxHashMap::default();
+    for (dest_id, src_id) in raw_aliases {
+        let mut root = src_id;
+        let mut depth = 0;
+        while let Some(&parent) = copy_alias.get(&root) {
+            root = parent;
+            depth += 1;
+            if depth > MAX_ALIAS_CHAIN_DEPTH { break; }
+        }
+        if root != dest_id {
+            copy_alias.insert(dest_id, root);
+        }
+    }
 
-        for block in &func.blocks {
-            for (inst_idx, inst) in block.instructions.iter().enumerate() {
-                // Track definition point
-                if let Some(dest) = inst.dest() {
-                    if block_local_set.contains(&dest.0) {
-                        def_inst_idx.insert(dest.0, inst_idx);
-                    }
-                }
-                // Track last use point
-                for_each_operand_in_instruction(inst, |op| {
-                    if let Operand::Value(v) = op {
-                        if block_local_set.contains(&v.0) {
-                            last_use.insert(v.0, inst_idx);
-                        }
-                    }
-                });
-                for_each_value_use_in_instruction(inst, |v| {
-                    if block_local_set.contains(&v.0) {
-                        last_use.insert(v.0, inst_idx);
-                    }
-                });
-                // InlineAsm output pointer values are read from stack slots
-                // during Phase 4 (output stores) AFTER the asm instruction.
-                // Extend their last_use past the InlineAsm instruction so
-                // greedy coloring won't reuse their slots for values defined
-                // at or before the InlineAsm (e.g., other output pointers or
-                // input values loaded during Phase 2).
-                //
-                // When an output pointer is copy-aliased (v_out = Copy v_root),
-                // v_out shares v_root's stack slot. We must also extend v_root's
-                // last_use, otherwise greedy coloring may reuse v_root's slot
-                // for a value defined before the InlineAsm, corrupting the
-                // output pointer that Phase 4 reads.
-                if let Instruction::InlineAsm { outputs, .. } = inst {
-                    for (_, v, _) in outputs {
-                        let extended = inst_idx + 1;
-                        if block_local_set.contains(&v.0) {
-                            last_use.insert(v.0, extended);
-                        }
-                        // Also extend the copy-alias root, which holds the
-                        // actual stack slot that will be read during Phase 4.
-                        if let Some(&root) = copy_alias.get(&v.0) {
-                            if block_local_set.contains(&root) {
-                                last_use.insert(root, extended);
-                            }
-                        }
-                    }
+    // Remove aliases where root or dest is an alloca (alloca slots are special).
+    let alloca_ids: FxHashSet<u32> = func.blocks.iter()
+        .flat_map(|b| b.instructions.iter())
+        .filter_map(|inst| {
+            if let Instruction::Alloca { dest, .. } = inst { Some(dest.0) } else { None }
+        })
+        .collect();
+    copy_alias.retain(|dest_id, root_id| {
+        !alloca_ids.contains(root_id) && !alloca_ids.contains(dest_id)
+    });
+
+    // Remove aliases for InlineAsm output pointer values. InlineAsm Phase 4 reads
+    // output pointers from stack slots AFTER the asm executes; if aliased, the
+    // root's slot may be reused between the Copy and the InlineAsm, corrupting
+    // the pointer read in Phase 4.
+    let mut asm_output_ptrs: FxHashSet<u32> = FxHashSet::default();
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            if let Instruction::InlineAsm { outputs, .. } = inst {
+                for (_, v, _) in outputs {
+                    asm_output_ptrs.insert(v.0);
                 }
             }
-            // Also check terminator for uses
-            for_each_operand_in_terminator(&block.terminator, |op| {
-                if let Operand::Value(v) = op {
-                    if block_local_set.contains(&v.0) {
-                        // Use block.instructions.len() as the "instruction index"
-                        // for the terminator (it comes after all instructions).
-                        last_use.insert(v.0, block.instructions.len());
-                    }
-                }
+        }
+    }
+    if !asm_output_ptrs.is_empty() {
+        copy_alias.retain(|dest_id, _| !asm_output_ptrs.contains(dest_id));
+    }
+
+    copy_alias
+}
+
+// ── Phase 2: Classify instructions into tiers ─────────────────────────────
+
+/// Determine if a non-alloca value can be assigned to a block-local pool slot (Tier 3).
+/// Returns `Some(def_block_idx)` if the value is defined and used only within a
+/// single block, making it safe to share stack space with values from other blocks.
+fn coalescable_group(
+    val_id: u32,
+    ctx: &StackLayoutContext,
+) -> Option<usize> {
+    if !ctx.coalesce {
+        return None;
+    }
+    // Values defined in multiple blocks (from phi elimination) must use Tier 2.
+    if ctx.multi_def_values.contains(&val_id) {
+        return None;
+    }
+    if let Some(&def_blk) = ctx.def_block.get(&val_id) {
+        if let Some(blocks) = ctx.use_blocks_map.get(&val_id) {
+            let mut unique: Vec<usize> = blocks.clone();
+            unique.sort_unstable();
+            unique.dedup();
+
+            if unique.is_empty() {
+                return Some(def_blk); // Dead value, safe to coalesce.
+            }
+
+            // Single-block value: defined and used in the same block.
+            if unique.len() == 1 && unique[0] == def_blk {
+                return Some(def_blk);
+            }
+        } else {
+            return Some(def_blk); // No uses - dead value.
+        }
+    }
+    None
+}
+
+/// Walk all instructions and classify each into Tier 1 (permanent alloca slots),
+/// Tier 2 (multi-block, liveness-packed), or Tier 3 (block-local, greedy reuse).
+#[allow(clippy::too_many_arguments)]
+fn classify_instructions(
+    state: &mut super::state::CodegenState,
+    func: &IrFunction,
+    ctx: &StackLayoutContext,
+    assign_slot: &impl Fn(i64, i64, i64) -> (i64, i64),
+    reg_assigned: &FxHashSet<u32>,
+    non_local_space: &mut i64,
+    deferred_slots: &mut Vec<DeferredSlot>,
+    multi_block_values: &mut Vec<MultiBlockValue>,
+    block_local_values: &mut Vec<BlockLocalValue>,
+    block_space: &mut FxHashMap<usize, i64>,
+    max_block_local_space: &mut i64,
+) {
+    let mut collected_values: FxHashSet<u32> = FxHashSet::default();
+
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            if let Instruction::Alloca { dest, size, ty, align, .. } = inst {
+                classify_alloca(
+                    state, dest, *size, *ty, *align, ctx,
+                    assign_slot, non_local_space, deferred_slots,
+                    block_space, max_block_local_space,
+                );
+            } else if let Some(dest) = inst.dest() {
+                classify_value(
+                    state, dest, inst, ctx, reg_assigned,
+                    &mut collected_values, multi_block_values,
+                    block_local_values,
+                );
+            }
+        }
+    }
+}
+
+/// Classify a single Alloca instruction into Tier 1 (permanent) or Tier 3 (block-local).
+fn classify_alloca(
+    state: &mut super::state::CodegenState,
+    dest: &Value,
+    size: usize,
+    ty: IrType,
+    align: usize,
+    ctx: &StackLayoutContext,
+    assign_slot: &impl Fn(i64, i64, i64) -> (i64, i64),
+    non_local_space: &mut i64,
+    deferred_slots: &mut Vec<DeferredSlot>,
+    block_space: &mut FxHashMap<usize, i64>,
+    max_block_local_space: &mut i64,
+) {
+    let effective_align = align;
+    let extra = if effective_align > 16 { effective_align - 1 } else { 0 };
+    let raw_size = if size == 0 { crate::common::types::target_ptr_size() as i64 } else { size as i64 };
+
+    state.alloca_values.insert(dest.0);
+    state.alloca_types.insert(dest.0, ty);
+    if effective_align > 16 {
+        state.alloca_alignments.insert(dest.0, effective_align as usize);
+    }
+
+    // Skip dead param allocas (still registered so backend recognizes them).
+    if ctx.dead_param_allocas.contains(&dest.0) {
+        return;
+    }
+
+    // Skip dead non-param allocas (never referenced by any instruction).
+    if ctx.coalescable_allocas.dead.contains(&dest.0) {
+        return;
+    }
+
+    // Single-block allocas: use block-local coalescing (Tier 3).
+    // Over-aligned allocas (> 16) are excluded because their alignment
+    // padding complicates coalescing.
+    if effective_align <= 16 {
+        if let Some(&use_block) = ctx.coalescable_allocas.single_block.get(&dest.0) {
+            let alloca_size = raw_size + extra as i64;
+            let alloca_align = align as i64;
+            let bs = block_space.entry(use_block).or_insert(0);
+            let before = *bs;
+            let (_, new_space) = assign_slot(*bs, alloca_size, alloca_align);
+            *bs = new_space;
+            if new_space > *max_block_local_space {
+                *max_block_local_space = new_space;
+            }
+            deferred_slots.push(DeferredSlot {
+                dest_id: dest.0, size: alloca_size, align: alloca_align,
+                block_offset: before,
             });
+            return;
         }
+    }
 
-        // Group block-local values by block, preserving definition order.
-        let mut per_block: FxHashMap<usize, Vec<(u32, i64)>> = FxHashMap::default();
-        for blv in &block_local_values {
-            per_block.entry(blv.block_idx).or_default().push((blv.dest_id, blv.slot_size));
+    // Non-coalescable allocas get permanent Tier 1 slots.
+    let (slot, new_space) = assign_slot(*non_local_space, raw_size + extra as i64, align as i64);
+    state.value_locations.insert(dest.0, StackSlot(slot));
+    *non_local_space = new_space;
+}
+
+/// Classify a non-alloca value into Tier 2 (multi-block) or Tier 3 (block-local).
+fn classify_value(
+    state: &mut super::state::CodegenState,
+    dest: Value,
+    inst: &Instruction,
+    ctx: &StackLayoutContext,
+    reg_assigned: &FxHashSet<u32>,
+    collected_values: &mut FxHashSet<u32>,
+    multi_block_values: &mut Vec<MultiBlockValue>,
+    block_local_values: &mut Vec<BlockLocalValue>,
+) {
+    let is_i128 = matches!(inst.result_type(), Some(IrType::I128) | Some(IrType::U128));
+    let is_f128 = matches!(inst.result_type(), Some(IrType::F128));
+    let slot_size: i64 = if is_i128 || is_f128 { 16 } else { 8 };
+
+    if is_i128 {
+        state.i128_values.insert(dest.0);
+    }
+
+    // On 32-bit targets, track values wider than 32 bits for multi-word copy handling.
+    if crate::common::types::target_is_32bit() {
+        let is_wide = matches!(inst.result_type(),
+            Some(IrType::F64) | Some(IrType::I64) | Some(IrType::U64));
+        if is_wide {
+            state.wide_values.insert(dest.0);
         }
+    }
 
-        // For each block, assign slots with intra-block reuse using greedy coloring.
-        // Values are processed in definition order. When a new value is defined,
-        // check if any previously-assigned values in this block are dead (last use
-        // strictly before this value's definition). Reuse their slots.
-        for (blk_idx, values) in &per_block {
-            // Active slots: (last_use_idx, slot_offset, slot_size) sorted by last_use
-            let mut active: Vec<(usize, i64, i64)> = Vec::new();
-            // Free slots available for reuse: (offset, size)
-            let mut free_8: Vec<i64> = Vec::new();
-            let mut free_16: Vec<i64> = Vec::new();
-            // Start from existing block space (block-local allocas already occupy
-            // offsets 0..block_space[blk_idx]). Non-alloca values must not overlap.
-            let mut block_peak: i64 = block_space.get(blk_idx).copied().unwrap_or(0);
+    // Skip register-assigned values (no stack slot needed).
+    if reg_assigned.contains(&dest.0) {
+        return;
+    }
 
-            for &(dest_id, slot_size) in values {
-                let my_def = def_inst_idx.get(&dest_id).copied().unwrap_or(0);
+    // Skip dead values (defined but never used).
+    if !ctx.used_values.contains(&dest.0) {
+        return;
+    }
 
-                // Release expired slots: values whose last use is strictly before
-                // this value's definition point.
-                let mut i = 0;
-                while i < active.len() {
-                    if active[i].0 < my_def {
-                        let (_, off, sz) = active.swap_remove(i);
-                        if sz == 16 { free_16.push(off); } else { free_8.push(off); }
-                    } else {
-                        i += 1;
-                    }
-                }
+    // Skip copy-aliased values (they'll share root's slot). Not for i128/f128.
+    if !is_i128 && !is_f128 && ctx.copy_alias.contains_key(&dest.0) {
+        return;
+    }
 
-                // Try to reuse a freed slot of the right size.
-                let free_list = if slot_size == 16 { &mut free_16 } else { &mut free_8 };
-                let offset = if let Some(reused) = free_list.pop() {
-                    reused
-                } else {
-                    // Allocate new slot at the current peak.
-                    let off = block_peak;
-                    block_peak += slot_size;
-                    off
-                };
+    // Dedup multi-def values (phi results appear in multiple blocks).
+    if !collected_values.insert(dest.0) {
+        return;
+    }
 
-                let my_last = last_use.get(&dest_id).copied().unwrap_or(my_def);
-                active.push((my_last, offset, slot_size));
-
-                deferred_slots.push(DeferredSlot {
-                    dest_id,
-                    size: slot_size,
-                    align: 0,
-                    block_offset: offset,
-                });
-            }
-
-            if block_peak > max_block_local_space {
-                max_block_local_space = block_peak;
-            }
-        }
+    if let Some(target_blk) = coalescable_group(dest.0, ctx) {
+        block_local_values.push(BlockLocalValue {
+            dest_id: dest.0,
+            slot_size,
+            block_idx: target_blk,
+        });
     } else {
-        // Fallback: no reuse, just accumulate (original behavior).
-        for blv in &block_local_values {
+        multi_block_values.push(MultiBlockValue {
+            dest_id: dest.0,
+            slot_size,
+        });
+    }
+}
+
+// ── Phase 3: Tier 3 block-local greedy slot reuse ─────────────────────────
+
+/// Assign stack slots for block-local values using intra-block greedy reuse.
+///
+/// Within a single block, values have short lifetimes. By tracking when each
+/// value is last used, we can reuse its stack slot for later values. This is
+/// critical for functions like blake2s_compress_generic where macro expansion
+/// creates thousands of short-lived intermediates in a single loop body block.
+#[allow(clippy::too_many_arguments)]
+fn assign_tier3_block_local_slots(
+    func: &IrFunction,
+    ctx: &StackLayoutContext,
+    coalesce: bool,
+    block_local_values: &[BlockLocalValue],
+    deferred_slots: &mut Vec<DeferredSlot>,
+    block_space: &mut FxHashMap<usize, i64>,
+    max_block_local_space: &mut i64,
+    assign_slot: &impl Fn(i64, i64, i64) -> (i64, i64),
+) {
+    if block_local_values.is_empty() {
+        return;
+    }
+
+    if !coalesce {
+        // Fallback: no reuse, just accumulate.
+        for blv in block_local_values {
             let bs = block_space.entry(blv.block_idx).or_insert(0);
             let before = *bs;
             let (_, new_space) = assign_slot(*bs, blv.slot_size, 0);
             *bs = new_space;
-            if new_space > max_block_local_space {
-                max_block_local_space = new_space;
+            if new_space > *max_block_local_space {
+                *max_block_local_space = new_space;
             }
             deferred_slots.push(DeferredSlot {
                 dest_id: blv.dest_id, size: blv.slot_size, align: 0,
                 block_offset: before,
             });
         }
+        return;
     }
 
-    // Tier 2: Liveness-based stack slot packing for multi-block values.
-    // Use live intervals to identify non-overlapping values that can share
-    // the same stack slot, reducing frame size significantly.
-    if !multi_block_values.is_empty() && enable_tier2 {
-        // Reuse liveness data from register allocation when available, avoiding
-        // a redundant O(blocks * values * iterations) dataflow computation.
-        // For large functions (e.g., luaV_execute: 922 blocks, 99K instructions),
-        // this saves ~0.5s of compile time per function.
-        let liveness = cached_liveness.unwrap_or_else(|| compute_live_intervals(func));
+    // Pre-compute per-block last-use and definition instruction indices.
+    let block_local_set: FxHashSet<u32> = block_local_values.iter().map(|v| v.dest_id).collect();
+    let mut last_use: FxHashMap<u32, usize> = FxHashMap::default();
+    let mut def_inst_idx: FxHashMap<u32, usize> = FxHashMap::default();
 
-        // Build map from value ID -> live interval.
-        let mut interval_map: FxHashMap<u32, (u32, u32)> = FxHashMap::default();
-        for iv in &liveness.intervals {
-            interval_map.insert(iv.value_id, (iv.start, iv.end));
-        }
-
-        // Separate values by slot size for packing (8-byte and 16-byte pools).
-        // Values of different sizes should not share slots to avoid alignment issues.
-        let mut values_8: Vec<(u32, u32, u32)> = Vec::new(); // (dest_id, start, end)
-        let mut values_16: Vec<(u32, u32, u32)> = Vec::new();
-        let mut no_interval: Vec<(u32, i64)> = Vec::new(); // (dest_id, size) - fallback
-
-        for mbv in &multi_block_values {
-            if let Some(&(start, end)) = interval_map.get(&mbv.dest_id) {
-                if mbv.slot_size == 16 {
-                    values_16.push((mbv.dest_id, start, end));
-                } else {
-                    values_8.push((mbv.dest_id, start, end));
+    for block in &func.blocks {
+        for (inst_idx, inst) in block.instructions.iter().enumerate() {
+            if let Some(dest) = inst.dest() {
+                if block_local_set.contains(&dest.0) {
+                    def_inst_idx.insert(dest.0, inst_idx);
                 }
-            } else {
-                // No interval info (e.g., dead value) - assign permanent slot.
-                no_interval.push((mbv.dest_id, mbv.slot_size));
             }
-        }
-
-        // Pack values using a greedy interval coloring algorithm:
-        // Sort by start point, then greedily assign to the first slot whose
-        // previous occupant's interval has ended. This is optimal for interval
-        // graphs (chromatic number equals clique number).
-        fn pack_values_into_slots(
-            values: &mut Vec<(u32, u32, u32)>,
-            state: &mut super::state::CodegenState,
-            non_local_space: &mut i64,
-            slot_size: i64,
-            assign_slot: &impl Fn(i64, i64, i64) -> (i64, i64),
-        ) {
-            if values.is_empty() {
-                return;
-            }
-
-            // Sort by interval start point (ascending).
-            values.sort_by_key(|&(_, start, _)| start);
-
-            // Use a min-heap of (end_point, slot_index) to efficiently find the
-            // slot whose current occupant ends earliest. If that slot's end < our
-            // start, we can reuse it. This gives O(N log S) instead of the previous
-            // O(N * S) linear scan, which is critical for large functions where
-            // both N (values) and S (slots) can be in the tens of thousands.
-            use std::collections::BinaryHeap;
-            use std::cmp::Reverse;
-
-            // Min-heap: (Reverse(end_point), slot_index)
-            let mut heap: BinaryHeap<Reverse<(u32, usize)>> = BinaryHeap::new();
-            // Slot data: (stack_slot_offset,) indexed by slot_index
-            let mut slot_offsets: Vec<i64> = Vec::new();
-
-            for &(dest_id, start, end) in values.iter() {
-                // Check if the earliest-ending slot is free (end < start).
-                if let Some(&Reverse((slot_end, slot_idx))) = heap.peek() {
-                    if slot_end < start {
-                        // Reuse this slot.
-                        heap.pop();
-                        let slot_offset = slot_offsets[slot_idx];
-                        heap.push(Reverse((end, slot_idx)));
-                        state.value_locations.insert(dest_id, StackSlot(slot_offset));
-                        continue;
+            for_each_operand_in_instruction(inst, |op| {
+                if let Operand::Value(v) = op {
+                    if block_local_set.contains(&v.0) {
+                        last_use.insert(v.0, inst_idx);
                     }
                 }
-                // No free slot — allocate a new one.
-                let slot_idx = slot_offsets.len();
-                let (slot, new_space) = assign_slot(*non_local_space, slot_size, 0);
-                state.value_locations.insert(dest_id, StackSlot(slot));
-                *non_local_space = new_space;
-                slot_offsets.push(slot);
-                heap.push(Reverse((end, slot_idx)));
+            });
+            for_each_value_use_in_instruction(inst, |v| {
+                if block_local_set.contains(&v.0) {
+                    last_use.insert(v.0, inst_idx);
+                }
+            });
+            // Extend last_use for InlineAsm output pointer values: Phase 4 reads
+            // these from stack slots AFTER the asm executes. Also extend
+            // copy-alias roots which hold the actual slot.
+            if let Instruction::InlineAsm { outputs, .. } = inst {
+                for (_, v, _) in outputs {
+                    let extended = inst_idx + 1;
+                    if block_local_set.contains(&v.0) {
+                        last_use.insert(v.0, extended);
+                    }
+                    if let Some(&root) = ctx.copy_alias.get(&v.0) {
+                        if block_local_set.contains(&root) {
+                            last_use.insert(root, extended);
+                        }
+                    }
+                }
             }
         }
+        for_each_operand_in_terminator(&block.terminator, |op| {
+            if let Operand::Value(v) = op {
+                if block_local_set.contains(&v.0) {
+                    last_use.insert(v.0, block.instructions.len());
+                }
+            }
+        });
+    }
 
-        pack_values_into_slots(&mut values_8, state, &mut non_local_space, 8, &assign_slot);
-        pack_values_into_slots(&mut values_16, state, &mut non_local_space, 16, &assign_slot);
+    // Group block-local values by block, preserving definition order.
+    let mut per_block: FxHashMap<usize, Vec<(u32, i64)>> = FxHashMap::default();
+    for blv in block_local_values {
+        per_block.entry(blv.block_idx).or_default().push((blv.dest_id, blv.slot_size));
+    }
 
-        // Assign permanent slots for values without interval info.
-        for (dest_id, size) in no_interval {
-            let (slot, new_space) = assign_slot(non_local_space, size, 0);
-            state.value_locations.insert(dest_id, StackSlot(slot));
-            non_local_space = new_space;
+    // For each block, assign slots with greedy coloring.
+    for (blk_idx, values) in &per_block {
+        let mut active: Vec<(usize, i64, i64)> = Vec::new(); // (last_use, offset, size)
+        let mut free_8: Vec<i64> = Vec::new();
+        let mut free_16: Vec<i64> = Vec::new();
+        let mut block_peak: i64 = block_space.get(blk_idx).copied().unwrap_or(0);
+
+        for &(dest_id, slot_size) in values {
+            let my_def = def_inst_idx.get(&dest_id).copied().unwrap_or(0);
+
+            // Release expired slots.
+            let mut i = 0;
+            while i < active.len() {
+                if active[i].0 < my_def {
+                    let (_, off, sz) = active.swap_remove(i);
+                    if sz == 16 { free_16.push(off); } else { free_8.push(off); }
+                } else {
+                    i += 1;
+                }
+            }
+
+            // Try to reuse a freed slot of matching size.
+            let free_list = if slot_size == 16 { &mut free_16 } else { &mut free_8 };
+            let offset = if let Some(reused) = free_list.pop() {
+                reused
+            } else {
+                let off = block_peak;
+                block_peak += slot_size;
+                off
+            };
+
+            let my_last = last_use.get(&dest_id).copied().unwrap_or(my_def);
+            active.push((my_last, offset, slot_size));
+
+            deferred_slots.push(DeferredSlot {
+                dest_id,
+                size: slot_size,
+                align: 0,
+                block_offset: offset,
+            });
         }
-    } else {
-        // Fallback: assign permanent slots for all multi-block values (no coalescing).
-        for mbv in &multi_block_values {
-            let (slot, new_space) = assign_slot(non_local_space, mbv.slot_size, 0);
+
+        if block_peak > *max_block_local_space {
+            *max_block_local_space = block_peak;
+        }
+    }
+}
+
+// ── Phase 4: Tier 2 liveness-based packing ────────────────────────────────
+
+/// Assign stack slots for multi-block values using liveness-based packing.
+///
+/// Uses a greedy interval coloring algorithm: sort by start point, greedily assign
+/// to the first slot whose previous occupant's interval has ended. This is optimal
+/// for interval graphs (chromatic number equals clique number).
+fn assign_tier2_liveness_packed_slots(
+    state: &mut super::state::CodegenState,
+    coalesce: bool,
+    cached_liveness: Option<super::liveness::LivenessResult>,
+    func: &IrFunction,
+    multi_block_values: &[MultiBlockValue],
+    non_local_space: &mut i64,
+    assign_slot: &impl Fn(i64, i64, i64) -> (i64, i64),
+) {
+    if multi_block_values.is_empty() {
+        return;
+    }
+
+    if !coalesce {
+        // Fallback: permanent slots for all multi-block values.
+        for mbv in multi_block_values {
+            let (slot, new_space) = assign_slot(*non_local_space, mbv.slot_size, 0);
             state.value_locations.insert(mbv.dest_id, StackSlot(slot));
-            non_local_space = new_space;
+            *non_local_space = new_space;
+        }
+        return;
+    }
+
+    // Reuse liveness data from register allocation when available.
+    let liveness = cached_liveness.unwrap_or_else(|| compute_live_intervals(func));
+
+    let mut interval_map: FxHashMap<u32, (u32, u32)> = FxHashMap::default();
+    for iv in &liveness.intervals {
+        interval_map.insert(iv.value_id, (iv.start, iv.end));
+    }
+
+    // Separate by slot size for packing (8-byte and 16-byte pools).
+    let mut values_8: Vec<(u32, u32, u32)> = Vec::new();
+    let mut values_16: Vec<(u32, u32, u32)> = Vec::new();
+    let mut no_interval: Vec<(u32, i64)> = Vec::new();
+
+    for mbv in multi_block_values {
+        if let Some(&(start, end)) = interval_map.get(&mbv.dest_id) {
+            if mbv.slot_size == 16 {
+                values_16.push((mbv.dest_id, start, end));
+            } else {
+                values_8.push((mbv.dest_id, start, end));
+            }
+        } else {
+            no_interval.push((mbv.dest_id, mbv.slot_size));
         }
     }
 
-    // Assign final offsets for deferred block-local values.
-    // All deferred values share a pool starting at non_local_space.
-    // Each value's final slot is computed by calling assign_slot with
-    // the global base plus the value's block-local offset.
+    pack_values_into_slots(&mut values_8, state, non_local_space, 8, assign_slot);
+    pack_values_into_slots(&mut values_16, state, non_local_space, 16, assign_slot);
 
-    let total_space = if !deferred_slots.is_empty() && max_block_local_space > 0 {
-        for ds in &deferred_slots {
+    // Assign permanent slots for values without interval info.
+    for (dest_id, size) in no_interval {
+        let (slot, new_space) = assign_slot(*non_local_space, size, 0);
+        state.value_locations.insert(dest_id, StackSlot(slot));
+        *non_local_space = new_space;
+    }
+}
+
+/// Pack values with known live intervals into shared stack slots using a min-heap.
+/// O(N log S) where N = values and S = slots.
+fn pack_values_into_slots(
+    values: &mut Vec<(u32, u32, u32)>,
+    state: &mut super::state::CodegenState,
+    non_local_space: &mut i64,
+    slot_size: i64,
+    assign_slot: &impl Fn(i64, i64, i64) -> (i64, i64),
+) {
+    if values.is_empty() {
+        return;
+    }
+
+    values.sort_by_key(|&(_, start, _)| start);
+
+    use std::collections::BinaryHeap;
+    use std::cmp::Reverse;
+
+    let mut heap: BinaryHeap<Reverse<(u32, usize)>> = BinaryHeap::new();
+    let mut slot_offsets: Vec<i64> = Vec::new();
+
+    for &(dest_id, start, end) in values.iter() {
+        if let Some(&Reverse((slot_end, slot_idx))) = heap.peek() {
+            if slot_end < start {
+                heap.pop();
+                let slot_offset = slot_offsets[slot_idx];
+                heap.push(Reverse((end, slot_idx)));
+                state.value_locations.insert(dest_id, StackSlot(slot_offset));
+                continue;
+            }
+        }
+        let slot_idx = slot_offsets.len();
+        let (slot, new_space) = assign_slot(*non_local_space, slot_size, 0);
+        state.value_locations.insert(dest_id, StackSlot(slot));
+        *non_local_space = new_space;
+        slot_offsets.push(slot);
+        heap.push(Reverse((end, slot_idx)));
+    }
+}
+
+// ── Phase 5: Finalize deferred slots ──────────────────────────────────────
+
+/// Assign final offsets for deferred block-local values. All deferred values
+/// share a pool starting at `non_local_space`; each value's final slot is
+/// computed by adding its block-local offset to the global base.
+fn finalize_deferred_slots(
+    state: &mut super::state::CodegenState,
+    deferred_slots: &[DeferredSlot],
+    non_local_space: i64,
+    max_block_local_space: i64,
+    assign_slot: &impl Fn(i64, i64, i64) -> (i64, i64),
+) -> i64 {
+    if !deferred_slots.is_empty() && max_block_local_space > 0 {
+        for ds in deferred_slots {
             let (slot, _) = assign_slot(non_local_space + ds.block_offset, ds.size, ds.align);
             state.value_locations.insert(ds.dest_id, StackSlot(slot));
         }
         non_local_space + max_block_local_space
     } else {
         non_local_space
-    };
+    }
+}
 
-    // ── Copy alias resolution ──────────────────────────────────────────
-    // Propagate stack slots from root values to their copy aliases.
-    // Each aliased value gets the same StackSlot as its root, eliminating
-    // a separate slot allocation and making the Copy a harmless self-move.
-    for (&dest_id, &root_id) in &copy_alias {
+// ── Phase 6: Copy alias resolution ────────────────────────────────────────
+
+/// Propagate stack slots from root values to their copy aliases.
+/// Each aliased value gets the same StackSlot as its root, eliminating
+/// a separate slot allocation and making the Copy a harmless self-move.
+fn resolve_copy_aliases(
+    state: &mut super::state::CodegenState,
+    copy_alias: &FxHashMap<u32, u32>,
+) {
+    for (&dest_id, &root_id) in copy_alias {
         if let Some(&slot) = state.value_locations.get(&root_id) {
             state.value_locations.insert(dest_id, slot);
         }
-        // If root has no slot (e.g., it was optimized away or reg-assigned),
-        // the aliased value also gets no slot. The Copy will still work via
-        // the accumulator path since operand_to_rax handles missing slots.
+        // If root has no slot (optimized away or reg-assigned), the aliased
+        // value also gets no slot. The Copy works via accumulator path.
     }
-
-    // ── Wide value propagation through Copy chains ─────────────────────
-    // On 32-bit targets, Copy instructions for 64-bit values (F64, I64, U64)
-    // need to copy 8 bytes (two movl instructions) instead of the default 4.
-    // The initial wide_values set only includes values from typed instructions
-    // (Load, BinOp, etc.), but phi elimination creates Copy chains where the
-    // destination has no type information. We must propagate wide status through
-    // ALL Copy instructions using a fixpoint iteration.
-    //
-    // This is necessary because codegen processes blocks in layout order, but
-    // phi copies can create cycles: block A copies from a value defined in
-    // block B, which is processed after A. Without pre-propagation, the Copy
-    // in block A would use the 4-byte default path, corrupting the upper 32 bits.
-    if crate::common::types::target_is_32bit() && !state.wide_values.is_empty() {
-        // Collect all Copy edges: (dest_id, src_id)
-        let mut copy_edges: Vec<(u32, u32)> = Vec::new();
-        for block in &func.blocks {
-            for inst in &block.instructions {
-                if let Instruction::Copy { dest, src: Operand::Value(src_val) } = inst {
-                    copy_edges.push((dest.0, src_val.0));
-                }
-            }
-        }
-        // Also propagate through copy aliases (dest -> root).
-        // Forward direction only: if root is wide, dest (which shares root's slot) must be wide.
-        // We do NOT propagate in reverse (root_id <- dest_id) because a 32-bit root value
-        // must not be marked wide just because one of its aliases is 64-bit. The alias shares
-        // the same 8-byte slot, but the root's own boolean/condition tests must use 32-bit logic.
-        for (&dest_id, &root_id) in &copy_alias {
-            copy_edges.push((dest_id, root_id));
-        }
-        // Fixpoint iteration: propagate wide status until stable.
-        if !copy_edges.is_empty() {
-            let mut changed = true;
-            let mut iters = 0;
-            while changed && iters < 100 {
-                changed = false;
-                iters += 1;
-                for &(dest_id, src_id) in &copy_edges {
-                    if state.wide_values.contains(&src_id) && !state.wide_values.contains(&dest_id) {
-                        state.wide_values.insert(dest_id);
-                        changed = true;
-                    }
-                }
-            }
-        }
-    }
-
-    total_space
 }
+
+// ── Phase 7: Wide value propagation ───────────────────────────────────────
+
+/// On 32-bit targets, propagate wide-value status through Copy chains.
+///
+/// Copy instructions for 64-bit values (F64, I64, U64) need 8-byte copies
+/// (two movl instructions) instead of the default 4-byte. The initial
+/// wide_values set only includes typed instructions; phi elimination creates
+/// Copy chains where the destination has no type info. We propagate using
+/// fixpoint iteration to handle cycles from phi copies.
+fn propagate_wide_values(
+    state: &mut super::state::CodegenState,
+    func: &IrFunction,
+    copy_alias: &FxHashMap<u32, u32>,
+) {
+    if !crate::common::types::target_is_32bit() || state.wide_values.is_empty() {
+        return;
+    }
+
+    let mut copy_edges: Vec<(u32, u32)> = Vec::new();
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            if let Instruction::Copy { dest, src: Operand::Value(src_val) } = inst {
+                copy_edges.push((dest.0, src_val.0));
+            }
+        }
+    }
+    // Also propagate through copy aliases (forward only: root -> dest).
+    for (&dest_id, &root_id) in copy_alias {
+        copy_edges.push((dest_id, root_id));
+    }
+
+    if copy_edges.is_empty() {
+        return;
+    }
+
+    // Fixpoint iteration: propagate wide status until stable.
+    let mut changed = true;
+    let mut iters = 0;
+    while changed && iters < 100 {
+        changed = false;
+        iters += 1;
+        for &(dest_id, src_id) in &copy_edges {
+            if state.wide_values.contains(&src_id) && !state.wide_values.contains(&dest_id) {
+                state.wide_values.insert(dest_id);
+                changed = true;
+            }
+        }
+    }
+}
+
+// ── Utility ───────────────────────────────────────────────────────────────
 
 /// Find the nth alloca instruction in the entry block (used for parameter storage).
 pub fn find_param_alloca(func: &IrFunction, param_idx: usize) -> Option<(Value, IrType)> {
