@@ -197,28 +197,54 @@ impl Lowerer {
                     current_idx += 1;
                 }
             } else {
-                // Flat init: determine how many scalar slots this item consumes.
-                // A string literal initializing a char/wchar_t array field fills the
-                // entire array, not just one scalar slot.
-                let slots = if self.flat_init_item_is_string_for_char_array(
-                    &item.init,
-                    fields_consumed,
-                    &field_scalar_counts,
-                    layout,
-                ) {
-                    // String literal fills the entire current char array field
-                    self.remaining_scalars_in_current_field(fields_consumed, &field_scalar_counts)
+                // Check if this expression produces a whole struct/union value
+                // (e.g., a global struct variable used as an initializer element).
+                // If so, it occupies one complete array element, not one scalar field slot.
+                let is_struct_value = if let Initializer::Expr(e) = &item.init {
+                    self.struct_value_size(e).is_some()
                 } else {
-                    1
+                    false
                 };
-                fields_consumed += slots;
-                if fields_consumed >= flat_count {
-                    // Completed one struct element
+
+                if is_struct_value {
+                    // Struct-valued expression: finish any partial element, then count
+                    // this as one complete struct element
+                    if fields_consumed > 0 {
+                        // We were in the middle of a flat init - finish it
+                        if current_idx >= max_idx {
+                            max_idx = current_idx + 1;
+                        }
+                        current_idx += 1;
+                        fields_consumed = 0;
+                    }
                     if current_idx >= max_idx {
                         max_idx = current_idx + 1;
                     }
                     current_idx += 1;
-                    fields_consumed = 0;
+                } else {
+                    // Flat init: determine how many scalar slots this item consumes.
+                    // A string literal initializing a char/wchar_t array field fills the
+                    // entire array, not just one scalar slot.
+                    let slots = if self.flat_init_item_is_string_for_char_array(
+                        &item.init,
+                        fields_consumed,
+                        &field_scalar_counts,
+                        layout,
+                    ) {
+                        // String literal fills the entire current char array field
+                        self.remaining_scalars_in_current_field(fields_consumed, &field_scalar_counts)
+                    } else {
+                        1
+                    };
+                    fields_consumed += slots;
+                    if fields_consumed >= flat_count {
+                        // Completed one struct element
+                        if current_idx >= max_idx {
+                            max_idx = current_idx + 1;
+                        }
+                        current_idx += 1;
+                        fields_consumed = 0;
+                    }
                 }
             }
         }

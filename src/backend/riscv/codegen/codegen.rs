@@ -1955,7 +1955,9 @@ impl ArchCodegen for RiscvCodegen {
 
     fn emit_call_f128_pre_convert(&mut self, args: &[Operand], arg_classes: &[CallArgClass],
                                    _arg_types: &[IrType], _stack_arg_space: usize) -> usize {
-        // RISC-V: pre-convert F128 variable args via __extenddftf2, saving to temp stack.
+        // RISC-V: pre-convert F128 value args to full 128-bit form, saving to temp stack.
+        // We use emit_f128_operand_to_a0_a1 which preserves full precision by checking
+        // the f128 source tracking, rather than truncating to f64 and re-extending.
         let mut f128_temp_space: i64 = 0;
         for (i, arg) in args.iter().enumerate() {
             if matches!(arg_classes[i], CallArgClass::F128Reg { .. }) {
@@ -1970,9 +1972,8 @@ impl ArchCodegen for RiscvCodegen {
             for (i, arg) in args.iter().enumerate() {
                 if !matches!(arg_classes[i], CallArgClass::F128Reg { .. }) { continue; }
                 if let Operand::Value(_) = arg {
-                    self.operand_to_t0(arg);
-                    self.state.emit("    fmv.d.x fa0, t0");
-                    self.state.emit("    call __extenddftf2");
+                    // Use the full-precision f128 loading path (checks tracking, falls back to extend)
+                    self.emit_f128_operand_to_a0_a1(arg);
                     self.emit_store_to_sp("a0", temp_offset, "sd");
                     self.emit_store_to_sp("a1", temp_offset + 8, "sd");
                     temp_offset += 16;
@@ -2053,12 +2054,14 @@ impl ArchCodegen for RiscvCodegen {
                         offset = (offset + 15) & !15;
                         match arg {
                             Operand::Const(ref c) => {
-                                let f64_val = match c {
-                                    IrConst::LongDouble(v, _) => *v,
-                                    IrConst::F64(v) => *v,
-                                    _ => c.to_f64().unwrap_or(0.0),
+                                // Use full f128 bytes from the LongDouble constant when available
+                                let bytes = match c {
+                                    IrConst::LongDouble(_, f128_bytes) => f128_bytes.clone(),
+                                    _ => {
+                                        let f64_val = c.to_f64().unwrap_or(0.0);
+                                        crate::ir::ir::f64_to_f128_bytes(f64_val)
+                                    }
                                 };
-                                let bytes = crate::ir::ir::f64_to_f128_bytes(f64_val);
                                 let lo = i64::from_le_bytes(bytes[0..8].try_into().unwrap());
                                 let hi = i64::from_le_bytes(bytes[8..16].try_into().unwrap());
                                 self.state.emit_fmt(format_args!("    li t0, {}", lo));
@@ -2067,9 +2070,8 @@ impl ArchCodegen for RiscvCodegen {
                                 self.emit_store_to_sp("t0", (offset + 8) as i64, "sd");
                             }
                             Operand::Value(_) => {
-                                self.operand_to_t0(arg);
-                                self.state.emit("    fmv.d.x fa0, t0");
-                                self.state.emit("    call __extenddftf2");
+                                // Load full f128 using precision-preserving path (checks tracking)
+                                self.emit_f128_operand_to_a0_a1(arg);
                                 self.emit_store_to_sp("a0", offset as i64, "sd");
                                 self.emit_store_to_sp("a1", (offset + 8) as i64, "sd");
                             }
@@ -2132,12 +2134,14 @@ impl ArchCodegen for RiscvCodegen {
             if let CallArgClass::F128Reg { reg_idx: base_reg } = arg_classes[i] {
                 match arg {
                     Operand::Const(ref c) => {
-                        let f64_val = match c {
-                            IrConst::LongDouble(v, _) => *v,
-                            IrConst::F64(v) => *v,
-                            _ => c.to_f64().unwrap_or(0.0),
+                        // Use full f128 bytes from the LongDouble constant when available
+                        let bytes = match c {
+                            IrConst::LongDouble(_, f128_bytes) => f128_bytes.clone(),
+                            _ => {
+                                let f64_val = c.to_f64().unwrap_or(0.0);
+                                crate::ir::ir::f64_to_f128_bytes(f64_val)
+                            }
                         };
-                        let bytes = crate::ir::ir::f64_to_f128_bytes(f64_val);
                         let lo = i64::from_le_bytes(bytes[0..8].try_into().unwrap());
                         let hi = i64::from_le_bytes(bytes[8..16].try_into().unwrap());
                         self.state.emit_fmt(format_args!("    li {}, {}", RISCV_ARG_REGS[base_reg], lo));
@@ -2242,10 +2246,22 @@ impl ArchCodegen for RiscvCodegen {
                 self.emit_store_to_s0("a1", slot.0 + 8, "sd");
             }
         } else if return_type.is_long_double() {
+            // F128 return value is in a0:a1 (lo:hi GP register pair).
+            // Store full 16-byte f128 to the stack slot first (before any calls clobber a0:a1).
             if let Some(slot) = self.state.get_slot(dest.0) {
-                self.state.emit("    call __trunctfdf2");
-                self.state.emit("    fmv.x.d t0, fa0");
-                self.emit_store_to_s0("t0", slot.0, "sd");
+                self.emit_store_to_s0("a0", slot.0, "sd");
+                self.emit_store_to_s0("a1", slot.0 + 8, "sd");
+            }
+            // Produce f64 approximation for register-based data flow
+            self.state.emit("    call __trunctfdf2");
+            self.state.emit("    fmv.x.d t0, fa0");
+            self.state.reg_cache.invalidate_all();
+            // Track that dest has full f128 in its slot
+            self.state.track_f128_self(dest.0);
+            // Store f64 approx only to callee-saved register (not stack slot)
+            if let Some(&reg) = self.reg_assignments.get(&dest.0) {
+                let reg_name = callee_saved_name(reg);
+                self.state.emit_fmt(format_args!("    mv {}, t0", reg_name));
             }
         } else if return_type == IrType::F32 {
             if let Some(slot) = self.state.get_slot(dest.0) {
