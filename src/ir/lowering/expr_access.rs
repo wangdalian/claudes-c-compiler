@@ -52,7 +52,7 @@ impl Lowerer {
         // GCC extension: cast to union type, e.g. (union convert)x
         // Creates a temporary union, stores the value into the first matching member at offset 0.
         if let CType::Union(ref key) = target_ctype {
-            let union_size = self.types.struct_layouts.get(&**key).map(|l| l.size).unwrap_or(0);
+            let union_size = self.types.borrow_struct_layouts().get(&**key).map(|l| l.size).unwrap_or(0);
             let inner_ctype = self.expr_ctype(inner);
             let src = self.lower_expr(inner);
 
@@ -185,7 +185,7 @@ impl Lowerer {
         let ctype = self.type_spec_to_ctype(type_spec);
         let size = match (&ctype, init) {
             (CType::Array(ref elem_ct, None), Initializer::List(items)) => {
-                let elem_size = elem_ct.size_ctx(&self.types.struct_layouts).max(1);
+                let elem_size = elem_ct.size_ctx(&*self.types.borrow_struct_layouts()).max(1);
                 // For char/unsigned char arrays with a single string literal initializer,
                 // the array size is the string length + 1 (null terminator)
                 if elem_size == 1 && items.len() == 1 {
@@ -302,7 +302,8 @@ impl Lowerer {
                     // Handle list initializers for array elements (e.g., struct or nested array)
                     match &elem_ctype {
                         Some(CType::Struct(key)) | Some(CType::Union(key)) => {
-                            if let Some(sub_layout) = self.types.struct_layouts.get(&**key).cloned() {
+                            let sub_layout = self.types.borrow_struct_layouts().get(&**key).cloned();
+                            if let Some(sub_layout) = sub_layout {
                                 // Zero-init the element region first for partial initialization
                                 self.zero_init_region(alloca, elem_offset, elem_size);
                                 self.emit_struct_init(sub_items, alloca, &sub_layout, elem_offset);

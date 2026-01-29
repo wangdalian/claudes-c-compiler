@@ -300,7 +300,7 @@ impl Lowerer {
                     // But skip byte-serialization if any struct field is or contains
                     // a pointer type (pointers need .quad directives for address relocations).
                     let has_ptr_fields = struct_layout.as_ref()
-                        .map_or(false, |layout| layout.has_pointer_fields(&self.types));
+                        .map_or(false, |layout| layout.has_pointer_fields(&*self.types.borrow_struct_layouts()));
                     if let Some(ref layout) = struct_layout {
                         if has_ptr_fields {
                             // Use Compound approach for struct arrays with pointer fields
@@ -954,7 +954,7 @@ impl Lowerer {
                         return true;
                     }
                     if h::expr_contains_string_literal(expr) {
-                        if h::type_has_pointer_elements(field_ty, &self.types) {
+                        if h::type_has_pointer_elements(field_ty, &*self.types.borrow_struct_layouts()) {
                             return true;
                         }
                     }
@@ -967,7 +967,7 @@ impl Lowerer {
                         }
                     }
                     if let CType::Array(elem_ty, Some(arr_size)) = field_ty {
-                        if h::type_has_pointer_elements(elem_ty, &self.types) {
+                        if h::type_has_pointer_elements(elem_ty, &*self.types.borrow_struct_layouts()) {
                             for i in 1..*arr_size {
                                 let next = item_idx + i;
                                 if next >= items.len() { break; }
@@ -980,7 +980,7 @@ impl Lowerer {
                     }
                 }
                 Initializer::List(nested_items) => {
-                    if h::type_has_pointer_elements(field_ty, &self.types) {
+                    if h::type_has_pointer_elements(field_ty, &*self.types.borrow_struct_layouts()) {
                         if self.init_has_addr_exprs(&item.init) {
                             return true;
                         }
@@ -1014,7 +1014,7 @@ impl Lowerer {
         }
 
         if let Some(target_layout) = self.get_struct_layout_for_ctype(&current_ty) {
-            if target_layout.has_pointer_fields(&self.types) && self.init_has_addr_exprs(&item.init) {
+            if target_layout.has_pointer_fields(&*self.types.borrow_struct_layouts()) && self.init_has_addr_exprs(&item.init) {
                 return true;
             }
             if let Initializer::List(nested_items) = &item.init {
@@ -1025,7 +1025,7 @@ impl Lowerer {
         }
 
         if let CType::Array(elem_ty, _) = &current_ty {
-            if h::type_has_pointer_elements(elem_ty, &self.types) {
+            if h::type_has_pointer_elements(elem_ty, &*self.types.borrow_struct_layouts()) {
                 return self.init_has_addr_exprs(&item.init);
             }
         }

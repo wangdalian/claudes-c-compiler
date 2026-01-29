@@ -201,7 +201,7 @@ impl Lowerer {
                 // Compute per-eightbyte SysV ABI classification for x86-64 struct params
                 let struct_eightbyte_classes = if struct_size.is_some() {
                     if let Some(layout) = self.get_struct_layout_for_type(&param.type_spec) {
-                        layout.classify_sysv_eightbytes(&self.types)
+                        layout.classify_sysv_eightbytes(&*self.types.borrow_struct_layouts())
                     } else {
                         Vec::new()
                     }

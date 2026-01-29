@@ -234,7 +234,7 @@ impl Lowerer {
         let param_struct_classes: Vec<Vec<crate::common::types::EightbyteClass>> = params.iter().enumerate().map(|(i, p)| {
             if param_struct_sizes.get(i).copied().flatten().is_some() {
                 if let Some(layout) = self.get_struct_layout_for_type(&p.type_spec) {
-                    layout.classify_sysv_eightbytes(&self.types)
+                    layout.classify_sysv_eightbytes(&*self.types.borrow_struct_layouts())
                 } else {
                     Vec::new()
                 }
@@ -747,7 +747,8 @@ impl Lowerer {
                     }
                 }
             } else if let CType::Struct(ref key) | CType::Union(ref key) = field.ty {
-                if let Some(sub_layout) = self.types.struct_layouts.get(&**key).cloned() {
+                let sub_layout = self.types.borrow_struct_layouts().get(&**key).cloned();
+                if let Some(sub_layout) = sub_layout {
                     let dest = self.emit_gep_offset(alloca, field_offset, IrType::I8);
                     self.lower_local_struct_init(sub_items, dest, &sub_layout);
                 }

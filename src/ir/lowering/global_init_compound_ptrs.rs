@@ -170,14 +170,15 @@ impl Lowerer {
         while item_idx < sub_items.len() {
             let sub_item = &sub_items[item_idx];
             let desig_name = h::first_field_designator(sub_item);
-            let resolution = layout.resolve_init_field(desig_name, current_field_idx, &self.types);
+            let resolution = layout.resolve_init_field(desig_name, current_field_idx, &*self.types.borrow_struct_layouts());
             let field_idx = match &resolution {
                 Some(InitFieldResolution::Direct(idx)) => *idx,
                 Some(InitFieldResolution::AnonymousMember { anon_field_idx, inner_name }) => {
                     // Designator targets a field inside an anonymous struct/union member.
                     // Recursively fill the anonymous member's sub-layout.
                     let extra_desigs = if sub_item.designators.len() > 1 { &sub_item.designators[1..] } else { &[] };
-                    if let Some(res) = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &sub_item.init, extra_desigs, &self.types.struct_layouts) {
+                    let anon_res = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &sub_item.init, extra_desigs, &*self.types.borrow_struct_layouts());
+                    if let Some(res) = anon_res {
                         let anon_offset = base_offset + res.anon_offset;
                         self.fill_struct_fields_from_items(
                             &[res.sub_item], &res.sub_layout, anon_offset, bytes, ptr_ranges,
@@ -417,13 +418,14 @@ impl Lowerer {
             if elem_idx >= num_elems { current_elem_idx = elem_idx + 1; continue; }
 
             let elem_base = array_base_offset + elem_idx * struct_size;
-            let resolution = layout.resolve_init_field(field_desig, current_field_idx, &self.types);
+            let resolution = layout.resolve_init_field(field_desig, current_field_idx, &*self.types.borrow_struct_layouts());
             let field_idx = match &resolution {
                 Some(InitFieldResolution::Direct(idx)) => *idx,
                 Some(InitFieldResolution::AnonymousMember { anon_field_idx, inner_name }) => {
                     // Designator targets a field inside an anonymous struct/union member.
                     let extra_desigs = if item.designators.len() > remaining_desigs_start { &item.designators[remaining_desigs_start..] } else { &[] };
-                    if let Some(res) = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &item.init, extra_desigs, &self.types.struct_layouts) {
+                    let anon_res = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &item.init, extra_desigs, &*self.types.borrow_struct_layouts());
+                    if let Some(res) = anon_res {
                         let anon_offset = elem_base + res.anon_offset;
                         self.fill_struct_fields_from_items(
                             &[res.sub_item], &res.sub_layout, anon_offset, bytes, ptr_ranges,
@@ -511,7 +513,7 @@ impl Lowerer {
         while item_idx < inner_items.len() {
             let inner_item = &inner_items[item_idx];
             let desig_name = h::first_field_designator(inner_item);
-            let resolution = sub_layout.resolve_init_field(desig_name, current_field_idx, &self.types);
+            let resolution = sub_layout.resolve_init_field(desig_name, current_field_idx, &*self.types.borrow_struct_layouts());
             let field_idx = match &resolution {
                 Some(InitFieldResolution::Direct(idx)) => *idx,
                 Some(InitFieldResolution::AnonymousMember { anon_field_idx, inner_name }) => {
@@ -702,7 +704,7 @@ impl Lowerer {
         ptr_ranges: &mut Vec<(usize, GlobalInit)>,
     ) {
         let elem_size = self.resolve_ctype_size(elem_ty);
-        let has_ptrs = h::type_has_pointer_elements(elem_ty, &self.types);
+        let has_ptrs = h::type_has_pointer_elements(elem_ty, &*self.types.borrow_struct_layouts());
         let elem_ir_ty = IrType::from_ctype(elem_ty);
         for (ai, item) in items.iter().enumerate() {
             let elem_offset = base_offset + ai * elem_size;
@@ -729,7 +731,7 @@ impl Lowerer {
         ptr_ranges: &mut Vec<(usize, GlobalInit)>,
     ) {
         if let Some(sub_layout) = self.get_struct_layout_for_ctype(field_ty) {
-            if sub_layout.has_pointer_fields(&self.types) {
+            if sub_layout.has_pointer_fields(&*self.types.borrow_struct_layouts()) {
                 self.fill_nested_struct_with_ptrs(items, &sub_layout, offset, bytes, ptr_ranges);
             } else {
                 self.fill_struct_global_bytes(items, &sub_layout, bytes, offset);
@@ -737,7 +739,7 @@ impl Lowerer {
         } else if let CType::Array(elem_ty, _) = field_ty {
             // Array field: check if elements are structs/unions with pointer fields
             if let Some(elem_layout) = self.get_struct_layout_for_ctype(elem_ty) {
-                if elem_layout.has_pointer_fields(&self.types) {
+                if elem_layout.has_pointer_fields(&*self.types.borrow_struct_layouts()) {
                     // Array of structs with pointer fields: handle each element
                     let struct_size = elem_layout.size;
                     for (ai, item) in items.iter().enumerate() {

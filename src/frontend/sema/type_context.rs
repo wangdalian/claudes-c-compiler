@@ -14,6 +14,7 @@
 //! scope push/pop instead of O(total-map-size).
 
 use crate::common::fx_hash::{FxHashMap, FxHashSet};
+use std::cell::RefCell;
 use std::rc::Rc;
 use crate::common::types::{AddressSpace, StructLayout, RcLayout, CType};
 use crate::frontend::parser::ast::{TypeSpecifier, ParamDecl, DerivedDeclarator};
@@ -117,7 +118,10 @@ pub struct TypeContext {
     /// Struct/union layouts indexed by tag name.
     /// Uses Rc<StructLayout> so lookups/clones are cheap refcount bumps
     /// instead of deep-copying all field names and types.
-    pub struct_layouts: FxHashMap<String, RcLayout>,
+    /// Wrapped in RefCell for interior mutability: type resolution methods
+    /// that take &self (via the TypeConvertContext trait) may need to insert
+    /// forward-declaration layouts when encountering struct/union types.
+    pub struct_layouts: RefCell<FxHashMap<String, RcLayout>>,
     /// Enum constant values
     pub enum_constants: FxHashMap<String, i64>,
     /// Typedef mappings (name -> resolved CType)
@@ -145,24 +149,26 @@ pub struct TypeContext {
     pub func_return_ctypes: FxHashMap<String, CType>,
     /// Cache for CType of named struct/union types.
     /// Uses RefCell because type_spec_to_ctype takes &self.
-    pub ctype_cache: std::cell::RefCell<FxHashMap<String, CType>>,
-    /// Scope stack for type-system undo tracking (enum_constants, struct_layouts, ctype_cache)
-    pub scope_stack: Vec<TypeScopeFrame>,
+    pub ctype_cache: RefCell<FxHashMap<String, CType>>,
+    /// Scope stack for type-system undo tracking (enum_constants, struct_layouts, ctype_cache).
+    /// Wrapped in RefCell for interior mutability: scoped insertion methods
+    /// called from &self contexts need to record undo entries.
+    pub scope_stack: RefCell<Vec<TypeScopeFrame>>,
     /// Counter for anonymous struct/union CType keys generated from &self contexts.
     /// Uses Cell for interior mutability since type_spec_to_ctype takes &self.
     anon_ctype_counter: std::cell::Cell<u32>,
 }
 
-impl crate::common::types::StructLayoutProvider for TypeContext {
-    fn get_struct_layout(&self, key: &str) -> Option<&StructLayout> {
-        self.struct_layouts.get(key).map(|rc| rc.as_ref())
-    }
-}
+/// We cannot directly implement `StructLayoutProvider` for `TypeContext` because
+/// `struct_layouts` is behind a `RefCell`, and the trait returns `Option<&StructLayout>`
+/// which would borrow from a temporary `Ref` guard. Instead, callers should use
+/// `tc.borrow_struct_layouts()` to get the guard, then pass `&*guard` as the
+/// `&dyn StructLayoutProvider` (since `FxHashMap<String, RcLayout>` implements the trait).
 
 impl TypeContext {
     pub fn new() -> Self {
         Self {
-            struct_layouts: FxHashMap::default(),
+            struct_layouts: RefCell::new(FxHashMap::default()),
             enum_constants: FxHashMap::default(),
             typedefs: FxHashMap::default(),
             typedef_alignments: FxHashMap::default(),
@@ -172,10 +178,24 @@ impl TypeContext {
             enum_typedefs: FxHashSet::default(),
             packed_enum_types: FxHashMap::default(),
             func_return_ctypes: FxHashMap::default(),
-            ctype_cache: std::cell::RefCell::new(FxHashMap::default()),
-            scope_stack: Vec::new(),
+            ctype_cache: RefCell::new(FxHashMap::default()),
+            scope_stack: RefCell::new(Vec::new()),
             anon_ctype_counter: std::cell::Cell::new(0),
         }
+    }
+
+    /// Borrow the struct layouts map immutably.
+    /// Returns a `Ref` guard that derefs to `FxHashMap<String, RcLayout>`.
+    /// The underlying `FxHashMap` implements `StructLayoutProvider`, so
+    /// `&*guard` can be passed wherever `&dyn StructLayoutProvider` is needed.
+    pub fn borrow_struct_layouts(&self) -> std::cell::Ref<'_, FxHashMap<String, RcLayout>> {
+        self.struct_layouts.borrow()
+    }
+
+    /// Borrow the struct layouts map mutably.
+    /// Returns a `RefMut` guard that derefs to `FxHashMap<String, RcLayout>`.
+    pub fn borrow_struct_layouts_mut(&self) -> std::cell::RefMut<'_, FxHashMap<String, RcLayout>> {
+        self.struct_layouts.borrow_mut()
     }
 
     /// Get the next anonymous struct/union ID for CType key generation.
@@ -192,52 +212,41 @@ impl TypeContext {
         self.anon_ctype_counter.set(value);
     }
 
-    /// Insert a struct layout from a &self context (interior mutability).
-    /// This is safe because we are single-threaded and do not hold references
-    /// into struct_layouts across this call.
+    /// Insert a struct layout from a &self context (interior mutability via RefCell).
     pub fn insert_struct_layout_from_ref(&self, key: &str, layout: StructLayout) {
-        // SAFETY: We are single-threaded and no references into struct_layouts
-        // are held across this call. The &self reference to TypeContext does not
-        // create a mutable alias because we use a raw pointer for the mutation.
-        let ptr = &self.struct_layouts as *const FxHashMap<String, RcLayout>
-            as *mut FxHashMap<String, RcLayout>;
-        unsafe { (*ptr).insert(key.to_string(), Rc::new(layout)); }
-    }
-
-    /// Invalidate a ctype_cache entry from a &self context.
-    pub fn invalidate_ctype_cache_from_ref(&self, key: &str) {
-        self.ctype_cache.borrow_mut().remove(key);
+        self.struct_layouts.borrow_mut().insert(key.to_string(), Rc::new(layout));
     }
 
     /// Push a new type-system scope frame.
     pub fn push_scope(&mut self) {
-        self.scope_stack.push(TypeScopeFrame::new());
+        self.scope_stack.get_mut().push(TypeScopeFrame::new());
     }
 
     /// Pop the top type-system scope frame and undo changes to
     /// enum_constants, struct_layouts, ctype_cache, and typedefs.
     pub fn pop_scope(&mut self) {
-        if let Some(frame) = self.scope_stack.pop() {
+        if let Some(frame) = self.scope_stack.get_mut().pop() {
             for key in frame.enums_added {
                 self.enum_constants.remove(&key);
             }
+            let layouts = self.struct_layouts.get_mut();
             for key in frame.struct_layouts_added {
-                self.struct_layouts.remove(&key);
+                layouts.remove(&key);
             }
             for (key, val) in frame.struct_layouts_shadowed {
                 // Don't restore an empty forward-declaration layout over a full
                 // definition.
                 if val.fields.is_empty() {
-                    if let Some(current) = self.struct_layouts.get(&key) {
+                    if let Some(current) = layouts.get(&key) {
                         if !current.fields.is_empty() {
                             continue;
                         }
                     }
                 }
-                self.struct_layouts.insert(key, val);
+                layouts.insert(key, val);
             }
             {
-                let mut cache = self.ctype_cache.borrow_mut();
+                let cache = self.ctype_cache.get_mut();
                 for key in frame.ctype_cache_added {
                     cache.remove(&key);
                 }
@@ -264,7 +273,7 @@ impl TypeContext {
     pub fn insert_enum_scoped(&mut self, name: String, value: i64) {
         let track = !self.enum_constants.contains_key(&name);
         if track {
-            if let Some(frame) = self.scope_stack.last_mut() {
+            if let Some(frame) = self.scope_stack.get_mut().last_mut() {
                 frame.enums_added.push(name.clone());
             }
         }
@@ -274,20 +283,21 @@ impl TypeContext {
     /// Insert a struct layout, tracking the change in the current scope frame
     /// so it can be undone on scope exit.
     pub fn insert_struct_layout_scoped(&mut self, key: String, layout: StructLayout) {
-        if let Some(frame) = self.scope_stack.last_mut() {
-            if let Some(prev) = self.struct_layouts.get(&key).cloned() {
+        let layouts = self.struct_layouts.get_mut();
+        if let Some(frame) = self.scope_stack.get_mut().last_mut() {
+            if let Some(prev) = layouts.get(&key).cloned() {
                 frame.struct_layouts_shadowed.push((key.clone(), prev));
             } else {
                 frame.struct_layouts_added.push(key.clone());
             }
         }
-        self.struct_layouts.insert(key, Rc::new(layout));
+        layouts.insert(key, Rc::new(layout));
     }
 
     /// Insert a typedef, tracking the change in the current scope frame
     /// so it can be undone on scope exit.
     pub fn insert_typedef_scoped(&mut self, name: String, ctype: CType) {
-        if let Some(frame) = self.scope_stack.last_mut() {
+        if let Some(frame) = self.scope_stack.get_mut().last_mut() {
             if let Some(prev) = self.typedefs.get(&name).cloned() {
                 frame.typedefs_shadowed.push((name.clone(), prev));
             } else {
@@ -300,7 +310,7 @@ impl TypeContext {
     /// Insert a typedef alignment, tracking the change in the current scope frame
     /// so it can be undone on scope exit.
     pub fn insert_typedef_alignment_scoped(&mut self, name: String, align: usize) {
-        if let Some(frame) = self.scope_stack.last_mut() {
+        if let Some(frame) = self.scope_stack.get_mut().last_mut() {
             if let Some(prev) = self.typedef_alignments.get(&name).copied() {
                 frame.typedef_alignments_shadowed.push((name.clone(), prev));
             } else {
@@ -313,11 +323,8 @@ impl TypeContext {
     /// Invalidate a ctype_cache entry, tracking the change in the current scope frame
     /// so it can be restored on scope exit.
     pub fn invalidate_ctype_cache_scoped(&mut self, key: &str) {
-        let prev = {
-            let mut cache = self.ctype_cache.borrow_mut();
-            cache.remove(key)
-        };
-        if let Some(frame) = self.scope_stack.last_mut() {
+        let prev = self.ctype_cache.get_mut().remove(key);
+        if let Some(frame) = self.scope_stack.get_mut().last_mut() {
             if let Some(prev) = prev {
                 frame.ctype_cache_shadowed.push((key.to_string(), prev));
             } else {
@@ -326,48 +333,34 @@ impl TypeContext {
         }
     }
 
-    /// Insert a struct layout from a &self context (interior mutability),
-    /// tracking the change in the current scope frame so it can be undone
-    /// on scope exit. This is the scoped equivalent of `insert_struct_layout_from_ref`.
+    /// Insert a struct layout from a &self context (interior mutability via RefCell),
+    /// tracking the change in the current scope frame so it can be undone on scope exit.
     ///
     /// Used by `type_spec_to_ctype` which takes &self but still needs to
     /// properly scope struct layout insertions within function bodies.
     pub fn insert_struct_layout_scoped_from_ref(&self, key: &str, layout: StructLayout) {
-        // SAFETY: Single-threaded; no references into struct_layouts or scope_stack
-        // are held across this call.
-        let layouts_ptr = &self.struct_layouts as *const FxHashMap<String, RcLayout>
-            as *mut FxHashMap<String, RcLayout>;
-        let stack_ptr = &self.scope_stack as *const Vec<TypeScopeFrame>
-            as *mut Vec<TypeScopeFrame>;
-        unsafe {
-            if let Some(frame) = (*stack_ptr).last_mut() {
-                if let Some(prev) = (*layouts_ptr).get(key).cloned() {
-                    frame.struct_layouts_shadowed.push((key.to_string(), prev));
-                } else {
-                    frame.struct_layouts_added.push(key.to_string());
-                }
+        let mut layouts = self.struct_layouts.borrow_mut();
+        let mut stack = self.scope_stack.borrow_mut();
+        if let Some(frame) = stack.last_mut() {
+            if let Some(prev) = layouts.get(key).cloned() {
+                frame.struct_layouts_shadowed.push((key.to_string(), prev));
+            } else {
+                frame.struct_layouts_added.push(key.to_string());
             }
-            (*layouts_ptr).insert(key.to_string(), Rc::new(layout));
         }
+        layouts.insert(key.to_string(), Rc::new(layout));
     }
 
     /// Invalidate a ctype_cache entry from a &self context, tracking the change
     /// in the current scope frame so it can be restored on scope exit.
     pub fn invalidate_ctype_cache_scoped_from_ref(&self, key: &str) {
-        let prev = {
-            let mut cache = self.ctype_cache.borrow_mut();
-            cache.remove(key)
-        };
-        // SAFETY: Single-threaded; no references into scope_stack held across this call.
-        let stack_ptr = &self.scope_stack as *const Vec<TypeScopeFrame>
-            as *mut Vec<TypeScopeFrame>;
-        unsafe {
-            if let Some(frame) = (*stack_ptr).last_mut() {
-                if let Some(prev) = prev {
-                    frame.ctype_cache_shadowed.push((key.to_string(), prev));
-                } else {
-                    frame.ctype_cache_added.push(key.to_string());
-                }
+        let prev = self.ctype_cache.borrow_mut().remove(key);
+        let mut stack = self.scope_stack.borrow_mut();
+        if let Some(frame) = stack.last_mut() {
+            if let Some(prev) = prev {
+                frame.ctype_cache_shadowed.push((key.to_string(), prev));
+            } else {
+                frame.ctype_cache_added.push(key.to_string());
             }
         }
     }

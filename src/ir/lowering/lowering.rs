@@ -838,7 +838,7 @@ impl Lowerer {
         let param_struct_classes: Vec<Vec<crate::common::types::EightbyteClass>> = params.iter().enumerate().map(|(i, p)| {
             if param_struct_sizes.get(i).copied().flatten().is_some() {
                 if let Some(layout) = self.get_struct_layout_for_type(&p.type_spec) {
-                    layout.classify_sysv_eightbytes(&self.types)
+                    layout.classify_sysv_eightbytes(&*self.types.borrow_struct_layouts())
                 } else {
                     Vec::new()
                 }

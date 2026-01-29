@@ -104,7 +104,7 @@ impl Lowerer {
                 0
             }
             CType::Struct(key) | CType::Union(key) => {
-                if let Some(layout) = self.types.struct_layouts.get(&**key) {
+                if let Some(layout) = self.types.borrow_struct_layouts().get(&**key) {
                     self.flat_scalar_count_for_layout(layout)
                 } else {
                     1

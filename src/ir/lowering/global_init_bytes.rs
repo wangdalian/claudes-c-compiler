@@ -51,12 +51,12 @@ impl Lowerer {
 
             let designator_name = h::first_field_designator(item);
             let array_start_idx = self.extract_index_designator(item, designator_name.is_some());
-            let resolution = layout.resolve_init_field(designator_name, current_field_idx, &self.types);
+            let resolution = layout.resolve_init_field(designator_name, current_field_idx, &*self.types.borrow_struct_layouts());
             let field_idx = match &resolution {
                 Some(crate::common::types::InitFieldResolution::Direct(idx)) => *idx,
                 Some(crate::common::types::InitFieldResolution::AnonymousMember { anon_field_idx, inner_name }) => {
                     let extra_desigs = if item.designators.len() > 1 { &item.designators[1..] } else { &[] };
-                    if let Some(res) = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &item.init, extra_desigs, &self.types.struct_layouts) {
+                    if let Some(res) = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &item.init, extra_desigs, &*self.types.borrow_struct_layouts()) {
                         self.fill_struct_global_bytes(&[res.sub_item], &res.sub_layout, bytes, base_offset + res.anon_offset);
                     }
                     item_idx += 1;
@@ -78,7 +78,7 @@ impl Lowerer {
             match &field_layout.ty {
                 // Nested designator or anonymous member designator into struct/union
                 CType::Struct(key) | CType::Union(key) if has_nested || is_anon => {
-                    if let Some(sub_layout) = self.types.struct_layouts.get(&**key).cloned() {
+                    if let Some(sub_layout) = self.types.borrow_struct_layouts().get(&**key).cloned() {
                         let sub_item = if is_anon && !has_nested {
                             // Pass all designators through for anonymous member field lookup
                             item.clone()
@@ -124,7 +124,7 @@ impl Lowerer {
                 }
                 // Struct or union field (non-nested designator)
                 CType::Struct(key) | CType::Union(key) => {
-                    if let Some(sub_layout) = self.types.struct_layouts.get(&**key).cloned() {
+                    if let Some(sub_layout) = self.types.borrow_struct_layouts().get(&**key).cloned() {
                         item_idx += self.fill_composite_field(
                             &items[item_idx..], &sub_layout, bytes, field_offset,
                         );
@@ -211,7 +211,7 @@ impl Lowerer {
             match desig {
                 Designator::Field(name) => {
                     let sub_layout = self.get_struct_layout_for_ctype(&current_ty)?;
-                    let resolution = sub_layout.resolve_init_field(Some(name.as_str()), 0, &self.types)?;
+                    let resolution = sub_layout.resolve_init_field(Some(name.as_str()), 0, &*self.types.borrow_struct_layouts())?;
                     match resolution {
                         crate::common::types::InitFieldResolution::Direct(fi) => {
                             byte_offset += sub_layout.fields[fi].offset;
@@ -224,7 +224,7 @@ impl Lowerer {
                             let anon_field = &sub_layout.fields[anon_field_idx];
                             byte_offset += anon_field.offset;
                             let anon_layout = self.get_struct_layout_for_ctype(&anon_field.ty)?;
-                            let inner_fi = anon_layout.resolve_init_field_idx(Some(inner_name.as_str()), 0, &self.types)?;
+                            let inner_fi = anon_layout.resolve_init_field_idx(Some(inner_name.as_str()), 0, &*self.types.borrow_struct_layouts())?;
                             byte_offset += anon_layout.fields[inner_fi].offset;
                             current_ty = anon_layout.fields[inner_fi].ty.clone();
                             bit_offset = anon_layout.fields[inner_fi].bit_offset;
@@ -470,7 +470,7 @@ impl Lowerer {
                     }
                 }
                 CType::Struct(ref key) | CType::Union(ref key) => {
-                    if let Some(sub_layout) = self.types.struct_layouts.get(&**key).cloned() {
+                    if let Some(sub_layout) = self.types.borrow_struct_layouts().get(&**key).cloned() {
                         self.fill_struct_global_bytes(sub_items, &sub_layout, bytes, elem_offset);
                     }
                 }

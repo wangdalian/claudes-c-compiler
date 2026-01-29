@@ -1,9 +1,0 @@
-Fix unsound unsafe code in type_context.rs
-
-Wrapping struct_layouts and scope_stack in RefCell to eliminate three
-unsafe blocks that cast &self to *mut for mutation through shared references.
-This is undefined behavior per Rust's aliasing rules.
-
-Files affected:
-- src/frontend/sema/type_context.rs (main changes)
-- ~20 files in src/ir/lowering/ and src/frontend/sema/ (caller updates)

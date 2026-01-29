@@ -319,14 +319,14 @@ impl SemanticAnalyzer {
                     let mut align = decl.alignment;
                     if let Some(ref sizeof_ts) = decl.alignment_sizeof_type {
                         let ctype = self.type_spec_to_ctype(sizeof_ts);
-                        let real_sizeof = ctype.size_ctx(&self.result.type_context);
+                        let real_sizeof = ctype.size_ctx(&*self.result.type_context.borrow_struct_layouts());
                         align = Some(align.map_or(real_sizeof, |a| a.max(real_sizeof)));
                     }
                     align.or_else(|| {
                         decl.alignas_type.as_ref().map(|ts| {
                             // _Alignas(type) means align to alignof(type)
                             let ctype = self.type_spec_to_ctype(ts);
-                            ctype.align_ctx(&self.result.type_context)
+                            ctype.align_ctx(&*self.result.type_context.borrow_struct_layouts())
                         })
                     })
                 };
@@ -383,7 +383,7 @@ impl SemanticAnalyzer {
             // For _Alignas(N) or __attribute__((aligned(N))), use the parsed numeric value.
             let explicit_alignment = if let Some(ref alignas_ts) = decl.alignas_type {
                 let ct = self.type_spec_to_ctype(alignas_ts);
-                let a = ct.align_ctx(&self.result.type_context.struct_layouts);
+                let a = ct.align_ctx(&*self.result.type_context.borrow_struct_layouts());
                 if a > 0 { Some(a) } else { None }
             } else {
                 decl.alignment
@@ -545,7 +545,8 @@ impl SemanticAnalyzer {
             }
             CType::Array(_, None) => 0, // unsized arrays contribute 0 scalars
             CType::Struct(key) | CType::Union(key) => {
-                if let Some(layout) = self.result.type_context.struct_layouts.get(&**key) {
+                let layouts = self.result.type_context.borrow_struct_layouts();
+                if let Some(layout) = layouts.get(&**key) {
                     if layout.fields.is_empty() {
                         return 0;
                     }
@@ -1138,10 +1139,10 @@ impl type_builder::TypeConvertContext for SemanticAnalyzer {
         };
         if !struct_fields.is_empty() {
             let mut layout = if is_union {
-                StructLayout::for_union_with_packing(&struct_fields, max_field_align, &self.result.type_context.struct_layouts)
+                StructLayout::for_union_with_packing(&struct_fields, max_field_align, &*self.result.type_context.borrow_struct_layouts())
             } else {
                 StructLayout::for_struct_with_packing(
-                    &struct_fields, max_field_align, &self.result.type_context.struct_layouts
+                    &struct_fields, max_field_align, &*self.result.type_context.borrow_struct_layouts()
                 )
             };
             if let Some(a) = struct_aligned {
@@ -1152,7 +1153,7 @@ impl type_builder::TypeConvertContext for SemanticAnalyzer {
                 }
             }
             self.result.type_context.insert_struct_layout_scoped_from_ref(&key, layout);
-        } else if self.result.type_context.struct_layouts.get(&key).is_none() {
+        } else if self.result.type_context.borrow_struct_layouts().get(&key).is_none() {
             let align = struct_aligned.unwrap_or(1);
             let layout = StructLayout {
                 fields: Vec::new(),

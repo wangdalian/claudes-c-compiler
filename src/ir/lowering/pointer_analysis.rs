@@ -238,13 +238,13 @@ impl Lowerer {
     /// For struct/union types, looks up the layout from `self.types.struct_layouts`.
     #[inline]
     pub(super) fn ctype_size(&self, ctype: &CType) -> usize {
-        ctype.size_ctx(&self.types.struct_layouts)
+        ctype.size_ctx(&*self.types.borrow_struct_layouts())
     }
 
     /// Convenience: get the alignment of a CType using the current struct layout context.
     #[inline]
     pub(super) fn ctype_align(&self, ctype: &CType) -> usize {
-        ctype.align_ctx(&self.types.struct_layouts)
+        ctype.align_ctx(&*self.types.borrow_struct_layouts())
     }
 
     /// Resolve the actual size of a CType, handling forward-declared/self-referential
@@ -258,7 +258,7 @@ impl Lowerer {
         // another type's CType that was built before the union was fully defined).
         match ctype {
             CType::Struct(key) | CType::Union(key) => {
-                if let Some(layout) = self.types.struct_layouts.get(&**key) {
+                if let Some(layout) = self.types.borrow_struct_layouts().get(&**key) {
                     return layout.size;
                 }
             }
@@ -268,7 +268,7 @@ impl Lowerer {
             _ => {}
         }
         // Fall back to size_ctx which handles struct/union types properly
-        ctype.size_ctx(&self.types.struct_layouts)
+        ctype.size_ctx(&*self.types.borrow_struct_layouts())
     }
 
     /// Get the element size for a pointer expression (for scaling in pointer arithmetic).

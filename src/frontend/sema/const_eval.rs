@@ -239,13 +239,13 @@ impl<'a> SemaConstEval<'a> {
                 if let Expr::Identifier(name, _) = inner_expr.as_ref() {
                     if let Some(sym) = self.symbols.lookup(name) {
                         if let Some(explicit_align) = sym.explicit_alignment {
-                            let natural = sym.ty.align_ctx(&self.types.struct_layouts);
+                            let natural = sym.ty.align_ctx(&*self.types.borrow_struct_layouts());
                             return Some(IrConst::I64(natural.max(explicit_align) as i64));
                         }
                     }
                 }
                 let ctype = self.infer_expr_ctype(inner_expr)?;
-                let align = ctype.align_ctx(&self.types.struct_layouts);
+                let align = ctype.align_ctx(&*self.types.borrow_struct_layouts());
                 Some(IrConst::I64(align as i64))
             }
 
@@ -254,13 +254,13 @@ impl<'a> SemaConstEval<'a> {
                 if let Expr::Identifier(name, _) = inner_expr.as_ref() {
                     if let Some(sym) = self.symbols.lookup(name) {
                         if let Some(explicit_align) = sym.explicit_alignment {
-                            let natural = sym.ty.preferred_align_ctx(&self.types.struct_layouts);
+                            let natural = sym.ty.preferred_align_ctx(&*self.types.borrow_struct_layouts());
                             return Some(IrConst::I64(natural.max(explicit_align) as i64));
                         }
                     }
                 }
                 let ctype = self.infer_expr_ctype(inner_expr)?;
-                let align = ctype.preferred_align_ctx(&self.types.struct_layouts);
+                let align = ctype.preferred_align_ctx(&*self.types.borrow_struct_layouts());
                 Some(IrConst::I64(align as i64))
             }
 
@@ -344,7 +344,7 @@ impl<'a> SemaConstEval<'a> {
             Expr::PointerMemberAccess(base, field_name, _) => {
                 let (type_spec, base_offset) = self.extract_null_pointer_cast_with_offset(base)?;
                 let layout = self.get_struct_layout_for_type(&type_spec)?;
-                let (field_offset, field_ty) = layout.field_offset(field_name, self.types)?;
+                let (field_offset, field_ty) = layout.field_offset(field_name, &*self.types.borrow_struct_layouts())?;
                 Some((base_offset + field_offset, field_ty))
             }
             Expr::MemberAccess(base, field_name, _) => {
@@ -352,7 +352,7 @@ impl<'a> SemaConstEval<'a> {
                 if let Expr::Deref(inner, _) = base.as_ref() {
                     let (type_spec, base_offset) = self.extract_null_pointer_cast_with_offset(inner)?;
                     let layout = self.get_struct_layout_for_type(&type_spec)?;
-                    let (field_offset, field_ty) = layout.field_offset(field_name, self.types)?;
+                    let (field_offset, field_ty) = layout.field_offset(field_name, &*self.types.borrow_struct_layouts())?;
                     return Some((base_offset + field_offset, field_ty));
                 }
                 // Second try: base is itself an offsetof sub-expression (chained access)
@@ -362,8 +362,9 @@ impl<'a> SemaConstEval<'a> {
                     CType::Struct(key) | CType::Union(key) => key.clone(),
                     _ => return None,
                 };
-                let layout = self.types.struct_layouts.get(&*struct_key)?;
-                let (field_offset, field_ty) = layout.field_offset(field_name, self.types)?;
+                let layouts = self.types.borrow_struct_layouts();
+                let layout = layouts.get(&*struct_key)?;
+                let (field_offset, field_ty) = layout.field_offset(field_name, &*layouts)?;
                 Some((base_offset + field_offset, field_ty))
             }
             Expr::ArraySubscript(base, index, _) => {
@@ -371,7 +372,7 @@ impl<'a> SemaConstEval<'a> {
                 let idx_val = self.eval_const_expr(index)?;
                 let idx = idx_val.to_i64()?;
                 let elem_size = match &base_type {
-                    CType::Array(elem, _) => elem.size_ctx(&self.types.struct_layouts),
+                    CType::Array(elem, _) => elem.size_ctx(&*self.types.borrow_struct_layouts()),
                     _ => return None,
                 };
                 let elem_ty = match &base_type {
@@ -404,7 +405,7 @@ impl<'a> SemaConstEval<'a> {
         let ctype = self.type_spec_to_ctype(type_spec);
         match &ctype {
             CType::Struct(key) | CType::Union(key) => {
-                self.types.struct_layouts.get(&**key).cloned()
+                self.types.borrow_struct_layouts().get(&**key).cloned()
             }
             _ => None,
         }
@@ -471,7 +472,7 @@ impl<'a> SemaConstEval<'a> {
 
     /// Get the size in bytes for a CType.
     fn ctype_size(&self, ctype: &CType) -> usize {
-        ctype.size_ctx(&self.types.struct_layouts)
+        ctype.size_ctx(&*self.types.borrow_struct_layouts())
     }
 
     /// Check if an expression has an unsigned type, using the expr_types cache
@@ -745,7 +746,7 @@ impl<'a> SemaConstEval<'a> {
                 // Look up cached layout for tagged structs
                 if let Some(tag) = tag {
                     let key = format!("struct.{}", tag);
-                    if let Some(layout) = self.types.struct_layouts.get(&key) {
+                    if let Some(layout) = self.types.borrow_struct_layouts().get(&key) {
                         return Some(layout.size);
                     }
                 }
@@ -754,7 +755,7 @@ impl<'a> SemaConstEval<'a> {
                     if !struct_fields.is_empty() {
                         let max_field_align = if *is_packed { Some(1) } else { *pragma_pack };
                         let mut layout = crate::common::types::StructLayout::for_struct_with_packing(
-                            &struct_fields, max_field_align, &self.types.struct_layouts
+                            &struct_fields, max_field_align, &*self.types.borrow_struct_layouts()
                         );
                         if let Some(a) = struct_aligned {
                             if *a > layout.align {
@@ -771,7 +772,7 @@ impl<'a> SemaConstEval<'a> {
             TypeSpecifier::Union(tag, fields, is_packed, pragma_pack, struct_aligned) => {
                 if let Some(tag) = tag {
                     let key = format!("union.{}", tag);
-                    if let Some(layout) = self.types.struct_layouts.get(&key) {
+                    if let Some(layout) = self.types.borrow_struct_layouts().get(&key) {
                         return Some(layout.size);
                     }
                 }
@@ -780,7 +781,7 @@ impl<'a> SemaConstEval<'a> {
                     if !union_fields.is_empty() {
                         let max_field_align = if *is_packed { Some(1) } else { *pragma_pack };
                         let mut layout = crate::common::types::StructLayout::for_union_with_packing(
-                            &union_fields, max_field_align, &self.types.struct_layouts
+                            &union_fields, max_field_align, &*self.types.borrow_struct_layouts()
                         );
                         if let Some(a) = struct_aligned {
                             if *a > layout.align {
@@ -809,7 +810,7 @@ impl<'a> SemaConstEval<'a> {
             }
             TypeSpecifier::TypedefName(name) => {
                 if let Some(ctype) = self.types.typedefs.get(name) {
-                    Some(ctype.size_ctx(&self.types.struct_layouts))
+                    Some(ctype.size_ctx(&*self.types.borrow_struct_layouts()))
                 } else {
                     Some(8) // fallback
                 }
@@ -817,7 +818,7 @@ impl<'a> SemaConstEval<'a> {
             TypeSpecifier::TypeofType(inner) => self.sizeof_type_spec(inner),
             TypeSpecifier::Typeof(expr) => {
                 let ctype = self.infer_expr_ctype(expr)?;
-                Some(ctype.size_ctx(&self.types.struct_layouts))
+                Some(ctype.size_ctx(&*self.types.borrow_struct_layouts()))
             }
             _ => None,
         }
@@ -841,7 +842,7 @@ impl<'a> SemaConstEval<'a> {
             _ => {}
         }
         let ctype = self.infer_expr_ctype(expr)?;
-        Some(ctype.size_ctx(&self.types.struct_layouts))
+        Some(ctype.size_ctx(&*self.types.borrow_struct_layouts()))
     }
 
     /// Compute alignof for a type specifier.
@@ -869,7 +870,7 @@ impl<'a> SemaConstEval<'a> {
             TypeSpecifier::Struct(tag, fields, is_packed, pragma_pack, struct_aligned) => {
                 if let Some(tag) = tag {
                     let key = format!("struct.{}", tag);
-                    if let Some(layout) = self.types.struct_layouts.get(&key) {
+                    if let Some(layout) = self.types.borrow_struct_layouts().get(&key) {
                         return layout.align;
                     }
                 }
@@ -878,7 +879,7 @@ impl<'a> SemaConstEval<'a> {
                     if !struct_fields.is_empty() {
                         let max_field_align = if *is_packed { Some(1) } else { *pragma_pack };
                         let mut layout = crate::common::types::StructLayout::for_struct_with_packing(
-                            &struct_fields, max_field_align, &self.types.struct_layouts
+                            &struct_fields, max_field_align, &*self.types.borrow_struct_layouts()
                         );
                         if let Some(a) = struct_aligned {
                             if *a > layout.align {
@@ -893,7 +894,7 @@ impl<'a> SemaConstEval<'a> {
             TypeSpecifier::Union(tag, fields, is_packed, pragma_pack, struct_aligned) => {
                 if let Some(tag) = tag {
                     let key = format!("union.{}", tag);
-                    if let Some(layout) = self.types.struct_layouts.get(&key) {
+                    if let Some(layout) = self.types.borrow_struct_layouts().get(&key) {
                         return layout.align;
                     }
                 }
@@ -902,7 +903,7 @@ impl<'a> SemaConstEval<'a> {
                     if !union_fields.is_empty() {
                         let max_field_align = if *is_packed { Some(1) } else { *pragma_pack };
                         let mut layout = crate::common::types::StructLayout::for_union_with_packing(
-                            &union_fields, max_field_align, &self.types.struct_layouts
+                            &union_fields, max_field_align, &*self.types.borrow_struct_layouts()
                         );
                         if let Some(a) = struct_aligned {
                             if *a > layout.align {
@@ -927,7 +928,7 @@ impl<'a> SemaConstEval<'a> {
             }
             TypeSpecifier::TypedefName(name) => {
                 if let Some(ctype) = self.types.typedefs.get(name) {
-                    ctype.align_ctx(&self.types.struct_layouts)
+                    ctype.align_ctx(&*self.types.borrow_struct_layouts())
                 } else {
                     crate::common::types::target_ptr_size()
                 }
@@ -935,7 +936,7 @@ impl<'a> SemaConstEval<'a> {
             TypeSpecifier::TypeofType(inner) => self.alignof_type_spec(inner),
             TypeSpecifier::Typeof(expr) => {
                 if let Some(ctype) = self.infer_expr_ctype(expr) {
-                    ctype.align_ctx(&self.types.struct_layouts)
+                    ctype.align_ctx(&*self.types.borrow_struct_layouts())
                 } else {
                     crate::common::types::target_ptr_size() // fallback
                 }
@@ -961,7 +962,7 @@ impl<'a> SemaConstEval<'a> {
             TypeSpecifier::Array(elem, _) => self.preferred_alignof_type_spec(elem),
             TypeSpecifier::TypedefName(name) => {
                 if let Some(ctype) = self.types.typedefs.get(name) {
-                    ctype.preferred_align_ctx(&self.types.struct_layouts)
+                    ctype.preferred_align_ctx(&*self.types.borrow_struct_layouts())
                 } else {
                     target_ptr_size()
                 }
@@ -969,7 +970,7 @@ impl<'a> SemaConstEval<'a> {
             TypeSpecifier::TypeofType(inner) => self.preferred_alignof_type_spec(inner),
             TypeSpecifier::Typeof(expr) => {
                 if let Some(ctype) = self.infer_expr_ctype(expr) {
-                    ctype.preferred_align_ctx(&self.types.struct_layouts)
+                    ctype.preferred_align_ctx(&*self.types.borrow_struct_layouts())
                 } else {
                     target_ptr_size()
                 }

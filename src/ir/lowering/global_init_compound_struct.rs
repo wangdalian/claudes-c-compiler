@@ -44,7 +44,7 @@ impl Lowerer {
             let item = &items[item_idx];
 
             let designator_name = h::first_field_designator(item);
-            let resolution = layout.resolve_init_field(designator_name, current_field_idx, &self.types);
+            let resolution = layout.resolve_init_field(designator_name, current_field_idx, &*self.types.borrow_struct_layouts());
 
             let field_idx = match &resolution {
                 Some(InitFieldResolution::Direct(idx)) => *idx,
@@ -491,7 +491,7 @@ impl Lowerer {
             Initializer::List(nested_items) => {
                 // Check if this is an array whose elements contain pointers
                 if let CType::Array(elem_ty, Some(arr_size)) = field_ty {
-                    if h::type_has_pointer_elements(elem_ty, &self.types) {
+                    if h::type_has_pointer_elements(elem_ty, &*self.types.borrow_struct_layouts()) {
                         // Distinguish: direct pointer array vs struct-with-pointer-fields array
                         if matches!(elem_ty.as_ref(), CType::Pointer(_, _) | CType::Function(_)) {
                             // Array of direct pointers: emit each element as a GlobalAddr or zero
@@ -578,7 +578,7 @@ impl Lowerer {
                 let has_array_idx_designator = item.designators.iter().any(|d| matches!(d, Designator::Index(_)));
                 if has_array_idx_designator {
                     if let CType::Array(elem_ty, Some(arr_size)) = &field.ty {
-                        if h::type_has_pointer_elements(elem_ty, &self.types) {
+                        if h::type_has_pointer_elements(elem_ty, &*self.types.borrow_struct_layouts()) {
                             self.emit_compound_ptr_array_designated_init(
                                 elements, &[item], elem_ty, *arr_size);
                             return;

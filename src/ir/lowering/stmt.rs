@@ -568,7 +568,7 @@ impl Lowerer {
         while item_idx < items.len() {
             let item = &items[item_idx];
             let desig_name = h::first_field_designator(item);
-            let resolution = match layout.resolve_init_field(desig_name, current_field_idx, &self.types) {
+            let resolution = match layout.resolve_init_field(desig_name, current_field_idx, &*self.types.borrow_struct_layouts()) {
                 Some(r) => r,
                 None => break,
             };
@@ -581,7 +581,8 @@ impl Lowerer {
                     // drill into it and consume multiple init items for inner fields.
                     if desig_name.is_none() && f.name.is_empty() && f.bit_width.is_none() {
                         if let CType::Struct(key) | CType::Union(key) = &f.ty {
-                            if let Some(sub_layout) = self.types.struct_layouts.get(&**key).cloned() {
+                            let sub_layout = self.types.borrow_struct_layouts().get(&**key).cloned();
+                            if let Some(sub_layout) = sub_layout {
                                 let anon_offset = f.offset;
                                 let sub_base = self.emit_gep_offset(base, anon_offset, IrType::Ptr);
                                 let anon_field_count = sub_layout.fields.iter()
@@ -600,7 +601,8 @@ impl Lowerer {
                 }
                 InitFieldResolution::AnonymousMember { anon_field_idx, inner_name } => {
                     let extra_desigs = if item.designators.len() > 1 { &item.designators[1..] } else { &[] };
-                    if let Some(res) = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &item.init, extra_desigs, &self.types.struct_layouts) {
+                    let anon_res = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &item.init, extra_desigs, &*self.types.borrow_struct_layouts());
+                    if let Some(res) = anon_res {
                         let sub_base = self.emit_gep_offset(base, res.anon_offset, IrType::Ptr);
                         self.lower_local_struct_init(&[res.sub_item], sub_base, &res.sub_layout);
                     }
@@ -678,7 +680,8 @@ impl Lowerer {
                             // delegate to emit_struct_init which knows how to consume
                             // the right number of flat items for each struct element.
                             let elem_size = self.resolve_ctype_size(elem_ty);
-                            if let Some(sub_layout) = self.types.struct_layouts.get(&**key).cloned() {
+                            let sub_layout = self.types.borrow_struct_layouts().get(&**key).cloned();
+                            if let Some(sub_layout) = sub_layout {
                                 let mut ai = 0usize;
                                 let mut consumed_total = 0usize;
                                 while ai < arr_size {
@@ -757,7 +760,8 @@ impl Lowerer {
     ) {
         match field_ctype {
             CType::Struct(key) | CType::Union(key) => {
-                if let Some(sub_layout) = self.types.struct_layouts.get(&**key).cloned() {
+                let sub_layout = self.types.borrow_struct_layouts().get(&**key).cloned();
+                if let Some(sub_layout) = sub_layout {
                     self.lower_local_struct_init(items, base, &sub_layout);
                 }
             }

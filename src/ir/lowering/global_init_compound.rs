@@ -199,7 +199,7 @@ impl Lowerer {
             }
         };
 
-        let elem_is_pointer = h::type_has_pointer_elements(elem_ty, &self.types);
+        let elem_is_pointer = h::type_has_pointer_elements(elem_ty, &*self.types.borrow_struct_layouts());
         let elem_size = self.resolve_ctype_size(elem_ty);
         let ptr_size = crate::common::types::target_ptr_size();
 
@@ -241,7 +241,7 @@ impl Lowerer {
         current_field_idx: usize,
     ) -> usize {
         let desig_name = h::first_field_designator(item);
-        layout.resolve_init_field_idx(desig_name, current_field_idx, &self.types)
+        layout.resolve_init_field_idx(desig_name, current_field_idx, &*self.types.borrow_struct_layouts())
             .unwrap_or(current_field_idx)
     }
 
@@ -346,7 +346,7 @@ impl Lowerer {
     pub(super) fn get_struct_layout_for_ctype(&self, ty: &CType) -> Option<crate::common::types::RcLayout> {
         match ty {
             CType::Struct(key) | CType::Union(key) => {
-                self.types.struct_layouts.get(&**key).cloned()
+                self.types.borrow_struct_layouts().get(&**key).cloned()
             }
             _ => None,
         }

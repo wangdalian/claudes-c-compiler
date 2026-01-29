@@ -401,12 +401,12 @@ impl Lowerer {
                     let mut current_layout = start_layout;
                     let mut final_field_ty: Option<CType> = None;
                     for field_name in fields.iter().rev() {
-                        if let Some((foff, fty)) = current_layout.field_offset(field_name, &self.types) {
+                        if let Some((foff, fty)) = current_layout.field_offset(field_name, &*self.types.borrow_struct_layouts()) {
                             member_offset += foff as i64;
                             final_field_ty = Some(fty.clone());
                             current_layout = match &fty {
                                 CType::Struct(key) | CType::Union(key) => {
-                                    self.types.struct_layouts.get(&**key).cloned()
+                                    self.types.borrow_struct_layouts().get(&**key).cloned()
                                         .unwrap_or_else(StructLayout::empty_rc)
                                 }
                                 _ => StructLayout::empty_rc(),
@@ -536,7 +536,7 @@ impl Lowerer {
                 // Look up the struct layout to get the field offset
                 let ginfo = self.globals.get(&global_name)?;
                 let layout = ginfo.struct_layout.clone()?;
-                let (field_offset, _field_ty) = layout.field_offset(field, &self.types)?;
+                let (field_offset, _field_ty) = layout.field_offset(field, &*self.types.borrow_struct_layouts())?;
                 let total = base_off + field_offset as i64;
                 if total == 0 {
                     Some(GlobalInit::GlobalAddr(global_name))
@@ -582,7 +582,7 @@ impl Lowerer {
             Expr::MemberAccess(base, field, _) => {
                 // Get the struct layout of the base expression
                 let layout = self.get_struct_layout_of_expr(base)?;
-                let (_offset, field_ty) = layout.field_offset(field, &self.types)?;
+                let (_offset, field_ty) = layout.field_offset(field, &*self.types.borrow_struct_layouts())?;
                 Some(field_ty)
             }
             _ => None,
@@ -601,10 +601,10 @@ impl Lowerer {
                 // For chained access s.a.b: get layout of s, find field a's type,
                 // then get layout of a's type (must be struct/union)
                 let base_layout = self.get_struct_layout_of_expr(base)?;
-                let (_offset, field_ty) = base_layout.field_offset(field, &self.types)?;
+                let (_offset, field_ty) = base_layout.field_offset(field, &*self.types.borrow_struct_layouts())?;
                 match &field_ty {
                     CType::Struct(key) | CType::Union(key) => {
-                        self.types.struct_layouts.get(&**key).map(|rc| (**rc).clone())
+                        self.types.borrow_struct_layouts().get(&**key).map(|rc| (**rc).clone())
                     }
                     _ => None,
                 }
@@ -669,11 +669,11 @@ impl Lowerer {
         for field_name in fields.iter().rev() {
             let mut found = false;
             // Try field_offset which handles anonymous structs/unions
-            if let Some((foff, fty)) = current_layout.field_offset(field_name, &self.types) {
+            if let Some((foff, fty)) = current_layout.field_offset(field_name, &*self.types.borrow_struct_layouts()) {
                 total_offset += foff as i64;
                 current_layout = match &fty {
                     CType::Struct(key) | CType::Union(key) => {
-                        self.types.struct_layouts.get(&**key).cloned()
+                        self.types.borrow_struct_layouts().get(&**key).cloned()
                             .unwrap_or_else(StructLayout::empty_rc)
                     }
                     _ => StructLayout::empty_rc(),
@@ -707,7 +707,7 @@ impl Lowerer {
         // The global should be an array of structs.
         let ginfo = self.globals.get(&global_name)?;
         let layout = ginfo.struct_layout.clone()?;
-        let (field_offset, _field_ty) = layout.field_offset(field, &self.types)?;
+        let (field_offset, _field_ty) = layout.field_offset(field, &*self.types.borrow_struct_layouts())?;
         let total_offset = base_offset + field_offset as i64;
         if total_offset == 0 {
             Some(GlobalInit::GlobalAddr(global_name))

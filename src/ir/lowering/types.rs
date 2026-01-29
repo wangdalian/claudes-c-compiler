@@ -68,7 +68,7 @@ impl Lowerer {
             _ => None,
         };
         if let Some(key) = key {
-            self.types.struct_layouts.get(&*key).map_or(false, |l| l.is_transparent_union)
+            self.types.borrow_struct_layouts().get(&*key).map_or(false, |l| l.is_transparent_union)
         } else {
             false
         }
@@ -274,7 +274,7 @@ impl Lowerer {
     /// Look up a struct/union layout by tag name, returning a cheap Rc clone.
     fn get_struct_union_layout_by_tag(&self, kind: &str, tag: &str) -> Option<RcLayout> {
         let key = format!("{}.{}", kind, tag);
-        self.types.struct_layouts.get(&key).cloned()
+        self.types.borrow_struct_layouts().get(&key).cloned()
     }
 
     /// Get the struct/union layout for a resolved TypeSpecifier.
@@ -285,7 +285,7 @@ impl Lowerer {
             TypeSpecifier::Struct(tag, Some(fields), is_packed, pragma_pack, _) => {
                 // Use cached layout for tagged structs
                 if let Some(tag) = tag {
-                    if let Some(layout) = self.types.struct_layouts.get(&format!("struct.{}", tag)) {
+                    if let Some(layout) = self.types.borrow_struct_layouts().get(&format!("struct.{}", tag)) {
                         return Some(layout.clone());
                     }
                 }
@@ -295,7 +295,7 @@ impl Lowerer {
             TypeSpecifier::Union(tag, Some(fields), is_packed, pragma_pack, _) => {
                 // Use cached layout for tagged unions
                 if let Some(tag) = tag {
-                    if let Some(layout) = self.types.struct_layouts.get(&format!("union.{}", tag)) {
+                    if let Some(layout) = self.types.borrow_struct_layouts().get(&format!("union.{}", tag)) {
                         return Some(layout.clone());
                     }
                 }
@@ -343,9 +343,9 @@ impl Lowerer {
             }
         }).collect();
         if is_union {
-            StructLayout::for_union_with_packing(&struct_fields, max_field_align, &self.types)
+            StructLayout::for_union_with_packing(&struct_fields, max_field_align, &*self.types.borrow_struct_layouts())
         } else {
-            StructLayout::for_struct_with_packing(&struct_fields, max_field_align, &self.types)
+            StructLayout::for_struct_with_packing(&struct_fields, max_field_align, &*self.types.borrow_struct_layouts())
         }
     }
 
@@ -353,7 +353,7 @@ impl Lowerer {
         // Handle TypedefName through CType
         if let TypeSpecifier::TypedefName(name) = ts {
             if let Some(ctype) = self.types.typedefs.get(name) {
-                return ctype.size_ctx(&self.types.struct_layouts);
+                return ctype.size_ctx(&*self.types.borrow_struct_layouts());
             }
             return crate::common::types::target_ptr_size(); // fallback
         }
@@ -364,13 +364,13 @@ impl Lowerer {
                 .is_some();
             if effective_packed {
                 let ctype = self.type_spec_to_ctype(ts);
-                return ctype.size_ctx(&self.types);
+                return ctype.size_ctx(&*self.types.borrow_struct_layouts());
             }
         }
         // Handle typeof(expr) by resolving the expression's type
         if let TypeSpecifier::Typeof(expr) = ts {
             if let Some(ctype) = self.get_expr_ctype(expr) {
-                return ctype.size_ctx(&self.types.struct_layouts);
+                return ctype.size_ctx(&*self.types.borrow_struct_layouts());
             }
             return crate::common::types::target_ptr_size(); // fallback
         }
@@ -438,7 +438,7 @@ impl Lowerer {
         // Handle TypedefName through CType preferred alignment
         if let TypeSpecifier::TypedefName(name) = ts {
             let natural = if let Some(ctype) = self.types.typedefs.get(name) {
-                ctype.preferred_align_ctx(&self.types.struct_layouts)
+                ctype.preferred_align_ctx(&*self.types.borrow_struct_layouts())
             } else {
                 target_ptr_size()
             };
@@ -449,7 +449,7 @@ impl Lowerer {
         }
         if let TypeSpecifier::Typeof(expr) = ts {
             if let Some(ctype) = self.get_expr_ctype(expr) {
-                return ctype.preferred_align_ctx(&self.types.struct_layouts);
+                return ctype.preferred_align_ctx(&*self.types.borrow_struct_layouts());
             }
             return target_ptr_size();
         }
@@ -553,7 +553,7 @@ impl Lowerer {
                 if dims.is_empty() {
                     return vec![];
                 }
-                let base_elem_size = current_ct.size_ctx(&self.types.struct_layouts).max(1);
+                let base_elem_size = current_ct.size_ctx(&*self.types.borrow_struct_layouts()).max(1);
                 let full_size: usize = dims.iter().product::<usize>() * base_elem_size;
                 let mut strides = vec![full_size];
                 strides.extend(Self::compute_strides_from_dims(&dims, base_elem_size));
@@ -597,7 +597,7 @@ impl Lowerer {
                 if ptr_count >= 1 {
                     ptr_sz
                 } else {
-                    inner_ct.size_ctx(&self.types.struct_layouts)
+                    inner_ct.size_ctx(&*self.types.borrow_struct_layouts())
                 }
             } else if ptr_count >= 2 {
                 ptr_sz
@@ -739,7 +739,7 @@ impl Lowerer {
             } else if is_ctype_array && !is_ts_array {
                 // Typedef'd array (e.g., va_list = CType::Array(Char, 24))
                 let all_dims = Self::collect_ctype_array_dims(&resolved_ctype);
-                let base_elem_size = Self::ctype_innermost_elem_size(&resolved_ctype, &self.types.struct_layouts);
+                let base_elem_size = Self::ctype_innermost_elem_size(&resolved_ctype, &*self.types.borrow_struct_layouts());
                 let total: usize = all_dims.iter().product::<usize>() * base_elem_size;
                 let strides = Self::compute_strides_from_dims(&all_dims, base_elem_size);
                 let elem_size = if strides.len() > 1 { strides[0] } else { base_elem_size };
@@ -767,9 +767,9 @@ impl Lowerer {
                 crate::common::types::target_ptr_size()
             } else if !type_dims.is_empty() {
                 // Use CType for innermost element size (works for both direct and typedef'd arrays)
-                Self::ctype_innermost_elem_size(&resolved_ctype, &self.types.struct_layouts)
+                Self::ctype_innermost_elem_size(&resolved_ctype, &*self.types.borrow_struct_layouts())
             } else {
-                resolved_ctype.size_ctx(&self.types.struct_layouts).max(1)
+                resolved_ctype.size_ctx(&*self.types.borrow_struct_layouts()).max(1)
             };
 
             // Combine: derived dims come first (outermost), then type dims
@@ -804,7 +804,7 @@ impl Lowerer {
         // Minimum 8 bytes on LP64 (to ensure stack alignment for loads/stores).
         // On ILP32, minimum 4 bytes (pointer-width).
         let min_alloc = if crate::common::types::target_is_32bit() { 4 } else { 8 };
-        let scalar_size = resolved_ctype.size_ctx(&self.types.struct_layouts).max(min_alloc);
+        let scalar_size = resolved_ctype.size_ctx(&*self.types.borrow_struct_layouts()).max(min_alloc);
         (scalar_size, 0, false, false, vec![])
     }
 

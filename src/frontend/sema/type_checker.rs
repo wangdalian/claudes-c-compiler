@@ -461,8 +461,9 @@ impl<'a> ExprTypeChecker<'a> {
 
         match &base_ctype {
             CType::Struct(key) | CType::Union(key) => {
-                if let Some(layout) = self.types.struct_layouts.get(key.as_ref()) {
-                    if let Some((_offset, field_ct)) = layout.field_offset(field_name, &self.types.struct_layouts) {
+                let layouts = self.types.borrow_struct_layouts();
+                if let Some(layout) = layouts.get(key.as_ref()) {
+                    if let Some((_offset, field_ct)) = layout.field_offset(field_name, &*layouts) {
                         return Some(field_ct);
                     }
                 }
@@ -700,9 +701,9 @@ impl<'a> ExprTypeChecker<'a> {
 
         let max_field_align = if is_packed { Some(1) } else { pragma_pack };
         let mut layout = if is_union {
-            StructLayout::for_union_with_packing(&struct_fields, max_field_align, &self.types.struct_layouts)
+            StructLayout::for_union_with_packing(&struct_fields, max_field_align, &*self.types.borrow_struct_layouts())
         } else {
-            StructLayout::for_struct_with_packing(&struct_fields, max_field_align, &self.types.struct_layouts)
+            StructLayout::for_struct_with_packing(&struct_fields, max_field_align, &*self.types.borrow_struct_layouts())
         };
 
         // Apply struct-level __attribute__((aligned(N)))

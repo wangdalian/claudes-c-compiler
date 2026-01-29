@@ -153,7 +153,7 @@ impl Lowerer {
             }
         }
         if let Some(key) = found_key {
-            if let Some(layout) = self.types.struct_layouts.get_mut(&key) {
+            if let Some(layout) = self.types.borrow_struct_layouts_mut().get_mut(&key) {
                 Rc::make_mut(layout).is_transparent_union = true;
             }
         }
@@ -174,8 +174,9 @@ impl Lowerer {
         match ts {
             TypeSpecifier::Struct(tag, Some(fields), is_packed, pragma_pack, _) => {
                 if let Some(tag) = tag {
-                    if let Some(layout) = self.types.struct_layouts.get(&format!("struct.{}", tag))
-                        .or_else(|| self.types.struct_layouts.get(tag.as_str()))
+                    let layouts = self.types.borrow_struct_layouts();
+                    if let Some(layout) = layouts.get(&format!("struct.{}", tag))
+                        .or_else(|| layouts.get(tag.as_str()))
                     {
                         return Some(layout.clone());
                     }
@@ -184,17 +185,19 @@ impl Lowerer {
                 Some(Rc::new(self.compute_struct_union_layout_packed(&fields, false, max_field_align)))
             }
             TypeSpecifier::Struct(Some(tag), None, _, _, _) => {
-                self.types.struct_layouts.get(&format!("struct.{}", tag)).cloned()
+                let layouts = self.types.borrow_struct_layouts();
+                layouts.get(&format!("struct.{}", tag)).cloned()
                     .or_else(|| {
                         // Anonymous structs from typeof/ctype_to_type_spec use the
                         // raw CType key (e.g., "__anon_struct_N") as the tag.
-                        self.types.struct_layouts.get(tag.as_str()).cloned()
+                        layouts.get(tag.as_str()).cloned()
                     })
             }
             TypeSpecifier::Union(tag, Some(fields), is_packed, pragma_pack, _) => {
                 if let Some(tag) = tag {
-                    if let Some(layout) = self.types.struct_layouts.get(&format!("union.{}", tag))
-                        .or_else(|| self.types.struct_layouts.get(tag.as_str()))
+                    let layouts = self.types.borrow_struct_layouts();
+                    if let Some(layout) = layouts.get(&format!("union.{}", tag))
+                        .or_else(|| layouts.get(tag.as_str()))
                     {
                         return Some(layout.clone());
                     }
@@ -203,11 +206,12 @@ impl Lowerer {
                 Some(Rc::new(self.compute_struct_union_layout_packed(&fields, true, max_field_align)))
             }
             TypeSpecifier::Union(Some(tag), None, _, _, _) => {
-                self.types.struct_layouts.get(&format!("union.{}", tag)).cloned()
+                let layouts = self.types.borrow_struct_layouts();
+                layouts.get(&format!("union.{}", tag)).cloned()
                     .or_else(|| {
                         // Anonymous unions from typeof/ctype_to_type_spec use the
                         // raw CType key (e.g., "__anon_struct_N") as the tag.
-                        self.types.struct_layouts.get(tag.as_str()).cloned()
+                        layouts.get(tag.as_str()).cloned()
                     })
             }
             // For typedef'd array types like `typedef S arr_t[4]`, peel the
@@ -499,7 +503,7 @@ impl Lowerer {
 
     fn resolve_member_access_impl(&self, base_expr: &Expr, field_name: &str, is_pointer: bool) -> (usize, IrType) {
         if let Some(layout) = self.get_member_layout(base_expr, is_pointer) {
-            if let Some((offset, ctype)) = layout.field_offset(field_name, &self.types) {
+            if let Some((offset, ctype)) = layout.field_offset(field_name, &*self.types.borrow_struct_layouts()) {
                 return (offset, IrType::from_ctype(&ctype));
             }
         }
@@ -529,7 +533,7 @@ impl Lowerer {
             }
             // Fallback: search anonymous struct/union members recursively,
             // preserving bitfield metadata (bit_offset, bit_width).
-            if let Some((offset, ctype, bit_offset, bit_width)) = layout.field_offset_with_bitfield(field_name, &self.types) {
+            if let Some((offset, ctype, bit_offset, bit_width)) = layout.field_offset_with_bitfield(field_name, &*self.types.borrow_struct_layouts()) {
                 let bf = match (bit_offset, bit_width) {
                     (Some(bo), Some(bw)) => Some((bo, bw)),
                     _ => None,
@@ -691,7 +695,7 @@ impl Lowerer {
     pub(super) fn struct_layout_from_ctype(&self, ctype: &CType) -> Option<RcLayout> {
         match ctype {
             CType::Struct(key) | CType::Union(key) => {
-                self.types.struct_layouts.get(key.as_ref()).cloned()
+                self.types.borrow_struct_layouts().get(key.as_ref()).cloned()
             }
             _ => None,
         }
@@ -796,7 +800,7 @@ impl Lowerer {
     ///   (false for get_layout_for_expr: field is a struct, resolve its own layout)
     fn resolve_field_struct_layout(&self, base: &Expr, field: &str, is_pointer_base: bool, want_pointer_deref: bool) -> Option<RcLayout> {
         let base_layout = self.get_member_layout(base, is_pointer_base)?;
-        let (_offset, ctype) = base_layout.field_offset(field, &self.types)?;
+        let (_offset, ctype) = base_layout.field_offset(field, &*self.types.borrow_struct_layouts())?;
         if want_pointer_deref {
             // Caller wants what the field points to (get_pointed_struct_layout path)
             if let Some(layout) = self.resolve_struct_from_pointer_ctype(&ctype) {
@@ -851,7 +855,7 @@ impl Lowerer {
     /// Handles both direct (s.field) and pointer (p->field) access.
     pub(super) fn resolve_member_field_ctype_impl(&self, base_expr: &Expr, field_name: &str, is_pointer: bool) -> Option<CType> {
         if let Some(layout) = self.get_member_layout(base_expr, is_pointer) {
-            if let Some((_offset, ctype)) = layout.field_offset(field_name, &self.types) {
+            if let Some((_offset, ctype)) = layout.field_offset(field_name, &*self.types.borrow_struct_layouts()) {
                 return Some(ctype.clone());
             }
         }
@@ -882,7 +886,7 @@ impl Lowerer {
             }
             // Search anonymous struct/union members recursively,
             // preserving bitfield metadata (bit_offset, bit_width).
-            if let Some((offset, ctype, bit_offset, bit_width)) = layout.field_offset_with_bitfield(field_name, &self.types) {
+            if let Some((offset, ctype, bit_offset, bit_width)) = layout.field_offset_with_bitfield(field_name, &*self.types.borrow_struct_layouts()) {
                 let bf = match (bit_offset, bit_width) {
                     (Some(bo), Some(bw)) => Some((bo, bw)),
                     _ => None,

@@ -294,7 +294,7 @@ impl Lowerer {
                 let cl_ctype = self.type_spec_to_ctype(type_spec);
                 let is_multi_field_aggregate = match &cl_ctype {
                     CType::Struct(key) | CType::Union(key) => {
-                        if let Some(layout) = self.types.struct_layouts.get(&**key) {
+                        if let Some(layout) = self.types.borrow_struct_layouts().get(&**key) {
                             // A struct is an aggregate if it has multiple fields, OR if its
                             // single field is itself an aggregate (array/struct/union).
                             // Without this check, (arr_t){ {100, 200, 300} } where arr_t
@@ -360,7 +360,7 @@ impl Lowerer {
                 // base should be (type*)0 - a cast of 0 to a pointer type
                 let (type_spec, base_offset) = self.extract_null_pointer_cast_with_offset(base)?;
                 let layout = self.get_struct_layout_for_type(&type_spec)?;
-                let (field_offset, field_ty) = layout.field_offset(field_name, &self.types)?;
+                let (field_offset, field_ty) = layout.field_offset(field_name, &*self.types.borrow_struct_layouts())?;
                 Some((base_offset + field_offset, field_ty))
             }
             Expr::MemberAccess(base, field_name, _) => {
@@ -368,7 +368,7 @@ impl Lowerer {
                 if let Expr::Deref(inner, _) = base.as_ref() {
                     let (type_spec, base_offset) = self.extract_null_pointer_cast_with_offset(inner)?;
                     let layout = self.get_struct_layout_for_type(&type_spec)?;
-                    let (field_offset, field_ty) = layout.field_offset(field_name, &self.types)?;
+                    let (field_offset, field_ty) = layout.field_offset(field_name, &*self.types.borrow_struct_layouts())?;
                     return Some((base_offset + field_offset, field_ty));
                 }
                 // Second try: base is itself an offsetof sub-expression (chained access)
@@ -378,8 +378,9 @@ impl Lowerer {
                     CType::Struct(key) | CType::Union(key) => key.clone(),
                     _ => return None,
                 };
-                let layout = self.types.struct_layouts.get(&*struct_key)?;
-                let (field_offset, field_ty) = layout.field_offset(field_name, &self.types)?;
+                let layouts = self.types.borrow_struct_layouts();
+                let layout = layouts.get(&*struct_key)?;
+                let (field_offset, field_ty) = layout.field_offset(field_name, &*layouts)?;
                 Some((base_offset + field_offset, field_ty))
             }
             Expr::ArraySubscript(base, index, _) => {

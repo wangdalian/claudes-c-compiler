@@ -256,7 +256,7 @@ impl Lowerer {
             // Only skip when the existing layout has fields (not a forward-declaration stub).
             if let Some(tag) = name {
                 let cache_key = format!("{}.{}", prefix, tag);
-                if let Some(existing) = self.types.struct_layouts.get(&cache_key) {
+                if let Some(existing) = self.types.borrow_struct_layouts().get(&cache_key) {
                     if !existing.fields.is_empty() {
                         let result = wrap(cache_key.clone());
                         self.types.ctype_cache.borrow_mut().insert(cache_key, result.clone());
@@ -287,9 +287,9 @@ impl Lowerer {
                 }
             }).collect();
             let mut layout = if is_union {
-                StructLayout::for_union_with_packing(&struct_fields, max_field_align, &self.types)
+                StructLayout::for_union_with_packing(&struct_fields, max_field_align, &*self.types.borrow_struct_layouts())
             } else {
-                StructLayout::for_struct_with_packing(&struct_fields, max_field_align, &self.types)
+                StructLayout::for_struct_with_packing(&struct_fields, max_field_align, &*self.types.borrow_struct_layouts())
             };
             // Apply struct-level __attribute__((aligned(N))): sets minimum alignment
             if let Some(a) = struct_aligned {
@@ -326,7 +326,7 @@ impl Lowerer {
                 return cached.clone();
             }
             // Forward declaration: insert an empty layout if not already present
-            if self.types.struct_layouts.get(&key).is_none() {
+            if self.types.borrow_struct_layouts().get(&key).is_none() {
                 let empty_layout = StructLayout {
                     fields: Vec::new(),
                     size: 0,

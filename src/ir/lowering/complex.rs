@@ -663,10 +663,11 @@ impl Lowerer {
     fn resolve_field_type(&self, struct_type: &CType, field: &str) -> CType {
         match struct_type {
             CType::Struct(key) | CType::Union(key) => {
-                if let Some(layout) = self.types.struct_layouts.get(&**key) {
+                let layouts = self.types.borrow_struct_layouts();
+                if let Some(layout) = layouts.get(&**key) {
                     // Use field_offset which already handles recursive lookup
                     // through anonymous struct/union members
-                    if let Some((_, ty)) = layout.field_offset(field, &self.types) {
+                    if let Some((_, ty)) = layout.field_offset(field, &*layouts) {
                         return ty;
                     }
                 }
@@ -808,20 +809,24 @@ impl Lowerer {
                 // Get base struct address and add field offset
                 let base_ct = self.expr_ctype(base);
                 if let CType::Struct(ref key) | CType::Union(ref key) = base_ct {
-                    if let Some(layout) = self.types.struct_layouts.get(&**key) {
-                        if let Some((offset, _)) = layout.field_offset(field, &self.types) {
-                            let base_ptr = self.lower_complex_lvalue(base);
-                            if offset == 0 {
-                                return base_ptr;
-                            }
-                            let dest = self.fresh_value();
-                            self.emit(Instruction::GetElementPtr {
-                                dest, base: base_ptr,
-                                offset: Operand::Const(IrConst::ptr_int(offset as i64)),
-                                ty: IrType::I8,
-                            });
-                            return dest;
+                    let field_offset = {
+                        let layouts = self.types.borrow_struct_layouts();
+                        layouts.get(&**key)
+                            .and_then(|layout| layout.field_offset(field, &*layouts))
+                            .map(|(offset, _)| offset)
+                    };
+                    if let Some(offset) = field_offset {
+                        let base_ptr = self.lower_complex_lvalue(base);
+                        if offset == 0 {
+                            return base_ptr;
                         }
+                        let dest = self.fresh_value();
+                        self.emit(Instruction::GetElementPtr {
+                            dest, base: base_ptr,
+                            offset: Operand::Const(IrConst::ptr_int(offset as i64)),
+                            ty: IrType::I8,
+                        });
+                        return dest;
                     }
                 }
                 // Fallback
@@ -834,19 +839,23 @@ impl Lowerer {
                 let base_ct = self.expr_ctype(base);
                 if let CType::Pointer(ref inner, _) = base_ct {
                     if let CType::Struct(ref key) | CType::Union(ref key) = **inner {
-                        if let Some(layout) = self.types.struct_layouts.get(&**key) {
-                            if let Some((offset, _)) = layout.field_offset(field, &self.types) {
-                                if offset == 0 {
-                                    return base_ptr;
-                                }
-                                let dest = self.fresh_value();
-                                self.emit(Instruction::GetElementPtr {
-                                    dest, base: base_ptr,
-                                    offset: Operand::Const(IrConst::ptr_int(offset as i64)),
-                                    ty: IrType::I8,
-                                });
-                                return dest;
+                        let field_offset = {
+                            let layouts = self.types.borrow_struct_layouts();
+                            layouts.get(&**key)
+                                .and_then(|layout| layout.field_offset(field, &*layouts))
+                                .map(|(offset, _)| offset)
+                        };
+                        if let Some(offset) = field_offset {
+                            if offset == 0 {
+                                return base_ptr;
                             }
+                            let dest = self.fresh_value();
+                            self.emit(Instruction::GetElementPtr {
+                                dest, base: base_ptr,
+                                offset: Operand::Const(IrConst::ptr_int(offset as i64)),
+                                ty: IrType::I8,
+                            });
+                            return dest;
                         }
                     }
                 }
