@@ -464,6 +464,28 @@ impl I686Codegen {
         self.state.emit("    movdqu %xmm0, (%eax)");
     }
 
+    /// Emit SSE unary 128-bit op with immediate: load xmm0 from arg0 ptr,
+    /// apply `inst $imm, %xmm0`, store result xmm0 to dest_ptr.
+    fn emit_sse_unary_imm_128(&mut self, dptr: &Value, args: &[Operand], sse_inst: &str) {
+        self.operand_to_eax(&args[0]);
+        self.state.emit("    movdqu (%eax), %xmm0");
+        let imm = Self::operand_to_imm_i64(&args[1]);
+        self.state.emit_fmt(format_args!("    {} ${}, %xmm0", sse_inst, imm));
+        self.operand_to_eax(&Operand::Value(*dptr));
+        self.state.emit("    movdqu %xmm0, (%eax)");
+    }
+
+    /// Emit SSE shuffle with immediate: load xmm0, apply `inst $imm, %xmm0, %xmm0`,
+    /// store result. Used for pshufd/pshuflw/pshufhw.
+    fn emit_sse_shuffle_imm_128(&mut self, dptr: &Value, args: &[Operand], sse_inst: &str) {
+        self.operand_to_eax(&args[0]);
+        self.state.emit("    movdqu (%eax), %xmm0");
+        let imm = Self::operand_to_imm_i64(&args[1]);
+        self.state.emit_fmt(format_args!("    {} ${}, %xmm0, %xmm0", sse_inst, imm));
+        self.operand_to_eax(&Operand::Value(*dptr));
+        self.state.emit("    movdqu %xmm0, (%eax)");
+    }
+
     /// Load an F128 (long double) operand onto the x87 FPU stack.
     fn emit_f128_load_to_x87(&mut self, op: &Operand) {
         match op {
@@ -4054,35 +4076,21 @@ impl ArchCodegen for I686Codegen {
                 }
             }
 
-            // --- SSE 128-bit binary operations ---
-            IntrinsicOp::Pcmpeqb128 => {
+            // SSE 128-bit binary operations
+            IntrinsicOp::Pcmpeqb128 | IntrinsicOp::Pcmpeqd128
+            | IntrinsicOp::Psubusb128 | IntrinsicOp::Por128
+            | IntrinsicOp::Pand128 | IntrinsicOp::Pxor128 => {
                 if let Some(dptr) = dest_ptr {
-                    self.emit_sse_binary_128(dptr, args, "pcmpeqb");
-                }
-            }
-            IntrinsicOp::Pcmpeqd128 => {
-                if let Some(dptr) = dest_ptr {
-                    self.emit_sse_binary_128(dptr, args, "pcmpeqd");
-                }
-            }
-            IntrinsicOp::Psubusb128 => {
-                if let Some(dptr) = dest_ptr {
-                    self.emit_sse_binary_128(dptr, args, "psubusb");
-                }
-            }
-            IntrinsicOp::Por128 => {
-                if let Some(dptr) = dest_ptr {
-                    self.emit_sse_binary_128(dptr, args, "por");
-                }
-            }
-            IntrinsicOp::Pand128 => {
-                if let Some(dptr) = dest_ptr {
-                    self.emit_sse_binary_128(dptr, args, "pand");
-                }
-            }
-            IntrinsicOp::Pxor128 => {
-                if let Some(dptr) = dest_ptr {
-                    self.emit_sse_binary_128(dptr, args, "pxor");
+                    let inst = match op {
+                        IntrinsicOp::Pcmpeqb128 => "pcmpeqb",
+                        IntrinsicOp::Pcmpeqd128 => "pcmpeqd",
+                        IntrinsicOp::Psubusb128 => "psubusb",
+                        IntrinsicOp::Por128 => "por",
+                        IntrinsicOp::Pand128 => "pand",
+                        IntrinsicOp::Pxor128 => "pxor",
+                        _ => unreachable!(),
+                    };
+                    self.emit_sse_binary_128(dptr, args, inst);
                 }
             }
             IntrinsicOp::Pmovmskb128 => {
@@ -4323,55 +4331,24 @@ impl ArchCodegen for I686Codegen {
                 }
             }
 
-            // --- SSE2 shift/shuffle operations ---
-            IntrinsicOp::Pslldqi128 => {
+            // SSE2 shift-by-immediate operations
+            IntrinsicOp::Pslldqi128 | IntrinsicOp::Psrldqi128
+            | IntrinsicOp::Psllqi128 | IntrinsicOp::Psrlqi128 => {
                 if let Some(dptr) = dest_ptr {
-                    self.operand_to_eax(&args[0]);
-                    self.state.emit("    movdqu (%eax), %xmm0");
-                    let imm = Self::operand_to_imm_i64(&args[1]);
-                    self.state.emit_fmt(format_args!("    pslldq ${}, %xmm0", imm));
-                    self.operand_to_eax(&Operand::Value(*dptr));
-                    self.state.emit("    movdqu %xmm0, (%eax)");
+                    let inst = match op {
+                        IntrinsicOp::Pslldqi128 => "pslldq",
+                        IntrinsicOp::Psrldqi128 => "psrldq",
+                        IntrinsicOp::Psllqi128 => "psllq",
+                        IntrinsicOp::Psrlqi128 => "psrlq",
+                        _ => unreachable!(),
+                    };
+                    self.emit_sse_unary_imm_128(dptr, args, inst);
                 }
             }
-            IntrinsicOp::Psrldqi128 => {
-                if let Some(dptr) = dest_ptr {
-                    self.operand_to_eax(&args[0]);
-                    self.state.emit("    movdqu (%eax), %xmm0");
-                    let imm = Self::operand_to_imm_i64(&args[1]);
-                    self.state.emit_fmt(format_args!("    psrldq ${}, %xmm0", imm));
-                    self.operand_to_eax(&Operand::Value(*dptr));
-                    self.state.emit("    movdqu %xmm0, (%eax)");
-                }
-            }
-            IntrinsicOp::Psllqi128 => {
-                if let Some(dptr) = dest_ptr {
-                    self.operand_to_eax(&args[0]);
-                    self.state.emit("    movdqu (%eax), %xmm0");
-                    let imm = Self::operand_to_imm_i64(&args[1]);
-                    self.state.emit_fmt(format_args!("    psllq ${}, %xmm0", imm));
-                    self.operand_to_eax(&Operand::Value(*dptr));
-                    self.state.emit("    movdqu %xmm0, (%eax)");
-                }
-            }
-            IntrinsicOp::Psrlqi128 => {
-                if let Some(dptr) = dest_ptr {
-                    self.operand_to_eax(&args[0]);
-                    self.state.emit("    movdqu (%eax), %xmm0");
-                    let imm = Self::operand_to_imm_i64(&args[1]);
-                    self.state.emit_fmt(format_args!("    psrlq ${}, %xmm0", imm));
-                    self.operand_to_eax(&Operand::Value(*dptr));
-                    self.state.emit("    movdqu %xmm0, (%eax)");
-                }
-            }
+            // SSE2 shuffle with immediate
             IntrinsicOp::Pshufd128 => {
                 if let Some(dptr) = dest_ptr {
-                    self.operand_to_eax(&args[0]);
-                    self.state.emit("    movdqu (%eax), %xmm0");
-                    let imm = Self::operand_to_imm_i64(&args[1]);
-                    self.state.emit_fmt(format_args!("    pshufd ${}, %xmm0, %xmm0", imm));
-                    self.operand_to_eax(&Operand::Value(*dptr));
-                    self.state.emit("    movdqu %xmm0, (%eax)");
+                    self.emit_sse_shuffle_imm_128(dptr, args, "pshufd");
                 }
             }
             IntrinsicOp::Loadldi128 => {
@@ -4383,109 +4360,49 @@ impl ArchCodegen for I686Codegen {
                 }
             }
 
-            // --- SSE2 packed 16-bit / 32-bit binary operations ---
-            IntrinsicOp::Paddw128 => {
-                if let Some(dptr) = dest_ptr { self.emit_sse_binary_128(dptr, args, "paddw"); }
-            }
-            IntrinsicOp::Psubw128 => {
-                if let Some(dptr) = dest_ptr { self.emit_sse_binary_128(dptr, args, "psubw"); }
-            }
-            IntrinsicOp::Pmulhw128 => {
-                if let Some(dptr) = dest_ptr { self.emit_sse_binary_128(dptr, args, "pmulhw"); }
-            }
-            IntrinsicOp::Pmaddwd128 => {
-                if let Some(dptr) = dest_ptr { self.emit_sse_binary_128(dptr, args, "pmaddwd"); }
-            }
-            IntrinsicOp::Pcmpgtw128 => {
-                if let Some(dptr) = dest_ptr { self.emit_sse_binary_128(dptr, args, "pcmpgtw"); }
-            }
-            IntrinsicOp::Pcmpgtb128 => {
-                if let Some(dptr) = dest_ptr { self.emit_sse_binary_128(dptr, args, "pcmpgtb"); }
-            }
-            IntrinsicOp::Paddd128 => {
-                if let Some(dptr) = dest_ptr { self.emit_sse_binary_128(dptr, args, "paddd"); }
-            }
-            IntrinsicOp::Psubd128 => {
-                if let Some(dptr) = dest_ptr { self.emit_sse_binary_128(dptr, args, "psubd"); }
-            }
-            IntrinsicOp::Packssdw128 => {
-                if let Some(dptr) = dest_ptr { self.emit_sse_binary_128(dptr, args, "packssdw"); }
-            }
-            IntrinsicOp::Packuswb128 => {
-                if let Some(dptr) = dest_ptr { self.emit_sse_binary_128(dptr, args, "packuswb"); }
-            }
-            IntrinsicOp::Punpcklbw128 => {
-                if let Some(dptr) = dest_ptr { self.emit_sse_binary_128(dptr, args, "punpcklbw"); }
-            }
-            IntrinsicOp::Punpckhbw128 => {
-                if let Some(dptr) = dest_ptr { self.emit_sse_binary_128(dptr, args, "punpckhbw"); }
-            }
-            IntrinsicOp::Punpcklwd128 => {
-                if let Some(dptr) = dest_ptr { self.emit_sse_binary_128(dptr, args, "punpcklwd"); }
-            }
-            IntrinsicOp::Punpckhwd128 => {
-                if let Some(dptr) = dest_ptr { self.emit_sse_binary_128(dptr, args, "punpckhwd"); }
+            // SSE2 binary 128-bit operations
+            IntrinsicOp::Paddw128 | IntrinsicOp::Psubw128 | IntrinsicOp::Pmulhw128
+            | IntrinsicOp::Pmaddwd128 | IntrinsicOp::Pcmpgtw128 | IntrinsicOp::Pcmpgtb128
+            | IntrinsicOp::Paddd128 | IntrinsicOp::Psubd128
+            | IntrinsicOp::Packssdw128 | IntrinsicOp::Packuswb128
+            | IntrinsicOp::Punpcklbw128 | IntrinsicOp::Punpckhbw128
+            | IntrinsicOp::Punpcklwd128 | IntrinsicOp::Punpckhwd128 => {
+                if let Some(dptr) = dest_ptr {
+                    let inst = match op {
+                        IntrinsicOp::Paddw128 => "paddw",
+                        IntrinsicOp::Psubw128 => "psubw",
+                        IntrinsicOp::Pmulhw128 => "pmulhw",
+                        IntrinsicOp::Pmaddwd128 => "pmaddwd",
+                        IntrinsicOp::Pcmpgtw128 => "pcmpgtw",
+                        IntrinsicOp::Pcmpgtb128 => "pcmpgtb",
+                        IntrinsicOp::Paddd128 => "paddd",
+                        IntrinsicOp::Psubd128 => "psubd",
+                        IntrinsicOp::Packssdw128 => "packssdw",
+                        IntrinsicOp::Packuswb128 => "packuswb",
+                        IntrinsicOp::Punpcklbw128 => "punpcklbw",
+                        IntrinsicOp::Punpckhbw128 => "punpckhbw",
+                        IntrinsicOp::Punpcklwd128 => "punpcklwd",
+                        IntrinsicOp::Punpckhwd128 => "punpckhwd",
+                        _ => unreachable!(),
+                    };
+                    self.emit_sse_binary_128(dptr, args, inst);
+                }
             }
 
-            // --- SSE2 shift-by-immediate ---
-            IntrinsicOp::Psllwi128 => {
+            // SSE2 element shift-by-immediate operations
+            IntrinsicOp::Psllwi128 | IntrinsicOp::Psrlwi128 | IntrinsicOp::Psrawi128
+            | IntrinsicOp::Psradi128 | IntrinsicOp::Pslldi128 | IntrinsicOp::Psrldi128 => {
                 if let Some(dptr) = dest_ptr {
-                    self.operand_to_eax(&args[0]);
-                    self.state.emit("    movdqu (%eax), %xmm0");
-                    let imm = Self::operand_to_imm_i64(&args[1]);
-                    self.state.emit_fmt(format_args!("    psllw ${}, %xmm0", imm));
-                    self.operand_to_eax(&Operand::Value(*dptr));
-                    self.state.emit("    movdqu %xmm0, (%eax)");
-                }
-            }
-            IntrinsicOp::Psrlwi128 => {
-                if let Some(dptr) = dest_ptr {
-                    self.operand_to_eax(&args[0]);
-                    self.state.emit("    movdqu (%eax), %xmm0");
-                    let imm = Self::operand_to_imm_i64(&args[1]);
-                    self.state.emit_fmt(format_args!("    psrlw ${}, %xmm0", imm));
-                    self.operand_to_eax(&Operand::Value(*dptr));
-                    self.state.emit("    movdqu %xmm0, (%eax)");
-                }
-            }
-            IntrinsicOp::Psrawi128 => {
-                if let Some(dptr) = dest_ptr {
-                    self.operand_to_eax(&args[0]);
-                    self.state.emit("    movdqu (%eax), %xmm0");
-                    let imm = Self::operand_to_imm_i64(&args[1]);
-                    self.state.emit_fmt(format_args!("    psraw ${}, %xmm0", imm));
-                    self.operand_to_eax(&Operand::Value(*dptr));
-                    self.state.emit("    movdqu %xmm0, (%eax)");
-                }
-            }
-            IntrinsicOp::Psradi128 => {
-                if let Some(dptr) = dest_ptr {
-                    self.operand_to_eax(&args[0]);
-                    self.state.emit("    movdqu (%eax), %xmm0");
-                    let imm = Self::operand_to_imm_i64(&args[1]);
-                    self.state.emit_fmt(format_args!("    psrad ${}, %xmm0", imm));
-                    self.operand_to_eax(&Operand::Value(*dptr));
-                    self.state.emit("    movdqu %xmm0, (%eax)");
-                }
-            }
-            IntrinsicOp::Pslldi128 => {
-                if let Some(dptr) = dest_ptr {
-                    self.operand_to_eax(&args[0]);
-                    self.state.emit("    movdqu (%eax), %xmm0");
-                    let imm = Self::operand_to_imm_i64(&args[1]);
-                    self.state.emit_fmt(format_args!("    pslld ${}, %xmm0", imm));
-                    self.operand_to_eax(&Operand::Value(*dptr));
-                    self.state.emit("    movdqu %xmm0, (%eax)");
-                }
-            }
-            IntrinsicOp::Psrldi128 => {
-                if let Some(dptr) = dest_ptr {
-                    self.operand_to_eax(&args[0]);
-                    self.state.emit("    movdqu (%eax), %xmm0");
-                    let imm = Self::operand_to_imm_i64(&args[1]);
-                    self.state.emit_fmt(format_args!("    psrld ${}, %xmm0", imm));
-                    self.operand_to_eax(&Operand::Value(*dptr));
-                    self.state.emit("    movdqu %xmm0, (%eax)");
+                    let inst = match op {
+                        IntrinsicOp::Psllwi128 => "psllw",
+                        IntrinsicOp::Psrlwi128 => "psrlw",
+                        IntrinsicOp::Psrawi128 => "psraw",
+                        IntrinsicOp::Psradi128 => "psrad",
+                        IntrinsicOp::Pslldi128 => "pslld",
+                        IntrinsicOp::Psrldi128 => "psrld",
+                        _ => unreachable!(),
+                    };
+                    self.emit_sse_unary_imm_128(dptr, args, inst);
                 }
             }
 
@@ -4557,24 +4474,14 @@ impl ArchCodegen for I686Codegen {
                     self.store_eax_to(d);
                 }
             }
-            IntrinsicOp::Pshuflw128 => {
+            IntrinsicOp::Pshuflw128 | IntrinsicOp::Pshufhw128 => {
                 if let Some(dptr) = dest_ptr {
-                    self.operand_to_eax(&args[0]);
-                    self.state.emit("    movdqu (%eax), %xmm0");
-                    let imm = Self::operand_to_imm_i64(&args[1]);
-                    self.state.emit_fmt(format_args!("    pshuflw ${}, %xmm0, %xmm0", imm));
-                    self.operand_to_eax(&Operand::Value(*dptr));
-                    self.state.emit("    movdqu %xmm0, (%eax)");
-                }
-            }
-            IntrinsicOp::Pshufhw128 => {
-                if let Some(dptr) = dest_ptr {
-                    self.operand_to_eax(&args[0]);
-                    self.state.emit("    movdqu (%eax), %xmm0");
-                    let imm = Self::operand_to_imm_i64(&args[1]);
-                    self.state.emit_fmt(format_args!("    pshufhw ${}, %xmm0, %xmm0", imm));
-                    self.operand_to_eax(&Operand::Value(*dptr));
-                    self.state.emit("    movdqu %xmm0, (%eax)");
+                    let inst = match op {
+                        IntrinsicOp::Pshuflw128 => "pshuflw",
+                        IntrinsicOp::Pshufhw128 => "pshufhw",
+                        _ => unreachable!(),
+                    };
+                    self.emit_sse_shuffle_imm_128(dptr, args, inst);
                 }
             }
         }
