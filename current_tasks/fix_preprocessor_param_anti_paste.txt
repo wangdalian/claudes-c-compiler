@@ -1,0 +1,25 @@
+Task: Fix preprocessor macro parameter substitution to use anti-paste guards
+
+Problem: When macro parameters are substituted with their arguments during
+expansion, the resulting text could accidentally create multi-character tokens
+by merging the end of preceding text with the start of the argument. For example,
+#define ADJUST(arr, top, i) arr[top-i+1] expanded with i=-1 would produce
+arr[top--1+1] instead of arr[top- -1+1], causing the lexer to parse top--
+(post-decrement) instead of top - -1 (subtract negative one).
+
+This bug caused Chibi-Scheme compilation to fail on all architectures.
+
+Fix: Changed substitute_params() in macro_defs.rs to use append_with_paste_guard()
+instead of raw push_str() when inserting macro argument text, for all three
+substitution paths (regular params, __VA_ARGS__, and named variadic params).
+
+Also added __builtin_nextafter/nextafterf/nextafterl as libc aliases (needed
+for JerryScript compilation).
+
+Test results:
+- x86: 2990/2990 (100.0%) tests, all projects PASS
+- ARM: 2850/2868 (99.4%) tests, all projects PASS
+- RISC-V: 2848/2859 (99.6%) tests, 11/12 projects PASS (mbedtls pre-existing)
+- i686: 2734/2737 (99.9%) tests, 11/12 projects PASS (mbedtls pre-existing)
+
+Status: in_progress
