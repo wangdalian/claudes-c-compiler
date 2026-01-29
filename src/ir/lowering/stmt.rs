@@ -78,87 +78,13 @@ impl Lowerer {
     }
 
     pub(super) fn lower_local_decl(&mut self, decl: &Declaration) {
-        // Resolve typeof(expr) or __auto_type to a concrete TypeSpecifier.
-        // We only resolve the type_spec; we do NOT clone the declarators because
-        // cloning creates new AST nodes with new ExprIds whose expr_ctype_cache
-        // entries become stale when the clone is dropped, poisoning later lookups
-        // for unrelated expressions that reuse those heap addresses.
-        // TODO: Once ExprId uses counter-based IDs, cloning would produce new
-        // unique IDs and this concern goes away.
-        let resolved_type_spec;
-        let type_spec = if matches!(&decl.type_spec, TypeSpecifier::Typeof(_) | TypeSpecifier::TypeofType(_) | TypeSpecifier::AutoType) {
-            resolved_type_spec = if matches!(&decl.type_spec, TypeSpecifier::AutoType) {
-                // __auto_type: infer type from the first declarator's initializer
-                if let Some(first) = decl.declarators.first() {
-                    if let Some(Initializer::Expr(ref init_expr)) = first.init {
-                        if let Some(ctype) = self.get_expr_ctype(init_expr) {
-                            Self::ctype_to_type_spec(&ctype)
-                        } else {
-                            self.emit_warning(
-                                "could not infer type for '__auto_type'; defaulting to 'int'",
-                                init_expr.span(),
-                            );
-                            TypeSpecifier::Int // fallback
-                        }
-                    } else {
-                        self.emit_warning(
-                            "'__auto_type' requires an initializer; defaulting to 'int'",
-                            decl.span,
-                        );
-                        TypeSpecifier::Int // fallback: no initializer
-                    }
-                } else {
-                    TypeSpecifier::Int
-                }
-            } else {
-                self.resolve_typeof(&decl.type_spec)
-            };
-            &resolved_type_spec
-        } else {
-            &decl.type_spec
-        };
+        let mut resolved_type_spec = None;
+        let type_spec = self.resolve_local_type_spec(decl, &mut resolved_type_spec);
 
         self.register_struct_type(type_spec);
 
         if decl.is_typedef() {
-            for declarator in &decl.declarators {
-                if !declarator.name.is_empty() {
-                    if let Some(fti) = extract_fptr_typedef_info(type_spec, &declarator.derived) {
-                        self.types.func_ptr_typedefs.insert(declarator.name.clone());
-                        self.types.func_ptr_typedef_info.insert(declarator.name.clone(), fti);
-                    }
-                    let mut resolved_ctype = self.build_full_ctype(type_spec, &declarator.derived);
-                    // Apply __attribute__((vector_size(N))): wrap base type in Vector
-                    if let Some(vs) = decl.vector_size {
-                        resolved_ctype = CType::Vector(Box::new(resolved_ctype), vs);
-                    }
-                    self.types.insert_typedef_scoped(declarator.name.clone(), resolved_ctype);
-
-                    // Preserve alignment override from __attribute__((aligned(N))) on the typedef.
-                    // When alignment_sizeof_type is set, recompute sizeof with full layout info.
-                    let effective_alignment = {
-                        let mut align = decl.alignment;
-                        if let Some(ref sizeof_ts) = decl.alignment_sizeof_type {
-                            let real_sizeof = self.sizeof_type(sizeof_ts);
-                            align = Some(align.map_or(real_sizeof, |a| a.max(real_sizeof)));
-                        }
-                        align.or_else(|| {
-                            decl.alignas_type.as_ref().map(|ts| self.alignof_type(ts))
-                        })
-                    };
-                    if let Some(align) = effective_alignment {
-                        self.types.insert_typedef_alignment_scoped(declarator.name.clone(), align);
-                    }
-
-                    // For VLA typedefs (e.g., `typedef char buf[n][m]`), compute the
-                    // runtime sizeof and store it so that `sizeof(buf)` can use it.
-                    if self.func_state.is_some() {
-                        if let Some(vla_size) = self.compute_vla_runtime_size(type_spec, &declarator.derived) {
-                            self.func_mut().insert_vla_typedef_size_scoped(declarator.name.clone(), vla_size);
-                        }
-                    }
-                }
-            }
+            self.lower_local_typedef(decl, type_spec);
             return;
         }
 
@@ -166,48 +92,23 @@ impl Lowerer {
             if declarator.name.is_empty() {
                 continue;
             }
-
-            // Extern declarations reference a global symbol, not a local variable
-            if decl.is_extern()
-                && self.lower_extern_decl(decl, declarator) {
-                    continue;
-                }
-                // Fall through to function declaration handler if it was an extern func decl
-
-            // Block-scope function declarations: `int f(int);` or typedef-based `func_t add;`
+            if decl.is_extern() && self.lower_extern_decl(decl, declarator) {
+                continue;
+            }
             if self.try_lower_block_func_decl(decl, declarator) {
                 continue;
             }
 
-            // Shared declaration analysis
             let mut da = self.analyze_declaration(type_spec, &declarator.derived);
-            // Apply inline __attribute__((vector_size(N))) to non-typedef declarations.
-            // For typedefs, this is handled above; for variables, we must wrap the
-            // CType and adjust sizes/types so the variable is treated as a vector aggregate.
             if let Some(vs) = decl.vector_size {
                 da.apply_vector_size(vs);
             }
             self.fixup_unsized_array(&mut da, type_spec, &declarator.derived, &declarator.init);
 
-            // Detect complex type variables and arrays of complex elements
             let is_complex = !da.is_pointer && !da.is_array && self.is_type_complex(type_spec);
-            let complex_elem_ctype: Option<CType> = if da.is_array && !da.is_pointer {
-                let ctype = self.type_spec_to_ctype(type_spec);
-                match ctype {
-                    CType::ComplexFloat => Some(CType::ComplexFloat),
-                    CType::ComplexDouble => Some(CType::ComplexDouble),
-                    CType::ComplexLongDouble => Some(CType::ComplexLongDouble),
-                    _ => None,
-                }
-            } else {
-                None
-            };
+            let complex_elem_ctype = self.detect_complex_array_elem(type_spec, &da);
 
             if decl.is_static() {
-                // For local static arrays-of-pointers, clear struct_layout so
-                // lower_global_init uses the pointer-array path (Compound with
-                // relocations) instead of the struct byte-serialization path.
-                // This matches the file-scope global handling in lower_top_level_declaration.
                 if da.is_array_of_pointers || da.is_array_of_func_ptrs {
                     da.struct_layout = None;
                     da.is_struct = false;
@@ -222,126 +123,217 @@ impl Lowerer {
                 None
             };
 
-            // Compute explicit alignment from _Alignas / __attribute__((aligned(N)))
-            // once, used both for alloca emission and for _Alignof(var) per C11 6.2.8p3.
-            let explicit_align = {
-                let mut ea = if let Some(ref alignas_ts) = decl.alignas_type {
-                    self.alignof_type(alignas_ts)
-                } else {
-                    decl.alignment.unwrap_or(0)
-                };
-                if let Some(ref sizeof_ts) = decl.alignment_sizeof_type {
-                    ea = ea.max(self.sizeof_type(sizeof_ts));
-                }
-                if let Some(&td_align) = self.typedef_alignment_for_type_spec(type_spec) {
-                    ea = ea.max(td_align);
-                }
-                ea
-            };
+            let explicit_align = self.compute_explicit_alignment(decl, type_spec);
 
-            let alloca;
-            if let Some(vla_size_val) = vla_size {
-                // VLA: allocate dynamically on the stack using DynAlloca.
-                // VLAs must stay at the declaration point (not hoisted) because
-                // their size is computed at runtime.
-                alloca = self.fresh_value();
-                // Save the stack pointer at function level (for goto) if this is the first VLA.
-                if !self.func().has_vla {
-                    self.func_mut().has_vla = true;
-                    let save_val = self.fresh_value();
-                    self.emit(Instruction::StackSave { dest: save_val });
-                    self.func_mut().vla_stack_save = Some(save_val);
-                }
-                // Save the stack pointer at scope level if this is the first VLA in the
-                // current scope. This allows StackRestore at scope exit to reclaim VLA
-                // stack space, preventing stack leaks when VLAs are declared in loops.
-                if let Some(frame) = self.func().scope_stack.last() {
-                    if frame.scope_stack_save.is_none() {
-                        let scope_save = self.fresh_value();
-                        self.emit(Instruction::StackSave { dest: scope_save });
-                        self.func_mut().scope_stack.last_mut().unwrap().scope_stack_save = Some(scope_save);
-                    }
-                }
-                // Use the explicit alignment (with a minimum of 16 for VLAs).
-                let vla_align = explicit_align.max(16);
-                self.emit(Instruction::DynAlloca {
-                    dest: alloca,
-                    size: Operand::Value(vla_size_val),
-                    align: vla_align,
-                });
+            let alloca = if let Some(vla_size_val) = vla_size {
+                self.emit_vla_alloca(vla_size_val, explicit_align)
             } else {
-                // Hoist static-size allocas to the entry block so that variables
-                // whose declarations are skipped by `goto` still have valid
-                // stack slots at runtime.
-                alloca = self.emit_entry_alloca(
+                self.emit_entry_alloca(
                     if da.is_array || da.is_struct || is_complex { IrType::Ptr } else { da.var_ty },
                     da.actual_alloc_size,
                     explicit_align,
                     decl.is_volatile(),
-                );
-            }
-            let mut local_info = LocalInfo::from_analysis(&da, alloca, decl.is_const());
-            local_info.var.address_space = decl.address_space;
-            // Store explicit alignment so _Alignof(var) returns the correct
-            // alignment per C11 6.2.8p3.
-            if explicit_align > 0 {
-                local_info.var.explicit_alignment = Some(explicit_align);
-            }
-            local_info.vla_size = vla_size;
-            // For local VLAs with multiple dimensions, compute runtime strides
-            // so that subscript operations use the correct element sizes.
-            if vla_size.is_some() {
-                let strides = self.compute_vla_local_strides(type_spec, &declarator.derived);
-                if !strides.is_empty() {
-                    local_info.vla_strides = strides;
-                }
-            }
-            local_info.asm_register = declarator.attrs.asm_register.clone();
-            local_info.asm_register_has_init = declarator.attrs.asm_register.is_some() && declarator.init.is_some();
-            local_info.cleanup_fn = declarator.attrs.cleanup_fn.clone();
-            // Register cleanup variable in the current scope frame for scope-exit cleanup
-            if let Some(ref cleanup_fn_name) = declarator.attrs.cleanup_fn {
-                if let Some(frame) = self.func_mut().scope_stack.last_mut() {
-                    frame.cleanup_vars.push((cleanup_fn_name.clone(), alloca));
-                }
-            }
-            self.insert_local_scoped(declarator.name.clone(), local_info);
+                )
+            };
 
-            // Track function pointer return and param types
-            for d in &declarator.derived {
-                if let DerivedDeclarator::FunctionPointer(params, _) = d {
-                    let ret_ty = self.type_spec_to_ir(type_spec);
-                    let param_tys: Vec<IrType> = params.iter().map(|p| {
-                        self.type_spec_to_ir(&p.type_spec)
-                    }).collect();
-                    self.func_meta.ptr_sigs.insert(declarator.name.clone(), FuncSig::for_ptr(ret_ty, param_tys));
-                    break;
-                }
-            }
+            self.register_local_var(decl, declarator, type_spec, &da, alloca, explicit_align, vla_size);
+            self.track_fptr_sig(declarator, type_spec);
 
             if let Some(ref init) = declarator.init {
-                match init {
-                    Initializer::Expr(expr) => {
-                        // Track const values before lowering (needed for VLA sizes)
-                        if decl.is_const() && !da.is_pointer && !da.is_array && !da.is_struct && !is_complex {
-                            if let Some(const_val) = self.eval_const_expr(expr) {
-                                if let Some(ival) = self.const_to_i64(&const_val) {
-                                    self.insert_const_local_scoped(declarator.name.clone(), ival);
-                                }
-                            }
-                        }
-                        self.lower_local_init_expr(expr, alloca, &da, is_complex, decl);
-                    }
-                    Initializer::List(items) => {
-                        self.lower_local_init_list(
-                            items, alloca, &da, is_complex, &complex_elem_ctype,
-                            decl, &declarator.name,
+                self.lower_local_var_init(init, decl, declarator, &da, alloca, is_complex, &complex_elem_ctype);
+            }
+        }
+    }
+
+    /// Resolve typeof/auto_type to a concrete TypeSpecifier, or return the original.
+    fn resolve_local_type_spec<'a>(
+        &mut self, decl: &'a Declaration, resolved: &'a mut Option<TypeSpecifier>,
+    ) -> &'a TypeSpecifier {
+        if !matches!(&decl.type_spec, TypeSpecifier::Typeof(_) | TypeSpecifier::TypeofType(_) | TypeSpecifier::AutoType) {
+            return &decl.type_spec;
+        }
+        let ts = if matches!(&decl.type_spec, TypeSpecifier::AutoType) {
+            if let Some(first) = decl.declarators.first() {
+                if let Some(Initializer::Expr(ref init_expr)) = first.init {
+                    if let Some(ctype) = self.get_expr_ctype(init_expr) {
+                        Self::ctype_to_type_spec(&ctype)
+                    } else {
+                        self.emit_warning(
+                            "could not infer type for '__auto_type'; defaulting to 'int'",
+                            init_expr.span(),
                         );
+                        TypeSpecifier::Int
                     }
+                } else {
+                    self.emit_warning(
+                        "'__auto_type' requires an initializer; defaulting to 'int'",
+                        decl.span,
+                    );
+                    TypeSpecifier::Int
+                }
+            } else {
+                TypeSpecifier::Int
+            }
+        } else {
+            self.resolve_typeof(&decl.type_spec)
+        };
+        *resolved = Some(ts);
+        resolved.as_ref().unwrap()
+    }
+
+    fn lower_local_typedef(&mut self, decl: &Declaration, type_spec: &TypeSpecifier) {
+        for declarator in &decl.declarators {
+            if declarator.name.is_empty() {
+                continue;
+            }
+            if let Some(fti) = extract_fptr_typedef_info(type_spec, &declarator.derived) {
+                self.types.func_ptr_typedefs.insert(declarator.name.clone());
+                self.types.func_ptr_typedef_info.insert(declarator.name.clone(), fti);
+            }
+            let mut resolved_ctype = self.build_full_ctype(type_spec, &declarator.derived);
+            if let Some(vs) = decl.vector_size {
+                resolved_ctype = CType::Vector(Box::new(resolved_ctype), vs);
+            }
+            self.types.insert_typedef_scoped(declarator.name.clone(), resolved_ctype);
+
+            let effective_alignment = {
+                let mut align = decl.alignment;
+                if let Some(ref sizeof_ts) = decl.alignment_sizeof_type {
+                    let real_sizeof = self.sizeof_type(sizeof_ts);
+                    align = Some(align.map_or(real_sizeof, |a| a.max(real_sizeof)));
+                }
+                align.or_else(|| {
+                    decl.alignas_type.as_ref().map(|ts| self.alignof_type(ts))
+                })
+            };
+            if let Some(align) = effective_alignment {
+                self.types.insert_typedef_alignment_scoped(declarator.name.clone(), align);
+            }
+            if self.func_state.is_some() {
+                if let Some(vla_size) = self.compute_vla_runtime_size(type_spec, &declarator.derived) {
+                    self.func_mut().insert_vla_typedef_size_scoped(declarator.name.clone(), vla_size);
                 }
             }
         }
+    }
 
+    fn detect_complex_array_elem(&self, type_spec: &TypeSpecifier, da: &DeclAnalysis) -> Option<CType> {
+        if da.is_array && !da.is_pointer {
+            let ctype = self.type_spec_to_ctype(type_spec);
+            match ctype {
+                CType::ComplexFloat => Some(CType::ComplexFloat),
+                CType::ComplexDouble => Some(CType::ComplexDouble),
+                CType::ComplexLongDouble => Some(CType::ComplexLongDouble),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    fn compute_explicit_alignment(&self, decl: &Declaration, type_spec: &TypeSpecifier) -> usize {
+        let mut ea = if let Some(ref alignas_ts) = decl.alignas_type {
+            self.alignof_type(alignas_ts)
+        } else {
+            decl.alignment.unwrap_or(0)
+        };
+        if let Some(ref sizeof_ts) = decl.alignment_sizeof_type {
+            ea = ea.max(self.sizeof_type(sizeof_ts));
+        }
+        if let Some(&td_align) = self.typedef_alignment_for_type_spec(type_spec) {
+            ea = ea.max(td_align);
+        }
+        ea
+    }
+
+    /// Emit VLA dynamic alloca with stack save at function and scope level.
+    fn emit_vla_alloca(&mut self, vla_size_val: Value, explicit_align: usize) -> Value {
+        let alloca = self.fresh_value();
+        if !self.func().has_vla {
+            self.func_mut().has_vla = true;
+            let save_val = self.fresh_value();
+            self.emit(Instruction::StackSave { dest: save_val });
+            self.func_mut().vla_stack_save = Some(save_val);
+        }
+        if let Some(frame) = self.func().scope_stack.last() {
+            if frame.scope_stack_save.is_none() {
+                let scope_save = self.fresh_value();
+                self.emit(Instruction::StackSave { dest: scope_save });
+                self.func_mut().scope_stack.last_mut().unwrap().scope_stack_save = Some(scope_save);
+            }
+        }
+        let vla_align = explicit_align.max(16);
+        self.emit(Instruction::DynAlloca {
+            dest: alloca,
+            size: Operand::Value(vla_size_val),
+            align: vla_align,
+        });
+        alloca
+    }
+
+    fn register_local_var(
+        &mut self, decl: &Declaration, declarator: &InitDeclarator,
+        type_spec: &TypeSpecifier, da: &DeclAnalysis, alloca: Value,
+        explicit_align: usize, vla_size: Option<Value>,
+    ) {
+        let mut local_info = LocalInfo::from_analysis(da, alloca, decl.is_const());
+        local_info.var.address_space = decl.address_space;
+        if explicit_align > 0 {
+            local_info.var.explicit_alignment = Some(explicit_align);
+        }
+        local_info.vla_size = vla_size;
+        if vla_size.is_some() {
+            let strides = self.compute_vla_local_strides(type_spec, &declarator.derived);
+            if !strides.is_empty() {
+                local_info.vla_strides = strides;
+            }
+        }
+        local_info.asm_register = declarator.attrs.asm_register.clone();
+        local_info.asm_register_has_init = declarator.attrs.asm_register.is_some() && declarator.init.is_some();
+        local_info.cleanup_fn = declarator.attrs.cleanup_fn.clone();
+        if let Some(ref cleanup_fn_name) = declarator.attrs.cleanup_fn {
+            if let Some(frame) = self.func_mut().scope_stack.last_mut() {
+                frame.cleanup_vars.push((cleanup_fn_name.clone(), alloca));
+            }
+        }
+        self.insert_local_scoped(declarator.name.clone(), local_info);
+    }
+
+    fn track_fptr_sig(&mut self, declarator: &InitDeclarator, type_spec: &TypeSpecifier) {
+        for d in &declarator.derived {
+            if let DerivedDeclarator::FunctionPointer(params, _) = d {
+                let ret_ty = self.type_spec_to_ir(type_spec);
+                let param_tys: Vec<IrType> = params.iter().map(|p| {
+                    self.type_spec_to_ir(&p.type_spec)
+                }).collect();
+                self.func_meta.ptr_sigs.insert(declarator.name.clone(), FuncSig::for_ptr(ret_ty, param_tys));
+                break;
+            }
+        }
+    }
+
+    fn lower_local_var_init(
+        &mut self, init: &Initializer, decl: &Declaration, declarator: &InitDeclarator,
+        da: &DeclAnalysis, alloca: Value, is_complex: bool, complex_elem_ctype: &Option<CType>,
+    ) {
+        match init {
+            Initializer::Expr(expr) => {
+                if decl.is_const() && !da.is_pointer && !da.is_array && !da.is_struct && !is_complex {
+                    if let Some(const_val) = self.eval_const_expr(expr) {
+                        if let Some(ival) = self.const_to_i64(&const_val) {
+                            self.insert_const_local_scoped(declarator.name.clone(), ival);
+                        }
+                    }
+                }
+                self.lower_local_init_expr(expr, alloca, da, is_complex, decl);
+            }
+            Initializer::List(items) => {
+                self.lower_local_init_list(
+                    items, alloca, da, is_complex, complex_elem_ctype,
+                    decl, &declarator.name,
+                );
+            }
+        }
     }
 
     /// Handle static local variable declarations: emit as globals with mangled names.

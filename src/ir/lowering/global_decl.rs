@@ -55,7 +55,7 @@ impl Lowerer {
                 RedeclResult::Proceed { prior_was_weak } => prior_was_weak,
             };
 
-            let mut da = self.prepare_global_analysis(decl, declarator);
+            let da = self.prepare_global_analysis(decl, declarator);
 
             let is_extern_decl = decl.is_extern() && declarator.init.is_none();
 
