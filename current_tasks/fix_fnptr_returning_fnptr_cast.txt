@@ -1,0 +1,19 @@
+Task: Fix parser to handle casts to function-pointer-returning-function-pointer types
+
+Problem: The parser fails to parse cast expressions like:
+  (void(*(*)(void*))(void))p
+which casts p to a "pointer to function taking void* and returning void(*)(void)".
+
+This blocks sqlite3 from compiling (17 parse errors on a single line using dlsym).
+
+The parser correctly handles:
+  (void(*)(void))p              -- function pointer cast
+  (void*(*)(int))p              -- function pointer returning pointer
+But NOT:
+  (void(*(*)(void*))(void))p    -- function pointer returning function pointer
+
+Fix: The cast expression parser needs to handle the abstract declarator suffix
+that follows the inner function pointer, specifically the trailing parameter list
+(void) which specifies the return type's parameters.
+
+Status: in_progress
