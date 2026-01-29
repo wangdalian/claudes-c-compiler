@@ -241,162 +241,165 @@ impl X86Codegen {
     /// (trait method) and the i128 special-case paths in `emit_cast`.
     pub(super) fn emit_cast_instrs_x86(&mut self, from_ty: IrType, to_ty: IrType) {
         // Handle F128 (long double) casts specially using x87 FPU instructions.
-        // The generic classify_cast() reduces F128 to F64, losing the extra precision
-        // that x87 80-bit extended precision provides. For integer <-> F128 casts,
-        // we must use x87 FILD/FISTTP to preserve full 64-bit integer precision.
         if to_ty == IrType::F128 && !from_ty.is_float() {
-            // Integer -> F128: use x87 FILD for exact conversion, then store as f64 in rax.
-            // We use subq/movq/addq instead of push/pop to avoid peephole push/pop elimination.
-            if from_ty.is_signed() || from_ty.size() < 8 {
-                // For signed types (or unsigned types smaller than 8 bytes that fit in signed i64):
-                // Sign/zero-extend to 64-bit first if needed
-                if from_ty.size() < 8 {
-                    if from_ty.is_unsigned() {
-                        match from_ty {
-                            IrType::U8 => self.state.emit("    movzbq %al, %rax"),
-                            IrType::U16 => self.state.emit("    movzwq %ax, %rax"),
-                            IrType::U32 => self.state.emit("    movl %eax, %eax"),
-                            _ => {}
-                        }
-                    } else {
-                        match from_ty {
-                            IrType::I8 => self.state.emit("    movsbq %al, %rax"),
-                            IrType::I16 => self.state.emit("    movswq %ax, %rax"),
-                            IrType::I32 => self.state.emit("    cltq"),
-                            _ => {}
-                        }
-                    }
-                }
-                // Store i64 to stack scratch space, FILD loads it into x87, FSTPL stores as f64
-                self.state.emit("    subq $8, %rsp");
-                self.state.emit("    movq %rax, (%rsp)");
-                self.state.emit("    fildq (%rsp)");
-                self.state.emit("    fstpl (%rsp)");
-                self.state.emit("    movq (%rsp), %rax");
-                self.state.emit("    addq $8, %rsp");
-            } else {
-                // Unsigned 64-bit: FILD treats as signed, so handle high-bit case.
-                // If value < 2^63, FILD works directly. Otherwise, use shift+round trick.
-                let big_label = self.state.fresh_label("u2ld_big");
-                let done_label = self.state.fresh_label("u2ld_done");
-                self.state.emit("    testq %rax, %rax");
-                self.state.out.emit_jcc_label("    js", &big_label);
-                // Positive (< 2^63): FILD directly
-                self.state.emit("    subq $8, %rsp");
-                self.state.emit("    movq %rax, (%rsp)");
-                self.state.emit("    fildq (%rsp)");
-                self.state.emit("    fstpl (%rsp)");
-                self.state.emit("    movq (%rsp), %rax");
-                self.state.emit("    addq $8, %rsp");
-                self.state.out.emit_jmp_label(&done_label);
-                self.state.out.emit_named_label(&big_label);
-                // High bit set: split into halved value + rounding bit, then double
-                self.state.emit("    movq %rax, %rcx");
-                self.state.emit("    shrq $1, %rax");
-                self.state.emit("    andq $1, %rcx");
-                self.state.emit("    orq %rcx, %rax");
-                self.state.emit("    subq $8, %rsp");
-                self.state.emit("    movq %rax, (%rsp)");
-                self.state.emit("    fildq (%rsp)");
-                self.state.emit("    fld %st(0)");          // duplicate ST0
-                self.state.emit("    faddp %st, %st(1)");   // ST0 = ST0 + ST1, pop = doubled value
-                self.state.emit("    fstpl (%rsp)");
-                self.state.emit("    movq (%rsp), %rax");
-                self.state.emit("    addq $8, %rsp");
-                self.state.out.emit_named_label(&done_label);
-            }
+            self.emit_int_to_f128_cast(from_ty);
             return;
         }
         if from_ty == IrType::F128 && !to_ty.is_float() {
-            // F128 -> Integer: use x87 FISTTP for truncation toward zero.
-            // rax holds f64 bits. Load as f64 into x87, then FISTTP to integer.
-            // We use subq/movq/addq instead of push/pop to avoid peephole elimination.
-            if to_ty.is_signed() || to_ty == IrType::Ptr {
-                self.state.emit("    subq $8, %rsp");
-                self.state.emit("    movq %rax, (%rsp)");
-                self.state.emit("    fldl (%rsp)");
-                self.state.emit("    fisttpq (%rsp)");
-                self.state.emit("    movq (%rsp), %rax");
-                self.state.emit("    addq $8, %rsp");
-                // Narrow if target is smaller than 64-bit
-                if to_ty.size() < 8 && to_ty != IrType::Ptr {
-                    match to_ty {
-                        IrType::I8 => self.state.emit("    movsbq %al, %rax"),
-                        IrType::I16 => self.state.emit("    movswq %ax, %rax"),
-                        IrType::I32 => self.state.emit("    movslq %eax, %rax"),
-                        _ => {}
-                    }
-                }
-            } else {
-                // F128 -> unsigned integer
-                if to_ty == IrType::U64 {
-                    // Handle values >= 2^63 that overflow signed FISTTP
-                    let big_label = self.state.fresh_label("ld2u_big");
-                    let done_label = self.state.fresh_label("ld2u_done");
-                    // Load f64 into x87 and compare with 2^63
-                    self.state.emit("    subq $8, %rsp");
-                    self.state.emit("    movq %rax, (%rsp)");
-                    self.state.emit("    fldl (%rsp)");
-                    // Load 2^63 as f64 for comparison
-                    self.state.emit("    movabsq $4890909195324358656, %rcx"); // 2^63 as f64 bits
-                    self.state.emit("    movq %rcx, (%rsp)");
-                    self.state.emit("    fldl (%rsp)");   // ST0 = 2^63, ST1 = value
-                    self.state.emit("    fcomip %st(1), %st");  // compare and pop 2^63
-                    self.state.out.emit_jcc_label("    jbe", &big_label); // if 2^63 <= value
-                    // Small case: value < 2^63
-                    self.state.emit("    fisttpq (%rsp)");
-                    self.state.emit("    movq (%rsp), %rax");
-                    self.state.emit("    addq $8, %rsp");
-                    self.state.out.emit_jmp_label(&done_label);
-                    // Big case: value >= 2^63
-                    self.state.out.emit_named_label(&big_label);
-                    self.state.emit("    movabsq $4890909195324358656, %rcx");
-                    self.state.emit("    movq %rcx, (%rsp)");
-                    self.state.emit("    fldl (%rsp)");   // ST0 = 2^63, ST1 = value
-                    self.state.emit("    fsubrp %st, %st(1)"); // ST0 = value - 2^63
-                    self.state.emit("    fisttpq (%rsp)");
-                    self.state.emit("    movq (%rsp), %rax");
-                    self.state.emit("    addq $8, %rsp");
-                    self.state.emit("    movabsq $9223372036854775808, %rcx");
-                    self.state.emit("    addq %rcx, %rax");
-                    self.state.out.emit_named_label(&done_label);
-                } else {
-                    // Smaller unsigned types: FISTTP then truncate
-                    self.state.emit("    subq $8, %rsp");
-                    self.state.emit("    movq %rax, (%rsp)");
-                    self.state.emit("    fldl (%rsp)");
-                    self.state.emit("    fisttpq (%rsp)");
-                    self.state.emit("    movq (%rsp), %rax");
-                    self.state.emit("    addq $8, %rsp");
-                    match to_ty {
-                        IrType::U8 => self.state.emit("    movzbq %al, %rax"),
-                        IrType::U16 => self.state.emit("    movzwq %ax, %rax"),
-                        IrType::U32 => self.state.emit("    movl %eax, %eax"),
-                        _ => {}
-                    }
-                }
-            }
+            self.emit_f128_to_int_cast(to_ty);
             return;
         }
         if from_ty == IrType::F128 && to_ty == IrType::F32 {
-            // F128 -> F32: load f64 into x87, convert to f32
-            self.state.emit("    subq $8, %rsp");
-            self.state.emit("    movq %rax, (%rsp)");
-            self.state.emit("    fldl (%rsp)");
-            self.state.emit("    fstps (%rsp)");
-            self.state.emit("    movl (%rsp), %eax");
-            self.state.emit("    addq $8, %rsp");
+            self.emit_f128_to_f32_cast();
             return;
         }
         if from_ty == IrType::F32 && to_ty == IrType::F128 {
-            // F32 -> F128: widen f32 to f64 (same as F32->F64 since F128 is stored as f64 in regs)
             self.state.emit("    movd %eax, %xmm0");
             self.state.emit("    cvtss2sd %xmm0, %xmm0");
             self.state.emit("    movq %xmm0, %rax");
             return;
         }
-        // Note: F64 <-> F128 falls through to classify_cast() which returns Noop,
-        // since F128 is stored as f64 bit-pattern in registers. This is correct.
+        // F64 <-> F128 falls through to Noop since F128 is stored as f64 bit-pattern.
+        self.emit_generic_cast(from_ty, to_ty);
+    }
+
+    /// Emit x87 FILD-based integer -> F128 conversion.
+    fn emit_int_to_f128_cast(&mut self, from_ty: IrType) {
+        if from_ty.is_signed() || from_ty.size() < 8 {
+            if from_ty.size() < 8 {
+                self.emit_extend_to_rax(from_ty);
+            }
+            self.emit_fild_to_f64_via_stack();
+        } else {
+            // Unsigned 64-bit: FILD treats as signed, handle high-bit case.
+            let big_label = self.state.fresh_label("u2ld_big");
+            let done_label = self.state.fresh_label("u2ld_done");
+            self.state.emit("    testq %rax, %rax");
+            self.state.out.emit_jcc_label("    js", &big_label);
+            self.emit_fild_to_f64_via_stack();
+            self.state.out.emit_jmp_label(&done_label);
+            self.state.out.emit_named_label(&big_label);
+            // High bit set: split into halved value + rounding bit, then double
+            self.state.emit("    movq %rax, %rcx");
+            self.state.emit("    shrq $1, %rax");
+            self.state.emit("    andq $1, %rcx");
+            self.state.emit("    orq %rcx, %rax");
+            self.state.emit("    subq $8, %rsp");
+            self.state.emit("    movq %rax, (%rsp)");
+            self.state.emit("    fildq (%rsp)");
+            self.state.emit("    fld %st(0)");
+            self.state.emit("    faddp %st, %st(1)");
+            self.state.emit("    fstpl (%rsp)");
+            self.state.emit("    movq (%rsp), %rax");
+            self.state.emit("    addq $8, %rsp");
+            self.state.out.emit_named_label(&done_label);
+        }
+    }
+
+    /// Emit x87 FISTTP-based F128 -> integer conversion.
+    fn emit_f128_to_int_cast(&mut self, to_ty: IrType) {
+        if to_ty.is_signed() || to_ty == IrType::Ptr {
+            self.emit_fisttp_from_f64_via_stack();
+            if to_ty.size() < 8 && to_ty != IrType::Ptr {
+                self.emit_sign_extend_to_rax(to_ty);
+            }
+        } else if to_ty == IrType::U64 {
+            self.emit_f128_to_u64_cast();
+        } else {
+            // Smaller unsigned types: FISTTP then truncate
+            self.emit_fisttp_from_f64_via_stack();
+            self.emit_zero_extend_to_rax(to_ty);
+        }
+    }
+
+    fn emit_f128_to_u64_cast(&mut self) {
+        let big_label = self.state.fresh_label("ld2u_big");
+        let done_label = self.state.fresh_label("ld2u_done");
+        self.state.emit("    subq $8, %rsp");
+        self.state.emit("    movq %rax, (%rsp)");
+        self.state.emit("    fldl (%rsp)");
+        self.state.emit("    movabsq $4890909195324358656, %rcx"); // 2^63 as f64 bits
+        self.state.emit("    movq %rcx, (%rsp)");
+        self.state.emit("    fldl (%rsp)");   // ST0 = 2^63, ST1 = value
+        self.state.emit("    fcomip %st(1), %st");
+        self.state.out.emit_jcc_label("    jbe", &big_label);
+        // Small case: value < 2^63
+        self.state.emit("    fisttpq (%rsp)");
+        self.state.emit("    movq (%rsp), %rax");
+        self.state.emit("    addq $8, %rsp");
+        self.state.out.emit_jmp_label(&done_label);
+        // Big case: value >= 2^63
+        self.state.out.emit_named_label(&big_label);
+        self.state.emit("    movabsq $4890909195324358656, %rcx");
+        self.state.emit("    movq %rcx, (%rsp)");
+        self.state.emit("    fldl (%rsp)");
+        self.state.emit("    fsubrp %st, %st(1)"); // ST0 = value - 2^63
+        self.state.emit("    fisttpq (%rsp)");
+        self.state.emit("    movq (%rsp), %rax");
+        self.state.emit("    addq $8, %rsp");
+        self.state.emit("    movabsq $9223372036854775808, %rcx");
+        self.state.emit("    addq %rcx, %rax");
+        self.state.out.emit_named_label(&done_label);
+    }
+
+    fn emit_f128_to_f32_cast(&mut self) {
+        self.state.emit("    subq $8, %rsp");
+        self.state.emit("    movq %rax, (%rsp)");
+        self.state.emit("    fldl (%rsp)");
+        self.state.emit("    fstps (%rsp)");
+        self.state.emit("    movl (%rsp), %eax");
+        self.state.emit("    addq $8, %rsp");
+    }
+
+    /// Store i64 to stack, FILD, store back as f64 — used for int->F128 small path.
+    fn emit_fild_to_f64_via_stack(&mut self) {
+        self.state.emit("    subq $8, %rsp");
+        self.state.emit("    movq %rax, (%rsp)");
+        self.state.emit("    fildq (%rsp)");
+        self.state.emit("    fstpl (%rsp)");
+        self.state.emit("    movq (%rsp), %rax");
+        self.state.emit("    addq $8, %rsp");
+    }
+
+    /// Load f64 from rax via stack, FISTTP to i64 — used for F128->int.
+    fn emit_fisttp_from_f64_via_stack(&mut self) {
+        self.state.emit("    subq $8, %rsp");
+        self.state.emit("    movq %rax, (%rsp)");
+        self.state.emit("    fldl (%rsp)");
+        self.state.emit("    fisttpq (%rsp)");
+        self.state.emit("    movq (%rsp), %rax");
+        self.state.emit("    addq $8, %rsp");
+    }
+
+    /// Sign or zero-extend a sub-64-bit type in rax to fill the register.
+    fn emit_extend_to_rax(&mut self, ty: IrType) {
+        if ty.is_unsigned() {
+            self.emit_zero_extend_to_rax(ty);
+        } else {
+            self.emit_sign_extend_to_rax(ty);
+        }
+    }
+
+    fn emit_sign_extend_to_rax(&mut self, ty: IrType) {
+        match ty {
+            IrType::I8 => self.state.emit("    movsbq %al, %rax"),
+            IrType::I16 => self.state.emit("    movswq %ax, %rax"),
+            IrType::I32 => self.state.emit("    cltq"),
+            _ => {}
+        }
+    }
+
+    fn emit_zero_extend_to_rax(&mut self, ty: IrType) {
+        match ty {
+            IrType::U8 => self.state.emit("    movzbq %al, %rax"),
+            IrType::U16 => self.state.emit("    movzwq %ax, %rax"),
+            IrType::U32 => self.state.emit("    movl %eax, %eax"),
+            _ => {}
+        }
+    }
+
+    /// Dispatch on classify_cast() for non-F128 cast kinds.
+    fn emit_generic_cast(&mut self, from_ty: IrType, to_ty: IrType) {
         match classify_cast(from_ty, to_ty) {
             CastKind::Noop => {}
 
@@ -408,112 +411,23 @@ impl X86Codegen {
                     self.state.emit("    movd %eax, %xmm0");
                     self.state.emit("    cvttss2siq %xmm0, %rax");
                 }
-                // Truncate to target width for sub-64-bit signed types
-                match to_ty {
-                    IrType::I8 => self.state.emit("    movsbq %al, %rax"),
-                    IrType::I16 => self.state.emit("    movswq %ax, %rax"),
-                    IrType::I32 => self.state.emit("    movslq %eax, %rax"),
-                    _ => {}
-                }
+                self.emit_sign_extend_to_rax(to_ty);
             }
 
             CastKind::FloatToUnsigned { from_f64, to_u64 } => {
-                if from_f64 {
-                    self.state.emit("    movq %rax, %xmm0");
-                    if to_u64 {
-                        // Handle values >= 2^63 that overflow signed conversion
-                        let big_label = self.state.fresh_label("f2u_big");
-                        let done_label = self.state.fresh_label("f2u_done");
-                        self.state.emit("    movabsq $4890909195324358656, %rcx"); // 2^63 as f64 bits
-                        self.state.emit("    movq %rcx, %xmm1");
-                        self.state.emit("    ucomisd %xmm1, %xmm0");
-                        self.state.out.emit_jcc_label("    jae", &big_label);
-                        self.state.emit("    cvttsd2siq %xmm0, %rax");
-                        self.state.out.emit_jmp_label(&done_label);
-                        self.state.out.emit_named_label(&big_label);
-                        self.state.emit("    subsd %xmm1, %xmm0");
-                        self.state.emit("    cvttsd2siq %xmm0, %rax");
-                        self.state.emit("    movabsq $9223372036854775808, %rcx"); // 2^63 as int
-                        self.state.emit("    addq %rcx, %rax");
-                        self.state.out.emit_named_label(&done_label);
-                    } else {
-                        self.state.emit("    cvttsd2siq %xmm0, %rax");
-                    }
-                } else {
-                    self.state.emit("    movd %eax, %xmm0");
-                    self.state.emit("    cvttss2siq %xmm0, %rax");
-                }
-                // Truncate to target width for sub-64-bit unsigned types
-                if !to_u64 {
-                    match to_ty {
-                        IrType::U8 => self.state.emit("    movzbq %al, %rax"),
-                        IrType::U16 => self.state.emit("    movzwq %ax, %rax"),
-                        IrType::U32 => self.state.emit("    movl %eax, %eax"),
-                        _ => {}
-                    }
-                }
+                self.emit_float_to_unsigned(from_f64, to_u64, to_ty);
             }
 
             CastKind::SignedToFloat { to_f64, from_ty } => {
-                // For sub-64-bit signed sources, sign-extend to 64 bits first.
-                // The value in rax may be zero-extended (e.g., from a U32->I32 noop cast),
-                // so we need explicit sign-extension before the 64-bit int-to-float conversion.
-                match from_ty.size() {
-                    1 => self.state.emit("    movsbq %al, %rax"),
-                    2 => self.state.emit("    movswq %ax, %rax"),
-                    4 => self.state.emit("    movslq %eax, %rax"),
-                    _ => {} // 8 bytes (I64): already full width
-                }
-                if to_f64 {
-                    self.state.emit("    cvtsi2sdq %rax, %xmm0");
-                    self.state.emit("    movq %xmm0, %rax");
-                } else {
-                    self.state.emit("    cvtsi2ssq %rax, %xmm0");
-                    self.state.emit("    movd %xmm0, %eax");
-                }
+                self.emit_sign_extend_to_rax(from_ty);
+                self.emit_int_to_float_conv(to_f64);
             }
 
             CastKind::UnsignedToFloat { to_f64, from_ty } => {
-                let from_u64 = from_ty == IrType::U64;
-                if from_u64 {
-                    // Handle U64 values >= 2^63 via shift+round trick
-                    let big_label = self.state.fresh_label("u2f_big");
-                    let done_label = self.state.fresh_label("u2f_done");
-                    self.state.emit("    testq %rax, %rax");
-                    self.state.out.emit_jcc_label("    js", &big_label);
-                    if to_f64 {
-                        self.state.emit("    cvtsi2sdq %rax, %xmm0");
-                    } else {
-                        self.state.emit("    cvtsi2ssq %rax, %xmm0");
-                    }
-                    self.state.out.emit_jmp_label(&done_label);
-                    self.state.out.emit_named_label(&big_label);
-                    self.state.emit("    movq %rax, %rcx");
-                    self.state.emit("    shrq $1, %rax");
-                    self.state.emit("    andq $1, %rcx");
-                    self.state.emit("    orq %rcx, %rax");
-                    if to_f64 {
-                        self.state.emit("    cvtsi2sdq %rax, %xmm0");
-                        self.state.emit("    addsd %xmm0, %xmm0");
-                    } else {
-                        self.state.emit("    cvtsi2ssq %rax, %xmm0");
-                        self.state.emit("    addss %xmm0, %xmm0");
-                    }
-                    self.state.out.emit_named_label(&done_label);
-                    if to_f64 {
-                        self.state.emit("    movq %xmm0, %rax");
-                    } else {
-                        self.state.emit("    movd %xmm0, %eax");
-                    }
+                if from_ty == IrType::U64 {
+                    self.emit_u64_to_float(to_f64);
                 } else {
-                    // U32 or smaller: zero-extended in rax, fits in signed i64
-                    if to_f64 {
-                        self.state.emit("    cvtsi2sdq %rax, %xmm0");
-                        self.state.emit("    movq %xmm0, %rax");
-                    } else {
-                        self.state.emit("    cvtsi2ssq %rax, %xmm0");
-                        self.state.emit("    movd %xmm0, %eax");
-                    }
+                    self.emit_int_to_float_conv(to_f64);
                 }
             }
 
@@ -530,23 +444,12 @@ impl X86Codegen {
             }
 
             CastKind::SignedToUnsignedSameSize { to_ty } => {
-                // Clear sign-extended upper bits
-                match to_ty {
-                    IrType::U8 => self.state.emit("    movzbq %al, %rax"),
-                    IrType::U16 => self.state.emit("    movzwq %ax, %rax"),
-                    IrType::U32 => self.state.emit("    movl %eax, %eax"),
-                    _ => {} // U64: no masking needed
-                }
+                self.emit_zero_extend_to_rax(to_ty);
             }
 
             CastKind::IntWiden { from_ty, to_ty } => {
                 if from_ty.is_unsigned() {
-                    match from_ty {
-                        IrType::U8 => self.state.emit("    movzbq %al, %rax"),
-                        IrType::U16 => self.state.emit("    movzwq %ax, %rax"),
-                        IrType::U32 => self.state.emit("    movl %eax, %eax"),
-                        _ => {}
-                    }
+                    self.emit_zero_extend_to_rax(from_ty);
                 } else if to_ty == IrType::U32 {
                     match from_ty {
                         IrType::I8 => self.state.emit("    movsbl %al, %eax"),
@@ -554,38 +457,97 @@ impl X86Codegen {
                         _ => {}
                     }
                 } else {
-                    match from_ty {
-                        IrType::I8 => self.state.emit("    movsbq %al, %rax"),
-                        IrType::I16 => self.state.emit("    movswq %ax, %rax"),
-                        IrType::I32 => self.state.emit("    cltq"),
-                        _ => {}
-                    }
+                    self.emit_sign_extend_to_rax(from_ty);
                 }
             }
 
             CastKind::IntNarrow { to_ty } => {
-                // Truncate then sign/zero-extend to fill 64-bit register correctly
-                match to_ty {
-                    IrType::I8 => self.state.emit("    movsbq %al, %rax"),
-                    IrType::U8 => self.state.emit("    movzbq %al, %rax"),
-                    IrType::I16 => self.state.emit("    movswq %ax, %rax"),
-                    IrType::U16 => self.state.emit("    movzwq %ax, %rax"),
-                    IrType::I32 => self.state.emit("    movslq %eax, %rax"),
-                    IrType::U32 => self.state.emit("    movl %eax, %eax"),
-                    _ => {}
+                if to_ty.is_signed() {
+                    self.emit_sign_extend_to_rax(to_ty);
+                } else {
+                    self.emit_zero_extend_to_rax(to_ty);
                 }
             }
 
-            // F128 cast kinds: unreachable on x86 because classify_cast() reduces
-            // F128 to F64, and F128-specific casts are handled before this match.
             CastKind::SignedToF128 { .. }
             | CastKind::UnsignedToF128 { .. }
             | CastKind::F128ToSigned { .. }
             | CastKind::F128ToUnsigned { .. }
             | CastKind::FloatToF128 { .. }
-            | CastKind::F128ToFloat { .. } => {
-                // On x86, F128 is x87 80-bit and handled by special-case code above.
+            | CastKind::F128ToFloat { .. } => {}
+        }
+    }
+
+    fn emit_float_to_unsigned(&mut self, from_f64: bool, to_u64: bool, to_ty: IrType) {
+        if from_f64 {
+            self.state.emit("    movq %rax, %xmm0");
+            if to_u64 {
+                let big_label = self.state.fresh_label("f2u_big");
+                let done_label = self.state.fresh_label("f2u_done");
+                self.state.emit("    movabsq $4890909195324358656, %rcx");
+                self.state.emit("    movq %rcx, %xmm1");
+                self.state.emit("    ucomisd %xmm1, %xmm0");
+                self.state.out.emit_jcc_label("    jae", &big_label);
+                self.state.emit("    cvttsd2siq %xmm0, %rax");
+                self.state.out.emit_jmp_label(&done_label);
+                self.state.out.emit_named_label(&big_label);
+                self.state.emit("    subsd %xmm1, %xmm0");
+                self.state.emit("    cvttsd2siq %xmm0, %rax");
+                self.state.emit("    movabsq $9223372036854775808, %rcx");
+                self.state.emit("    addq %rcx, %rax");
+                self.state.out.emit_named_label(&done_label);
+            } else {
+                self.state.emit("    cvttsd2siq %xmm0, %rax");
             }
+        } else {
+            self.state.emit("    movd %eax, %xmm0");
+            self.state.emit("    cvttss2siq %xmm0, %rax");
+        }
+        if !to_u64 {
+            self.emit_zero_extend_to_rax(to_ty);
+        }
+    }
+
+    /// Convert i64 in rax to float (f32 or f64), result back in rax.
+    fn emit_int_to_float_conv(&mut self, to_f64: bool) {
+        if to_f64 {
+            self.state.emit("    cvtsi2sdq %rax, %xmm0");
+            self.state.emit("    movq %xmm0, %rax");
+        } else {
+            self.state.emit("    cvtsi2ssq %rax, %xmm0");
+            self.state.emit("    movd %xmm0, %eax");
+        }
+    }
+
+    /// Convert U64 in rax to float, handling values >= 2^63 via shift+round.
+    fn emit_u64_to_float(&mut self, to_f64: bool) {
+        let big_label = self.state.fresh_label("u2f_big");
+        let done_label = self.state.fresh_label("u2f_done");
+        self.state.emit("    testq %rax, %rax");
+        self.state.out.emit_jcc_label("    js", &big_label);
+        if to_f64 {
+            self.state.emit("    cvtsi2sdq %rax, %xmm0");
+        } else {
+            self.state.emit("    cvtsi2ssq %rax, %xmm0");
+        }
+        self.state.out.emit_jmp_label(&done_label);
+        self.state.out.emit_named_label(&big_label);
+        self.state.emit("    movq %rax, %rcx");
+        self.state.emit("    shrq $1, %rax");
+        self.state.emit("    andq $1, %rcx");
+        self.state.emit("    orq %rcx, %rax");
+        if to_f64 {
+            self.state.emit("    cvtsi2sdq %rax, %xmm0");
+            self.state.emit("    addsd %xmm0, %xmm0");
+        } else {
+            self.state.emit("    cvtsi2ssq %rax, %xmm0");
+            self.state.emit("    addss %xmm0, %xmm0");
+        }
+        self.state.out.emit_named_label(&done_label);
+        if to_f64 {
+            self.state.emit("    movq %xmm0, %rax");
+        } else {
+            self.state.emit("    movd %xmm0, %eax");
         }
     }
 

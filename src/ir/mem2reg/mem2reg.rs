@@ -22,6 +22,7 @@ use crate::ir::ir::{
     Value,
 };
 use crate::ir::analysis;
+use crate::backend::inline_asm::constraint_is_memory_only;
 use crate::common::types::IrType;
 
 /// Maximum byte size for an alloca to be considered promotable to an SSA register.
@@ -275,11 +276,24 @@ fn find_promotable_allocas(func: &IrFunction, promote_params: bool) -> Vec<Alloc
                 // InlineAsm: output pointers act as definitions (like Store),
                 // while input operand Values that are allocas disqualify them
                 // (the address is taken for memory/address constraints).
+                // Memory-only output constraints (=m, =o, =V, =p) also disqualify
+                // the alloca because the inline asm writes directly to the alloca's
+                // stack memory through the template (the backend substitutes the
+                // stack-relative address like -8(%rbp) for the operand).
                 Instruction::InlineAsm { outputs, inputs, .. } => {
-                    // Output pointers: treat as definitions of the alloca
-                    for (_, ptr, _) in outputs {
-                        if candidate_set.contains(&ptr.0) && !disqualified.contains(&ptr.0) {
-                            def_blocks.entry(ptr.0).or_default().insert(block_idx);
+                    // Output pointers: treat as definitions of the alloca,
+                    // unless the constraint is memory-only (=m) in which case
+                    // the alloca must keep its stack slot.
+                    for (constraint, ptr, _) in outputs {
+                        if candidate_set.contains(&ptr.0) {
+                            if constraint_is_memory_only(constraint, false) {
+                                // Memory-only output: the inline asm template writes
+                                // directly to the alloca's memory address. Must keep
+                                // the alloca on the stack, not promote to SSA.
+                                disqualified.insert(ptr.0);
+                            } else if !disqualified.contains(&ptr.0) {
+                                def_blocks.entry(ptr.0).or_default().insert(block_idx);
+                            }
                         }
                     }
                     // Input operands: if a candidate alloca appears as a Value,
@@ -1198,5 +1212,53 @@ mod tests {
             matches!(inst, Instruction::Alloca { .. })
         );
         assert!(has_alloca, "Alloca should NOT be promoted when its address is used as InlineAsm input Value");
+    }
+
+    #[test]
+    fn test_inline_asm_memory_output_only_not_promoted() {
+        // InlineAsm with "=m" output-only constraint should NOT be promoted.
+        // The alloca appears ONLY in outputs (not inputs), but the inline asm
+        // writes directly to the alloca's stack memory. Promoting it would cause
+        // the backend to lose the stack address, resulting in writes to garbage.
+        //
+        // Pattern: asm("mov %1, %0" : "=m"(result) : "r"(value))
+        let mut func = IrFunction::new("test_asm_mem_output_only".to_string(), IrType::I32, vec![], false);
+        func.blocks.push(BasicBlock {
+            label: BlockId(0),
+            instructions: vec![
+                // %0 = alloca i32 (for "=m" output)
+                Instruction::Alloca { dest: Value(0), ty: IrType::I32, size: 4, align: 4, volatile: false },
+                // inline_asm outputs=[("=m", %0)] inputs=[("r", const 42)]
+                // Output is memory-only; alloca must NOT be promoted.
+                Instruction::InlineAsm {
+                    template: "movl $42, %0".to_string(),
+                    outputs: vec![("=m".to_string(), Value(0), None)],
+                    inputs: vec![],
+                    clobbers: vec![],
+                    operand_types: vec![IrType::I32],
+                    goto_labels: vec![],
+                    input_symbols: vec![],
+                    seg_overrides: vec![AddressSpace::Default],
+                },
+                // %1 = load %0
+                Instruction::Load { dest: Value(1), ptr: Value(0), ty: IrType::I32,
+                    seg_override: AddressSpace::Default },
+            ],
+            terminator: Terminator::Return(Some(Operand::Value(Value(1)))),
+            source_spans: Vec::new(),
+        });
+        func.next_value_id = 2;
+
+        let mut module = IrModule::new();
+        module.functions.push(func);
+        promote_allocas(&mut module);
+
+        let func = &module.functions[0];
+        // The alloca MUST still exist — it was NOT promoted because the "=m"
+        // constraint means the inline asm writes directly to stack memory.
+        let has_alloca = func.blocks[0].instructions.iter().any(|inst|
+            matches!(inst, Instruction::Alloca { .. })
+        );
+        assert!(has_alloca, "Alloca should NOT be promoted when used as =m inline asm output");
     }
 }

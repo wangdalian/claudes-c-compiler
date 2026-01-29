@@ -10,6 +10,7 @@ use crate::frontend::parser::ast::{
     Declaration,
     DerivedDeclarator,
     Expr,
+    InitDeclarator,
     Initializer,
     TypeSpecifier,
 };
