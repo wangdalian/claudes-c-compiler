@@ -1,0 +1,20 @@
+Fix RISC-V F128 (long double) precision loss in function call returns
+
+Bug: When a function returns an F128 (long double) value on RISC-V, the result
+in a0:a1 was truncated to f64 via __trunctfdf2 and only the 8-byte f64
+approximation was stored to the stack slot. This lost the lower 56 bits of
+precision. When the value was later used, it was re-extended via __extenddftf2,
+producing an inaccurate result.
+
+Also fixed: emit_call_f128_pre_convert was using operand_to_t0 + __extenddftf2
+to pass F128 args to user functions, losing precision. Changed to use
+emit_f128_operand_to_a0_a1 which checks f128 source tracking for full precision.
+
+Root cause: emit_call_store_result's long_double branch only stored the f64
+approximation, not the full 16-byte f128 from a0:a1, and didn't call
+track_f128_self to enable precision-preserving subsequent loads.
+
+Fix: Store both a0 and a1 (full 16-byte f128) to the stack slot, then produce
+the f64 approximation for register flow, and call track_f128_self.
+
+Status: in_progress

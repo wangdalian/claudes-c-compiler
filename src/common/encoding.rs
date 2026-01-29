@@ -16,7 +16,16 @@ const PUA_BASE: u32 = 0xE080;
 /// If the bytes are valid UTF-8, returns them as-is.
 /// Otherwise, processes byte-by-byte: valid UTF-8 sequences are preserved,
 /// and invalid bytes 0x80-0xFF are encoded as PUA code points U+E080-U+E0FF.
+///
+/// A UTF-8 BOM (EF BB BF) at the start of the input is stripped, matching
+/// the behavior of GCC and Clang.
 pub fn bytes_to_string(bytes: Vec<u8>) -> String {
+    // Strip UTF-8 BOM if present at the start of the file
+    let bytes = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        bytes[3..].to_vec()
+    } else {
+        bytes
+    };
     match String::from_utf8(bytes) {
         Ok(s) => s,
         Err(e) => encode_non_utf8(e.into_bytes()),
@@ -144,6 +153,24 @@ mod tests {
         assert_eq!((b, l), (0xA2, 3));
         let (b, l) = decode_pua_byte(&input, 8);
         assert_eq!((b, l), (b'!', 1));
+    }
+
+    #[test]
+    fn test_bom_stripping() {
+        // UTF-8 BOM followed by ASCII content
+        let bytes = vec![0xEF, 0xBB, 0xBF, b'#', b'i', b'n', b'c'];
+        let result = bytes_to_string(bytes);
+        assert_eq!(result, "#inc");
+
+        // BOM-only file
+        let bytes = vec![0xEF, 0xBB, 0xBF];
+        let result = bytes_to_string(bytes);
+        assert_eq!(result, "");
+
+        // No BOM - should be unchanged
+        let bytes = vec![b'#', b'i', b'n', b'c'];
+        let result = bytes_to_string(bytes);
+        assert_eq!(result, "#inc");
     }
 
     #[test]
