@@ -14,11 +14,18 @@ Items a Rust expert would flag, roughly ordered by impact:
    - collect_trailing_specifiers: 10 params -> TypeSpecFlags struct
    - gvn_dfs: DONE (was 14 params, now GvnState struct)
 
-3. Visibility: 1309 pub items vs 16 pub(crate) (large effort)
-   - Nearly every struct field, method, and type is unrestricted pub
-   - Should audit and restrict to pub(crate) or pub(super) where possible
-   - Highest impact files: ir/ir.rs (133 pub), parser/ast.rs (117 pub),
-     common/types.rs (98 pub), backend/state.rs (62 pub)
+3. [PARTIAL] Visibility: was 836 pub + 18 pub(crate), now improved at module level
+   - All 22 mod.rs files updated: pub mod -> pub(crate) mod throughout
+   - Only lib.rs::backend and lib.rs::driver remain pub (needed by main.rs)
+   - backend::CodegenOptions and its fields changed to pub(crate)
+   - backend::Target methods (except triple()) changed to pub(crate)
+   - Unused re-exports removed (ir::*, ast::*, sema builtins, codegen types)
+   - Remaining: individual pub fn/struct/enum/const within pub(crate) modules
+     are semantically capped at pub(crate) by Rust's visibility rules, but
+     could be explicitly marked pub(crate) for consistency. Low priority since
+     the module-level changes already enforce the correct boundary.
+   - The tighter visibility now exposes ~67 dead code warnings (previously
+     hidden behind pub), which could be cleaned up separately.
 
 4. [PARTIAL] String allocations from literals (medium effort)
    - Was 420 .to_string() calls, now 334 (86 eliminated)

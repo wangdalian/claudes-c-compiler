@@ -1,6 +1,4 @@
-pub mod analysis;
-pub mod ir;
-pub mod lowering;
-pub mod mem2reg;
-
-pub use ir::*;
+pub(crate) mod analysis;
+pub(crate) mod ir;
+pub(crate) mod lowering;
+pub(crate) mod mem2reg;

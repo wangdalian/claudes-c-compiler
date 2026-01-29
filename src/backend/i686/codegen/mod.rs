@@ -1,3 +1,3 @@
-pub mod codegen;
+pub(crate) mod codegen;
 mod asm_emitter;
 mod inline_asm;

@@ -1,51 +1,51 @@
-pub mod common;
+pub(crate) mod common;
 
 // Shared codegen framework, split into focused modules:
-pub mod state;       // CodegenState, StackSlot, SlotAddr
-pub mod traits;      // ArchCodegen trait with default implementations
-pub mod generation;    // Module/function/instruction dispatch
-pub mod stack_layout;  // Stack layout: slot assignment, alloca coalescing, regalloc helpers
-pub mod call_abi;    // Call argument classification and stack computation
-pub mod call_emit;   // Callee-side parameter classification (shared by emit_store_params)
-pub mod cast;        // Cast and float operation classification
-pub mod f128_softfloat; // Shared F128 soft-float orchestration (ARM + RISC-V)
-pub mod inline_asm;  // InlineAsmEmitter trait and shared framework
+pub(crate) mod state;       // CodegenState, StackSlot, SlotAddr
+pub(crate) mod traits;      // ArchCodegen trait with default implementations
+pub(crate) mod generation;    // Module/function/instruction dispatch
+pub(crate) mod stack_layout;  // Stack layout: slot assignment, alloca coalescing, regalloc helpers
+pub(crate) mod call_abi;    // Call argument classification and stack computation
+pub(crate) mod call_emit;   // Callee-side parameter classification (shared by emit_store_params)
+pub(crate) mod cast;        // Cast and float operation classification
+pub(crate) mod f128_softfloat; // Shared F128 soft-float orchestration (ARM + RISC-V)
+pub(crate) mod inline_asm;  // InlineAsmEmitter trait and shared framework
 
 // Register allocation and liveness analysis
-pub mod liveness;     // Live interval computation
-pub mod regalloc;     // Linear scan register allocator
+pub(crate) mod liveness;     // Live interval computation
+pub(crate) mod regalloc;     // Linear scan register allocator
 
 
-pub mod x86;
-pub mod i686;
-pub mod arm;
-pub mod riscv;
+pub(crate) mod x86;
+pub(crate) mod i686;
+pub(crate) mod arm;
+pub(crate) mod riscv;
 
 use crate::ir::ir::IrModule;
 
 /// Options that control code generation, parsed from CLI flags.
 #[derive(Debug, Clone, Default)]
-pub struct CodegenOptions {
+pub(crate) struct CodegenOptions {
     /// Whether to generate position-independent code (-fPIC/-fpic)
-    pub pic: bool,
+    pub(crate) pic: bool,
     /// Whether to replace `ret` with `jmp __x86_return_thunk` (-mfunction-return=thunk-extern)
-    pub function_return_thunk: bool,
+    pub(crate) function_return_thunk: bool,
     /// Whether to replace indirect calls/jumps with retpoline thunks (-mindirect-branch=thunk-extern)
-    pub indirect_branch_thunk: bool,
+    pub(crate) indirect_branch_thunk: bool,
     /// Patchable function entry: (total_nops, nops_before_entry).
     /// -fpatchable-function-entry=N[,M] emits NOP padding around function entry points
     /// and records them in __patchable_function_entries for runtime patching (ftrace).
-    pub patchable_function_entry: Option<(u32, u32)>,
+    pub(crate) patchable_function_entry: Option<(u32, u32)>,
     /// Whether to emit endbr64 at function entry points (-fcf-protection=branch).
     /// Required for Intel CET/IBT (Indirect Branch Tracking).
-    pub cf_protection_branch: bool,
+    pub(crate) cf_protection_branch: bool,
     /// Whether SSE is disabled (-mno-sse). When true, the x86 codegen avoids
     /// SSE/XMM instructions in variadic prologues (XMM register saving) and
     /// va_start sets fp_offset to overflow so va_arg never uses XMM regs.
     /// TODO: Full -mno-sse support would also need to avoid SSE in float
     /// operations, casts, and other FP codegen paths. Currently only the
     /// variadic ABI path is gated, which is sufficient for the Linux kernel.
-    pub no_sse: bool,
+    pub(crate) no_sse: bool,
     /// Whether to use only general-purpose registers (-mgeneral-regs-only).
     /// On AArch64, this prevents FP/SIMD register usage in variadic function
     /// prologues (no q0-q7 saves) and sets __vr_offs=0 in va_start.
@@ -54,29 +54,29 @@ pub struct CodegenOptions {
     /// popcount, byte-swap, float casts, and other FP codegen paths. Currently only
     /// the variadic ABI path is gated, which is sufficient for the Linux kernel
     /// (kernel code doesn't use floats or popcount builtins in hot paths).
-    pub general_regs_only: bool,
+    pub(crate) general_regs_only: bool,
     /// Whether to use the kernel code model (-mcmodel=kernel). All symbols
     /// are assumed to be in the negative 2GB of the virtual address space.
     /// Uses absolute sign-extended 32-bit addressing (movq $symbol) for
     /// global address references, producing R_X86_64_32S relocations.
-    pub code_model_kernel: bool,
+    pub(crate) code_model_kernel: bool,
     /// Whether to disable jump table emission for switch statements (-fno-jump-tables).
     /// When true, all switch statements use compare-and-branch chains instead of
     /// indirect jumps through a jump table. Required by the Linux kernel when building
     /// with retpoline (-mindirect-branch=thunk-extern) to avoid indirect jumps that
     /// objtool would reject.
-    pub no_jump_tables: bool,
+    pub(crate) no_jump_tables: bool,
     /// Whether to suppress linker relaxation (-mno-relax, RISC-V only).
     /// When true, the codegen emits `.option norelax` at the top of the
     /// assembly output, which prevents the GNU assembler from generating
     /// R_RISCV_RELAX relocation entries. This is required for the Linux
     /// kernel's EFI stub, which uses -fpic -mno-relax to ensure no
     /// absolute symbol references are introduced by linker relaxation.
-    pub no_relax: bool,
+    pub(crate) no_relax: bool,
     /// Whether to emit debug info (.file/.loc directives) when compiling with -g.
     /// When true, the codegen emits DWARF line number directives based on
     /// source_spans attached to each IR instruction during lowering.
-    pub debug_info: bool,
+    pub(crate) debug_info: bool,
 }
 
 /// Target architecture.
@@ -101,17 +101,17 @@ impl Target {
     }
 
     /// Whether this target uses 32-bit pointers (ILP32 data model).
-    pub fn is_32bit(&self) -> bool {
+    pub(crate) fn is_32bit(&self) -> bool {
         matches!(self, Target::I686)
     }
 
     /// Pointer size in bytes for this target.
-    pub fn ptr_size(&self) -> usize {
+    pub(crate) fn ptr_size(&self) -> usize {
         if self.is_32bit() { 4 } else { 8 }
     }
 
     /// Get the assembler config for this target.
-    pub fn assembler_config(&self) -> common::AssemblerConfig {
+    pub(crate) fn assembler_config(&self) -> common::AssemblerConfig {
         match self {
             Target::X86_64 => common::AssemblerConfig {
                 command: "gcc",
@@ -133,7 +133,7 @@ impl Target {
     }
 
     /// Get the linker config for this target.
-    pub fn linker_config(&self) -> common::LinkerConfig {
+    pub(crate) fn linker_config(&self) -> common::LinkerConfig {
         match self {
             Target::X86_64 => common::LinkerConfig {
                 command: "gcc",
@@ -159,25 +159,25 @@ impl Target {
     }
 
     /// Generate assembly for an IR module using this target's code generator.
-    pub fn generate_assembly(&self, module: &IrModule) -> String {
+    pub(crate) fn generate_assembly(&self, module: &IrModule) -> String {
         self.generate_assembly_with_opts(module, &CodegenOptions::default())
     }
 
     /// Generate assembly with PIC (position-independent code) option.
-    pub fn generate_assembly_with_options(&self, module: &IrModule, pic: bool) -> String {
+    pub(crate) fn generate_assembly_with_options(&self, module: &IrModule, pic: bool) -> String {
         let opts = CodegenOptions { pic, ..Default::default() };
         self.generate_assembly_with_opts(module, &opts)
     }
 
     /// Generate assembly with full codegen options.
-    pub fn generate_assembly_with_opts(&self, module: &IrModule, opts: &CodegenOptions) -> String {
+    pub(crate) fn generate_assembly_with_opts(&self, module: &IrModule, opts: &CodegenOptions) -> String {
         self.generate_assembly_with_opts_and_debug(module, opts, None)
     }
 
     /// Generate assembly with full codegen options and optional source manager for debug info.
     /// When `source_mgr` is provided and `opts.debug_info` is true, the codegen emits
     /// .file/.loc directives for DWARF line number information.
-    pub fn generate_assembly_with_opts_and_debug(
+    pub(crate) fn generate_assembly_with_opts_and_debug(
         &self,
         module: &IrModule,
         opts: &CodegenOptions,
@@ -210,23 +210,23 @@ impl Target {
     }
 
     /// Assemble text to object file.
-    pub fn assemble(&self, asm_text: &str, output_path: &str) -> Result<(), String> {
+    pub(crate) fn assemble(&self, asm_text: &str, output_path: &str) -> Result<(), String> {
         common::assemble(&self.assembler_config(), asm_text, output_path)
     }
 
     /// Assemble text to object file with dynamic extra arguments.
     /// Used to pass through -mabi= and -march= flags from the CLI.
-    pub fn assemble_with_extra(&self, asm_text: &str, output_path: &str, extra_args: &[String]) -> Result<(), String> {
+    pub(crate) fn assemble_with_extra(&self, asm_text: &str, output_path: &str, extra_args: &[String]) -> Result<(), String> {
         common::assemble_with_extra(&self.assembler_config(), asm_text, output_path, extra_args)
     }
 
     /// Link object files into executable.
-    pub fn link(&self, object_files: &[&str], output_path: &str) -> Result<(), String> {
+    pub(crate) fn link(&self, object_files: &[&str], output_path: &str) -> Result<(), String> {
         common::link(&self.linker_config(), object_files, output_path)
     }
 
     /// Link object files with additional user-provided linker args.
-    pub fn link_with_args(&self, object_files: &[&str], output_path: &str, user_args: &[String]) -> Result<(), String> {
+    pub(crate) fn link_with_args(&self, object_files: &[&str], output_path: &str, user_args: &[String]) -> Result<(), String> {
         common::link_with_args(&self.linker_config(), object_files, output_path, user_args)
     }
 }

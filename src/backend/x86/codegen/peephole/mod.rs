@@ -21,4 +21,4 @@
 mod types;
 mod passes;
 
-pub use passes::peephole_optimize;
+pub(crate) use passes::peephole_optimize;

@@ -9,22 +9,22 @@
 //! another. We always run all passes to maximize test coverage of the
 //! optimizer and catch issues early.
 
-pub mod cfg_simplify;
-pub mod constant_fold;
-pub mod copy_prop;
-pub mod dce;
+pub(crate) mod cfg_simplify;
+pub(crate) mod constant_fold;
+pub(crate) mod copy_prop;
+pub(crate) mod dce;
 mod dead_statics;
-pub mod div_by_const;
-pub mod gvn;
-pub mod if_convert;
-pub mod inline;
-pub mod ipcp;
-pub mod iv_strength_reduce;
-pub mod licm;
-pub mod loop_analysis;
-pub mod narrow;
+pub(crate) mod div_by_const;
+pub(crate) mod gvn;
+pub(crate) mod if_convert;
+pub(crate) mod inline;
+pub(crate) mod ipcp;
+pub(crate) mod iv_strength_reduce;
+pub(crate) mod licm;
+pub(crate) mod loop_analysis;
+pub(crate) mod narrow;
 mod resolve_asm;
-pub mod simplify;
+pub(crate) mod simplify;
 
 use crate::ir::analysis::CfgAnalysis;
 use crate::ir::ir::{IrFunction, IrModule};
@@ -188,7 +188,7 @@ fn run_gvn_licm_ivsr_shared(
 /// optimization tiers.
 // TODO: Restore per-level optimization tiers once the compiler is stable enough
 // to warrant differentiated behavior (e.g., -O0 skipping passes for faster builds).
-pub fn run_passes(module: &mut IrModule, _opt_level: u32, target: crate::backend::Target) {
+pub(crate) fn run_passes(module: &mut IrModule, _opt_level: u32, target: crate::backend::Target) {
     // Debug support: set CCC_DISABLE_PASSES=pass1,pass2,... to skip specific passes.
     // Useful for bisecting miscompilation bugs to a specific pass.
     // Pass names: cfg, copyprop, simplify, constfold, gvn, licm, ifconv, dce, all

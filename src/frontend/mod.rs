@@ -1,4 +1,4 @@
-pub mod preprocessor;
-pub mod lexer;
-pub mod parser;
-pub mod sema;
+pub(crate) mod preprocessor;
+pub(crate) mod lexer;
+pub(crate) mod parser;
+pub(crate) mod sema;

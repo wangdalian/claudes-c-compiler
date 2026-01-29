@@ -1,3 +1,3 @@
-pub mod codegen;
+pub(crate) mod codegen;
 
-pub use codegen::codegen::ArmCodegen;
+pub(crate) use codegen::codegen::ArmCodegen;

@@ -24,9 +24,9 @@ pub enum CompileMode {
 
 /// A command-line define: -Dname or -Dname=value
 #[derive(Debug, Clone)]
-pub struct CliDefine {
-    pub name: String,
-    pub value: String,
+pub(crate) struct CliDefine {
+    pub(crate) name: String,
+    pub(crate) value: String,
 }
 
 /// The compiler driver orchestrates all compilation phases.

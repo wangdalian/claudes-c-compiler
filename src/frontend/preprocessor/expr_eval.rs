@@ -244,7 +244,7 @@ impl Preprocessor {
     pub(super) fn is_supported_builtin(name: &str) -> bool {
         // Check the canonical builtin registry (covers BUILTIN_MAP, __builtin_choose_expr,
         // __builtin_unreachable, __builtin_trap, and all __atomic_*/__sync_* builtins)
-        if crate::frontend::sema::is_builtin(name) {
+        if crate::frontend::sema::builtins::is_builtin(name) {
             return true;
         }
         // These are handled as special syntax (dedicated AST nodes or parser keywords)

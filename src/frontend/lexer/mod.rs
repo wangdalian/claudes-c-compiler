@@ -1,5 +1,4 @@
-pub mod token;
-pub mod lexer;
+pub(crate) mod token;
+pub(crate) mod lexer;
 
-pub use token::{Token, TokenKind};
-pub use lexer::Lexer;
+pub(crate) use lexer::Lexer;
