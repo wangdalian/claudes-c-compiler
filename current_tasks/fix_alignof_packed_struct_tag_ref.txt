@@ -1,0 +1,19 @@
+Task: Fix __alignof__ for packed struct tag references in _Static_assert
+
+Problem: When _Static_assert uses __alignof__(struct packed_struct) where
+packed_struct was previously defined with __attribute__((packed)), the parser's
+compile-time constant evaluator returns the wrong alignment (ptr_size instead of 1).
+
+This is because the parser's alignof_type_spec() only checks the is_packed flag
+on the TypeSpecifier node, but for tag references (struct name without body),
+is_packed is always false since the packed attribute was on the original definition.
+
+The kernel x86 defconfig build fails on:
+- arch/x86/kernel/signal_32.c: __alignof__(siginfo32_t) == 4
+- drivers/platform/x86/wmi.c: __alignof__(struct guid_block) == 1
+
+Fix: Add struct tag alignment tracking to the parser so it can look up
+alignment info for previously-defined struct/union tags during constant
+expression evaluation.
+
+Status: in_progress
