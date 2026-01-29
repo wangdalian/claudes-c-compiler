@@ -1,0 +1,8 @@
+task: fix_f128_source_ptr_slot_reuse
+status: completed
+branch: master
+description: Fix SIGSEGV in K&R functions with f128 params due to Tier 3 slot reuse of f128 source pointer
+files:
+  - src/backend/liveness.rs
+  - src/backend/stack_layout.rs
+  - tests/f128-slot-reuse-call/

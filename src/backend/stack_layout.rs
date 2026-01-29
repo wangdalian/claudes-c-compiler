@@ -1129,6 +1129,35 @@ fn assign_tier3_block_local_slots(
                 }
             }
         });
+
+        // F128 source pointer liveness extension (Tier 3 block-local mirror).
+        //
+        // When an F128 Load uses a pointer, the codegen records that pointer so
+        // Call emission can reload the full 128-bit value later. The pointer's
+        // slot must stay live until the F128 dest's last use, otherwise the
+        // greedy slot coloring reuses it and the Call dereferences garbage.
+        for inst in &block.instructions {
+            if let Instruction::Load { dest, ptr, ty, .. } = inst {
+                if *ty == IrType::F128 {
+                    if block_local_set.contains(&ptr.0) {
+                        if let Some(&dest_last) = last_use.get(&dest.0) {
+                            let ptr_last = last_use.get(&ptr.0).copied().unwrap_or(0);
+                            if dest_last > ptr_last {
+                                last_use.insert(ptr.0, dest_last);
+                            }
+                            if let Some(&root) = ctx.copy_alias.get(&ptr.0) {
+                                if block_local_set.contains(&root) {
+                                    let root_last = last_use.get(&root).copied().unwrap_or(0);
+                                    if dest_last > root_last {
+                                        last_use.insert(root, dest_last);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Group block-local values by block, preserving definition order.

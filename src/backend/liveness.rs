@@ -303,6 +303,16 @@ pub fn compute_live_intervals(func: &IrFunction) -> LivenessResult {
     extend_gep_base_liveness(func, &alloca_set, &id_to_dense,
         &mut last_use_points, &mut block_gen);
 
+    // Phase 1c: Extend liveness for F128 source pointers.
+    //
+    // When an F128 Load occurs, the codegen records which pointer was used so
+    // that later Call emission can reload the full 128-bit value from memory.
+    // The pointer's stack slot must remain live until the last use of the F128
+    // dest value, otherwise the Tier 3 block-local allocator may reuse the
+    // pointer's slot and overwrite it before the Call reads it back.
+    extend_f128_source_liveness(func, &alloca_set, &id_to_dense,
+        &mut last_use_points, &mut block_gen);
+
     // Phase 2: Build successor lists for the CFG.
     let mut successors: Vec<Vec<usize>> = vec![Vec::new(); num_blocks];
     for (idx, block) in func.blocks.iter().enumerate() {
@@ -605,6 +615,93 @@ fn extend_gep_base_liveness(
         }
         // Account for terminator point
         block_point += 1;
+    }
+}
+
+/// Extend liveness for F128 load source pointers.
+///
+/// When an F128 value is loaded from memory, the codegen records which pointer
+/// was used (via `track_f128_load` in state.rs). Later, during Call emission,
+/// `emit_f128_operand_to_a0_a1` reads the pointer back from its stack slot to
+/// reload the full 128-bit value. This creates an implicit dependency: the
+/// pointer must remain live until the last use of the F128 dest value.
+///
+/// Without this extension, the Tier 2 liveness analysis considers the pointer
+/// dead after the Load instruction, allowing the register allocator (and
+/// subsequently the Tier 3 slot allocator) to reuse its slot. If another value
+/// is placed in that slot before the Call, the pointer is corrupted and the
+/// Call dereferences garbage (typically causing SIGSEGV).
+fn extend_f128_source_liveness(
+    func: &IrFunction,
+    alloca_set: &FxHashSet<u32>,
+    id_to_dense: &FxHashMap<u32, usize>,
+    last_use_points: &mut [u32],
+    block_gen: &mut [BitSet],
+) {
+    // Collect (ptr_id, dest_id) pairs for F128 loads with non-alloca pointers.
+    let mut f128_loads: Vec<(u32, u32)> = Vec::new();
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            if let Instruction::Load { dest, ptr, ty, .. } = inst {
+                if *ty == IrType::F128 && !alloca_set.contains(&ptr.0) {
+                    f128_loads.push((ptr.0, dest.0));
+                }
+            }
+        }
+    }
+
+    if f128_loads.is_empty() {
+        return;
+    }
+
+    // Extend each pointer's last_use_point to match its dest's last_use_point.
+    for &(ptr_id, dest_id) in &f128_loads {
+        let dest_dense = id_to_dense.get(&dest_id).copied();
+        let ptr_dense = id_to_dense.get(&ptr_id).copied();
+        if let (Some(dd), Some(pd)) = (dest_dense, ptr_dense) {
+            let dest_last = last_use_points[dd];
+            if dest_last != u32::MAX {
+                let ptr_entry = &mut last_use_points[pd];
+                if *ptr_entry == u32::MAX || dest_last > *ptr_entry {
+                    *ptr_entry = dest_last;
+                }
+            }
+        }
+    }
+
+    // Update gen sets so backward dataflow propagation keeps the pointer live
+    // in predecessor blocks when the dest value is used in a successor block.
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for inst in &block.instructions {
+            let mut check_use = |vid: u32| {
+                for &(ptr_id, dest_id) in &f128_loads {
+                    if vid == dest_id {
+                        if let Some(&pd) = id_to_dense.get(&ptr_id) {
+                            block_gen[bi].insert(pd);
+                        }
+                    }
+                }
+            };
+            for_each_operand_in_instruction(inst, |op| {
+                if let Operand::Value(v) = op {
+                    check_use(v.0);
+                }
+            });
+            for_each_value_use_in_instruction(inst, |v| {
+                check_use(v.0);
+            });
+        }
+        for_each_operand_in_terminator(&block.terminator, |op| {
+            if let Operand::Value(v) = op {
+                for &(ptr_id, dest_id) in &f128_loads {
+                    if v.0 == dest_id {
+                        if let Some(&pd) = id_to_dense.get(&ptr_id) {
+                            block_gen[bi].insert(pd);
+                        }
+                    }
+                }
+            }
+        });
     }
 }
 
