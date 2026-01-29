@@ -306,6 +306,10 @@ fn for_each_instruction_use(inst: &Instruction, mut f: impl FnMut(u32)) {
             f(dest_ptr.0);
             f(src_ptr.0);
         }
+        Instruction::VaArgStruct { dest_ptr, va_list_ptr, .. } => {
+            f(dest_ptr.0);
+            f(va_list_ptr.0);
+        }
         Instruction::AtomicRmw { ptr, val, .. } => {
             visit_operand(ptr, &mut f);
             visit_operand(val, &mut f);
@@ -408,6 +412,7 @@ fn has_side_effects(inst: &Instruction) -> bool {
         Instruction::VaEnd { .. } |
         Instruction::VaCopy { .. } |
         Instruction::VaArg { .. } |
+        Instruction::VaArgStruct { .. } |
         Instruction::AtomicRmw { .. } |
         Instruction::AtomicCmpxchg { .. } |
         Instruction::AtomicLoad { .. } |

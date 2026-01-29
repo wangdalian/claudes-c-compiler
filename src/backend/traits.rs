@@ -644,6 +644,10 @@ pub trait ArchCodegen {
     /// Emit va_copy: copy src va_list to dest va_list.
     fn emit_va_copy(&mut self, dest_ptr: &Value, src_ptr: &Value);
 
+    /// Emit va_arg for struct types: read `size` bytes of struct data from the
+    /// va_list and store them at `dest_ptr`. The va_list is advanced appropriately.
+    fn emit_va_arg_struct(&mut self, dest_ptr: &Value, va_list_ptr: &Value, size: usize);
+
     /// Emit an atomic read-modify-write operation.
     fn emit_atomic_rmw(&mut self, dest: &Value, op: AtomicRmwOp, ptr: &Operand, val: &Operand, ty: IrType, ordering: AtomicOrdering);
 

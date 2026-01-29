@@ -3808,6 +3808,14 @@ impl ArchCodegen for ArmCodegen {
         self.state.emit("    stp x2, x3, [x0, #16]");
     }
 
+    fn emit_va_arg_struct(&mut self, _dest_ptr: &Value, _va_list_ptr: &Value, _size: usize) {
+        // On ARM64, large structs (>16 bytes) are passed by reference, and the
+        // lowering reads the pointer via a regular VaArg instruction. Small
+        // structs are decomposed into individual slot reads. VaArgStruct should
+        // never be emitted for this target.
+        panic!("VaArgStruct should not be emitted for ARM64 target");
+    }
+
     // emit_return: uses default implementation from ArchCodegen trait
 
     // emit_branch, emit_cond_branch, emit_unreachable, emit_indirect_branch:

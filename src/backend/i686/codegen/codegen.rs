@@ -3846,6 +3846,13 @@ impl ArchCodegen for I686Codegen {
         self.state.emit("    movl %eax, (%edx)");
     }
 
+    fn emit_va_arg_struct(&mut self, _dest_ptr: &Value, _va_list_ptr: &Value, _size: usize) {
+        // On i686, all structs are on the stack and the lowering decomposes
+        // them into individual I32 slot reads. VaArgStruct should never be
+        // emitted for this target.
+        panic!("VaArgStruct should not be emitted for i686 target");
+    }
+
     // --- Atomics ---
 
     fn emit_atomic_rmw(&mut self, dest: &Value, op: AtomicRmwOp, ptr: &Operand, val: &Operand,

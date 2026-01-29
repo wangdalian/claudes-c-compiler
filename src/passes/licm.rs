@@ -212,6 +212,7 @@ fn for_each_operand_value(inst: &Instruction, mut f: impl FnMut(u32)) {
         Instruction::VaEnd { va_list_ptr } => f(va_list_ptr.0),
         Instruction::VaCopy { dest_ptr, src_ptr } => { f(dest_ptr.0); f(src_ptr.0); }
         Instruction::VaArg { va_list_ptr, .. } => f(va_list_ptr.0),
+        Instruction::VaArgStruct { dest_ptr, va_list_ptr, .. } => { f(dest_ptr.0); f(va_list_ptr.0); }
         Instruction::AtomicRmw { ptr, val, .. } => { collect(ptr, &mut f); collect(val, &mut f); }
         Instruction::AtomicCmpxchg { ptr, expected, desired, .. } => {
             collect(ptr, &mut f); collect(expected, &mut f); collect(desired, &mut f);

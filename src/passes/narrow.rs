@@ -725,6 +725,7 @@ fn for_each_used_value(inst: &Instruction, f: &mut impl FnMut(Value)) {
         Instruction::VaArg { va_list_ptr, .. } | Instruction::VaStart { va_list_ptr }
         | Instruction::VaEnd { va_list_ptr } => f(*va_list_ptr),
         Instruction::VaCopy { dest_ptr, src_ptr } => { f(*dest_ptr); f(*src_ptr); }
+        Instruction::VaArgStruct { dest_ptr, va_list_ptr, .. } => { f(*dest_ptr); f(*va_list_ptr); }
         Instruction::AtomicRmw { ptr, val, .. } => { visit_operand(ptr, f); visit_operand(val, f); }
         Instruction::AtomicCmpxchg { ptr, expected, desired, .. } => {
             visit_operand(ptr, f); visit_operand(expected, f); visit_operand(desired, f);

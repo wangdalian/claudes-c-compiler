@@ -67,7 +67,7 @@ and PostgreSQL.
 | Redis | SET/GET roundtrip |
 | libffi | Call + closure tests |
 | musl libc | hello, malloc, string, math, io, environ |
-| tcc | 78 tests including tests2 suite; i686: 76/78 (2 are arch-specific expected-value mismatches) |
+| tcc | 78 tests including tests2 suite; i686: build succeeds but tcc can't find 32-bit system headers at runtime |
 | mbedTLS | AES, RSA, ECP, SHA, ARIA self-tests |
 | jq | All 12 tests on all architectures |
 | Linux kernel | Builds and boots on x86-64 and AArch64 |

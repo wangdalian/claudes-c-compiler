@@ -370,6 +370,10 @@ pub fn allocate_registers(
                     eligible.remove(&dest_ptr.0);
                     eligible.remove(&src_ptr.0);
                 }
+                Instruction::VaArgStruct { dest_ptr, va_list_ptr, .. } => {
+                    eligible.remove(&dest_ptr.0);
+                    eligible.remove(&va_list_ptr.0);
+                }
                 Instruction::AtomicRmw { ptr, .. } => {
                     if let Operand::Value(v) = ptr {
                         eligible.remove(&v.0);

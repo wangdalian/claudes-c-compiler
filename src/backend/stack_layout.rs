@@ -353,6 +353,10 @@ fn compute_coalescable_allocas(
                     if alloca_set.contains(&dest_ptr.0) { escaped.insert(dest_ptr.0); }
                     if alloca_set.contains(&src_ptr.0) { escaped.insert(src_ptr.0); }
                 }
+                Instruction::VaArgStruct { dest_ptr, va_list_ptr, .. } => {
+                    if alloca_set.contains(&dest_ptr.0) { escaped.insert(dest_ptr.0); }
+                    if alloca_set.contains(&va_list_ptr.0) { escaped.insert(va_list_ptr.0); }
+                }
                 // Cast/Copy/BinOp/Cmp/Select/UnaryOp: if alloca value used as operand, it escapes
                 // (these compute on the address value, which means it could be stored later)
                 Instruction::Cast { src, .. } | Instruction::Copy { src, .. } | Instruction::UnaryOp { src, .. } => {

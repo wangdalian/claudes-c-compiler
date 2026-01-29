@@ -347,6 +347,13 @@ pub enum Instruction {
     /// result_ty is the type of the argument being extracted.
     VaArg { dest: Value, va_list_ptr: Value, result_ty: IrType },
 
+    /// va_arg for struct/union types: read a struct from the va_list into a
+    /// pre-allocated buffer. `dest_ptr` is a pointer to the buffer (an alloca),
+    /// `size` is the struct size in bytes. The backend reads the appropriate
+    /// number of bytes from the va_list (registers or overflow area) and stores
+    /// them at `dest_ptr`, advancing the va_list state appropriately.
+    VaArgStruct { dest_ptr: Value, va_list_ptr: Value, size: usize },
+
     /// va_start: initialize a va_list. last_named_param is the pointer to the last named parameter.
     VaStart { va_list_ptr: Value, },
 
@@ -1444,6 +1451,7 @@ impl Instruction {
             | Instruction::VaStart { .. }
             | Instruction::VaEnd { .. }
             | Instruction::VaCopy { .. }
+            | Instruction::VaArgStruct { .. }
             | Instruction::AtomicStore { .. }
             | Instruction::Fence { .. }
             | Instruction::SetReturnF64Second { .. }
@@ -1512,6 +1520,10 @@ impl Instruction {
             Instruction::VaCopy { dest_ptr, src_ptr } => {
                 used.push(dest_ptr.0);
                 used.push(src_ptr.0);
+            }
+            Instruction::VaArgStruct { dest_ptr, va_list_ptr, .. } => {
+                used.push(dest_ptr.0);
+                used.push(va_list_ptr.0);
             }
             Instruction::AtomicRmw { ptr, val, .. } => {
                 push_operand_value(ptr, &mut used);

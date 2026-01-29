@@ -996,6 +996,14 @@ impl Lowerer {
             return self.lower_va_arg_complex(ap_expr, &ctype);
         }
 
+        // Check if the requested type is a struct/union. Struct types are passed
+        // by value in variadic arguments (their bytes are inline on the va_list),
+        // but IrType maps structs to Ptr. We need to read the struct data as
+        // individual slots and store to a temporary alloca.
+        if self.is_type_struct_or_union(type_spec) {
+            return self.lower_va_arg_struct(ap_expr, type_spec, &ctype);
+        }
+
         use crate::backend::Target;
         let ap_val = if self.target == Target::Riscv64 || self.target == Target::I686 {
             // RISC-V / i686: va_list is a pointer, need address of the variable holding it
@@ -1010,6 +1018,132 @@ impl Lowerer {
         let dest = self.fresh_value();
         self.emit(Instruction::VaArg { dest, va_list_ptr, result_ty: result_ty.clone() });
         Operand::Value(dest)
+    }
+
+    /// Lower va_arg for struct/union types.
+    ///
+    /// Struct variadic arguments are passed by value: their bytes are stored
+    /// inline on the va_list (or in registers, for the first few args).
+    /// However, IrType maps structs to IrType::Ptr, so the backend's emit_va_arg
+    /// would read a pointer-sized value and treat it as an address — causing a
+    /// segfault when dereferenced.
+    ///
+    /// Fix: read the struct data as individual 8-byte (or 4-byte on i686) slots
+    /// via scalar VaArg instructions, store them to a temporary alloca, and
+    /// return the alloca address.
+    ///
+    /// Exception: on ARM64/RISC-V, structs larger than 16 bytes are passed by
+    /// reference (a pointer is on the va_list), so we read one pointer.
+    fn lower_va_arg_struct(
+        &mut self,
+        ap_expr: &Expr,
+        type_spec: &TypeSpecifier,
+        _ctype: &CType,
+    ) -> Operand {
+        use crate::backend::Target;
+
+        let struct_size = self.sizeof_type(type_spec);
+        let struct_align = self.alignof_type(type_spec);
+
+        // On ARM64 and RISC-V, structs > 16 bytes are passed by reference:
+        // a pointer to the struct is placed in the va_list. Read the pointer
+        // and return it directly (the pointer IS the struct address).
+        let large_struct_by_ref = matches!(self.target, Target::Aarch64 | Target::Riscv64);
+        if large_struct_by_ref && struct_size > 16 {
+            let ap_val = self.lower_va_list_pointer(ap_expr);
+            let va_list_ptr = self.operand_to_value(ap_val);
+            let dest = self.fresh_value();
+            self.emit(Instruction::VaArg {
+                dest,
+                va_list_ptr,
+                result_ty: IrType::Ptr,
+            });
+            return Operand::Value(dest);
+        }
+
+        // On x86-64, structs > 16 bytes are MEMORY class and always placed on
+        // the overflow area (not in GP registers). We use VaArgStruct to let
+        // the backend read the data directly from the overflow area.
+        if self.target == Target::X86_64 && struct_size > 16 {
+            let ap_val = self.lower_va_list_pointer(ap_expr);
+            let va_list_ptr = self.operand_to_value(ap_val);
+            let alloca = self.fresh_value();
+            self.emit(Instruction::Alloca {
+                dest: alloca,
+                size: struct_size,
+                ty: IrType::I64,
+                align: struct_align,
+                volatile: false,
+            });
+            self.emit(Instruction::VaArgStruct {
+                dest_ptr: alloca,
+                va_list_ptr,
+                size: struct_size,
+            });
+            return Operand::Value(alloca);
+        }
+
+        // Small structs (or any struct on i686): passed by value inline.
+        // Read each slot from the va_list and store to a temporary alloca.
+        let slot_size = if self.target == Target::I686 { 4 } else { 8 };
+        let slot_ty = if self.target == Target::I686 { IrType::I32 } else { IrType::I64 };
+
+        // Number of slots needed (round up)
+        let num_slots = (struct_size + slot_size - 1) / slot_size;
+        let alloc_size = if struct_size > 0 { num_slots * slot_size } else { slot_size };
+
+        // Allocate temporary storage for the struct
+        let alloca = self.fresh_value();
+        self.emit(Instruction::Alloca {
+            dest: alloca,
+            size: alloc_size,
+            ty: slot_ty,
+            align: struct_align,
+            volatile: false,
+        });
+
+        // Get the va_list pointer (same logic as scalar va_arg)
+        let ap_val = self.lower_va_list_pointer(ap_expr);
+        let va_list_ptr = self.operand_to_value(ap_val);
+
+        // Read each slot and store it into the alloca
+        for i in 0..num_slots {
+            let slot_val = self.fresh_value();
+            self.emit(Instruction::VaArg {
+                dest: slot_val,
+                va_list_ptr,
+                result_ty: slot_ty,
+            });
+            if i == 0 {
+                // Store directly to the alloca base
+                self.emit(Instruction::Store {
+                    val: Operand::Value(slot_val),
+                    ptr: alloca,
+                    ty: slot_ty,
+                    seg_override: AddressSpace::Default,
+                });
+            } else {
+                // Store at offset i * slot_size
+                let offset = (i * slot_size) as i64;
+                let offset_ptr = self.fresh_value();
+                self.emit(Instruction::BinOp {
+                    dest: offset_ptr,
+                    op: IrBinOp::Add,
+                    lhs: Operand::Value(alloca),
+                    rhs: Operand::Const(IrConst::I64(offset)),
+                    ty: IrType::Ptr,
+                });
+                self.emit(Instruction::Store {
+                    val: Operand::Value(slot_val),
+                    ptr: offset_ptr,
+                    ty: slot_ty,
+                    seg_override: AddressSpace::Default,
+                });
+            }
+        }
+
+        // Return the alloca address — callers will use this as a pointer to the struct data
+        Operand::Value(alloca)
     }
 
     /// Lower va_arg for complex types by decomposing into component va_arg calls.

@@ -2698,6 +2698,14 @@ impl ArchCodegen for RiscvCodegen {
         self.state.emit("    sd t2, 0(t0)");
     }
 
+    fn emit_va_arg_struct(&mut self, _dest_ptr: &Value, _va_list_ptr: &Value, _size: usize) {
+        // On RISC-V, large structs (>16 bytes) are passed by reference, and the
+        // lowering reads the pointer via a regular VaArg instruction. Small
+        // structs are decomposed into individual slot reads. VaArgStruct should
+        // never be emitted for this target.
+        panic!("VaArgStruct should not be emitted for RISC-V target");
+    }
+
     // emit_return: overridden above (near emit_return_f128_to_reg) for F128 full-precision return
 
     // emit_branch, emit_cond_branch, emit_unreachable, emit_indirect_branch:

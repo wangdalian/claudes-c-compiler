@@ -1108,6 +1108,7 @@ fn generate_instruction(cg: &mut dyn ArchCodegen, inst: &Instruction, gep_fold_m
                 Instruction::VaStart { va_list_ptr } => cg.emit_va_start(va_list_ptr),
                 Instruction::VaEnd { va_list_ptr } => cg.emit_va_end(va_list_ptr),
                 Instruction::VaCopy { dest_ptr, src_ptr } => cg.emit_va_copy(dest_ptr, src_ptr),
+                Instruction::VaArgStruct { dest_ptr, va_list_ptr, size } => cg.emit_va_arg_struct(dest_ptr, va_list_ptr, *size),
                 Instruction::AtomicRmw { dest, op, ptr, val, ty, ordering } => cg.emit_atomic_rmw(dest, *op, ptr, val, *ty, *ordering),
                 Instruction::AtomicCmpxchg { dest, ptr, expected, desired, ty, success_ordering, failure_ordering, returns_bool } =>
                     cg.emit_atomic_cmpxchg(dest, ptr, expected, desired, *ty, *success_ordering, *failure_ordering, *returns_bool),

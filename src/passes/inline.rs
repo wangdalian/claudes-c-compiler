@@ -1006,6 +1006,7 @@ fn build_callee_map(module: &IrModule) -> HashMap<String, CalleeData> {
                     Instruction::VaStart { .. }
                     | Instruction::VaEnd { .. }
                     | Instruction::VaArg { .. }
+                    | Instruction::VaArgStruct { .. }
                     | Instruction::VaCopy { .. }
                     | Instruction::DynAlloca { .. }
                     | Instruction::StackSave { .. }
@@ -1514,6 +1515,11 @@ fn remap_instruction(inst: &Instruction, vo: u32, bo: u32) -> Instruction {
         Instruction::VaCopy { dest_ptr, src_ptr } => Instruction::VaCopy {
             dest_ptr: remap_value(*dest_ptr, vo),
             src_ptr: remap_value(*src_ptr, vo),
+        },
+        Instruction::VaArgStruct { dest_ptr, va_list_ptr, size } => Instruction::VaArgStruct {
+            dest_ptr: remap_value(*dest_ptr, vo),
+            va_list_ptr: remap_value(*va_list_ptr, vo),
+            size: *size,
         },
         Instruction::AtomicRmw { dest, op, ptr, val, ty, ordering } => Instruction::AtomicRmw {
             dest: remap_value(*dest, vo),

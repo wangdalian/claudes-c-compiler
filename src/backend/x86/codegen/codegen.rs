@@ -3536,6 +3536,100 @@ impl ArchCodegen for X86Codegen {
         self.state.reg_cache.invalidate_all(); // complex control flow, don't track
     }
 
+    fn emit_va_arg_struct(&mut self, dest_ptr: &Value, va_list_ptr: &Value, size: usize) {
+        // x86-64 System V ABI: structs > 16 bytes are MEMORY class and are
+        // always passed via the overflow_arg_area (stack), never in registers.
+        // We read overflow_arg_area, copy `size` bytes to `dest_ptr`, then
+        // advance overflow_arg_area past the struct.
+
+        // Load va_list pointer into %rcx
+        if let Some(&reg) = self.reg_assignments.get(&va_list_ptr.0) {
+            let reg_name = phys_reg_name(reg);
+            self.state.out.emit_instr_reg_reg("    movq", reg_name, "rcx");
+        } else if let Some(slot) = self.state.get_slot(va_list_ptr.0) {
+            if self.state.is_alloca(va_list_ptr.0) {
+                self.state.out.emit_instr_rbp_reg("    leaq", slot.0, "rcx");
+            } else {
+                self.state.out.emit_instr_rbp_reg("    movq", slot.0, "rcx");
+            }
+        }
+
+        // Load overflow_arg_area into %rsi (source for copy)
+        self.state.emit("    movq 8(%rcx), %rsi");
+
+        // Load dest_ptr into %rdi (destination for copy)
+        if let Some(&reg) = self.reg_assignments.get(&dest_ptr.0) {
+            let reg_name = phys_reg_name(reg);
+            self.state.out.emit_instr_reg_reg("    movq", reg_name, "rdi");
+        } else if let Some(slot) = self.state.get_slot(dest_ptr.0) {
+            if self.state.is_alloca(dest_ptr.0) {
+                self.state.out.emit_instr_rbp_reg("    leaq", slot.0, "rdi");
+            } else {
+                self.state.out.emit_instr_rbp_reg("    movq", slot.0, "rdi");
+            }
+        }
+
+        // Copy struct data: read 8 bytes at a time from [rsi] to [rdi]
+        let num_qwords = (size + 7) / 8;
+        for i in 0..num_qwords {
+            let offset = (i * 8) as i64;
+            if offset + 8 <= size as i64 {
+                self.state.out.emit_instr_mem_reg("    movq", offset, "rsi", "rax");
+                self.state.out.emit_instr_reg_mem("    movq", "rax", offset, "rdi");
+            } else {
+                // Partial last word: copy remaining bytes
+                let remaining = size - i * 8;
+                if remaining >= 4 {
+                    self.state.out.emit_instr_mem_reg("    movl", offset, "rsi", "eax");
+                    self.state.out.emit_instr_reg_mem("    movl", "eax", offset, "rdi");
+                    if remaining > 4 {
+                        let off4 = offset + 4;
+                        if remaining >= 6 {
+                            self.state.out.emit_instr_mem_reg("    movzwl", off4, "rsi", "eax");
+                            self.state.out.emit_instr_reg_mem("    movw", "ax", off4, "rdi");
+                            if remaining == 7 {
+                                let off6 = offset + 6;
+                                self.state.out.emit_instr_mem_reg("    movzbl", off6, "rsi", "eax");
+                                self.state.out.emit_instr_reg_mem("    movb", "al", off6, "rdi");
+                            }
+                        } else {
+                            // remaining == 5
+                            self.state.out.emit_instr_mem_reg("    movzbl", off4, "rsi", "eax");
+                            self.state.out.emit_instr_reg_mem("    movb", "al", off4, "rdi");
+                        }
+                    }
+                } else if remaining >= 2 {
+                    self.state.out.emit_instr_mem_reg("    movzwl", offset, "rsi", "eax");
+                    self.state.out.emit_instr_reg_mem("    movw", "ax", offset, "rdi");
+                    if remaining == 3 {
+                        let off2 = offset + 2;
+                        self.state.out.emit_instr_mem_reg("    movzbl", off2, "rsi", "eax");
+                        self.state.out.emit_instr_reg_mem("    movb", "al", off2, "rdi");
+                    }
+                } else {
+                    self.state.out.emit_instr_mem_reg("    movzbl", offset, "rsi", "eax");
+                    self.state.out.emit_instr_reg_mem("    movb", "al", offset, "rdi");
+                }
+            }
+        }
+
+        // Advance overflow_arg_area past the struct (8-byte aligned)
+        // Reload %rcx since it might have been clobbered
+        if let Some(&reg) = self.reg_assignments.get(&va_list_ptr.0) {
+            let reg_name = phys_reg_name(reg);
+            self.state.out.emit_instr_reg_reg("    movq", reg_name, "rcx");
+        } else if let Some(slot) = self.state.get_slot(va_list_ptr.0) {
+            if self.state.is_alloca(va_list_ptr.0) {
+                self.state.out.emit_instr_rbp_reg("    leaq", slot.0, "rcx");
+            } else {
+                self.state.out.emit_instr_rbp_reg("    movq", slot.0, "rcx");
+            }
+        }
+        let advance = ((size + 7) / 8) * 8;
+        self.state.out.emit_instr_imm_mem("    addq", advance as i64, 8, "rcx");
+        self.state.reg_cache.invalidate_all();
+    }
+
     fn emit_va_start(&mut self, va_list_ptr: &Value) {
         // x86-64 System V ABI va_start implementation.
         // The prologue saves all 6 integer arg registers to the register save area.

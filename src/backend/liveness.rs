@@ -750,6 +750,7 @@ pub(super) fn for_each_operand_in_instruction(inst: &Instruction, mut f: impl Fn
         Instruction::VaStart { .. } => {}
         Instruction::VaEnd { .. } => {}
         Instruction::VaCopy { .. } => {}
+        Instruction::VaArgStruct { .. } => {}
         Instruction::AtomicRmw { ptr, val, .. } => { f(ptr); f(val); }
         Instruction::AtomicCmpxchg { ptr, expected, desired, .. } => { f(ptr); f(expected); f(desired); }
         Instruction::AtomicLoad { ptr, .. } => f(ptr),
@@ -788,6 +789,7 @@ pub(super) fn for_each_value_use_in_instruction(inst: &Instruction, mut f: impl 
         Instruction::VaStart { va_list_ptr } => f(va_list_ptr),
         Instruction::VaEnd { va_list_ptr } => f(va_list_ptr),
         Instruction::VaCopy { dest_ptr, src_ptr } => { f(dest_ptr); f(src_ptr); }
+        Instruction::VaArgStruct { dest_ptr, va_list_ptr, .. } => { f(dest_ptr); f(va_list_ptr); }
         Instruction::InlineAsm { outputs, .. } => {
             for (_, v, _) in outputs { f(v); }
         }
