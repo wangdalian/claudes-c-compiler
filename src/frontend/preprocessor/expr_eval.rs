@@ -150,7 +150,7 @@ impl Preprocessor {
                     result.push_str(val);
                 } else if ident == "__has_feature" || ident == "__has_extension" {
                     self.skip_paren_arg_bytes(bytes, &mut i);
-                    result.push_str("0");
+                    result.push('0');
                 } else {
                     result.push_str(ident);
                 }

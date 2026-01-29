@@ -1,16 +1,16 @@
-/// Macro definitions and expansion logic for the C preprocessor.
-///
-/// Supports:
-/// - Object-like macros: `#define FOO value`
-/// - Function-like macros: `#define MAX(a,b) ((a)>(b)?(a):(b))`
-/// - Variadic macros: `#define LOG(fmt, ...) printf(fmt, __VA_ARGS__)`
-/// - Stringification: `#param`
-/// - Token pasting: `a ## b`
-///
-/// Performance: All scanning operates on byte slices (`&[u8]`) to avoid
-/// the overhead of `Vec<char>` allocation. Since C preprocessor tokens are
-/// ASCII, this is safe and correct. UTF-8 multi-byte sequences in string/char
-/// literals are copied verbatim without interpretation.
+//! Macro definitions and expansion logic for the C preprocessor.
+//!
+//! Supports:
+//! - Object-like macros: `#define FOO value`
+//! - Function-like macros: `#define MAX(a,b) ((a)>(b)?(a):(b))`
+//! - Variadic macros: `#define LOG(fmt, ...) printf(fmt, __VA_ARGS__)`
+//! - Stringification: `#param`
+//! - Token pasting: `a ## b`
+//!
+//! Performance: All scanning operates on byte slices (`&[u8]`) to avoid
+//! the overhead of `Vec<char>` allocation. Since C preprocessor tokens are
+//! ASCII, this is safe and correct. UTF-8 multi-byte sequences in string/char
+//! literals are copied verbatim without interpretation.
 
 use std::cell::Cell;
 
@@ -156,9 +156,7 @@ impl MacroTable {
         // - 0x02/0x03 (PASTE_PROTECT_START/END): should already be consumed by
         //   substitute_params, but strip defensively in case any leak through.
         if result.as_bytes().iter().any(|&b| b == BLUE_PAINT_MARKER || b == PASTE_PROTECT_START || b == PASTE_PROTECT_END) {
-            result.replace(BLUE_PAINT_MARKER as char, "")
-                  .replace(PASTE_PROTECT_START as char, "")
-                  .replace(PASTE_PROTECT_END as char, "")
+            result.replace([BLUE_PAINT_MARKER as char, PASTE_PROTECT_START as char, PASTE_PROTECT_END as char], "")
         } else {
             result
         }

@@ -118,11 +118,7 @@ impl Parser {
     /// This is the shared core that replaces 10 nearly-identical parsing functions.
     fn parse_binary_expr(&mut self, level: PrecedenceLevel) -> Expr {
         let mut lhs = self.parse_next_tighter(level);
-        loop {
-            let op = match self.token_to_binop(self.peek(), level) {
-                Some(op) => op,
-                None => break,
-            };
+        while let Some(op) = self.token_to_binop(self.peek(), level) {
             let span = self.peek_span();
             self.advance();
             let rhs = self.parse_next_tighter(level);
@@ -507,15 +503,11 @@ impl Parser {
                 let span = self.peek_span();
                 self.advance();
                 // Concatenate adjacent string literals (wide + narrow = wide)
-                loop {
-                    match self.peek() {
-                        TokenKind::StringLiteral(s2) | TokenKind::WideStringLiteral(s2)
-                        | TokenKind::Char16StringLiteral(s2) => {
-                            result.push_str(s2);
-                            self.advance();
-                        }
-                        _ => break,
-                    }
+                while let TokenKind::StringLiteral(s2) | TokenKind::WideStringLiteral(s2)
+                    | TokenKind::Char16StringLiteral(s2) = self.peek()
+                {
+                    result.push_str(s2);
+                    self.advance();
                 }
                 Expr::WideStringLiteral(result, span)
             }
@@ -651,18 +643,16 @@ impl Parser {
             let (type_spec, is_const) = if matches!(self.peek(), TokenKind::Default) {
                 self.advance();
                 (None, false)
+            } else if let Some(ts) = self.parse_type_specifier() {
+                // Capture whether the base type had `const` before pointer declarators.
+                // For `const int *`, parsing_const is true after parse_type_specifier
+                // (from the `const` keyword), and the `*` is applied in
+                // parse_abstract_declarator_suffix. This means the pointee is const.
+                let base_const = self.attrs.parsing_const();
+                let full_type = self.parse_abstract_declarator_suffix(ts);
+                (Some(full_type), base_const)
             } else {
-                if let Some(ts) = self.parse_type_specifier() {
-                    // Capture whether the base type had `const` before pointer declarators.
-                    // For `const int *`, parsing_const is true after parse_type_specifier
-                    // (from the `const` keyword), and the `*` is applied in
-                    // parse_abstract_declarator_suffix. This means the pointee is const.
-                    let base_const = self.attrs.parsing_const();
-                    let full_type = self.parse_abstract_declarator_suffix(ts);
-                    (Some(full_type), base_const)
-                } else {
-                    (None, false)
-                }
+                (None, false)
             };
             self.attrs.set_const(saved_const);
             self.expect(&TokenKind::Colon);

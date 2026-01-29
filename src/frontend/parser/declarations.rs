@@ -66,7 +66,7 @@ impl Parser {
                 loop {
                     match self.peek() {
                         TokenKind::StringLiteral(s) => {
-                            asm_str.push_str(&s);
+                            asm_str.push_str(s);
                             self.advance();
                         }
                         TokenKind::RParen | TokenKind::Eof => break,
@@ -769,11 +769,10 @@ impl Parser {
                         }
                     }
                 }
-                if !designators.is_empty() {
-                    if matches!(self.peek(), TokenKind::Assign) {
+                if !designators.is_empty()
+                    && matches!(self.peek(), TokenKind::Assign) {
                         self.advance();
                     }
-                }
                 let init = self.parse_initializer();
                 items.push(InitializerItem { designators, init });
                 if !self.consume_if(&TokenKind::Comma) {

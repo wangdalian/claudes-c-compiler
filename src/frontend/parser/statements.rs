@@ -403,13 +403,9 @@ impl Parser {
         if matches!(self.peek(), TokenKind::Colon | TokenKind::RParen) {
             return clobbers;
         }
-        loop {
-            if let TokenKind::StringLiteral(ref s) = self.peek() {
-                clobbers.push(s.clone());
-                self.advance();
-            } else {
-                break;
-            }
+        while let TokenKind::StringLiteral(ref s) = self.peek() {
+            clobbers.push(s.clone());
+            self.advance();
             if !self.consume_if(&TokenKind::Comma) {
                 break;
             }
@@ -424,13 +420,9 @@ impl Parser {
         if matches!(self.peek(), TokenKind::RParen) {
             return labels;
         }
-        loop {
-            if let TokenKind::Identifier(ref name) = self.peek() {
-                labels.push(name.clone());
-                self.advance();
-            } else {
-                break;
-            }
+        while let TokenKind::Identifier(ref name) = self.peek() {
+            labels.push(name.clone());
+            self.advance();
             if !self.consume_if(&TokenKind::Comma) {
                 break;
             }

@@ -365,10 +365,10 @@ fn analyze_loop_memory(
 /// 1. Its pointer operand is loop-invariant
 /// 2. The memory it reads is not modified inside the loop:
 ///    a. If ptr is an alloca that IS address-taken (used in GEP, passed to
-///       calls, etc.): never hoisted, since stores through derived pointers
-///       may not be tracked in `stored_allocas`
+///    calls, etc.): never hoisted, since stores through derived pointers
+///    may not be tracked in `stored_allocas`
 ///    b. If ptr is an alloca that is NOT address-taken: safe to hoist if no
-///       store in the loop directly targets that alloca
+///    store in the loop directly targets that alloca
 fn is_load_hoistable(
     ptr: &Value,
     alloca_info: &AllocaAnalysis,
@@ -573,7 +573,7 @@ fn hoist_loop_invariants(
         preheader_block.instructions.extend(sorted);
         if !preheader_block.source_spans.is_empty() {
             preheader_block.source_spans.extend(
-                std::iter::repeat(crate::common::source::Span::dummy()).take(num_sorted)
+                std::iter::repeat_n(crate::common::source::Span::dummy(), num_sorted)
             );
         }
     }

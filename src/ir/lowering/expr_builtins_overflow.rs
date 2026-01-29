@@ -64,7 +64,7 @@ impl Lowerer {
         let result_ptr = self.operand_to_value(result_ptr_val);
 
         // Perform the operation in the result type (operands are now properly widened)
-        let result = self.emit_binop_val(op, lhs_val.clone(), rhs_val.clone(), result_ir_ty);
+        let result = self.emit_binop_val(op, lhs_val, rhs_val, result_ir_ty);
 
         // Store the (possibly truncated/wrapped) result
         self.emit(Instruction::Store { val: Operand::Value(result), ptr: result_ptr, ty: result_ir_ty,
@@ -194,7 +194,7 @@ impl Lowerer {
             IrBinOp::Sub => {
                 // Signed sub overflow: ((lhs ^ rhs) & (result ^ lhs)) < 0
                 // overflow if operands have different signs and result sign differs from lhs
-                let xor_ops = self.emit_binop_val(IrBinOp::Xor, lhs.clone(), rhs, ty);
+                let xor_ops = self.emit_binop_val(IrBinOp::Xor, lhs, rhs, ty);
                 let xor_res = self.emit_binop_val(IrBinOp::Xor, Operand::Value(result), lhs, ty);
                 let and_val = self.emit_binop_val(IrBinOp::And, Operand::Value(xor_ops), Operand::Value(xor_res), ty);
                 let shifted = self.emit_binop_val(IrBinOp::AShr, Operand::Value(and_val), Operand::Const(IrConst::I64(bits - 1)), ty);

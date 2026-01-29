@@ -170,7 +170,7 @@ impl Lowerer {
                 let arg_vals: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
                 let dest = self.fresh_value();
                 let libc_sig = self.func_meta.sigs.get(libc_name.as_str());
-                let variadic = libc_sig.map_or(false, |s| s.is_variadic);
+                let variadic = libc_sig.is_some_and(|s| s.is_variadic);
                 let n_fixed = if variadic {
                     libc_sig.map(|s| s.param_types.len()).unwrap_or(arg_vals.len())
                 } else { arg_vals.len() };
@@ -245,8 +245,8 @@ impl Lowerer {
                     // __builtin_isunordered: returns 1 if either operand is NaN.
                     // Emit (a != a) | (b != b) since NaN is the only value where x != x.
                     if name == "__builtin_isunordered" {
-                        let lhs_nan = self.emit_cmp_val(IrCmpOp::Ne, lhs.clone(), lhs.clone(), cmp_ty);
-                        let rhs_nan = self.emit_cmp_val(IrCmpOp::Ne, rhs.clone(), rhs.clone(), cmp_ty);
+                        let lhs_nan = self.emit_cmp_val(IrCmpOp::Ne, lhs, lhs, cmp_ty);
+                        let rhs_nan = self.emit_cmp_val(IrCmpOp::Ne, rhs, rhs, cmp_ty);
                         let dest = self.emit_binop_val(IrBinOp::Or, Operand::Value(lhs_nan), Operand::Value(rhs_nan), IrType::I32);
                         return Some(Operand::Value(dest));
                     }
@@ -256,7 +256,7 @@ impl Lowerer {
                     // islessgreater(NaN, x) must be false.
                     // Emit (a < b) | (a > b).
                     if name == "__builtin_islessgreater" {
-                        let lt = self.emit_cmp_val(IrCmpOp::Slt, lhs.clone(), rhs.clone(), cmp_ty);
+                        let lt = self.emit_cmp_val(IrCmpOp::Slt, lhs, rhs, cmp_ty);
                         let gt = self.emit_cmp_val(IrCmpOp::Sgt, lhs, rhs, cmp_ty);
                         let dest = self.emit_binop_val(IrBinOp::Or, Operand::Value(lt), Operand::Value(gt), IrType::I32);
                         return Some(Operand::Value(dest));
@@ -527,11 +527,7 @@ impl Lowerer {
                     Operand::Const(IrConst::I64(0))
                 };
                 // Only level 0 is supported; for other levels return NULL
-                let is_level_zero = match &level {
-                    Operand::Const(IrConst::I64(0)) => true,
-                    Operand::Const(IrConst::I32(0)) => true,
-                    _ => false,
-                };
+                let is_level_zero = matches!(&level, Operand::Const(IrConst::I64(0)) | Operand::Const(IrConst::I32(0)));
                 if is_level_zero {
                     let op = if *intrinsic == BuiltinIntrinsic::FrameAddress {
                         IntrinsicOp::FrameAddress
@@ -576,8 +572,8 @@ impl Lowerer {
             }
             X86IntrinsicKind::PtrStore => {
                 let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                let ptr_val = self.operand_to_value(arg_ops[0].clone());
-                self.emit(Instruction::Intrinsic { dest: None, op, dest_ptr: Some(ptr_val), args: vec![arg_ops[1].clone()] });
+                let ptr_val = self.operand_to_value(arg_ops[0]);
+                self.emit(Instruction::Intrinsic { dest: None, op, dest_ptr: Some(ptr_val), args: vec![arg_ops[1]] });
                 Some(Operand::Const(IrConst::I64(0)))
             }
             X86IntrinsicKind::Vec128 => {

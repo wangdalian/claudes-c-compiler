@@ -563,10 +563,10 @@ impl Preprocessor {
     /// remove F/D extension macros that set_target unconditionally defines.
     pub fn set_riscv_march(&mut self, march: &str) {
         // Extract the base ISA string (strip rv32/rv64 prefix for extension parsing).
-        let exts = if march.starts_with("rv64") {
-            &march[4..]
-        } else if march.starts_with("rv32") {
-            &march[4..]
+        let exts = if let Some(rest) = march.strip_prefix("rv64") {
+            rest
+        } else if let Some(rest) = march.strip_prefix("rv32") {
+            rest
         } else {
             march
         };

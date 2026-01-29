@@ -56,7 +56,7 @@ impl Lowerer {
                 Some(crate::common::types::InitFieldResolution::Direct(idx)) => *idx,
                 Some(crate::common::types::InitFieldResolution::AnonymousMember { anon_field_idx, inner_name }) => {
                     let extra_desigs = if item.designators.len() > 1 { &item.designators[1..] } else { &[] };
-                    if let Some(res) = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &item.init, extra_desigs, &*self.types.borrow_struct_layouts()) {
+                    if let Some(res) = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &item.init, extra_desigs, &self.types.borrow_struct_layouts()) {
                         self.fill_struct_global_bytes(&[res.sub_item], &res.sub_layout, bytes, base_offset + res.anon_offset);
                     }
                     item_idx += 1;
@@ -354,7 +354,7 @@ impl Lowerer {
             if !remaining_index_desigs.is_empty() {
                 // .a[1].b[2] - remaining has both field and index
                 // Build designator list with fields and indices from after_first_idx
-                let sub_desigs: Vec<_> = after_first_idx.iter().cloned().collect();
+                let sub_desigs: Vec<_> = after_first_idx.to_vec();
                 if let Some(sub_layout) = self.get_struct_layout_for_ctype(elem_ty) {
                     let sub_item = InitializerItem {
                         designators: sub_desigs,
@@ -362,14 +362,12 @@ impl Lowerer {
                     };
                     self.fill_struct_global_bytes(&[sub_item], &sub_layout, bytes, elem_offset);
                 }
-            } else {
-                if let Some(sub_layout) = self.get_struct_layout_for_ctype(elem_ty) {
-                    let sub_item = InitializerItem {
-                        designators: remaining_field_desigs,
-                        init: item.init.clone(),
-                    };
-                    self.fill_struct_global_bytes(&[sub_item], &sub_layout, bytes, elem_offset);
-                }
+            } else if let Some(sub_layout) = self.get_struct_layout_for_ctype(elem_ty) {
+                let sub_item = InitializerItem {
+                    designators: remaining_field_desigs,
+                    init: item.init.clone(),
+                };
+                self.fill_struct_global_bytes(&[sub_item], &sub_layout, bytes, elem_offset);
             }
         } else if !remaining_index_desigs.is_empty() {
             // Multi-dimensional array: .a[1][2] = val
@@ -1010,7 +1008,7 @@ impl Lowerer {
 
                 // If there are extra index designators beyond the first, we need to compute
                 // a byte offset within this_stride and recurse or write directly.
-                if index_designators.len() > 1 && remaining_strides.len() > 0 {
+                if index_designators.len() > 1 && !remaining_strides.is_empty() {
                     let elem_offset = base_offset + current_idx * this_stride;
                     // Compute sub-offset from remaining designators
                     let mut sub_byte_offset = 0usize;

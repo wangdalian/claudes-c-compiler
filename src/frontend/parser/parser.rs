@@ -107,6 +107,7 @@ pub(super) mod parsed_attr_flag {
 /// Boolean attributes are stored as a packed bitfield (`flags`) for memory
 /// efficiency — 18 booleans collapse from 18 bytes into 4 bytes. Accessor
 /// methods provide the same API as the old struct fields.
+#[derive(Default)]
 pub(super) struct ParsedDeclAttrs {
     /// Packed boolean flags — see `parsed_attr_flag` constants.
     flags: u32,
@@ -135,22 +136,6 @@ pub(super) struct ParsedDeclAttrs {
     pub parsed_alignment_sizeof_type: Option<TypeSpecifier>,
 }
 
-impl Default for ParsedDeclAttrs {
-    fn default() -> Self {
-        Self {
-            flags: 0,
-            parsing_address_space: AddressSpace::default(),
-            parsing_alias_target: None,
-            parsing_visibility: None,
-            parsing_section: None,
-            parsing_cleanup_fn: None,
-            parsing_vector_size: None,
-            parsed_alignas: None,
-            parsed_alignas_type: None,
-            parsed_alignment_sizeof_type: None,
-        }
-    }
-}
 
 impl ParsedDeclAttrs {
     // --- flag getters ---
@@ -478,14 +463,10 @@ impl Parser {
     /// We skip these qualifiers since they only affect optimization hints and
     /// don't change the type semantics (array params decay to pointers).
     pub(super) fn skip_array_qualifiers(&mut self) {
-        loop {
-            match self.peek() {
-                TokenKind::Static | TokenKind::Const | TokenKind::Volatile
-                | TokenKind::Restrict | TokenKind::Atomic => {
-                    self.advance();
-                }
-                _ => break,
-            }
+        while let TokenKind::Static | TokenKind::Const | TokenKind::Volatile
+            | TokenKind::Restrict | TokenKind::Atomic = self.peek()
+        {
+            self.advance();
         }
     }
 
@@ -588,7 +569,7 @@ impl Parser {
                                             self.advance(); // consume (
                                             let mut result = String::new();
                                             while let TokenKind::StringLiteral(s) = self.peek() {
-                                                result.push_str(&s);
+                                                result.push_str(s);
                                                 self.advance();
                                             }
                                             if !result.is_empty() {
@@ -608,7 +589,7 @@ impl Parser {
                                             self.advance(); // consume (
                                             let mut result = String::new();
                                             while let TokenKind::StringLiteral(s) = self.peek() {
-                                                result.push_str(&s);
+                                                result.push_str(s);
                                                 self.advance();
                                             }
                                             if !result.is_empty() {
@@ -626,7 +607,7 @@ impl Parser {
                                             self.advance(); // consume (
                                             let mut result = String::new();
                                             while let TokenKind::StringLiteral(s) = self.peek() {
-                                                result.push_str(&s);
+                                                result.push_str(s);
                                                 self.advance();
                                             }
                                             if !result.is_empty() {
@@ -644,7 +625,7 @@ impl Parser {
                                             self.advance(); // consume (
                                             let mut result = String::new();
                                             while let TokenKind::StringLiteral(s) = self.peek() {
-                                                result.push_str(&s);
+                                                result.push_str(s);
                                                 self.advance();
                                             }
                                             if !result.is_empty() {
@@ -897,7 +878,7 @@ impl Parser {
         let mut combined = String::new();
         let mut found_string = false;
         while let TokenKind::StringLiteral(s) = self.peek() {
-            combined.push_str(&s);
+            combined.push_str(s);
             found_string = true;
             self.advance();
         }

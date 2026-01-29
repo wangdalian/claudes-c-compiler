@@ -294,7 +294,7 @@ impl Lowerer {
         if let CType::Struct(ref key) | CType::Union(ref key) = elem_ty {
             let sub_layout = self.types.borrow_struct_layouts().get(&**key).cloned();
             if let Some(sub_layout) = sub_layout {
-                let sub_desigs: Vec<_> = after_first_idx.iter().cloned().collect();
+                let sub_desigs: Vec<_> = after_first_idx.to_vec();
                 let sub_item = InitializerItem {
                     designators: sub_desigs,
                     init: item.init.clone(),

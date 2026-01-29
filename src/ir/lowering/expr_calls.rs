@@ -427,16 +427,16 @@ impl Lowerer {
 
         // If the signature has an empty parameter list (unprototyped function like `int f()`),
         // all arguments need default argument promotions (float->double, char/short->int).
-        let is_unprototyped = sig.map_or(false, |s| s.param_types.is_empty());
+        let is_unprototyped = sig.is_some_and(|s| s.param_types.is_empty());
         let param_types: Option<Vec<IrType>> = sig.map(|s| s.param_types.clone()).filter(|v| !v.is_empty())
             .or_else(|| inferred_from_ctype.as_ref().map(|(pt, _, _, _)| pt.clone()).filter(|v| !v.is_empty()));
         let param_ctypes: Option<Vec<CType>> = sig.map(|s| s.param_ctypes.clone()).filter(|v| !v.is_empty())
             .or_else(|| inferred_from_ctype.as_ref().map(|(_, pc, _, _)| pc.clone()).filter(|v| !v.is_empty()));
         let param_bool_flags: Option<Vec<bool>> = sig.map(|s| s.param_bool_flags.clone()).filter(|v| !v.is_empty())
             .or_else(|| inferred_from_ctype.as_ref().map(|(_, _, pb, _)| pb.clone()).filter(|v| !v.is_empty()));
-        let pre_call_variadic = func_name.map_or(false, |name|
+        let pre_call_variadic = func_name.is_some_and(|name|
             self.is_function_variadic(name)
-        ) || inferred_from_ctype.as_ref().map_or(false, |(_, _, _, variadic)| *variadic);
+        ) || inferred_from_ctype.as_ref().is_some_and(|(_, _, _, variadic)| *variadic);
 
         let mut arg_types = Vec::with_capacity(args.len());
         // Track argument indices where a complex expression was converted to a
@@ -506,7 +506,7 @@ impl Lowerer {
             }
 
             let is_bool_param = param_bool_flags.as_ref()
-                .map_or(false, |flags| i < flags.len() && flags[i]);
+                .is_some_and(|flags| i < flags.len() && flags[i]);
 
             if let Some(ref ptypes) = param_types {
                 if i < ptypes.len() {
@@ -621,9 +621,7 @@ impl Lowerer {
         // This is used by RISC-V to even-align register pairs for 2×XLEN-aligned structs
         // (e.g., struct containing long double with 16-byte alignment).
         let struct_arg_aligns: Vec<Option<usize>> = args.iter().enumerate().map(|(i, a)| {
-            if struct_arg_sizes.get(i).copied().flatten().is_none() {
-                return None;
-            }
+            struct_arg_sizes.get(i).copied().flatten()?;
             let ctype = self.get_expr_ctype(a);
             match ctype {
                 Some(ref ct @ CType::Struct(_)) | Some(ref ct @ CType::Union(_)) => {

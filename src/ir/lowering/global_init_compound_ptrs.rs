@@ -177,7 +177,7 @@ impl Lowerer {
                     // Designator targets a field inside an anonymous struct/union member.
                     // Recursively fill the anonymous member's sub-layout.
                     let extra_desigs = if sub_item.designators.len() > 1 { &sub_item.designators[1..] } else { &[] };
-                    let anon_res = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &sub_item.init, extra_desigs, &*self.types.borrow_struct_layouts());
+                    let anon_res = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &sub_item.init, extra_desigs, &self.types.borrow_struct_layouts());
                     if let Some(res) = anon_res {
                         let anon_offset = base_offset + res.anon_offset;
                         self.fill_struct_fields_from_items(
@@ -369,7 +369,7 @@ impl Lowerer {
                         while item_idx < items.len() && current_field_idx < layout.fields.len() {
                             let sub_item = &items[item_idx];
                             // If this item has an array index designator, it starts a new element
-                            if sub_item.designators.first().is_some() && item_idx != 0 {
+                            if !sub_item.designators.is_empty() && item_idx != 0 {
                                 break;
                             }
                             let field = &layout.fields[current_field_idx];
@@ -435,7 +435,7 @@ impl Lowerer {
                 Some(InitFieldResolution::AnonymousMember { anon_field_idx, inner_name }) => {
                     // Designator targets a field inside an anonymous struct/union member.
                     let extra_desigs = if item.designators.len() > remaining_desigs_start { &item.designators[remaining_desigs_start..] } else { &[] };
-                    let anon_res = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &item.init, extra_desigs, &*self.types.borrow_struct_layouts());
+                    let anon_res = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &item.init, extra_desigs, &self.types.borrow_struct_layouts());
                     if let Some(res) = anon_res {
                         let anon_offset = elem_base + res.anon_offset;
                         self.fill_struct_fields_from_items(
@@ -549,8 +549,8 @@ impl Lowerer {
             };
 
             // Handle multi-level designators within the nested struct (e.g., .config.i = &val)
-            if h::has_nested_field_designator(inner_item) {
-                if field_idx < sub_layout.fields.len() {
+            if h::has_nested_field_designator(inner_item)
+                && field_idx < sub_layout.fields.len() {
                     let field = &sub_layout.fields[field_idx];
                     let field_abs_offset = base_offset + field.offset;
 
@@ -569,7 +569,6 @@ impl Lowerer {
                     if sub_layout.is_union && desig_name.is_none() { break; }
                     continue;
                 }
-            }
 
             let field = &sub_layout.fields[field_idx];
             let field_abs_offset = base_offset + field.offset;

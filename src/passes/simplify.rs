@@ -94,14 +94,13 @@ pub(crate) fn simplify_function(func: &mut IrFunction) -> usize {
     for block in &func.blocks {
         for inst in &block.instructions {
             if let Instruction::BinOp { dest, op, lhs, rhs, .. } = inst {
-                if matches!(op, IrBinOp::And | IrBinOp::Or | IrBinOp::Xor) {
-                    if operand_is_boolean(lhs, &is_boolean) && operand_is_boolean(rhs, &is_boolean) {
+                if matches!(op, IrBinOp::And | IrBinOp::Or | IrBinOp::Xor)
+                    && operand_is_boolean(lhs, &is_boolean) && operand_is_boolean(rhs, &is_boolean) {
                         let id = dest.0 as usize;
                         if id < is_boolean.len() {
                             is_boolean[id] = true;
                         }
                     }
-                }
             }
         }
     }

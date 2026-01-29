@@ -560,7 +560,7 @@ impl Driver {
         // Versioned shared libraries: .so.1, .so.1.2.3, etc.
         if let Some(pos) = path.rfind(".so.") {
             let after = &path[pos + 4..];
-            if after.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+            if after.chars().next().is_some_and(|c| c.is_ascii_digit()) {
                 return true;
             }
         }
@@ -914,7 +914,7 @@ impl Driver {
     /// Test whether the system GCC accepts a given flag by compiling /dev/null.
     fn system_gcc_accepts_flag(flag: &str) -> bool {
         let result = std::process::Command::new("gcc")
-            .args(&["-Werror", flag, "-c", "-x", "c", "/dev/null", "-o", "/dev/null"])
+            .args(["-Werror", flag, "-c", "-x", "c", "/dev/null", "-o", "/dev/null"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();

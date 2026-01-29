@@ -272,13 +272,11 @@ impl Lowerer {
                 // GCC treats enum bitfields as unsigned: values are zero-extended
                 // on load, not sign-extended. Check both direct enum type specs
                 // and typedef'd enum types (e.g., typedef enum EFoo EFoo).
-                if bit_width.is_some() {
-                    if self.is_enum_type_spec(&f.type_spec) {
-                        if ty == CType::Int {
+                if bit_width.is_some()
+                    && self.is_enum_type_spec(&f.type_spec)
+                        && ty == CType::Int {
                             ty = CType::UInt;
                         }
-                    }
-                }
                 StructField {
                     name: f.name.clone().unwrap_or_default(),
                     ty,
@@ -451,11 +449,9 @@ impl type_builder::TypeConvertContext for Lowerer {
             if max_val <= 0xFF { CType::UChar }
             else if max_val <= 0xFFFF { CType::UShort }
             else { CType::UInt }
-        } else {
-            if min_val >= -128 && max_val <= 127 { CType::Char }
-            else if min_val >= -32768 && max_val <= 32767 { CType::Short }
-            else { CType::Int }
-        }
+        } else if min_val >= -128 && max_val <= 127 { CType::Char }
+        else if min_val >= -32768 && max_val <= 32767 { CType::Short }
+        else { CType::Int }
     }
 
     fn resolve_typeof_expr(&self, expr: &Expr) -> CType {

@@ -50,11 +50,7 @@ pub fn run(module: &mut IrModule) -> usize {
                     let replace = match &block.instructions[i] {
                         Instruction::Call { func: callee, info } => {
                             if let Some(dest) = info.dest {
-                                if let Some(const_val) = const_returns.get(callee.as_str()) {
-                                    Some((dest, *const_val))
-                                } else {
-                                    None
-                                }
+                                const_returns.get(callee.as_str()).map(|const_val| (dest, *const_val))
                             } else {
                                 None
                             }
@@ -96,11 +92,10 @@ pub fn run(module: &mut IrModule) -> usize {
                     };
                     if !is_dead {
                         new_insts.push(inst);
-                        if has_spans {
-                            if idx < block.source_spans.len() {
+                        if has_spans
+                            && idx < block.source_spans.len() {
                                 new_spans.push(block.source_spans[idx]);
                             }
-                        }
                     } else {
                         total_changes += 1;
                     }

@@ -62,7 +62,7 @@ impl Lowerer {
         };
 
         if let Some(lv) = self.lower_lvalue(lhs) {
-            self.store_lvalue_typed(&lv, rhs_val.clone(), lhs_ty);
+            self.store_lvalue_typed(&lv, rhs_val, lhs_ty);
             return rhs_val;
         }
         rhs_val
@@ -162,11 +162,11 @@ impl Lowerer {
         // e.g. `s.bool_bf = 2` would mask 2 (0b10) to 1 bit = 0, not 1.
         let store_val = if is_bool {
             let rhs_ty = self.get_expr_type(rhs);
-            self.emit_bool_normalize_typed(rhs_val.clone(), rhs_ty)
+            self.emit_bool_normalize_typed(rhs_val, rhs_ty)
         } else {
-            rhs_val.clone()
+            rhs_val
         };
-        self.store_bitfield(field_addr, storage_ty, bit_offset, bit_width, store_val.clone());
+        self.store_bitfield(field_addr, storage_ty, bit_offset, bit_width, store_val);
         Some(self.truncate_to_bitfield_value(store_val, bit_width, storage_ty.is_signed()))
     }
 
@@ -180,7 +180,7 @@ impl Lowerer {
         let rhs_val = self.lower_expr(rhs);
 
         let is_unsigned = storage_ty.is_unsigned();
-        let ir_op = Self::binop_to_ir(op.clone(), is_unsigned);
+        let ir_op = Self::binop_to_ir(*op, is_unsigned);
         let wt = widened_op_type(IrType::I32);
         let result = self.emit_binop_val(ir_op, current_val, rhs_val, wt);
 
@@ -192,7 +192,7 @@ impl Lowerer {
             Operand::Value(result)
         };
 
-        self.store_bitfield(field_addr, storage_ty, bit_offset, bit_width, store_val.clone());
+        self.store_bitfield(field_addr, storage_ty, bit_offset, bit_width, store_val);
         Some(self.truncate_to_bitfield_value(store_val, bit_width, storage_ty.is_signed()))
     }
 
@@ -373,8 +373,8 @@ impl Lowerer {
             let low_loaded = self.fresh_value();
             self.emit(Instruction::Load { dest: low_loaded, ptr: addr, ty: storage_ty , seg_override: AddressSpace::Default });
             let low_val = if bit_offset > 0 {
-                let shifted = self.emit_binop_val(IrBinOp::LShr, Operand::Value(low_loaded), Operand::Const(IrConst::I64(bit_offset as i64)), op_ty);
-                shifted
+                
+                self.emit_binop_val(IrBinOp::LShr, Operand::Value(low_loaded), Operand::Const(IrConst::I64(bit_offset as i64)), op_ty)
             } else {
                 low_loaded
             };
@@ -502,10 +502,10 @@ impl Lowerer {
             let loaded = self.load_lvalue_typed(&lv, ty);
             let loaded_promoted = self.emit_implicit_cast(loaded, ty, op_ty);
             let is_unsigned = self.infer_expr_type(lhs).is_unsigned();
-            let ir_op = Self::binop_to_ir(op.clone(), is_unsigned);
+            let ir_op = Self::binop_to_ir(*op, is_unsigned);
             let result = self.emit_binop_val(ir_op, loaded_promoted, rhs_promoted, op_ty);
             let result_cast = self.emit_implicit_cast(Operand::Value(result), op_ty, ty);
-            self.store_lvalue_typed(&lv, result_cast.clone(), ty);
+            self.store_lvalue_typed(&lv, result_cast, ty);
             return result_cast;
         }
         Operand::Const(IrConst::I64(0))
@@ -531,7 +531,7 @@ impl Lowerer {
             } else {
                 common_ty.is_unsigned()
             };
-            let ir_op = Self::binop_to_ir(op.clone(), is_unsigned);
+            let ir_op = Self::binop_to_ir(*op, is_unsigned);
 
             // Scale RHS for pointer += and -=
             let actual_rhs = if ty == IrType::Ptr && matches!(op, BinOp::Add | BinOp::Sub) {
@@ -549,7 +549,7 @@ impl Lowerer {
             } else {
                 store_val
             };
-            self.store_lvalue_typed(&lv, store_val.clone(), ty);
+            self.store_lvalue_typed(&lv, store_val, ty);
             return store_val;
         }
         rhs_val
@@ -751,7 +751,7 @@ impl Lowerer {
         let is_unsigned = elem_ct.is_unsigned();
 
         // Get the IR binary operation
-        let ir_op = Self::binop_to_ir(op.clone(), is_unsigned);
+        let ir_op = Self::binop_to_ir(*op, is_unsigned);
 
         // LHS is always a vector for compound assignment
         let lhs_ptr = self.lower_expr(lhs);
@@ -785,7 +785,7 @@ impl Lowerer {
             self.emit(Instruction::Load { dest: lhs_elem, ptr: lhs_elem_ptr, ty: elem_ir_ty, seg_override: AddressSpace::Default });
             // Get RHS element: splatted scalar or loaded from vector
             let rhs_elem_op = if let Some(ref scalar_op) = rhs_scalar {
-                scalar_op.clone()
+                *scalar_op
             } else {
                 let rhs_elem_ptr = if offset > 0 {
                     self.emit_binop_val(IrBinOp::Add, Operand::Value(rhs_val), Operand::Const(IrConst::ptr_int(offset as i64)), ptr_int_ty)
@@ -820,7 +820,7 @@ impl Lowerer {
             _ => unreachable!("lower_vector_binary_op called with non-vector type: {:?}", vec_ct),
         };
         let is_unsigned = elem_ct.is_unsigned();
-        let ir_op = Self::binop_to_ir(op.clone(), is_unsigned);
+        let ir_op = Self::binop_to_ir(*op, is_unsigned);
 
         // Determine if each operand is a vector or scalar.
         let lhs_is_vector = self.expr_ctype(lhs).is_vector();
@@ -856,7 +856,7 @@ impl Lowerer {
 
             // Get LHS element: load from vector, or use splatted scalar
             let lhs_elem_op = if let Some(ref scalar_op) = lhs_scalar {
-                scalar_op.clone()
+                *scalar_op
             } else {
                 let lhs_elem_ptr = if offset > 0 {
                     self.emit_binop_val(IrBinOp::Add, Operand::Value(lhs_val), Operand::Const(IrConst::ptr_int(offset as i64)), ptr_int_ty)
@@ -870,7 +870,7 @@ impl Lowerer {
 
             // Get RHS element: load from vector, or use splatted scalar
             let rhs_elem_op = if let Some(ref scalar_op) = rhs_scalar {
-                scalar_op.clone()
+                *scalar_op
             } else {
                 let rhs_elem_ptr = if offset > 0 {
                     self.emit_binop_val(IrBinOp::Add, Operand::Value(rhs_val), Operand::Const(IrConst::ptr_int(offset as i64)), ptr_int_ty)

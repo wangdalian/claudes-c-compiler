@@ -1,9 +1,9 @@
-/// Full C preprocessor implementation.
-///
-/// Struct definition, core preprocessing pipeline, directive dispatch,
-/// and public configuration API. Predefined macros and target configuration
-/// live in `predefined_macros`, pragma handling in `pragmas`, and text
-/// processing (comment stripping, line joining) in `text_processing`.
+//! Full C preprocessor implementation.
+//!
+//! Struct definition, core preprocessing pipeline, directive dispatch,
+//! and public configuration API. Predefined macros and target configuration
+//! live in `predefined_macros`, pragma handling in `pragmas`, and text
+//! processing (comment stripping, line joining) in `text_processing`.
 
 use crate::common::fx_hash::{FxHashMap, FxHashSet};
 use std::path::PathBuf;
@@ -125,7 +125,7 @@ impl Preprocessor {
 
         // For included files, save and reset the conditional stack and line override
         let saved_conditionals = if is_include {
-            Some(std::mem::replace(&mut self.conditionals, ConditionalStack::new()))
+            Some(std::mem::take(&mut self.conditionals))
         } else {
             None
         };
@@ -396,7 +396,7 @@ impl Preprocessor {
         // (resolve_include_path uses .parent() to get the directory)
         let path = PathBuf::from(filename);
         let canonical = std::fs::canonicalize(&path)
-            .unwrap_or_else(|_| path);
+            .unwrap_or(path);
         self.include_stack.push(canonical);
     }
 
@@ -579,7 +579,7 @@ impl Preprocessor {
             _ => {
                 // Handle GNU linemarker: # <digit-sequence> ["filename" [flags]]
                 // This is equivalent to #line <digit-sequence> ["filename"]
-                if keyword.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+                if keyword.chars().next().is_some_and(|c| c.is_ascii_digit()) {
                     let line_rest = format!("{} {}", keyword, rest);
                     self.handle_line_directive(&line_rest, line_num);
                 }
@@ -597,14 +597,14 @@ impl Preprocessor {
     }
 
     fn handle_undef(&mut self, rest: &str) {
-        let name = rest.trim().split_whitespace().next().unwrap_or("");
+        let name = rest.split_whitespace().next().unwrap_or("");
         if !name.is_empty() {
             self.macros.undefine(name);
         }
     }
 
     fn handle_ifdef(&mut self, rest: &str, negate: bool) {
-        let name = rest.trim().split_whitespace().next().unwrap_or("");
+        let name = rest.split_whitespace().next().unwrap_or("");
         let defined = self.macros.is_defined(name);
         let condition = if negate { !defined } else { defined };
         self.conditionals.push_if(condition);

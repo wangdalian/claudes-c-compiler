@@ -665,7 +665,7 @@ fn remove_promoted_instructions(func: &mut IrFunction, alloca_to_idx: &FxHashMap
             block.source_spans.retain(|_| {
                 let keep = match &insts[span_idx] {
                     Instruction::Alloca { dest, .. } => {
-                        !(alloca_to_idx.contains_key(&dest.0) && !param_alloca_values.contains(&dest.0))
+                        !alloca_to_idx.contains_key(&dest.0) || param_alloca_values.contains(&dest.0)
                     }
                     Instruction::Store { ptr, .. } => !alloca_to_idx.contains_key(&ptr.0),
                     Instruction::Load { ptr, .. } => !alloca_to_idx.contains_key(&ptr.0),

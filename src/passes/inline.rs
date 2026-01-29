@@ -229,11 +229,10 @@ fn select_inline_site(
         // When the caller has a section attribute (e.g., .init.text),
         // allow inlining small callees even into large callers to
         // prevent section mismatch errors.
-        if caller_too_large && !callee_data.is_always_inline {
-            if !caller_has_section || callee_inst_count > MAX_SMALL_INLINE_INSTRUCTIONS {
+        if caller_too_large && !callee_data.is_always_inline
+            && (!caller_has_section || callee_inst_count > MAX_SMALL_INLINE_INSTRUCTIONS) {
                 continue;
             }
-        }
         // Absolute cap: stop normal inlining for extremely large callers.
         // always_inline callees MUST still be inlined (C semantic requirement).
         if caller_at_absolute_cap && !callee_data.is_always_inline {
@@ -258,10 +257,8 @@ fn select_inline_site(
                     continue;
                 }
             }
-        } else {
-            if callee_inst_count > budget_remaining {
-                continue;
-            }
+        } else if callee_inst_count > budget_remaining {
+            continue;
         }
         return Some((site.clone(), callee_inst_count, use_relaxed));
     }
@@ -463,7 +460,7 @@ fn resolve_inline_asm_symbols(func: &mut IrFunction) {
             // Record stores to alloca pointers (the last store wins; for inlined
             // parameter allocas there's typically exactly one store at the top)
             if let Instruction::Store { val, ptr, .. } = inst {
-                alloca_stores.insert(ptr.0, val.clone());
+                alloca_stores.insert(ptr.0, *val);
             }
         }
     }
@@ -522,9 +519,7 @@ fn resolve_inline_asm_symbols(func: &mut IrFunction) {
                             else if let Some(const_val) = trace_to_const(&Operand::Value(*v)) {
                                 if debug_resolve { eprintln!("[RESOLVE_ASM]   -> resolved to const {}", const_val); }
                                 *operand = Operand::Const(IrConst::I64(const_val));
-                            } else {
-                                if debug_resolve { eprintln!("[RESOLVE_ASM]   -> FAILED to resolve Value({})", v.0); }
-                            }
+                            } else if debug_resolve { eprintln!("[RESOLVE_ASM]   -> FAILED to resolve Value({})", v.0); }
                         }
                         Operand::Const(_) => {
                             // Already a constant - nothing to fix
@@ -812,7 +807,7 @@ fn global_init_contains_local_label(init: &GlobalInit) -> bool {
         GlobalInit::GlobalLabelDiff(lab1, lab2, _) => {
             lab1.starts_with(".L") || lab2.starts_with(".L")
         }
-        GlobalInit::Compound(inits) => inits.iter().any(|i| global_init_contains_local_label(i)),
+        GlobalInit::Compound(inits) => inits.iter().any(global_init_contains_local_label),
         _ => false,
     }
 }
@@ -824,11 +819,10 @@ fn global_init_contains_local_label(init: &GlobalInit) -> bool {
 fn func_has_static_locals_with_label_refs(module: &IrModule, func_name: &str) -> bool {
     let prefix = format!("{}.", func_name);
     for global in &module.globals {
-        if global.name.starts_with(&prefix) {
-            if global_init_contains_local_label(&global.init) {
+        if global.name.starts_with(&prefix)
+            && global_init_contains_local_label(&global.init) {
                 return true;
             }
-        }
     }
     false
 }
@@ -890,15 +884,14 @@ fn build_callee_map(module: &IrModule) -> HashMap<String, CalleeData> {
             && !is_small_static
             && inst_count_for_static <= MAX_INLINE_INSTRUCTIONS
             && func.blocks.len() <= MAX_INLINE_BLOCKS;
-        if !is_always_inline && !is_trivially_empty && !is_small_static && !is_medium_static {
-            if !func.is_static || !func.is_inline {
+        if !is_always_inline && !is_trivially_empty && !is_small_static && !is_medium_static
+            && (!func.is_static || !func.is_inline) {
                 if debug_callee && func.name.contains("write16") {
                     eprintln!("[INLINE_DEBUG] {} skipped: is_static={}, is_inline={}, is_declaration={}",
                         func.name, func.is_static, func.is_inline, func.is_declaration);
                 }
                 continue;
             }
-        }
         if debug_callee && func.name.contains("write16") {
             let ic: usize = func.blocks.iter().map(|b| b.instructions.len()).sum();
             eprintln!("[INLINE_DEBUG] {} candidate: blocks={}, inst_count={}, is_variadic={}, params={}",
@@ -1106,14 +1099,11 @@ fn inline_call_site(
 
     // Replace Return terminators in inlined blocks
     for block in &mut inlined_blocks {
-        match &block.terminator {
-            Terminator::Return(ret_val) => {
-                if let (Some(_call_dest), Some(ret_operand)) = (site.dest, ret_val) {
-                    phi_incoming.push((*ret_operand, block.label));
-                }
-                block.terminator = Terminator::Branch(merge_block_id);
+        if let Terminator::Return(ret_val) = &block.terminator {
+            if let (Some(_call_dest), Some(ret_operand)) = (site.dest, ret_val) {
+                phi_incoming.push((*ret_operand, block.label));
             }
-            _ => {}
+            block.terminator = Terminator::Branch(merge_block_id);
         }
     }
 
@@ -1537,7 +1527,7 @@ fn remap_instruction(inst: &Instruction, vo: u32, bo: u32) -> Instruction {
         },
         Instruction::Intrinsic { dest, op, dest_ptr, args } => Instruction::Intrinsic {
             dest: dest.map(|v| remap_value(v, vo)),
-            op: op.clone(),
+            op: *op,
             dest_ptr: dest_ptr.map(|v| remap_value(v, vo)),
             args: args.iter().map(|a| remap_operand(a, vo)).collect(),
         },
@@ -1627,7 +1617,7 @@ fn format_instruction(inst: &Instruction) -> String {
             format!("v{} = cmp {:?} {:?} {}, {}", dest.0, op, ty, format_operand(lhs), format_operand(rhs))
         }
         Instruction::Call { func, info } => {
-            let args_str: Vec<String> = info.args.iter().map(|a| format_operand(a)).collect();
+            let args_str: Vec<String> = info.args.iter().map(format_operand).collect();
             if let Some(d) = info.dest {
                 format!("v{} = call {}({})", d.0, func, args_str.join(", "))
             } else {

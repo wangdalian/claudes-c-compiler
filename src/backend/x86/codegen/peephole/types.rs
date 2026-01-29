@@ -259,11 +259,10 @@ pub(super) fn classify_line(raw: &str) -> LineInfo {
             }
         }
         // Check for self-move: movq %reg, %reg (same src and dst)
-        if sb[3] == b'q' && sb.len() >= 6 && sb[4] == b' ' {
-            if is_self_move_fast(sb) {
+        if sb[3] == b'q' && sb.len() >= 6 && sb[4] == b' '
+            && is_self_move_fast(sb) {
                 return line_info(LineKind::SelfMove, ts);
             }
-        }
         // Pre-classify extension-related instructions
         let ext = classify_mov_ext(s, sb);
         if ext != ExtKind::None {
@@ -338,14 +337,14 @@ pub(super) fn classify_line(raw: &str) -> LineInfo {
 
     // Push / Pop (extract register for fast checks)
     if first == b'p' {
-        if s.starts_with("pushq ") {
-            let reg = register_family_fast(s[6..].trim());
+        if let Some(rest) = s.strip_prefix("pushq ") {
+            let reg = register_family_fast(rest.trim());
             // Only use reg for bitmask if it's a GP register; otherwise use full scan
             let rr = if reg <= REG_GP_MAX { 1u16 << reg } else { scan_register_refs(sb) };
             return line_info_with_regs(LineKind::Push { reg }, ts, rr);
         }
-        if s.starts_with("popq ") {
-            let reg = register_family_fast(s[5..].trim());
+        if let Some(rest) = s.strip_prefix("popq ") {
+            let reg = register_family_fast(rest.trim());
             let rr = if reg <= REG_GP_MAX { 1u16 << reg } else { scan_register_refs(sb) };
             return line_info_with_regs(LineKind::Pop { reg }, ts, rr);
         }
@@ -433,23 +432,21 @@ pub(super) fn classify_mov_ext(s: &str, sb: &[u8]) -> ExtKind {
     }
 
     // Producers: movq $const, %rax
-    if len >= 6 && sb[3] == b'q' && sb[4] == b' ' && sb[5] == b'$' {
-        if s.ends_with("%rax") {
+    if len >= 6 && sb[3] == b'q' && sb[4] == b' ' && sb[5] == b'$'
+        && s.ends_with("%rax") {
             return ExtKind::ProducerMovqConstRax;
         }
-    }
 
     // Producers: movq %REG, %rax (register-to-rax copy, REG != rax)
     // Used for fusion: `movq %REG, %rax; movl %eax, %eax` -> `movl %REGd, %eax`
-    if len >= 6 && sb[3] == b'q' && sb[4] == b' ' && sb[5] == b'%' {
-        if s.ends_with(", %rax") {
+    if len >= 6 && sb[3] == b'q' && sb[4] == b' ' && sb[5] == b'%'
+        && s.ends_with(", %rax") {
             // Extract source register and verify it's not %rax itself
             let src = &s[5..s.len() - 6]; // between "movq " and ", %rax"
             if src.starts_with('%') && src != "%rax" && !src.contains('(') {
                 return ExtKind::ProducerMovqRegToRax;
             }
         }
-    }
 
     // Producers: movzbq ... %rax
     if s.starts_with("movzbq ") && s.ends_with("%rax") {
@@ -463,11 +460,10 @@ pub(super) fn classify_mov_ext(s: &str, sb: &[u8]) -> ExtKind {
     }
 
     // Producers: movl ... %eax
-    if len >= 6 && sb[3] == b'l' && sb[4] == b' ' {
-        if s.ends_with("%eax") {
+    if len >= 6 && sb[3] == b'l' && sb[4] == b' '
+        && s.ends_with("%eax") {
             return ExtKind::ProducerMovlToEax;
         }
-    }
 
     // Producers: movzbl ... %eax
     if s.starts_with("movzbl ") && s.ends_with("%eax") {
@@ -535,20 +531,18 @@ pub(super) fn compute_trim_offset(b: &[u8]) -> usize {
 pub(super) fn parse_dest_reg_fast(s: &str) -> RegId {
     let b = s.as_bytes();
     // Implicit rax writers
-    if b.len() >= 4 {
-        if b[0] == b'c' && (s == "cltq" || s == "cqto" || s == "cdq" || s == "cqo") {
+    if b.len() >= 4
+        && b[0] == b'c' && (s == "cltq" || s == "cqto" || s == "cdq" || s == "cqo") {
             return 0; // rax family
         }
-    }
     // Single-operand div/idiv/mul implicitly write rax:rdx.
     // Note: imul is not listed because the codegen only emits two/three-operand
     // forms (imulq %rcx, %rax / imulq $imm, %rax, %rax) which write to the
     // explicit destination, handled by the comma-based dest extraction below.
-    if b.len() >= 3 && (b[0] == b'd' || b[0] == b'i' || b[0] == b'm') {
-        if s.starts_with("div") || s.starts_with("idiv") || s.starts_with("mul") {
+    if b.len() >= 3 && (b[0] == b'd' || b[0] == b'i' || b[0] == b'm')
+        && (s.starts_with("div") || s.starts_with("idiv") || s.starts_with("mul")) {
             return 0; // rax family (also rdx, but we track rax as primary)
         }
-    }
     // Two-operand instructions: last operand is destination
     if let Some(comma_pos) = memrchr(b',', b) {
         let after_comma = &s[comma_pos + 1..];
@@ -598,7 +592,7 @@ pub(super) fn fast_parse_i32(s: &str) -> i32 {
     let (neg, start) = if b[0] == b'-' { (true, 1) } else { (false, 0) };
     let mut v: i32 = 0;
     for &c in &b[start..] {
-        if c >= b'0' && c <= b'9' {
+        if c.is_ascii_digit() {
             v = v.wrapping_mul(10).wrapping_add((c - b'0') as i32);
         } else {
             break;
@@ -1089,11 +1083,10 @@ pub(super) fn replace_dest_register(inst: &str, old_reg: &str, new_reg: &str) ->
             if let Some((src, dst)) = rest.rsplit_once(',') {
                 let src = src.trim();
                 let dst = dst.trim();
-                if dst == old_reg {
-                    if !src.contains(old_reg) {
+                if dst == old_reg
+                    && !src.contains(old_reg) {
                         return Some(format!("{}{}, {}", prefix, src, new_reg));
                     }
-                }
             }
         }
     }

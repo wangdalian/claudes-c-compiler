@@ -1,12 +1,12 @@
-/// Long double precision support.
-///
-/// On x86-64, `long double` is 80-bit x87 extended precision (stored in 16 bytes with 6 padding bytes).
-/// On AArch64/RISC-V, `long double` is IEEE 754 binary128 (quad precision, 16 bytes).
-///
-/// This module provides:
-/// - Parsing decimal strings directly to x87 80-bit format with full 64-bit mantissa precision
-/// - Conversion between x87 and f128 formats
-/// - Conversion from raw bytes back to f64 for operations that need it
+//! Long double precision support.
+//!
+//! On x86-64, `long double` is 80-bit x87 extended precision (stored in 16 bytes with 6 padding bytes).
+//! On AArch64/RISC-V, `long double` is IEEE 754 binary128 (quad precision, 16 bytes).
+//!
+//! This module provides:
+//! - Parsing decimal strings directly to x87 80-bit format with full 64-bit mantissa precision
+//! - Conversion between x87 and f128 formats
+//! - Conversion from raw bytes back to f64 for operations that need it
 
 /// Result of preprocessing a long double string literal.
 enum PreparsedFloat<'a> {
@@ -30,10 +30,10 @@ fn preparse_long_double(text: &str) -> PreparsedFloat<'_> {
         text
     };
 
-    let (negative, text) = if text.starts_with('-') {
-        (true, &text[1..])
-    } else if text.starts_with('+') {
-        (false, &text[1..])
+    let (negative, text) = if let Some(rest) = text.strip_prefix('-') {
+        (true, rest)
+    } else if let Some(rest) = text.strip_prefix('+') {
+        (false, rest)
     } else {
         (false, text)
     };
@@ -815,7 +815,7 @@ pub fn f128_bytes_to_f64(f128: &[u8; 16]) -> f64 {
     // Normal f128: value = (-1)^sign * 2^(exp15-16383) * (1 + mantissa112/2^112)
     let unbiased = exp15 - 16383;
 
-    if unbiased >= -1022 && unbiased <= 1023 {
+    if (-1022..=1023).contains(&unbiased) {
         let f64_biased_exp = (unbiased + 1023) as u64;
         // Take top 52 bits of 112-bit mantissa
         let mantissa52 = (mantissa112 >> 60) as u64;
@@ -1942,7 +1942,7 @@ fn div_256_by_128(hi: u128, lo: u128, divisor: u128) -> (u128, u128) {
 
     // Process high 128 bits
     for i in (0..128).rev() {
-        remainder = remainder << 1;
+        remainder <<= 1;
         remainder |= (hi >> i) & 1;
         if remainder >= divisor {
             remainder -= divisor;
@@ -1953,7 +1953,7 @@ fn div_256_by_128(hi: u128, lo: u128, divisor: u128) -> (u128, u128) {
 
     // Now process low 128 bits, building the actual quotient
     for i in (0..128).rev() {
-        remainder = remainder << 1;
+        remainder <<= 1;
         remainder |= (lo >> i) & 1;
         if remainder >= divisor {
             remainder -= divisor;

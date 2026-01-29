@@ -406,7 +406,7 @@ impl Lowerer {
         {
             let ctype = self.type_spec_to_ctype(type_spec);
             if let Some((elem_ct, num_elems)) = ctype.vector_info() {
-                return self.lower_vector_init(items, &elem_ct, num_elems);
+                return self.lower_vector_init(items, elem_ct, num_elems);
             }
         }
 
@@ -516,7 +516,7 @@ impl Lowerer {
             let ctype = self.type_spec_to_ctype(type_spec);
             if let Some((elem_ct, vec_num_elems)) = ctype.vector_info() {
                 return self.lower_vector_array_init(
-                    items, &elem_ct, vec_num_elems, num_elems,
+                    items, elem_ct, vec_num_elems, num_elems,
                 );
             }
         }
@@ -1545,13 +1545,13 @@ impl Lowerer {
                     });
                     let relative_pos = values.len() - start_len;
                     if sub_elem_count > 0 {
-                        *current_outer_idx = (relative_pos + sub_elem_count - 1) / sub_elem_count;
+                        *current_outer_idx = relative_pos.div_ceil(sub_elem_count);
                     }
                 } else {
                     values.push(self.zero_const(base_ty));
                     let relative_pos = values.len() - start_len;
                     if sub_elem_count > 0 {
-                        *current_outer_idx = (relative_pos + sub_elem_count - 1) / sub_elem_count;
+                        *current_outer_idx = relative_pos.div_ceil(sub_elem_count);
                     }
                 }
             }
@@ -1664,9 +1664,7 @@ impl Lowerer {
 
     /// Try to evaluate a label difference: `&&lab1 - &&lab2`.
     fn eval_label_diff_expr(&mut self, expr: &Expr, byte_size: usize) -> Option<GlobalInit> {
-        if self.func_state.is_none() {
-            return None;
-        }
+        self.func_state.as_ref()?;
         if let Expr::BinaryOp(BinOp::Sub, lhs, rhs, _) = expr {
             let lhs_inner = Self::strip_casts(lhs);
             let rhs_inner = Self::strip_casts(rhs);

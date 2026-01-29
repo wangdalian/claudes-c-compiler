@@ -17,12 +17,9 @@ impl Lowerer {
     pub(super) fn resolve_type_spec<'a>(&'a self, ts: &'a TypeSpecifier) -> &'a TypeSpecifier {
         let mut current = ts;
         for _ in 0..32 {
-            match current {
-                TypeSpecifier::TypeofType(inner) => {
-                    current = inner;
-                    continue;
-                }
-                _ => {}
+            if let TypeSpecifier::TypeofType(inner) = current {
+                current = inner;
+                continue;
             }
             break;
         }
@@ -68,7 +65,7 @@ impl Lowerer {
             _ => None,
         };
         if let Some(key) = key {
-            self.types.borrow_struct_layouts().get(&*key).map_or(false, |l| l.is_transparent_union)
+            self.types.borrow_struct_layouts().get(&*key).is_some_and(|l| l.is_transparent_union)
         } else {
             false
         }
@@ -200,9 +197,7 @@ impl Lowerer {
                 // Resolve typedef through CType
                 if let Some(ctype) = self.types.typedefs.get(name) {
                     IrType::from_ctype(ctype)
-                } else {
-                    if is_32bit { IrType::I32 } else { IrType::I64 } // fallback for unresolved typedef
-                }
+                } else if is_32bit { IrType::I32 } else { IrType::I64 }
             }
             TypeSpecifier::Typeof(expr) => {
                 // For _Generic selections inside typeof(), resolve fresh to avoid stale cache.
@@ -213,9 +208,7 @@ impl Lowerer {
                 };
                 if let Some(ctype) = ctype {
                     IrType::from_ctype(&ctype)
-                } else {
-                    if is_32bit { IrType::I32 } else { IrType::I64 }
-                }
+                } else if is_32bit { IrType::I32 } else { IrType::I64 }
             }
             TypeSpecifier::TypeofType(inner) => self.type_spec_to_ir(inner),
             TypeSpecifier::FunctionPointer(_, _, _) => IrType::Ptr, // function pointer is a pointer
@@ -318,13 +311,11 @@ impl Lowerer {
             let mut ty = self.struct_field_ctype(f);
             // GCC treats enum bitfields as unsigned (see struct_or_union_to_ctype).
             // Check both direct enum type specs and typedef'd enum types.
-            if bit_width.is_some() {
-                if self.is_enum_type_spec(&f.type_spec) {
-                    if ty == CType::Int {
+            if bit_width.is_some()
+                && self.is_enum_type_spec(&f.type_spec)
+                    && ty == CType::Int {
                         ty = CType::UInt;
                     }
-                }
-            }
             // Merge per-field alignment with typedef alignment.
             // If the field's type is a typedef with __aligned__, that alignment
             // must be applied even when the field itself has no explicit alignment.
@@ -518,13 +509,13 @@ impl Lowerer {
         if let TypeSpecifier::Pointer(inner, _) = ts {
             // Collect dimensions from nested Array types
             let mut dims: Vec<usize> = Vec::new();
-            let mut current = &*inner;
+            let mut current = inner;
             loop {
                 let resolved = self.resolve_type_spec(current);
                 if let TypeSpecifier::Array(elem, size_expr) = resolved {
                     let n = size_expr.as_ref().and_then(|e| self.expr_as_array_size(e)).unwrap_or(1);
                     dims.push(n as usize);
-                    current = &*elem;
+                    current = elem;
                 } else {
                     break;
                 }
@@ -756,7 +747,7 @@ impl Lowerer {
             } else if is_ctype_array && !is_ts_array {
                 // Typedef'd array (e.g., va_list = CType::Array(Char, 24))
                 let all_dims = Self::collect_ctype_array_dims(&resolved_ctype);
-                let base_elem_size = Self::ctype_innermost_elem_size(&resolved_ctype, &*self.types.borrow_struct_layouts());
+                let base_elem_size = Self::ctype_innermost_elem_size(&resolved_ctype, &self.types.borrow_struct_layouts());
                 let total: usize = all_dims.iter().product::<usize>() * base_elem_size;
                 let strides = Self::compute_strides_from_dims(&all_dims, base_elem_size);
                 let elem_size = if strides.len() > 1 { strides[0] } else { base_elem_size };
@@ -784,7 +775,7 @@ impl Lowerer {
                 crate::common::types::target_ptr_size()
             } else if !type_dims.is_empty() {
                 // Use CType for innermost element size (works for both direct and typedef'd arrays)
-                Self::ctype_innermost_elem_size(&resolved_ctype, &*self.types.borrow_struct_layouts())
+                Self::ctype_innermost_elem_size(&resolved_ctype, &self.types.borrow_struct_layouts())
             } else {
                 resolved_ctype.size_ctx(&*self.types.borrow_struct_layouts()).max(1)
             };

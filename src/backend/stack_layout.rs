@@ -93,7 +93,7 @@ fn compute_value_use_blocks(func: &IrFunction) -> FxHashMap<u32, Vec<usize>> {
     let mut uses: FxHashMap<u32, Vec<usize>> = FxHashMap::default();
 
     let record_use = |id: u32, block_idx: usize, uses: &mut FxHashMap<u32, Vec<usize>>| {
-        let blocks = uses.entry(id).or_insert_with(Vec::new);
+        let blocks = uses.entry(id).or_default();
         if blocks.last() != Some(&block_idx) {
             blocks.push(block_idx);
         }
@@ -208,7 +208,7 @@ fn compute_coalescable_allocas(
             gep_to_alloca.get(&val_id).copied()
         };
         if let Some(root_id) = root {
-            let blocks = alloca_use_blocks.entry(root_id).or_insert_with(Vec::new);
+            let blocks = alloca_use_blocks.entry(root_id).or_default();
             if blocks.last() != Some(&block_idx) {
                 blocks.push(block_idx);
             }
@@ -223,11 +223,11 @@ fn compute_coalescable_allocas(
                          alloca_use_blocks: &mut FxHashMap<u32, Vec<usize>>| {
         if alloca_set.contains(&val_id) {
             escaped.insert(val_id);
-            let blocks = alloca_use_blocks.entry(val_id).or_insert_with(Vec::new);
+            let blocks = alloca_use_blocks.entry(val_id).or_default();
             if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
         } else if let Some(&root) = gep_to_alloca.get(&val_id) {
             escaped.insert(root);
-            let blocks = alloca_use_blocks.entry(root).or_insert_with(Vec::new);
+            let blocks = alloca_use_blocks.entry(root).or_default();
             if blocks.last() != Some(&block_idx) { blocks.push(block_idx); }
         }
     };
@@ -321,10 +321,8 @@ fn compute_coalescable_allocas(
                         record_alloca_use(v.0, block_idx, &alloca_set, &gep_to_alloca, &mut alloca_use_blocks);
                     }
                 }
-                Instruction::AtomicLoad { ptr, .. } => {
-                    if let Operand::Value(v) = ptr {
-                        record_alloca_use(v.0, block_idx, &alloca_set, &gep_to_alloca, &mut alloca_use_blocks);
-                    }
+                Instruction::AtomicLoad { ptr: Operand::Value(v), .. } => {
+                    record_alloca_use(v.0, block_idx, &alloca_set, &gep_to_alloca, &mut alloca_use_blocks);
                 }
                 Instruction::AtomicStore { ptr, val, .. } => {
                     mark_operand_escaped(val, &alloca_set, &gep_to_alloca, &mut escaped);
@@ -430,13 +428,13 @@ pub fn collect_inline_asm_callee_saved(
         for inst in &block.instructions {
             if let Instruction::InlineAsm { outputs, inputs, clobbers, .. } = inst {
                 for (constraint, _, _) in outputs {
-                    let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+                    let c = constraint.trim_start_matches(['=', '+', '&']);
                     if let Some(phys) = constraint_to_phys(c) {
                         if already.insert(phys.0) { used.push(phys); }
                     }
                 }
                 for (constraint, _, _) in inputs {
-                    let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+                    let c = constraint.trim_start_matches(['=', '+', '&']);
                     if let Some(phys) = constraint_to_phys(c) {
                         if already.insert(phys.0) { used.push(phys); }
                     }
@@ -937,7 +935,7 @@ fn classify_alloca(
     state.alloca_values.insert(dest.0);
     state.alloca_types.insert(dest.0, ty);
     if effective_align > 16 {
-        state.alloca_alignments.insert(dest.0, effective_align as usize);
+        state.alloca_alignments.insert(dest.0, effective_align);
     }
 
     // Skip dead param allocas (still registered so backend recognizes them).

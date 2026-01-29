@@ -14,10 +14,7 @@ impl Lowerer {
     pub(super) fn get_struct_layout_for_pointer_param(&self, type_spec: &TypeSpecifier) -> Option<RcLayout> {
         // Try TypeSpecifier match first
         let resolved = self.resolve_type_spec(type_spec);
-        match resolved {
-            TypeSpecifier::Pointer(inner, _) => return self.get_struct_layout_for_type(inner),
-            _ => {}
-        }
+        if let TypeSpecifier::Pointer(inner, _) = resolved { return self.get_struct_layout_for_type(inner) }
         // Fall back to CType for typedef'd pointer types
         let ctype = self.type_spec_to_ctype(type_spec);
         if let CType::Pointer(inner, _) = &ctype {
@@ -120,12 +117,10 @@ impl Lowerer {
             }
             Expr::AddressOf(_, _) => true,
             Expr::PostfixOp(_, inner, _) => self.expr_is_pointer(inner),
-            Expr::UnaryOp(op, inner, _) => {
-                match op {
-                    UnaryOp::PreInc | UnaryOp::PreDec => self.expr_is_pointer(inner),
-                    _ => false,
-                }
+            Expr::UnaryOp(UnaryOp::PreInc | UnaryOp::PreDec, inner, _) => {
+                self.expr_is_pointer(inner)
             }
+            Expr::UnaryOp(_, _, _) => false,
             Expr::ArraySubscript(base, _, _) => {
                 // Result of subscript on pointer-to-pointer
                 if let Some(pt) = self.get_pointee_type_of_expr(base) {
@@ -334,10 +329,8 @@ impl Lowerer {
             Expr::GnuConditional(cond, _, _) => self.get_pointer_elem_size_from_expr(cond),
             Expr::Comma(_, rhs, _) => self.get_pointer_elem_size_from_expr(rhs),
             Expr::FunctionCall(_, _, _) => {
-                if let Some(ctype) = self.get_expr_ctype(expr) {
-                    if let CType::Pointer(pointee, _) = &ctype {
-                        return self.resolve_ctype_size(pointee).max(1);
-                    }
+                if let Some(CType::Pointer(pointee, _)) = self.get_expr_ctype(expr).as_ref() {
+                    return self.resolve_ctype_size(pointee).max(1);
                 }
                 target_ptr_size()
             }
@@ -402,14 +395,10 @@ impl Lowerer {
             Expr::PostfixOp(_, inner, _) => {
                 self.get_pointee_type_of_expr(inner)
             }
-            Expr::UnaryOp(op, inner, _) => {
-                match op {
-                    UnaryOp::PreInc | UnaryOp::PreDec => {
-                        self.get_pointee_type_of_expr(inner)
-                    }
-                    _ => None,
-                }
+            Expr::UnaryOp(UnaryOp::PreInc | UnaryOp::PreDec, inner, _) => {
+                self.get_pointee_type_of_expr(inner)
             }
+            Expr::UnaryOp(_, _, _) => None,
             Expr::BinaryOp(_, lhs, rhs, _) => {
                 if let Some(pt) = self.get_pointee_type_of_expr(lhs) {
                     return Some(pt);
@@ -470,16 +459,12 @@ impl Lowerer {
     /// or the expression is not a pointer with a named address space.
     pub(super) fn get_addr_space_of_ptr_expr(&self, expr: &Expr) -> AddressSpace {
         // Try CType-based resolution first
-        if let Some(ctype) = self.get_expr_ctype(expr) {
-            if let CType::Pointer(_, addr_space) = ctype {
-                return addr_space;
-            }
+        if let Some(CType::Pointer(_, addr_space)) = self.get_expr_ctype(expr) {
+            return addr_space;
         }
         // For cast expressions, check the target type directly
-        if let Expr::Cast(ref type_spec, _, _) = expr {
-            if let TypeSpecifier::Pointer(_, addr_space) = type_spec {
-                return *addr_space;
-            }
+        if let Expr::Cast(TypeSpecifier::Pointer(_, addr_space), _, _) = expr {
+            return *addr_space;
         }
         AddressSpace::Default
     }

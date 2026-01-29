@@ -206,12 +206,11 @@ pub(crate) fn substitute_x86_asm_operands(
                     modifier = Some('P');
                     i += 1;
                 }
-            } else if matches!(chars[i], 'k' | 'w' | 'b' | 'h' | 'q' | 'l' | 'c' | 'a' | 'n') {
-                if i + 1 < chars.len() && (chars[i + 1].is_ascii_digit() || chars[i + 1] == '[') {
+            } else if matches!(chars[i], 'k' | 'w' | 'b' | 'h' | 'q' | 'l' | 'c' | 'a' | 'n')
+                && i + 1 < chars.len() && (chars[i + 1].is_ascii_digit() || chars[i + 1] == '[') {
                     modifier = Some(chars[i]);
                     i += 1;
                 }
-            }
 
             if chars[i] == '[' {
                 // Named operand: %[name] or %k[name]

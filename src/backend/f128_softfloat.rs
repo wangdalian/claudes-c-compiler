@@ -264,12 +264,10 @@ pub fn f128_store_to_slot<T: F128SoftFloat + ?Sized>(cg: &mut T, val: &Operand, 
                     cg.f128_copy_addr_reg_to_slot(slot);
                     return;
                 }
-            } else {
-                if let Some(src_slot) = cg.f128_get_slot(src_id) {
-                    let src_off = src_slot.0 + offset;
-                    cg.f128_copy_slot_to_slot(src_off, slot);
-                    return;
-                }
+            } else if let Some(src_slot) = cg.f128_get_slot(src_id) {
+                let src_off = src_slot.0 + offset;
+                cg.f128_copy_slot_to_slot(src_off, slot);
+                return;
             }
         }
     }
@@ -308,13 +306,11 @@ pub fn f128_store_to_addr_reg<T: F128SoftFloat + ?Sized>(cg: &mut T, val: &Opera
                     cg.f128_copy_addr_reg_to_saved_addr();
                     return;
                 }
-            } else {
-                if let Some(src_slot) = cg.f128_get_slot(src_id) {
-                    let src_off = src_slot.0 + offset;
-                    cg.f128_save_addr_reg();
-                    cg.f128_copy_slot_to_saved_addr(src_off);
-                    return;
-                }
+            } else if let Some(src_slot) = cg.f128_get_slot(src_id) {
+                let src_off = src_slot.0 + offset;
+                cg.f128_save_addr_reg();
+                cg.f128_copy_slot_to_saved_addr(src_off);
+                return;
             }
         }
     }

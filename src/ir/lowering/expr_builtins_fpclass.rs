@@ -99,7 +99,7 @@ impl Lowerer {
 
     /// Compute the absolute value (sign-stripped) of float bits: bits & abs_mask.
     fn fp_abs_bits(&mut self, bits: &Operand, int_ty: IrType, abs_mask: i64) -> Value {
-        self.emit_binop_val(IrBinOp::And, bits.clone(), Operand::Const(IrConst::I64(abs_mask)), int_ty)
+        self.emit_binop_val(IrBinOp::And, *bits, Operand::Const(IrConst::I64(abs_mask)), int_ty)
     }
 
     /// Lower __builtin_fpclassify(nan_val, inf_val, norm_val, subnorm_val, zero_val, x).
@@ -129,14 +129,14 @@ impl Lowerer {
                 self.emit_cmp_val(
                     IrCmpOp::Eq,
                     Operand::Value(cls),
-                    Operand::Const(IrConst::I32(libc_cls as i32)),
+                    Operand::Const(IrConst::I32(libc_cls)),
                     IrType::I32,
                 )
             }).collect();
 
             let mut result = self.emit_binop_val(
                 IrBinOp::Mul,
-                class_vals[libc_to_user[0]].clone(),
+                class_vals[libc_to_user[0]],
                 Operand::Value(is_class[0]),
                 IrType::I64,
             );
@@ -144,7 +144,7 @@ impl Lowerer {
                 let user_idx = libc_to_user[libc_cls];
                 let contrib = self.emit_binop_val(
                     IrBinOp::Mul,
-                    class_vals[user_idx].clone(),
+                    class_vals[user_idx],
                     Operand::Value(is_class[libc_cls]),
                     IrType::I64,
                 );
@@ -161,7 +161,7 @@ impl Lowerer {
         let (bits, int_ty) = self.bitcast_float_to_int(arg_val, arg_ty);
         let (_abs_mask, _exp_only, exp_shift, exp_field_max, mant_mask) = Self::fp_masks(arg_ty);
 
-        let shifted = self.emit_binop_val(IrBinOp::LShr, bits.clone(), Operand::Const(IrConst::I64(exp_shift)), int_ty);
+        let shifted = self.emit_binop_val(IrBinOp::LShr, bits, Operand::Const(IrConst::I64(exp_shift)), int_ty);
         let exponent = self.emit_binop_val(IrBinOp::And, Operand::Value(shifted), Operand::Const(IrConst::I64(exp_field_max)), int_ty);
         let mantissa = self.emit_binop_val(IrBinOp::And, bits, Operand::Const(IrConst::I64(mant_mask)), int_ty);
 
@@ -184,11 +184,11 @@ impl Lowerer {
         // Order: nan=0, inf=1, normal=2, subnormal=3, zero=4
         let class_flags = [is_nan, is_inf, is_normal, is_subnorm, is_zero];
         let contribs: Vec<_> = class_vals.iter().zip(class_flags.iter())
-            .map(|(val, &flag)| (val.clone(), flag))
+            .map(|(val, &flag)| (*val, flag))
             .collect();
-        let mut result = self.emit_binop_val(IrBinOp::Mul, contribs[0].0.clone(), Operand::Value(contribs[0].1), IrType::I64);
+        let mut result = self.emit_binop_val(IrBinOp::Mul, contribs[0].0, Operand::Value(contribs[0].1), IrType::I64);
         for &(ref val, flag) in &contribs[1..] {
-            let contrib = self.emit_binop_val(IrBinOp::Mul, val.clone(), Operand::Value(flag), IrType::I64);
+            let contrib = self.emit_binop_val(IrBinOp::Mul, *val, Operand::Value(flag), IrType::I64);
             result = self.emit_binop_val(IrBinOp::Add, Operand::Value(result), Operand::Value(contrib), IrType::I64);
         }
 
@@ -296,7 +296,7 @@ impl Lowerer {
         let (arg_ty, arg_val) = self.lower_fp_classify_arg(args);
         if arg_ty == IrType::F128 {
             // __isinfl returns nonzero if inf
-            let isinf_result = self.emit_f128_classify_libcall("__isinfl", arg_val.clone());
+            let isinf_result = self.emit_f128_classify_libcall("__isinfl", arg_val);
             let is_inf = self.classify_result_to_bool(isinf_result);
             // __signbitl returns nonzero if negative
             let signbit_result = self.emit_f128_classify_libcall("__signbitl", arg_val);

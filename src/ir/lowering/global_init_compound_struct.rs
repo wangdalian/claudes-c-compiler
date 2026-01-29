@@ -220,11 +220,7 @@ impl Lowerer {
 
                 // When the storage unit overlaps with already-written data
                 // (due to align_down placement), skip the overlapping bytes.
-                let skip = if current_offset > storage_unit_offset {
-                    current_offset - storage_unit_offset
-                } else {
-                    0
-                };
+                let skip = current_offset.saturating_sub(storage_unit_offset);
                 // Emit only the non-overlapping portion of the storage unit
                 push_bytes_as_elements(&mut elements, &unit_bytes[skip..]);
                 current_offset = storage_unit_offset + storage_unit_size;

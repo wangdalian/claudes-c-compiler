@@ -1,8 +1,8 @@
-/// Built-in macro definitions that substitute for system headers.
-///
-/// Since we strip #include directives but don't actually read system headers,
-/// we define essential macros from <limits.h>, <stdint.h>, <stddef.h>,
-/// <stdbool.h>, <stdatomic.h>, etc. as built-in macros.
+//! Built-in macro definitions that substitute for system headers.
+//!
+//! Since we strip #include directives but don't actually read system headers,
+//! we define essential macros from <limits.h>, <stdint.h>, <stddef.h>,
+//! <stdbool.h>, <stdatomic.h>, etc. as built-in macros.
 
 use super::macro_defs::{MacroDef, MacroTable};
 

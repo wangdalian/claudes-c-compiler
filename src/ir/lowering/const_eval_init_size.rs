@@ -250,11 +250,10 @@ impl Lowerer {
         }
 
         // If there are remaining fields consumed, count the partial struct element
-        if fields_consumed > 0 {
-            if current_idx >= max_idx {
+        if fields_consumed > 0
+            && current_idx >= max_idx {
                 max_idx = current_idx + 1;
             }
-        }
 
         max_idx
     }

@@ -12,7 +12,7 @@ use crate::backend::traits::ArchCodegen;
 use crate::backend::common::PtrDirective;
 use crate::backend::state::{CodegenState, StackSlot};
 use crate::backend::regalloc::PhysReg;
-use crate::backend::generation::{generate_module, is_i128_type, calculate_stack_space_common,
+use crate::backend::generation::{is_i128_type, calculate_stack_space_common,
                                   run_regalloc_and_merge_clobbers, filter_available_regs,
                                   find_param_alloca, collect_inline_asm_callee_saved};
 use crate::backend::call_abi;
@@ -1057,8 +1057,8 @@ impl ArchCodegen for I686Codegen {
         let mut asm_clobbered_regs: Vec<PhysReg> = Vec::new();
         collect_inline_asm_callee_saved(
             func, &mut asm_clobbered_regs,
-            |constraint| i686_constraint_to_phys(constraint),
-            |clobber| i686_clobber_to_phys(clobber),
+            i686_constraint_to_phys,
+            i686_clobber_to_phys,
         );
         let available_regs = filter_available_regs(I686_CALLEE_SAVED, &asm_clobbered_regs);
 
@@ -1075,7 +1075,9 @@ impl ArchCodegen for I686Codegen {
         // Reserve space for callee-saved register pushes at the top of the frame
         // (between ebp and locals). Each push takes 4 bytes.
         let callee_saved_bytes = self.used_callee_saved.len() as i64 * 4;
-        let space = calculate_stack_space_common(&mut self.state, func, callee_saved_bytes, |space, alloc_size, align| {
+        
+
+        calculate_stack_space_common(&mut self.state, func, callee_saved_bytes, |space, alloc_size, align| {
             let effective_align = if align > 0 { align.max(4) } else { 4 };
             let alloc = (alloc_size + 3) & !3; // round up to 4-byte boundary
             let required = space + alloc;
@@ -1095,9 +1097,7 @@ impl ArchCodegen for I686Codegen {
                 ((required + effective_align - 1) / effective_align) * effective_align
             };
             (-new_space, new_space)
-        }, &reg_assigned, cached_liveness);
-
-        space
+        }, &reg_assigned, cached_liveness)
     }
 
     fn aligned_frame_size(&self, raw_space: i64) -> i64 {
@@ -1213,11 +1213,10 @@ impl ArchCodegen for I686Codegen {
                 if let Some(slot) = self.state.get_slot(dest.0) {
                     (slot, ty, dest.0)
                 } else {
-                    if self.is_fastcall && fastcall_reg_idx < fastcall_reg_count && i < func.params.len() {
-                        if self.is_fastcall_reg_eligible(ty) {
+                    if self.is_fastcall && fastcall_reg_idx < fastcall_reg_count && i < func.params.len()
+                        && self.is_fastcall_reg_eligible(ty) {
                             fastcall_reg_idx += 1;
                         }
-                    }
                     continue;
                 }
             } else {

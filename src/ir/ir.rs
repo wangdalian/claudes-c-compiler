@@ -1038,29 +1038,29 @@ impl IrConst {
     pub fn coerce_to_with_src(&self, target_ty: IrType, src_ty: Option<IrType>) -> IrConst {
         // Check if already the right type
         match (self, target_ty) {
-            (IrConst::I8(_), IrType::I8 | IrType::U8) => return self.clone(),
-            (IrConst::I16(_), IrType::I16 | IrType::U16) => return self.clone(),
-            (IrConst::I32(_), IrType::I32) => return self.clone(),
+            (IrConst::I8(_), IrType::I8 | IrType::U8) => return *self,
+            (IrConst::I16(_), IrType::I16 | IrType::U16) => return *self,
+            (IrConst::I32(_), IrType::I32) => return *self,
             // U32 is stored as I64 (zero-extended), so I32 must be converted
-            (IrConst::I64(_), IrType::U32) => return self.clone(),
-            (IrConst::I64(_), IrType::I64 | IrType::U64) => return self.clone(),
+            (IrConst::I64(_), IrType::U32) => return *self,
+            (IrConst::I64(_), IrType::I64 | IrType::U64) => return *self,
             // Ptr: on LP64 I64 is already correct; on ILP32 we need I32
             (IrConst::I64(v), IrType::Ptr) => {
                 if crate::common::types::target_is_32bit() {
                     return IrConst::I32(*v as i32);
                 }
-                return self.clone();
+                return *self;
             }
             (IrConst::I32(_), IrType::Ptr) => {
                 if crate::common::types::target_is_32bit() {
-                    return self.clone();
+                    return *self;
                 }
                 // On LP64, widen I32 to I64 for Ptr
             }
-            (IrConst::I128(_), IrType::I128 | IrType::U128) => return self.clone(),
-            (IrConst::F32(_), IrType::F32) => return self.clone(),
-            (IrConst::F64(_), IrType::F64) => return self.clone(),
-            (IrConst::LongDouble(..), IrType::F64 | IrType::F128) => return self.clone(),
+            (IrConst::I128(_), IrType::I128 | IrType::U128) => return *self,
+            (IrConst::F32(_), IrType::F32) => return *self,
+            (IrConst::F64(_), IrType::F64) => return *self,
+            (IrConst::LongDouble(..), IrType::F64 | IrType::F128) => return *self,
             _ => {}
         }
         // Convert integer types via from_i64, with unsigned-aware paths
@@ -1068,7 +1068,7 @@ impl IrConst {
             // When the source type is unsigned, we need to zero-extend (not sign-extend)
             // when widening to a larger type. Mask to the source width to get the correct
             // unsigned value (e.g., U32 0xFFFFFFF8 = 4294967288, not -8).
-            if src_ty.map_or(false, |t| t.is_unsigned()) {
+            if src_ty.is_some_and(|t| t.is_unsigned()) {
                 // Mask to the source type's width to get the correct unsigned value
                 let src_size = src_ty.unwrap().size();
                 let uint_val = match src_size {
@@ -1097,7 +1097,7 @@ impl IrConst {
                 return result;
             }
         }
-        self.clone()
+        *self
     }
 
     /// Coerce this constant to match a target IrType (assumes signed source for int-to-float).

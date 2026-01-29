@@ -403,7 +403,7 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule, source_mgr: 
         let total_insts: usize = module.functions.iter()
             .map(|f| f.blocks.iter().map(|b| b.instructions.len()).sum::<usize>())
             .sum();
-        let estimated_bytes = (total_insts * 40).max(256 * 1024).min(64 * 1024 * 1024);
+        let estimated_bytes = (total_insts * 40).clamp(256 * 1024, 64 * 1024 * 1024);
         let state = cg.state();
         if state.out.buf.capacity() < estimated_bytes {
             state.out.buf.reserve(estimated_bytes - state.out.buf.capacity());
@@ -475,8 +475,8 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule, source_mgr: 
                             continue; // skip dummy spans
                         }
                         let loc = sm.resolve_span(*span);
-                        if !table.contains_key(&loc.file) {
-                            table.insert(loc.file, next_id);
+                        if let std::collections::hash_map::Entry::Vacant(e) = table.entry(loc.file) {
+                            e.insert(next_id);
                             next_id += 1;
                         }
                     }
@@ -536,11 +536,9 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule, source_mgr: 
                             // (e.g., function names passed to inline asm).
                             // Use the parsed input_symbols rather than substring matching
                             // on the template to avoid false positives.
-                            for sym in input_symbols {
-                                if let Some(s) = sym {
-                                    let base = s.split('+').next().unwrap_or(s);
-                                    refs.insert(base.to_string());
-                                }
+                            for s in input_symbols.iter().flatten() {
+                                let base = s.split('+').next().unwrap_or(s);
+                                refs.insert(base.to_string());
                             }
                         }
                         _ => {}

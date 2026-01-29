@@ -386,7 +386,7 @@ fn find_basic_ivs(
                     .map(|(i, _)| i);
                 if let Some(bi) = bi_opt {
                     if bi == preheader {
-                        init_op = Some(op.clone());
+                        init_op = Some(*op);
                     } else if back_blocks.contains(&bi) {
                         if let Operand::Value(v) = op {
                             back_val = Some(*v);
@@ -409,36 +409,34 @@ fn find_basic_ivs(
             //              back_val = Cast(Add(Cast(dest), step))
             // These patterns arise from C integer promotion rules.
             let add_val = look_through_casts(back_val.0, &loop_defs);
-            if let Some(add_inst) = loop_defs.get(&add_val) {
-                if let Instruction::BinOp { op, lhs, rhs, .. } = add_inst {
-                    if *op == IrBinOp::Add {
-                        let phi_id = dest.0;
-                        let lhs_root = match lhs {
-                            Operand::Value(v) => look_through_casts(v.0, &loop_defs),
-                            _ => u32::MAX,
-                        };
-                        let rhs_root = match rhs {
-                            Operand::Value(v) => look_through_casts(v.0, &loop_defs),
-                            _ => u32::MAX,
-                        };
+            if let Some(Instruction::BinOp { op, lhs, rhs, .. }) = loop_defs.get(&add_val) {
+                if *op == IrBinOp::Add {
+                    let phi_id = dest.0;
+                    let lhs_root = match lhs {
+                        Operand::Value(v) => look_through_casts(v.0, &loop_defs),
+                        _ => u32::MAX,
+                    };
+                    let rhs_root = match rhs {
+                        Operand::Value(v) => look_through_casts(v.0, &loop_defs),
+                        _ => u32::MAX,
+                    };
 
-                        let step_operand = if lhs_root == phi_id {
-                            Some(rhs)
-                        } else if rhs_root == phi_id {
-                            Some(lhs)
-                        } else {
-                            None
-                        };
+                    let step_operand = if lhs_root == phi_id {
+                        Some(rhs)
+                    } else if rhs_root == phi_id {
+                        Some(lhs)
+                    } else {
+                        None
+                    };
 
-                        if let Some(Operand::Const(c)) = step_operand {
-                            if let Some(step) = c.to_i64() {
-                                ivs.push(BasicIV {
-                                    phi_dest: *dest,
-                                    ty: *ty,
-                                    init: init_op,
-                                    step,
-                                });
-                            }
+                    if let Some(Operand::Const(c)) = step_operand {
+                        if let Some(step) = c.to_i64() {
+                            ivs.push(BasicIV {
+                                phi_dest: *dest,
+                                ty: *ty,
+                                init: init_op,
+                                step,
+                            });
                         }
                     }
                 }
@@ -529,7 +527,7 @@ fn find_derived_exprs(
                     dest, op: IrBinOp::Shl, lhs: Operand::Value(v), rhs: Operand::Const(c), ..
                 } => {
                     if let (Some(idx), Some(shift)) = (find_iv(v.0), c.to_i64()) {
-                        if shift >= 0 && shift < 64 {
+                        if (0..64).contains(&shift) {
                             (*dest, idx, 1i64 << shift)
                         } else {
                             continue;

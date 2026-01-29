@@ -69,7 +69,7 @@ pub(super) fn init_contains_string_literal(item: &InitializerItem) -> bool {
     match &item.init {
         Initializer::Expr(expr) => expr_contains_string_literal(expr),
         Initializer::List(sub_items) => {
-            sub_items.iter().any(|sub| init_contains_string_literal(sub))
+            sub_items.iter().any(init_contains_string_literal)
         }
     }
 }

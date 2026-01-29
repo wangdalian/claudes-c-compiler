@@ -145,13 +145,12 @@ pub trait TypeConvertContext {
 fn find_function_pointer_core(derived: &[DerivedDeclarator]) -> Option<usize> {
     for i in 0..derived.len() {
         // Look for Pointer followed by FunctionPointer
-        if matches!(&derived[i], DerivedDeclarator::Pointer) {
-            if i + 1 < derived.len()
+        if matches!(&derived[i], DerivedDeclarator::Pointer)
+            && i + 1 < derived.len()
                 && matches!(&derived[i + 1], DerivedDeclarator::FunctionPointer(_, _))
             {
                 return Some(i);
             }
-        }
         // Standalone FunctionPointer
         if matches!(&derived[i], DerivedDeclarator::FunctionPointer(_, _)) {
             return Some(i);

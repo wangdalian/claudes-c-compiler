@@ -1,9 +1,9 @@
-/// Shared utility functions for the preprocessor module.
-///
-/// Provides both char-oriented and byte-oriented helpers for scanning C source text.
-/// The byte-oriented variants (`*_byte`, `*_bytes`) are preferred in hot paths since
-/// they avoid the overhead of `Vec<char>` allocation. The char-oriented versions are
-/// retained for code that still operates on `&[char]`.
+//! Shared utility functions for the preprocessor module.
+//!
+//! Provides both char-oriented and byte-oriented helpers for scanning C source text.
+//! The byte-oriented variants (`*_byte`, `*_bytes`) are preferred in hot paths since
+//! they avoid the overhead of `Vec<char>` allocation. The char-oriented versions are
+//! retained for code that still operates on `&[char]`.
 
 /// Check if a character can start a C identifier.
 /// GCC extension: '$' is allowed in identifiers (-fdollars-in-identifiers, on by default).

@@ -23,7 +23,7 @@ pub(super) enum RvConstraintKind {
 // TODO: Support multi-alternative constraint parsing (e.g., "rm", "Ir") like x86.
 // Currently only single-alternative constraints are recognized.
 pub(super) fn classify_rv_constraint(constraint: &str) -> RvConstraintKind {
-    let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+    let c = constraint.trim_start_matches(['=', '+', '&']);
     // Check for tied operand (all digits)
     if !c.is_empty() && c.chars().all(|ch| ch.is_ascii_digit()) {
         if let Ok(n) = c.parse::<usize>() {

@@ -57,7 +57,7 @@ struct BitSet {
 impl BitSet {
     /// Create a new empty bitset that can hold indices [0..num_bits).
     fn new(num_bits: usize) -> Self {
-        let num_words = (num_bits + 63) / 64;
+        let num_words = num_bits.div_ceil(64);
         Self { words: vec![0u64; num_words] }
     }
 
@@ -531,11 +531,10 @@ fn extend_gep_base_liveness(
             match inst {
                 Instruction::Load { ptr, ty, .. } => {
                     // Load.ptr is foldable unless i128
-                    if matches!(ty, IrType::I128 | IrType::U128) {
-                        if gep_info.contains_key(&ptr.0) {
+                    if matches!(ty, IrType::I128 | IrType::U128)
+                        && gep_info.contains_key(&ptr.0) {
                             non_foldable.insert(ptr.0);
                         }
-                    }
                 }
                 Instruction::Store { val, ptr, ty, .. } => {
                     // Store.val is NOT foldable; Store.ptr is (unless i128)
@@ -544,11 +543,10 @@ fn extend_gep_base_liveness(
                             non_foldable.insert(v.0);
                         }
                     }
-                    if matches!(ty, IrType::I128 | IrType::U128) {
-                        if gep_info.contains_key(&ptr.0) {
+                    if matches!(ty, IrType::I128 | IrType::U128)
+                        && gep_info.contains_key(&ptr.0) {
                             non_foldable.insert(ptr.0);
                         }
-                    }
                 }
                 _ => {
                     // Any other use invalidates folding
@@ -819,7 +817,7 @@ fn terminator_targets(term: &Terminator) -> Vec<u32> {
         }
         Terminator::Switch { cases, default, .. } => {
             let mut targets = vec![default.0];
-            for &(_, ref label) in cases {
+            for (_, label) in cases {
                 targets.push(label.0);
             }
             targets
@@ -906,8 +904,8 @@ pub(super) fn for_each_value_use_in_instruction(inst: &Instruction, mut f: impl 
         Instruction::InlineAsm { outputs, .. } => {
             for (_, v, _) in outputs { f(v); }
         }
-        Instruction::Intrinsic { dest_ptr, .. } => {
-            if let Some(dp) = dest_ptr { f(dp); }
+        Instruction::Intrinsic { dest_ptr: Some(dp), .. } => {
+            f(dp);
         }
         Instruction::StackRestore { ptr } => f(ptr),
         _ => {}

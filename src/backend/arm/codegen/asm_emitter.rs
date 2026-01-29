@@ -21,7 +21,7 @@ impl InlineAsmEmitter for ArmCodegen {
     // NOTE: ARM-specific immediate constraints (K, L, I) are validated in
     // constant_fits_immediate() below; classify_constraint returns GpReg for these.
     fn classify_constraint(&self, constraint: &str) -> AsmOperandKind {
-        let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+        let c = constraint.trim_start_matches(['=', '+', '&']);
         // Explicit register constraint from register variable: {regname}
         if c.starts_with('{') && c.ends_with('}') {
             let reg_name = &c[1..c.len()-1];
@@ -310,7 +310,7 @@ impl InlineAsmEmitter for ArmCodegen {
     ///   'I' - unsigned 12-bit immediate (0..4095) for add/sub instructions
     ///   'L' - logical immediate for 32-bit operations (32-bit bitmask pattern)
     fn constant_fits_immediate(&self, constraint: &str, value: i64) -> bool {
-        let stripped = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+        let stripped = constraint.trim_start_matches(['=', '+', '&']);
         // If constraint has 'i' or 'n', any constant value is accepted
         if stripped.contains('i') || stripped.contains('n') {
             return true;
@@ -324,7 +324,7 @@ impl InlineAsmEmitter for ArmCodegen {
                 // AArch64 'L': 32-bit logical immediate (validate in 32-bit context)
                 'L' => is_valid_aarch64_logical_immediate_32(value as u32),
                 // AArch64 'I': unsigned 12-bit add/sub immediate
-                'I' => value >= 0 && value <= 4095,
+                'I' => (0..=4095).contains(&value),
                 _ => continue,
             };
             if fits {
@@ -364,7 +364,7 @@ fn is_valid_aarch64_logical_immediate_32(value: u32) -> bool {
         let mask = if size == 32 { u32::MAX } else { (1u32 << size) - 1 };
         let element = value & mask;
         // Check if value is a repeating pattern of this element size
-        let mut check = element as u32;
+        let mut check = element;
         let mut s = size;
         while s < 32 {
             check |= check << s;

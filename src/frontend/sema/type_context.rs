@@ -159,11 +159,11 @@ pub struct TypeContext {
     anon_ctype_counter: std::cell::Cell<u32>,
 }
 
-/// We cannot directly implement `StructLayoutProvider` for `TypeContext` because
-/// `struct_layouts` is behind a `RefCell`, and the trait returns `Option<&StructLayout>`
-/// which would borrow from a temporary `Ref` guard. Instead, callers should use
-/// `tc.borrow_struct_layouts()` to get the guard, then pass `&*guard` as the
-/// `&dyn StructLayoutProvider` (since `FxHashMap<String, RcLayout>` implements the trait).
+// We cannot directly implement `StructLayoutProvider` for `TypeContext` because
+// `struct_layouts` is behind a `RefCell`, and the trait returns `Option<&StructLayout>`
+// which would borrow from a temporary `Ref` guard. Instead, callers should use
+// `tc.borrow_struct_layouts()` to get the guard, then pass `&*guard` as the
+// `&dyn StructLayoutProvider` (since `FxHashMap<String, RcLayout>` implements the trait).
 
 impl TypeContext {
     pub fn new() -> Self {

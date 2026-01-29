@@ -48,7 +48,7 @@ impl Lowerer {
 
         // ctz_val = ctz(x)
         let ctz_val = self.fresh_value();
-        self.emit(Instruction::UnaryOp { dest: ctz_val, op: IrUnaryOp::Ctz, src: arg.clone(), ty });
+        self.emit(Instruction::UnaryOp { dest: ctz_val, op: IrUnaryOp::Ctz, src: arg, ty });
 
         // ctz_plus_1 = ctz_val + 1
         let ctz_plus_1 = self.fresh_value();
@@ -139,7 +139,7 @@ impl Lowerer {
         self.emit(Instruction::BinOp {
             dest: sign_bit,
             op: IrBinOp::LShr,
-            lhs: arg.clone(),
+            lhs: arg,
             rhs: Operand::Const(if ty == IrType::I64 { IrConst::I64(bits) } else { IrConst::I32(bits as i32) }),
             ty,
         });

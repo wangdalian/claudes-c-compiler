@@ -18,7 +18,7 @@ impl InlineAsmEmitter for RiscvCodegen {
     fn classify_constraint(&self, constraint: &str) -> AsmOperandKind {
         // TODO: RISC-V =@cc not fully implemented — needs SLTU/SEQZ/etc. in store_output_from_reg.
         // Currently stores incorrect results (just a GP register value, no condition capture).
-        let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+        let c = constraint.trim_start_matches(['=', '+', '&']);
         // Explicit register constraint from register variable: {regname}
         if c.starts_with('{') && c.ends_with('}') {
             let reg_name = &c[1..c.len()-1];
@@ -263,8 +263,8 @@ impl InlineAsmEmitter for RiscvCodegen {
 
     fn store_output_from_reg(&mut self, op: &AsmOperand, ptr: &Value, _constraint: &str, all_output_regs: &[&str]) {
         match &op.kind {
-            AsmOperandKind::Memory => return,
-            AsmOperandKind::Address => return, // AMO/LR/SC wrote through the pointer
+            AsmOperandKind::Memory => (),
+            AsmOperandKind::Address => (), // AMO/LR/SC wrote through the pointer
             AsmOperandKind::FpReg => {
                 let reg = op.reg.clone();
                 // Use fsw for F32, fsd for F64/other
@@ -320,7 +320,7 @@ impl InlineAsmEmitter for RiscvCodegen {
     /// Without this override, values like 128 would be incorrectly emitted as
     /// immediates in CSR instructions, causing assembler errors.
     fn constant_fits_immediate(&self, constraint: &str, value: i64) -> bool {
-        let stripped = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+        let stripped = constraint.trim_start_matches(['=', '+', '&']);
         // If constraint has 'i' or 'n', any constant value is accepted
         if stripped.contains('i') || stripped.contains('n') {
             return true;
@@ -329,9 +329,9 @@ impl InlineAsmEmitter for RiscvCodegen {
         for ch in stripped.chars() {
             let fits = match ch {
                 // RISC-V 'I': 12-bit signed immediate (-2048..2047)
-                'I' => value >= -2048 && value <= 2047,
+                'I' => (-2048..=2047).contains(&value),
                 // RISC-V 'K': 5-bit unsigned CSR immediate (0..31) for csrs/csrc/csrw
-                'K' => value >= 0 && value <= 31,
+                'K' => (0..=31).contains(&value),
                 _ => continue,
             };
             if fits {

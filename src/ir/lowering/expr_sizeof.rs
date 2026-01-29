@@ -1,8 +1,8 @@
-/// Expression sizeof, alignof, and related size computations.
-///
-/// This module contains functions for computing the size and alignment of C expressions,
-/// extracted from expr_types.rs for maintainability. Includes sizeof_expr, alignof_expr,
-/// preferred_alignof_expr, and their helper functions.
+//! Expression sizeof, alignof, and related size computations.
+//!
+//! This module contains functions for computing the size and alignment of C expressions,
+//! extracted from expr_types.rs for maintainability. Includes sizeof_expr, alignof_expr,
+//! preferred_alignof_expr, and their helper functions.
 
 use crate::frontend::parser::ast::*;
 use crate::common::types::CType;
@@ -456,7 +456,7 @@ impl Lowerer {
                         ctype.preferred_align_ctx(&*self.types.borrow_struct_layouts())
                     } else {
                         // Fallback: use size as preferred alignment (min 1, max 16)
-                        vi.ty.size().min(16).max(1)
+                        vi.ty.size().clamp(1, 16)
                     };
                     return natural.max(explicit_align);
                 }

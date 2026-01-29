@@ -183,7 +183,7 @@ pub trait InlineAsmEmitter {
 /// Other architecture-specific immediate letters (e.g., x86 'N', 'e') are handled
 /// separately by each backend's `classify_constraint`.
 pub fn constraint_has_immediate_alt(constraint: &str) -> bool {
-    let stripped = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+    let stripped = constraint.trim_start_matches(['=', '+', '&']);
     // Named tied operands ("[name]") don't have immediates
     if stripped.starts_with('[') && stripped.ends_with(']') {
         return false;
@@ -210,7 +210,7 @@ pub fn constraint_has_immediate_alt(constraint: &str) -> bool {
 /// If the constraint contains 'i' or 'n', any constant fits. Otherwise, the value
 /// must fit the range of at least one uppercase immediate letter present.
 pub fn constant_fits_immediate_constraint(constraint: &str, value: i64) -> bool {
-    let stripped = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+    let stripped = constraint.trim_start_matches(['=', '+', '&']);
     // If constraint has 'i' or 'n', any constant value is accepted
     if stripped.contains('i') || stripped.contains('n') {
         return true;
@@ -218,13 +218,13 @@ pub fn constant_fits_immediate_constraint(constraint: &str, value: i64) -> bool 
     // Check each uppercase immediate letter to see if value fits its range
     for ch in stripped.chars() {
         let fits = match ch {
-            'I' => value >= 0 && value <= 31,
-            'N' | 'K' => value >= 0 && value <= 255,
-            'e' | 'E' => value >= -(1i64 << 31) && value <= ((1i64 << 31) - 1),
-            'M' => value >= 0 && value <= 3,
-            'J' => value >= 0 && value <= 0xFFFF_FFFF,
+            'I' => (0..=31).contains(&value),
+            'N' | 'K' => (0..=255).contains(&value),
+            'e' | 'E' => (-(1i64 << 31)..=((1i64 << 31) - 1)).contains(&value),
+            'M' => (0..=3).contains(&value),
+            'J' => (0..=0xFFFF_FFFF).contains(&value),
             'L' => value == 0xFF || value == 0xFFFF,
-            'O' => value >= 0 && value <= 127,
+            'O' => (0..=127).contains(&value),
             'G' | 'H' => false, // floating-point immediate constraints, not integer
             _ => continue, // not an immediate constraint letter
         };
@@ -240,7 +240,7 @@ pub fn constant_fits_immediate_constraint(constraint: &str, value: i64) -> bool 
 /// Also recognizes "Q" which is an AArch64-specific memory constraint meaning
 /// "a memory address with a single base register" (used for atomic ops like ldaxr/stlxr).
 pub fn constraint_has_memory_alt(constraint: &str) -> bool {
-    let stripped = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+    let stripped = constraint.trim_start_matches(['=', '+', '&']);
     // Named tied operands ("[name]") are not memory constraints
     if stripped.starts_with('[') && stripped.ends_with(']') {
         return false;
@@ -261,7 +261,7 @@ pub fn constraint_has_memory_alt(constraint: &str) -> bool {
 /// - On x86/x86-64: 'Q' = legacy byte register (rax/rbx/rcx/rdx with %h form)
 /// - On RISC-V: 'Q' is not a standard constraint
 pub fn constraint_is_memory_only(constraint: &str, is_arm: bool) -> bool {
-    let stripped = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+    let stripped = constraint.trim_start_matches(['=', '+', '&']);
     // Named tied operands ("[name]") are never memory-only
     if stripped.starts_with('[') && stripped.ends_with(']') {
         return false;
@@ -301,7 +301,7 @@ pub fn constraint_needs_address(constraint: &str, is_riscv: bool, is_arm: bool) 
     }
     // RISC-V "A" constraint: address for AMO/LR/SC instructions
     if is_riscv {
-        let stripped = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+        let stripped = constraint.trim_start_matches(['=', '+', '&']);
         if stripped == "A" {
             return true;
         }
@@ -446,13 +446,18 @@ fn classify_all_operands(
 
         // For pure immediate-only constraints ("i", "n", etc.) that are still GpReg/QReg
         // because the operand is a Value (not a Const), promote to Immediate with a
-        // placeholder value of 0.
-        if matches!(op.kind, AsmOperandKind::GpReg | AsmOperandKind::QReg) && matches!(val, Operand::Value(_)) {
-            if constraint_is_immediate_only(constraint) {
+        // placeholder value of 0. This happens in standalone bodies of static inline
+        // functions where "i" constraint parameters can't be resolved to constants.
+        // The standalone body is safe because: (1) always_inline functions are DCE'd
+        // if never called directly, and (2) .pushsection metadata with 0 won't be
+        // linked into the final binary. Without this, the backend would load the value
+        // into a register and substitute the register name (e.g., "x9") into data
+        // directives like .hword, causing linker errors ("undefined reference to x9").
+        if matches!(op.kind, AsmOperandKind::GpReg | AsmOperandKind::QReg) && matches!(val, Operand::Value(_))
+            && constraint_is_immediate_only(constraint) {
                 op.imm_value = Some(0);
                 op.kind = AsmOperandKind::Immediate;
             }
-        }
 
         operands.push(op);
     }
@@ -593,7 +598,7 @@ fn assign_scratch_registers(
                         emitter.setup_memory_fallback(&mut operands[i], &val);
                     } else {
                         let input_idx = i - outputs.len();
-                        let val = inputs[input_idx].1.clone();
+                        let val = inputs[input_idx].1;
                         emitter.setup_memory_fallback(&mut operands[i], &val);
                     }
                 } else {
@@ -878,7 +883,7 @@ fn x86_normalize_reg_to_64bit(name: &str) -> Option<Cow<'static, str>> {
             let num_end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
             let num_str = &s[..num_end];
             let num: u32 = num_str.parse().ok()?;
-            if num >= 8 && num <= 15 {
+            if (8..=15).contains(&num) {
                 Some(Cow::Owned(format!("r{}", num)))
             } else {
                 None

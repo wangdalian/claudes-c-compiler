@@ -4,7 +4,7 @@ use crate::common::fx_hash::FxHashMap;
 use crate::backend::common::PtrDirective;
 use crate::backend::state::{CodegenState, StackSlot, SlotAddr};
 use crate::backend::traits::ArchCodegen;
-use crate::backend::generation::{generate_module, is_i128_type, calculate_stack_space_common, find_param_alloca};
+use crate::backend::generation::{is_i128_type, calculate_stack_space_common, find_param_alloca};
 use crate::backend::call_abi::{CallAbiConfig, CallArgClass, compute_stack_arg_space};
 use crate::backend::call_emit::{ParamClass, classify_params};
 use crate::backend::cast::{CastKind, classify_cast, FloatOp};
@@ -232,7 +232,7 @@ impl RiscvCodegen {
 
     /// Check if an immediate fits in a 12-bit signed field.
     fn fits_imm12(val: i64) -> bool {
-        val >= -2048 && val <= 2047
+        (-2048..=2047).contains(&val)
     }
 
     /// Emit: store `reg` to `offset(s0)`, handling large offsets via t6.
@@ -563,7 +563,6 @@ impl RiscvCodegen {
         self.state.emit("    mv t6, t1");
     }
 
-    /// Emit a 128-bit integer binary operation.
     // emit_i128_binop and emit_i128_cmp use the shared default implementations
     // via ArchCodegen trait defaults, with per-op primitives defined in the trait impl above.
 
@@ -691,7 +690,7 @@ impl ArchCodegen for RiscvCodegen {
         // Subtract min_val to normalize index
         if min_val != 0 {
             let neg_min = -min_val;
-            if neg_min >= -2048 && neg_min <= 2047 {
+            if (-2048..=2047).contains(&neg_min) {
                 self.state.emit_fmt(format_args!("    addi t0, t0, {}", neg_min));
             } else {
                 self.state.emit_fmt(format_args!("    li t1, {}", neg_min));
@@ -814,7 +813,7 @@ impl ArchCodegen for RiscvCodegen {
             let effective_align = if align > 0 { align.max(8) } else { 8 };
             let alloc = ((alloc_size + 7) & !7).max(8);
             let new_space = ((space + alloc + effective_align - 1) / effective_align) * effective_align;
-            (-(new_space as i64), new_space)
+            (-new_space, new_space)
         }, &reg_assigned, cached_liveness);
 
         // Add space for saving callee-saved registers.
@@ -836,7 +835,7 @@ impl ArchCodegen for RiscvCodegen {
         // They are saved at the bottom of the frame (highest negative offsets from s0).
         let used_regs = self.used_callee_saved.clone();
         for (i, &reg) in used_regs.iter().enumerate() {
-            let offset = -(frame_size as i64) + (i as i64 * 8);
+            let offset = -frame_size + (i as i64 * 8);
             let reg_name = callee_saved_name(reg);
             self.emit_store_to_s0(reg_name, offset, "sd");
         }
@@ -846,7 +845,7 @@ impl ArchCodegen for RiscvCodegen {
         // Restore callee-saved registers before epilogue.
         let used_regs = self.used_callee_saved.clone();
         for (i, &reg) in used_regs.iter().enumerate() {
-            let offset = -(frame_size as i64) + (i as i64 * 8);
+            let offset = -frame_size + (i as i64 * 8);
             let reg_name = callee_saved_name(reg);
             self.emit_load_from_s0(reg_name, offset, "ld");
         }
@@ -1035,7 +1034,7 @@ impl ArchCodegen for RiscvCodegen {
                 }
                 ParamClass::StructStack { offset, size } | ParamClass::LargeStructStack { offset, size } => {
                     let src = stack_base + offset;
-                    let n_dwords = (size + 7) / 8;
+                    let n_dwords = size.div_ceil(8);
                     for qi in 0..n_dwords {
                         let src_off = src + (qi as i64 * 8);
                         let dst_off = slot.0 + (qi as i64 * 8);
@@ -1063,7 +1062,7 @@ impl ArchCodegen for RiscvCodegen {
                     }
                     // Large structs (>2048 bytes) have dword offsets exceeding
                     // RISC-V's 12-bit signed immediate; emit_load_from_reg handles this.
-                    let n_dwords = (size + 7) / 8;
+                    let n_dwords = size.div_ceil(8);
                     for qi in 0..n_dwords {
                         let src_off = (qi * 8) as i64;
                         let dst_off = slot.0 + src_off;
@@ -1076,7 +1075,7 @@ impl ArchCodegen for RiscvCodegen {
                     // Load the pointer, then copy the struct data into the alloca.
                     let caller_offset = stack_base + offset;
                     self.emit_load_from_s0("t1", caller_offset, "ld");
-                    let n_dwords = (size + 7) / 8;
+                    let n_dwords = size.div_ceil(8);
                     for qi in 0..n_dwords {
                         let src_off = (qi * 8) as i64;
                         let dst_off = slot.0 + src_off;
@@ -1259,7 +1258,7 @@ impl ArchCodegen for RiscvCodegen {
         // Restore callee-saved registers before frame teardown.
         let used_regs = self.used_callee_saved.clone();
         for (i, &reg) in used_regs.iter().enumerate() {
-            let offset = -(frame_size as i64) + (i as i64 * 8);
+            let offset = -frame_size + (i as i64 * 8);
             let reg_name = callee_saved_name(reg);
             self.emit_load_from_s0(reg_name, offset, "ld");
         }
@@ -1606,7 +1605,7 @@ impl ArchCodegen for RiscvCodegen {
     }
 
     fn emit_add_imm_to_acc(&mut self, imm: i64) {
-        if imm >= -2048 && imm <= 2047 {
+        if (-2048..=2047).contains(&imm) {
             self.state.emit_fmt(format_args!("    addi t0, t0, {}", imm));
         } else {
             // Large immediate: load into t1 (secondary), then add
@@ -1900,7 +1899,7 @@ impl ArchCodegen for RiscvCodegen {
     ///   2. Load condition into t1
     ///   3. beqz t1, skip  (if cond == 0, keep false_val)
     ///   4. Load true_val into t0
-    ///   skip:
+    ///      skip:
     ///   5. Store t0 to dest
     fn emit_select(&mut self, dest: &Value, cond: &Operand, true_val: &Operand, false_val: &Operand, _ty: IrType) {
         let label_id = self.state.next_label_id();
@@ -1988,7 +1987,7 @@ impl ArchCodegen for RiscvCodegen {
                 if !arg_classes[arg_i].is_stack() { continue; }
                 match arg_classes[arg_i] {
                     CallArgClass::StructByValStack { size } | CallArgClass::LargeStructStack { size } => {
-                        let n_dwords = (size + 7) / 8;
+                        let n_dwords = size.div_ceil(8);
                         match arg {
                             Operand::Value(v) => {
                                 if let Some(&reg) = self.reg_assignments.get(&v.0) {
@@ -2052,7 +2051,7 @@ impl ArchCodegen for RiscvCodegen {
                             Operand::Const(ref c) => {
                                 // Use full f128 bytes from the LongDouble constant when available
                                 let bytes = match c {
-                                    IrConst::LongDouble(_, f128_bytes) => f128_bytes.clone(),
+                                    IrConst::LongDouble(_, f128_bytes) => *f128_bytes,
                                     _ => {
                                         let f64_val = c.to_f64().unwrap_or(0.0);
                                         crate::ir::ir::f64_to_f128_bytes(f64_val)
@@ -2132,7 +2131,7 @@ impl ArchCodegen for RiscvCodegen {
                     Operand::Const(ref c) => {
                         // Use full f128 bytes from the LongDouble constant when available
                         let bytes = match c {
-                            IrConst::LongDouble(_, f128_bytes) => f128_bytes.clone(),
+                            IrConst::LongDouble(_, f128_bytes) => *f128_bytes,
                             _ => {
                                 let f64_val = c.to_f64().unwrap_or(0.0);
                                 crate::ir::ir::f64_to_f128_bytes(f64_val)

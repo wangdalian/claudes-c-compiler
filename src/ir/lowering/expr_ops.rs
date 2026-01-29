@@ -80,8 +80,8 @@ impl Lowerer {
         }
 
         // Pointer comparison
-        if matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
-            if self.expr_is_pointer(lhs) || self.expr_is_pointer(rhs) {
+        if matches!(op, BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge)
+            && (self.expr_is_pointer(lhs) || self.expr_is_pointer(rhs)) {
                 let lhs_val = self.lower_expr(lhs);
                 let rhs_val = self.lower_expr(rhs);
                 let cmp_op = Self::binop_to_cmp(*op, true);
@@ -89,7 +89,6 @@ impl Lowerer {
                 let dest = self.emit_cmp_val(cmp_op, lhs_val, rhs_val, ptr_ty);
                 return Operand::Value(dest);
             }
-        }
 
         self.lower_arithmetic_binop(op, lhs, rhs)
     }
@@ -564,13 +563,13 @@ impl Lowerer {
         if result_is_complex {
             // Complex condition: convert to bool via (real != 0) || (imag != 0)
             let common_ct = self.common_complex_type(&cond_ct, &else_ct);
-            let cond_ptr = self.operand_to_value(cond_val.clone());
+            let cond_ptr = self.operand_to_value(cond_val);
             let cond_bool_op = self.lower_complex_to_bool(cond_ptr, &cond_ct);
             let cond_bool_val = self.operand_to_value(cond_bool_op);
             return self.emit_ternary_branch(
                 Operand::Value(cond_bool_val),
                 IrType::Ptr,
-                |s| s.convert_to_complex(cond_val.clone(), &cond_ct, &common_ct),
+                |s| s.convert_to_complex(cond_val, &cond_ct, &common_ct),
                 |s| {
                     let v = s.lower_expr(else_expr);
                     s.convert_to_complex(v, &else_ct, &common_ct)
@@ -586,13 +585,13 @@ impl Lowerer {
         let cond_bool = self.fresh_value();
         self.emit(Instruction::Cmp {
             dest: cond_bool, op: IrCmpOp::Ne,
-            lhs: cond_val.clone(), rhs: Operand::Const(zero), ty: int_ty,
+            lhs: cond_val, rhs: Operand::Const(zero), ty: int_ty,
         });
 
         self.emit_ternary_branch(
             Operand::Value(cond_bool),
             common_ty,
-            |s| s.emit_implicit_cast(cond_val.clone(), cond_ty, common_ty),
+            |s| s.emit_implicit_cast(cond_val, cond_ty, common_ty),
             |s| {
                 let else_val = s.lower_expr(else_expr);
                 s.emit_implicit_cast(else_val, else_ty, common_ty)
@@ -776,7 +775,7 @@ impl Lowerer {
         let ty = self.get_expr_type(inner);
         if let Some(lv) = self.lower_lvalue(inner) {
             let loaded = self.load_lvalue_typed(&lv, ty);
-            let loaded_val = self.operand_to_value(loaded.clone());
+            let loaded_val = self.operand_to_value(loaded);
             let (step, binop_ty) = self.inc_dec_step_and_type(ty, inner);
             let ir_op = if is_inc { IrBinOp::Add } else { IrBinOp::Sub };
             let result = self.emit_binop_val(ir_op, Operand::Value(loaded_val), step, binop_ty);
@@ -791,7 +790,7 @@ impl Lowerer {
             } else {
                 Operand::Value(result)
             };
-            self.store_lvalue_typed(&lv, store_op.clone(), ty);
+            self.store_lvalue_typed(&lv, store_op, ty);
             return if return_new { store_op } else { loaded };
         }
         self.lower_expr(inner)
@@ -805,7 +804,7 @@ impl Lowerer {
         let ir_op = if is_inc { IrBinOp::Add } else { IrBinOp::Sub };
         let wt = widened_op_type(IrType::I32);
         let one = if wt == IrType::I32 { IrConst::I32(1) } else { IrConst::I64(1) };
-        let result = self.emit_binop_val(ir_op, current_val.clone(), Operand::Const(one), wt);
+        let result = self.emit_binop_val(ir_op, current_val, Operand::Const(one), wt);
 
         self.store_bitfield(field_addr, storage_ty, bit_offset, bit_width, Operand::Value(result));
 

@@ -83,7 +83,7 @@ impl Preprocessor {
             let saved = self.macros.get(&name).cloned();
             self.macro_save_stack
                 .entry(name)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(saved);
         }
     }

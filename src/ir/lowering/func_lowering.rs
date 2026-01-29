@@ -142,7 +142,7 @@ impl Lowerer {
             }
         }
 
-        for (_orig_idx, param) in func.params.iter().enumerate() {
+        for param in func.params.iter() {
             let param_name = param.name.clone().unwrap_or_default();
             let param_ctype = self.type_spec_to_ctype(&param.type_spec);
 
@@ -735,7 +735,7 @@ impl Lowerer {
             Stmt::For(init, _, _, body, _) => {
                 // C99: for-init declarations have their own scope, matching
                 // the push_scope() in lower_for_stmt.
-                let has_decl_init = init.as_ref().map_or(false, |i| matches!(i.as_ref(), ForInit::Declaration(_)));
+                let has_decl_init = init.as_ref().is_some_and(|i| matches!(i.as_ref(), ForInit::Declaration(_)));
                 let for_depth = if has_decl_init { depth + 1 } else { depth };
                 Self::prescan_stmt(body, for_depth, result);
             }

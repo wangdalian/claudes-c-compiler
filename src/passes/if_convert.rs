@@ -513,23 +513,20 @@ fn detect_triangle(
                 }
             }
 
-            match (arm_val, pred_val) {
-                (Some(av), Some(pv)) => {
-                    // Support integer, pointer, F32, and F64 types.
-                    // Skip long double (F128) and 128-bit integers.
-                    if !ty.is_long_double() && !ty.is_128bit() {
-                        // Map to true/false values based on which arm the block is
-                        if arm_is_true {
-                            phi_selects.push((*dest, *ty, av, pv));
-                        } else {
-                            phi_selects.push((*dest, *ty, pv, av));
-                        }
+            if let (Some(av), Some(pv)) = (arm_val, pred_val) {
+                // Support integer, pointer, F32, and F64 types.
+                // Skip long double (F128) and 128-bit integers.
+                if !ty.is_long_double() && !ty.is_128bit() {
+                    // Map to true/false values based on which arm the block is
+                    if arm_is_true {
+                        phi_selects.push((*dest, *ty, av, pv));
                     } else {
-                        // Unconvertible phi — bail out to avoid partial conversion.
-                        return None;
+                        phi_selects.push((*dest, *ty, pv, av));
                     }
+                } else {
+                    // Unconvertible phi — bail out to avoid partial conversion.
+                    return None;
                 }
-                _ => {}
             }
         }
     }

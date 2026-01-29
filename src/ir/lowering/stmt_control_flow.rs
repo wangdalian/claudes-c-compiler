@@ -69,7 +69,7 @@ impl Lowerer {
         body: &Stmt,
     ) {
         // C99: for-init declarations have their own scope.
-        let has_decl_init = init.as_ref().map_or(false, |i| matches!(i.as_ref(), ForInit::Declaration(_)));
+        let has_decl_init = init.as_ref().is_some_and(|i| matches!(i.as_ref(), ForInit::Declaration(_)));
         if has_decl_init {
             self.push_scope();
         }

@@ -56,8 +56,7 @@ impl Preprocessor {
         let (include_path, is_system) = if path.starts_with('<') {
             let end = path.find('>').unwrap_or(path.len());
             (path[1..end].to_string(), true)
-        } else if path.starts_with('"') {
-            let rest = &path[1..];
+        } else if let Some(rest) = path.strip_prefix('"') {
             let end = rest.find('"').unwrap_or(rest.len());
             (rest[..end].to_string(), false)
         } else {
@@ -157,8 +156,7 @@ impl Preprocessor {
         let (include_path, _is_system) = if path.starts_with('<') {
             let end = path.find('>').unwrap_or(path.len());
             (path[1..end].to_string(), true)
-        } else if path.starts_with('"') {
-            let rest = &path[1..];
+        } else if let Some(rest) = path.strip_prefix('"') {
             let end = rest.find('"').unwrap_or(rest.len());
             (rest[..end].to_string(), false)
         } else {
@@ -168,8 +166,7 @@ impl Preprocessor {
             if expanded.starts_with('<') {
                 let end = expanded.find('>').unwrap_or(expanded.len());
                 (expanded[1..end].to_string(), true)
-            } else if expanded.starts_with('"') {
-                let rest = &expanded[1..];
+            } else if let Some(rest) = expanded.strip_prefix('"') {
                 let end = rest.find('"').unwrap_or(rest.len());
                 (rest[..end].to_string(), false)
             } else {

@@ -279,14 +279,9 @@ impl Lowerer {
         // Collect subscripts from outer to inner: arr[i][j] has outer=[j] inner=[i]
         let mut subscripts: Vec<&Expr> = Vec::new();
         let mut current = expr;
-        loop {
-            match current {
-                Expr::ArraySubscript(base, index, _) => {
-                    subscripts.push(index);
-                    current = base.as_ref();
-                }
-                _ => break,
-            }
+        while let Expr::ArraySubscript(base, index, _) = current {
+            subscripts.push(index);
+            current = base.as_ref();
         }
 
         // Try to resolve the base. It can be:
@@ -353,14 +348,9 @@ impl Lowerer {
         // Count subscripts and find the base
         let mut num_subscripts = 0usize;
         let mut current = expr;
-        loop {
-            match current {
-                Expr::ArraySubscript(base, _, _) => {
-                    num_subscripts += 1;
-                    current = base.as_ref();
-                }
-                _ => break,
-            }
+        while let Expr::ArraySubscript(base, _, _) = current {
+            num_subscripts += 1;
+            current = base.as_ref();
         }
         // The base must be a global array with more dimensions than subscripts
         // (so the result is a sub-array that decays to a pointer)

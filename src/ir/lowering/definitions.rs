@@ -300,7 +300,7 @@ impl DeclAnalysis {
         let ct = self.c_type.as_ref()?;
         // Direct vector type: CType::Vector(elem, size)
         if let Some((elem_ct, _)) = ct.vector_info() {
-            return Some(IrType::from_ctype(&elem_ct));
+            return Some(IrType::from_ctype(elem_ct));
         }
         // Array of vectors: CType::Array(Vector(elem, size), count)
         let mut inner = ct;
@@ -308,7 +308,7 @@ impl DeclAnalysis {
             inner = elem.as_ref();
         }
         if let Some((elem_ct, _)) = inner.vector_info() {
-            return Some(IrType::from_ctype(&elem_ct));
+            return Some(IrType::from_ctype(elem_ct));
         }
         None
     }

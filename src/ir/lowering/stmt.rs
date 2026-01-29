@@ -147,12 +147,11 @@ impl Lowerer {
             }
 
             // Extern declarations reference a global symbol, not a local variable
-            if decl.is_extern() {
-                if self.lower_extern_decl(decl, declarator) {
+            if decl.is_extern()
+                && self.lower_extern_decl(decl, declarator) {
                     continue;
                 }
                 // Fall through to function declaration handler if it was an extern func decl
-            }
 
             // Block-scope function declarations: `int f(int);` or typedef-based `func_t add;`
             if self.try_lower_block_func_decl(decl, declarator) {
@@ -192,7 +191,7 @@ impl Lowerer {
                     da.struct_layout = None;
                     da.is_struct = false;
                 }
-                self.lower_local_static_decl(&decl, &declarator, &da, type_spec);
+                self.lower_local_static_decl(decl, declarator, &da, type_spec);
                 continue;
             }
 
@@ -601,7 +600,7 @@ impl Lowerer {
                 }
                 InitFieldResolution::AnonymousMember { anon_field_idx, inner_name } => {
                     let extra_desigs = if item.designators.len() > 1 { &item.designators[1..] } else { &[] };
-                    let anon_res = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &item.init, extra_desigs, &*self.types.borrow_struct_layouts());
+                    let anon_res = h::resolve_anonymous_member(layout, *anon_field_idx, inner_name, &item.init, extra_desigs, &self.types.borrow_struct_layouts());
                     if let Some(res) = anon_res {
                         let sub_base = self.emit_gep_offset(base, res.anon_offset, IrType::Ptr);
                         self.lower_local_struct_init(&[res.sub_item], sub_base, &res.sub_layout);
@@ -1062,12 +1061,10 @@ impl Lowerer {
 
         // Check if any dimension is non-constant
         let mut has_vla = false;
-        for dim in &array_dims {
-            if let Some(expr) = dim {
-                if self.expr_as_array_size(expr).is_none() {
-                    has_vla = true;
-                    break;
-                }
+        for expr in array_dims.iter().copied().flatten() {
+            if self.expr_as_array_size(expr).is_none() {
+                has_vla = true;
+                break;
             }
         }
 
@@ -1086,31 +1083,29 @@ impl Lowerer {
         let mut result: Option<Value> = None;
         let mut const_product: usize = base_elem_size;
 
-        for dim in &array_dims {
-            if let Some(expr) = dim {
-                if let Some(const_val) = self.expr_as_array_size(expr) {
-                    // Constant dimension - accumulate
-                    const_product *= const_val as usize;
-                } else {
-                    // Runtime dimension - emit multiplication
-                    let dim_val = self.lower_expr(expr);
-                    let dim_value = self.operand_to_value(dim_val);
+        for expr in array_dims.iter().copied().flatten() {
+            if let Some(const_val) = self.expr_as_array_size(expr) {
+                // Constant dimension - accumulate
+                const_product *= const_val as usize;
+            } else {
+                // Runtime dimension - emit multiplication
+                let dim_val = self.lower_expr(expr);
+                let dim_value = self.operand_to_value(dim_val);
 
-                    let ptr_int_ty = target_int_ir_type();
-                    result = if let Some(prev) = result {
-                        let mul = self.emit_binop_val(IrBinOp::Mul, Operand::Value(prev), Operand::Value(dim_value), ptr_int_ty);
+                let ptr_int_ty = target_int_ir_type();
+                result = if let Some(prev) = result {
+                    let mul = self.emit_binop_val(IrBinOp::Mul, Operand::Value(prev), Operand::Value(dim_value), ptr_int_ty);
+                    Some(mul)
+                } else {
+                    // First runtime dim: multiply by accumulated constants
+                    if const_product > 1 {
+                        let mul = self.emit_binop_val(IrBinOp::Mul, Operand::Value(dim_value), Operand::Const(IrConst::ptr_int(const_product as i64)), ptr_int_ty);
+                        const_product = 1;
                         Some(mul)
                     } else {
-                        // First runtime dim: multiply by accumulated constants
-                        if const_product > 1 {
-                            let mul = self.emit_binop_val(IrBinOp::Mul, Operand::Value(dim_value), Operand::Const(IrConst::ptr_int(const_product as i64)), ptr_int_ty);
-                            const_product = 1;
-                            Some(mul)
-                        } else {
-                            Some(dim_value)
-                        }
-                    };
-                }
+                        Some(dim_value)
+                    }
+                };
             }
         }
 
@@ -1160,12 +1155,10 @@ impl Lowerer {
 
         // Check if any dimension is a VLA
         let mut has_vla = false;
-        for dim in &array_dims {
-            if let Some(expr) = dim {
-                if self.expr_as_array_size(expr).is_none() {
-                    has_vla = true;
-                    break;
-                }
+        for expr in array_dims.iter().copied().flatten() {
+            if self.expr_as_array_size(expr).is_none() {
+                has_vla = true;
+                break;
             }
         }
         if !has_vla {
@@ -1206,7 +1199,7 @@ impl Lowerer {
                         let stride_val = self.emit_binop_val(
                             IrBinOp::Mul,
                             Operand::Value(current_stride.unwrap()),
-                            Operand::Const(IrConst::ptr_int(const_val as i64)),
+                            Operand::Const(IrConst::ptr_int(const_val)),
                             ptr_int_ty,
                         );
                         current_stride = Some(stride_val);

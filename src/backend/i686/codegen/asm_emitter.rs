@@ -19,7 +19,7 @@ impl InlineAsmEmitter for I686Codegen {
     fn asm_state(&mut self) -> &mut CodegenState { &mut self.state }
 
     fn classify_constraint(&self, constraint: &str) -> AsmOperandKind {
-        let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+        let c = constraint.trim_start_matches(['=', '+', '&']);
         // Explicit register constraint: {regname}
         if c.starts_with('{') && c.ends_with('}') {
             let reg_name = &c[1..c.len()-1];
@@ -84,21 +84,18 @@ impl InlineAsmEmitter for I686Codegen {
 
     fn setup_operand_metadata(&self, op: &mut AsmOperand, val: &Operand, _is_output: bool) {
         if matches!(op.kind, AsmOperandKind::Memory) {
-            match val {
-                Operand::Value(v) => {
-                    if let Some(slot) = self.state.get_slot(v.0) {
-                        if self.state.is_alloca(v.0) {
-                            if self.state.alloca_over_align(v.0).is_some() {
-                                op.mem_addr = String::new();
-                            } else {
-                                op.mem_addr = format!("{}(%ebp)", slot.0);
-                            }
-                        } else {
+            if let Operand::Value(v) = val {
+                if let Some(slot) = self.state.get_slot(v.0) {
+                    if self.state.is_alloca(v.0) {
+                        if self.state.alloca_over_align(v.0).is_some() {
                             op.mem_addr = String::new();
+                        } else {
+                            op.mem_addr = format!("{}(%ebp)", slot.0);
                         }
+                    } else {
+                        op.mem_addr = String::new();
                     }
                 }
-                _ => {}
             }
         }
         if matches!(op.kind, AsmOperandKind::Immediate) {

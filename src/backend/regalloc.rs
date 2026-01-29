@@ -266,12 +266,11 @@ pub fn allocate_registers(
             let mut best_free_time: u32 = u32::MAX;
 
             for (i, &free_until) in caller_free_until.iter().enumerate() {
-                if free_until <= interval.start {
-                    if best.is_none() || free_until < best_free_time {
+                if free_until <= interval.start
+                    && (best.is_none() || free_until < best_free_time) {
                         best = Some(i);
                         best_free_time = free_until;
                     }
-                }
             }
 
             if let Some(reg_idx) = best {
@@ -409,10 +408,8 @@ fn remove_ineligible_operands(func: &IrFunction, eligible: &mut FxHashSet<u32>) 
     for block in &func.blocks {
         for inst in &block.instructions {
             match inst {
-                Instruction::CallIndirect { func_ptr, .. } => {
-                    if let Operand::Value(v) = func_ptr {
-                        eligible.remove(&v.0);
-                    }
+                Instruction::CallIndirect { func_ptr: Operand::Value(v), .. } => {
+                    eligible.remove(&v.0);
                 }
                 Instruction::Memcpy { dest, src, .. } => {
                     eligible.remove(&dest.0);
@@ -435,25 +432,17 @@ fn remove_ineligible_operands(func: &IrFunction, eligible: &mut FxHashSet<u32>) 
                     eligible.remove(&dest_ptr.0);
                     eligible.remove(&va_list_ptr.0);
                 }
-                Instruction::AtomicRmw { ptr, .. } => {
-                    if let Operand::Value(v) = ptr {
-                        eligible.remove(&v.0);
-                    }
+                Instruction::AtomicRmw { ptr: Operand::Value(v), .. } => {
+                    eligible.remove(&v.0);
                 }
-                Instruction::AtomicCmpxchg { ptr, .. } => {
-                    if let Operand::Value(v) = ptr {
-                        eligible.remove(&v.0);
-                    }
+                Instruction::AtomicCmpxchg { ptr: Operand::Value(v), .. } => {
+                    eligible.remove(&v.0);
                 }
-                Instruction::AtomicLoad { ptr, .. } => {
-                    if let Operand::Value(v) = ptr {
-                        eligible.remove(&v.0);
-                    }
+                Instruction::AtomicLoad { ptr: Operand::Value(v), .. } => {
+                    eligible.remove(&v.0);
                 }
-                Instruction::AtomicStore { ptr, .. } => {
-                    if let Operand::Value(v) = ptr {
-                        eligible.remove(&v.0);
-                    }
+                Instruction::AtomicStore { ptr: Operand::Value(v), .. } => {
+                    eligible.remove(&v.0);
                 }
                 Instruction::StackRestore { ptr } => {
                     eligible.remove(&ptr.0);

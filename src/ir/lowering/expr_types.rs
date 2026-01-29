@@ -1,8 +1,8 @@
-/// Expression type resolution and sizing.
-///
-/// This module contains functions for determining the IR type and size of C expressions.
-/// It includes helpers for binary operations, subscript, function call return types,
-/// `_Generic` selections, `sizeof` computation, and CType-level expression type resolution.
+//! Expression type resolution and sizing.
+//!
+//! This module contains functions for determining the IR type and size of C expressions.
+//! It includes helpers for binary operations, subscript, function call return types,
+//! `_Generic` selections, `sizeof` computation, and CType-level expression type resolution.
 
 use crate::common::fx_hash::FxHashMap;
 use crate::frontend::parser::ast::*;
@@ -152,25 +152,23 @@ impl Lowerer {
             }
             Expr::StmtExpr(compound, _) => {
                 // Statement expression: recurse into the last expression statement
-                if let Some(last) = compound.items.last() {
-                    if let crate::frontend::parser::ast::BlockItem::Statement(
-                        crate::frontend::parser::ast::Stmt::Expr(Some(inner_expr))
-                    ) = last {
-                        if let Some(size) = self.struct_value_size(inner_expr) {
-                            return Some(size);
-                        }
-                        // Fallback: the inner variable may not be lowered yet (it's
-                        // declared inside the statement expression). Scan the compound
-                        // statement's declarations to resolve its type and size.
-                        if let Expr::Identifier(name, _) = inner_expr {
-                            for item in &compound.items {
-                                if let crate::frontend::parser::ast::BlockItem::Declaration(decl) = item {
-                                    for declarator in &decl.declarators {
-                                        if declarator.name == *name {
-                                            let ctype = self.build_full_ctype(&decl.type_spec, &declarator.derived);
-                                            if ctype.is_struct_or_union() || ctype.is_vector() {
-                                                return Some(self.ctype_size(&ctype));
-                                            }
+                if let Some(crate::frontend::parser::ast::BlockItem::Statement(
+                    crate::frontend::parser::ast::Stmt::Expr(Some(inner_expr))
+                )) = compound.items.last() {
+                    if let Some(size) = self.struct_value_size(inner_expr) {
+                        return Some(size);
+                    }
+                    // Fallback: the inner variable may not be lowered yet (it's
+                    // declared inside the statement expression). Scan the compound
+                    // statement's declarations to resolve its type and size.
+                    if let Expr::Identifier(name, _) = inner_expr {
+                        for item in &compound.items {
+                            if let crate::frontend::parser::ast::BlockItem::Declaration(decl) = item {
+                                for declarator in &decl.declarators {
+                                    if declarator.name == *name {
+                                        let ctype = self.build_full_ctype(&decl.type_spec, &declarator.derived);
+                                        if ctype.is_struct_or_union() || ctype.is_vector() {
+                                            return Some(self.ctype_size(&ctype));
                                         }
                                     }
                                 }
@@ -787,10 +785,8 @@ impl Lowerer {
                 if let Some(ctype) = self.get_expr_ctype(expr) {
                     return IrType::from_ctype(&ctype);
                 }
-                if let Some(last) = compound.items.last() {
-                    if let BlockItem::Statement(Stmt::Expr(Some(expr))) = last {
-                        return self.get_expr_type(expr);
-                    }
+                if let Some(BlockItem::Statement(Stmt::Expr(Some(expr)))) = compound.items.last() {
+                    return self.get_expr_type(expr);
                 }
                 target_int_ir_type()
             }
@@ -1179,10 +1175,8 @@ impl Lowerer {
                     }
                     if Self::is_polymorphic_atomic_builtin(name) {
                         if let Some(first_arg) = args.first() {
-                            if let Some(ctype) = self.get_expr_ctype(first_arg) {
-                                if let CType::Pointer(inner, _) = ctype {
-                                    return Some(*inner);
-                                }
+                            if let Some(CType::Pointer(inner, _)) = self.get_expr_ctype(first_arg) {
+                                return Some(*inner);
                             }
                         }
                     }
@@ -1249,8 +1243,7 @@ impl Lowerer {
     /// enabling resolution of nested statement expression patterns like the kernel's
     /// atomic_cmpxchg macro: `typeof(*({ typeof(&obj->member) __ai_ptr = ...; ({ typeof(*__ai_ptr) __ret; ...; __ret; }); }))`
     fn get_stmt_expr_ctype(&self, compound: &CompoundStmt, parent_scope: Option<&FxHashMap<String, CType>>) -> Option<CType> {
-        if let Some(last) = compound.items.last() {
-            if let BlockItem::Statement(Stmt::Expr(Some(expr))) = last {
+        if let Some(BlockItem::Statement(Stmt::Expr(Some(expr)))) = compound.items.last() {
                 // If the last expression is itself a StmtExpr, we must build
                 // the current scope first and pass it down, so inner typeof()
                 // expressions can reference variables from this compound
@@ -1277,7 +1270,6 @@ impl Lowerer {
                     }
                 }
             }
-        }
         None
     }
 
@@ -1407,18 +1399,16 @@ impl Lowerer {
             // This handles nested stmt exprs like the kernel's cmpxchg macro where
             // the inner compound uses typeof() referencing outer compound variables.
             Expr::StmtExpr(compound, _) => {
-                if let Some(last) = compound.items.last() {
-                    if let BlockItem::Statement(Stmt::Expr(Some(expr))) = last {
-                        // First try normal resolution
-                        if let Some(ctype) = self.get_expr_ctype(expr) {
+                if let Some(BlockItem::Statement(Stmt::Expr(Some(expr)))) = compound.items.last() {
+                    // First try normal resolution
+                    if let Some(ctype) = self.get_expr_ctype(expr) {
+                        return Some(ctype);
+                    }
+                    // Build a combined scope: outer scope + inner declarations
+                    let combined_scope = self.build_compound_scope(compound, Some(scope));
+                    if !combined_scope.is_empty() {
+                        if let Some(ctype) = self.get_expr_ctype_with_scope(expr, &combined_scope) {
                             return Some(ctype);
-                        }
-                        // Build a combined scope: outer scope + inner declarations
-                        let combined_scope = self.build_compound_scope(compound, Some(scope));
-                        if !combined_scope.is_empty() {
-                            if let Some(ctype) = self.get_expr_ctype_with_scope(expr, &combined_scope) {
-                                return Some(ctype);
-                            }
                         }
                     }
                 }

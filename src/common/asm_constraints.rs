@@ -12,7 +12,7 @@
 /// The constraint is first stripped of output/early-clobber modifiers ('=', '+', '&').
 /// Named operand references like "[name]" are not immediate constraints.
 pub fn constraint_is_immediate_only(constraint: &str) -> bool {
-    let stripped = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+    let stripped = constraint.trim_start_matches(['=', '+', '&']);
     if stripped.is_empty() {
         return false;
     }

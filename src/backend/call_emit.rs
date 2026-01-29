@@ -190,11 +190,11 @@ pub fn classify_params_full(func: &IrFunction, config: &CallAbiConfig) -> ParamC
                 int_reg_idx += gp_used;
                 float_reg_idx += fp_used;
             } else if size <= 16 {
-                let regs_needed = if size <= slot_size { 1 } else { (size + slot_size - 1) / slot_size };
+                let regs_needed = if size <= slot_size { 1 } else { size.div_ceil(slot_size) };
                 // RISC-V psABI: 2×XLEN-aligned structs must start at even register.
                 if regs_needed == 2 && config.align_i128_pairs {
                     let struct_align = param.struct_align.unwrap_or(slot_size);
-                    if struct_align > slot_size && int_reg_idx % 2 != 0 {
+                    if struct_align > slot_size && !int_reg_idx.is_multiple_of(2) {
                         int_reg_idx += 1; // skip to even register
                     }
                 }
@@ -234,7 +234,7 @@ pub fn classify_params_full(func: &IrFunction, config: &CallAbiConfig) -> ParamC
 
         // i128 parameters.
         if is_i128 {
-            if config.align_i128_pairs && int_reg_idx % 2 != 0 {
+            if config.align_i128_pairs && !int_reg_idx.is_multiple_of(2) {
                 int_reg_idx += 1;
             }
             if int_reg_idx + 1 < config.max_int_regs {
@@ -265,7 +265,7 @@ pub fn classify_params_full(func: &IrFunction, config: &CallAbiConfig) -> ParamC
                 }
             } else if config.f128_in_gp_pairs {
                 // RISC-V: F128 in aligned GP pair.
-                if config.align_i128_pairs && int_reg_idx % 2 != 0 {
+                if config.align_i128_pairs && !int_reg_idx.is_multiple_of(2) {
                     int_reg_idx += 1;
                 }
                 if int_reg_idx + 1 < config.max_int_regs {

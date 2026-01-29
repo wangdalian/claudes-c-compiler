@@ -150,7 +150,7 @@ pub struct ParamDecl {
     /// VLA size expressions from the outermost array dimension that was decayed to pointer.
     /// E.g., for `void foo(int a, int b[a++])`, the expression `a++` is stored here
     /// so its side effects can be evaluated at function entry during IR lowering.
-    pub vla_size_exprs: Vec<Box<Expr>>,
+    pub vla_size_exprs: Vec<Expr>,
 }
 
 /// Bit masks for boolean flags in `Declaration::flags`.

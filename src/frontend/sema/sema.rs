@@ -282,28 +282,26 @@ impl SemanticAnalyzer {
 
                 // Function pointer typedef (e.g., typedef void *(*lua_Alloc)(void *, ...))
                 if has_fptr_derived {
-                    if let Some(fptr_derived) = declarator.derived.iter().find(|d|
+                    if let Some(DerivedDeclarator::FunctionPointer(params, variadic)) = declarator.derived.iter().find(|d|
                         matches!(d, DerivedDeclarator::FunctionPointer(_, _)))
                     {
-                        if let DerivedDeclarator::FunctionPointer(params, variadic) = fptr_derived {
-                            let ptr_count = declarator.derived.iter()
-                                .take_while(|d| matches!(d, DerivedDeclarator::Pointer))
-                                .count();
-                            let ret_ptr_count = if ptr_count > 0 { ptr_count - 1 } else { 0 };
-                            let mut return_type = decl.type_spec.clone();
-                            for _ in 0..ret_ptr_count {
-                                return_type = TypeSpecifier::Pointer(Box::new(return_type), AddressSpace::Default);
-                            }
-                            self.result.type_context.func_ptr_typedefs.insert(declarator.name.clone());
-                            self.result.type_context.func_ptr_typedef_info.insert(
-                                declarator.name.clone(),
-                                FunctionTypedefInfo {
-                                    return_type,
-                                    params: params.clone(),
-                                    variadic: *variadic,
-                                },
-                            );
+                        let ptr_count = declarator.derived.iter()
+                            .take_while(|d| matches!(d, DerivedDeclarator::Pointer))
+                            .count();
+                        let ret_ptr_count = if ptr_count > 0 { ptr_count - 1 } else { 0 };
+                        let mut return_type = decl.type_spec.clone();
+                        for _ in 0..ret_ptr_count {
+                            return_type = TypeSpecifier::Pointer(Box::new(return_type), AddressSpace::Default);
                         }
+                        self.result.type_context.func_ptr_typedefs.insert(declarator.name.clone());
+                        self.result.type_context.func_ptr_typedef_info.insert(
+                            declarator.name.clone(),
+                            FunctionTypedefInfo {
+                                return_type,
+                                params: params.clone(),
+                                variadic: *variadic,
+                            },
+                        );
                     }
                 }
 
@@ -514,11 +512,10 @@ impl SemanticAnalyzer {
                 }
 
                 // Count partial struct element at the end
-                if flat_scalars_per_elem > 1 && fields_consumed > 0 {
-                    if current_idx >= max_idx {
+                if flat_scalars_per_elem > 1 && fields_consumed > 0
+                    && current_idx >= max_idx {
                         max_idx = current_idx + 1;
                     }
-                }
 
                 if has_any_designator {
                     Some(max_idx)
@@ -816,7 +813,7 @@ impl SemanticAnalyzer {
                 if let Expr::Identifier(name, callee_span) = callee.as_ref() {
                     if builtins::is_builtin(name) {
                         // Valid builtin call - will be resolved during lowering
-                    } else if self.result.functions.get(name).is_none()
+                    } else if !self.result.functions.contains_key(name)
                         && self.symbol_table.lookup(name).is_none()
                     {
                         // Implicit function declaration (C89 style) - register it
@@ -997,7 +994,7 @@ impl SemanticAnalyzer {
     }
 
     fn convert_struct_fields(&self, fields: &[StructFieldDecl]) -> Vec<crate::common::types::StructField> {
-        fields.iter().filter_map(|f| {
+        fields.iter().map(|f| {
             let ty = if f.derived.is_empty() {
                 self.type_spec_to_ctype(&f.type_spec)
             } else {
@@ -1020,12 +1017,12 @@ impl SemanticAnalyzer {
                 }
                 align
             };
-            Some(crate::common::types::StructField {
+            crate::common::types::StructField {
                 name,
                 ty,
                 bit_width,
                 alignment: field_alignment,
-            })
+            }
         }).collect()
     }
 

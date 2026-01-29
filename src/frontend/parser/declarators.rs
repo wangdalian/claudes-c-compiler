@@ -111,7 +111,7 @@ impl Parser {
             TokenKind::Attribute | TokenKind::Extension => true,
             TokenKind::Identifier(name) => {
                 // Typedef name -> parameter list; regular name -> declarator
-                !(self.typedefs.contains(name) && !self.shadowed_typedefs.contains(name))
+                !self.typedefs.contains(name) || self.shadowed_typedefs.contains(name)
             }
             TokenKind::RParen | TokenKind::Ellipsis => false,
             TokenKind::Void | TokenKind::Char | TokenKind::Short | TokenKind::Int |
@@ -350,7 +350,7 @@ impl Parser {
                 let mut vla_size_exprs = Vec::new();
                 if !array_dims.is_empty() {
                     if let Some(Some(expr)) = array_dims.first() {
-                        vla_size_exprs.push(expr.clone());
+                        vla_size_exprs.push((**expr).clone());
                     }
                     for dim in array_dims.iter().skip(1).rev() {
                         type_spec = TypeSpecifier::Array(Box::new(type_spec), dim.clone());
@@ -381,22 +381,18 @@ impl Parser {
     /// Parse a K&R-style identifier list: foo(a, b, c)
     fn parse_kr_identifier_list(&mut self) -> (Vec<ParamDecl>, bool) {
         let mut params = Vec::new();
-        loop {
-            if let TokenKind::Identifier(ref n) = self.peek() {
-                let n = n.clone();
-                let span = self.peek_span();
-                self.advance();
-                params.push(ParamDecl {
-                    type_spec: TypeSpecifier::Int, // K&R default type
-                    name: Some(n),
-                    span,
-                    fptr_params: None,
-                    is_const: false,
-                    vla_size_exprs: Vec::new(),
-                });
-            } else {
-                break;
-            }
+        while let TokenKind::Identifier(ref n) = self.peek() {
+            let n = n.clone();
+            let span = self.peek_span();
+            self.advance();
+            params.push(ParamDecl {
+                type_spec: TypeSpecifier::Int, // K&R default type
+                name: Some(n),
+                span,
+                fptr_params: None,
+                is_const: false,
+                vla_size_exprs: Vec::new(),
+            });
             if !self.consume_if(&TokenKind::Comma) {
                 break;
             }

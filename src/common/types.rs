@@ -59,8 +59,8 @@ pub fn target_int_ir_type() -> IrType {
 /// - I32/U32 and smaller → I32 (machine word)
 /// - I64/U64 (long long) → I64 (requires register pairs)
 /// - I128/U128 → I128
-/// This replaces hardcoded `IrType::I64` in arithmetic lowering so that i686
-/// doesn't needlessly generate 64-bit operations for 32-bit C types.
+///   This replaces hardcoded `IrType::I64` in arithmetic lowering so that i686
+///   doesn't needlessly generate 64-bit operations for 32-bit C types.
 pub fn widened_op_type(common_ty: IrType) -> IrType {
     // Float and 128-bit types are never widened; return them unchanged.
     if common_ty.is_float() || common_ty == IrType::I128 || common_ty == IrType::U128
@@ -398,7 +398,7 @@ impl StructLayout {
                         if is_packed_1 {
                             // For packed(1), advance to next byte boundary
                             let total_bits = (bf_unit_offset * 8) as u32 + bf_bit_pos;
-                            offset = align_up((total_bits as usize + 7) / 8, 1);
+                            offset = align_up((total_bits as usize).div_ceil(8), 1);
                         } else {
                             offset = bf_unit_offset + bf_unit_size;
                         }
@@ -434,7 +434,7 @@ impl StructLayout {
                     // so we widen to unsigned short (16 bits).
                     let needed_bits = bit_offset_in_storage + bw;
                     let storage_ty = if needed_bits > unit_bits {
-                        let needed_bytes = ((needed_bits + 7) / 8) as usize;
+                        let needed_bytes = needed_bits.div_ceil(8) as usize;
                         let is_signed = field.ty.is_signed();
                         Self::smallest_int_ctype_for_bytes(needed_bytes, is_signed)
                     } else {
@@ -558,7 +558,7 @@ impl StructLayout {
                     // This allows subsequent fields to pack into the remaining bytes
                     // of the bitfield's storage unit (matching GCC/SysV ABI behavior).
                     let total_bits = (bf_unit_offset * 8) as u32 + bf_bit_pos;
-                    offset = (total_bits as usize + 7) / 8; // round up to next byte
+                    offset = (total_bits as usize).div_ceil(8); // round up to next byte
                     in_bitfield = false;
                 }
 
@@ -584,7 +584,7 @@ impl StructLayout {
         if in_bitfield {
             if is_packed_1 {
                 let total_bits = (bf_unit_offset * 8) as u32 + bf_bit_pos;
-                offset = (total_bits as usize + 7) / 8;
+                offset = (total_bits as usize).div_ceil(8);
             } else {
                 offset = bf_unit_offset + bf_unit_size;
             }

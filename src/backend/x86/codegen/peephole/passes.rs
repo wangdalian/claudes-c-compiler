@@ -700,7 +700,7 @@ fn fuse_compare_and_branch(store: &mut LineStore, infos: &mut [LineInfo]) -> boo
         seq_indices[0] = i;
         let mut rest = [0usize; CMP_FUSION_LOOKAHEAD - 1];
         let rest_count = collect_non_nop_indices::<{ CMP_FUSION_LOOKAHEAD - 1 }>(infos, i, len, &mut rest);
-        for k in 0..rest_count { seq_indices[k + 1] = rest[k]; }
+        seq_indices[1..(rest_count + 1)].copy_from_slice(&rest[..rest_count]);
         let seq_count = 1 + rest_count;
 
         if seq_count < 4 {
@@ -1177,7 +1177,7 @@ fn global_store_forwarding(store: &mut LineStore, infos: &mut [LineInfo]) -> boo
                         // Removing these "redundant" restores breaks objtool validation.
                         let is_epilogue_restore = matches!(load_reg, 3 | 12 | 13 | 14 | 15)
                             && load_offset < 0
-                            && is_near_epilogue(&infos, i);
+                            && is_near_epilogue(infos, i);
                         if load_reg == mapping.reg_id && !is_epilogue_restore {
                             // Same register: load is redundant
                             mark_nop(&mut infos[i]);
@@ -1354,17 +1354,13 @@ struct SlotEntry {
 /// Small inline vector for register->offset tracking (avoids heap allocation
 /// for the common case of <=4 offsets per register).
 #[derive(Clone)]
+#[derive(Default)]
 struct SmallVec {
     inline: [i32; 4],
     len: u8,
     overflow: Option<Vec<i32>>,
 }
 
-impl Default for SmallVec {
-    fn default() -> Self {
-        SmallVec { inline: [0; 4], len: 0, overflow: None }
-    }
-}
 
 impl SmallVec {
     #[inline]
@@ -1428,14 +1424,12 @@ impl<'a> Iterator for SmallVecIter<'a> {
             } else {
                 None
             }
+        } else if self.idx < self.sv.len as usize {
+            let v = self.sv.inline[self.idx];
+            self.idx += 1;
+            Some(v)
         } else {
-            if self.idx < self.sv.len as usize {
-                let v = self.sv.inline[self.idx];
-                self.idx += 1;
-                Some(v)
-            } else {
-                None
-            }
+            None
         }
     }
 }
@@ -1457,7 +1451,7 @@ fn parse_dotl_number(s: &str) -> Option<u32> {
     }
     let mut v: u32 = 0;
     for &c in b {
-        if c >= b'0' && c <= b'9' {
+        if c.is_ascii_digit() {
             v = v.wrapping_mul(10).wrapping_add((c - b'0') as u32);
         } else {
             return None;

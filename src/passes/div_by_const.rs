@@ -281,7 +281,7 @@ fn compute_unsigned_magic_32(d: u32) -> Option<(u64, u32, bool)> {
     for p in 0u32..32 {
         // magic = ceil(2^(32+p) / d)
         let two_pow = 1u128 << (32 + p);
-        let magic = (two_pow + d as u128 - 1) / d as u128;
+        let magic = two_pow.div_ceil(d as u128);
 
         // Check if this magic number works: the error must be <= 2^p
         // error = magic * d - 2^(32+p) which must be <= 2^p

@@ -1270,7 +1270,7 @@ pub fn get_const_i128_shift_amount(rhs: &Operand) -> Option<u32> {
     match rhs {
         Operand::Const(c) => {
             let val = c.to_i64()?;
-            if val >= 0 && val < 128 {
+            if (0..128).contains(&val) {
                 Some(val as u32)
             } else {
                 None

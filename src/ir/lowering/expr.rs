@@ -259,8 +259,8 @@ impl Lowerer {
             let ty = info.ty;
             let is_array = info.is_array;
             let is_struct = info.is_struct;
-            let is_complex = info.c_type.as_ref().map_or(false, |ct| ct.is_complex());
-            let is_vector = info.c_type.as_ref().map_or(false, |ct| ct.is_vector());
+            let is_complex = info.c_type.as_ref().is_some_and(|ct| ct.is_complex());
+            let is_vector = info.c_type.as_ref().is_some_and(|ct| ct.is_vector());
             let static_global_name = info.static_global_name.clone();
             let asm_register = info.asm_register.clone();
             let asm_register_has_init = info.asm_register_has_init;

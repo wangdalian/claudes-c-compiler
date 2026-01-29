@@ -287,7 +287,7 @@ fn eliminate_phis_in_function(func: &mut IrFunction, next_block_id: &mut u32) {
 
                     let copy_inst = Instruction::Copy {
                         dest: phi.dest,
-                        src: src.clone(),
+                        src: *src,
                     };
 
                     if multi_succ[pred_idx] && !is_indirect_branch[pred_idx] {
@@ -344,7 +344,7 @@ fn eliminate_phis_in_function(func: &mut IrFunction, next_block_id: &mut u32) {
             let mut globally_needs_temp: FxHashSet<usize> = FxHashSet::default();
 
             for pred_label in &pred_labels {
-                if label_to_idx.get(pred_label).is_none() {
+                if !label_to_idx.contains_key(pred_label) {
                     continue;
                 }
 
@@ -397,7 +397,7 @@ fn eliminate_phis_in_function(func: &mut IrFunction, next_block_id: &mut u32) {
                         if let Some(src) = phi_src_maps[i].get(pred_label) {
                             edge_copies.push(Instruction::Copy {
                                 dest: tmp,
-                                src: (*src).clone(),
+                                src: *(*src),
                             });
                         }
                     }
@@ -415,7 +415,7 @@ fn eliminate_phis_in_function(func: &mut IrFunction, next_block_id: &mut u32) {
                             }
                             edge_copies.push(Instruction::Copy {
                                 dest: phi.dest,
-                                src: (*src).clone(),
+                                src: *(*src),
                             });
                         }
                     }
@@ -469,7 +469,7 @@ fn eliminate_phis_in_function(func: &mut IrFunction, next_block_id: &mut u32) {
             let num_copies = copies.len();
             block.instructions.extend(copies);
             if !block.source_spans.is_empty() {
-                block.source_spans.extend(std::iter::repeat(crate::common::source::Span::dummy()).take(num_copies));
+                block.source_spans.extend(std::iter::repeat_n(crate::common::source::Span::dummy(), num_copies));
             }
         }
     }

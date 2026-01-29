@@ -242,11 +242,9 @@ impl Lowerer {
         // For char/unsigned char array compound literals with a single string literal,
         // copy the string bytes directly instead of storing a pointer.
         if elem_size == 1 && items.len() == 1 && items[0].designators.is_empty() {
-            if let Initializer::Expr(ref expr) = items[0].init {
-                if let Expr::StringLiteral(ref s, _) = expr {
-                    self.emit_string_to_alloca(alloca, s, 0);
-                    return;
-                }
+            if let Initializer::Expr(Expr::StringLiteral(ref s, _)) = items[0].init {
+                self.emit_string_to_alloca(alloca, s, 0);
+                return;
             }
         }
 
@@ -749,7 +747,7 @@ impl Lowerer {
         }
         // Check if dereferencing yields an aggregate type.
         // In these cases, the result is an address (no Load needed).
-        if self.get_expr_ctype(inner).map_or(false, |ct| pointee_is_no_load(&ct)) {
+        if self.get_expr_ctype(inner).is_some_and(|ct| pointee_is_no_load(&ct)) {
             return self.lower_expr(inner);
         }
         {
@@ -842,7 +840,7 @@ impl Lowerer {
             None => {
                 let resolved = self.resolve_field_ctype(base_expr, field_name, is_pointer);
                 resolved.as_ref()
-                    .map(|ct| Self::is_aggregate_or_complex(ct))
+                    .map(Self::is_aggregate_or_complex)
                     .unwrap_or(false)
             }
         };
@@ -1016,7 +1014,7 @@ impl Lowerer {
         let va_list_ptr = self.operand_to_value(ap_val);
         let result_ty = self.resolve_va_arg_type(type_spec);
         let dest = self.fresh_value();
-        self.emit(Instruction::VaArg { dest, va_list_ptr, result_ty: result_ty.clone() });
+        self.emit(Instruction::VaArg { dest, va_list_ptr, result_ty });
         Operand::Value(dest)
     }
 
@@ -1105,7 +1103,7 @@ impl Lowerer {
         };
 
         // Number of slots needed (round up)
-        let num_slots = (struct_size + slot_size - 1) / slot_size;
+        let num_slots = struct_size.div_ceil(slot_size);
         let alloc_size = if struct_size > 0 { num_slots * slot_size } else { slot_size };
 
         // Allocate temporary storage for the struct

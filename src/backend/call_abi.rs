@@ -176,7 +176,7 @@ pub fn classify_call_args(
         let struct_size = struct_arg_sizes.get(i).copied().flatten();
         let arg_ty = if i < arg_types.len() { Some(arg_types[i]) } else { None };
         let is_long_double = arg_ty.map(|t| t.is_long_double()).unwrap_or(false);
-        let is_i128 = arg_ty.map(|t| is_i128_type(t)).unwrap_or(false);
+        let is_i128 = arg_ty.map(is_i128_type).unwrap_or(false);
         let is_float = if let Some(ty) = arg_ty {
             ty.is_float()
         } else {
@@ -227,7 +227,7 @@ pub fn classify_call_args(
                 let slot_size = crate::common::types::target_ptr_size();
                 if regs_needed == 2 && config.align_i128_pairs {
                     let struct_align = struct_arg_aligns.get(i).copied().flatten().unwrap_or(slot_size);
-                    if struct_align > slot_size && int_idx % 2 != 0 {
+                    if struct_align > slot_size && !int_idx.is_multiple_of(2) {
                         int_idx += 1; // skip to even register
                     }
                 }
@@ -251,7 +251,7 @@ pub fn classify_call_args(
                 result.push(CallArgClass::LargeStructStack { size });
             }
         } else if is_i128 {
-            if config.align_i128_pairs && int_idx % 2 != 0 {
+            if config.align_i128_pairs && !int_idx.is_multiple_of(2) {
                 int_idx += 1;
             }
             if int_idx + 1 < config.max_int_regs {
@@ -270,7 +270,7 @@ pub fn classify_call_args(
                     result.push(CallArgClass::F128Stack);
                 }
             } else if config.f128_in_gp_pairs {
-                if config.align_i128_pairs && int_idx % 2 != 0 {
+                if config.align_i128_pairs && !int_idx.is_multiple_of(2) {
                     int_idx += 1;
                 }
                 if int_idx + 1 < config.max_int_regs {

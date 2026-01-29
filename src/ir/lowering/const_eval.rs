@@ -1,13 +1,13 @@
-/// Constant expression evaluation for the IR lowerer.
-///
-/// Core constant-folding logic: integer and floating-point arithmetic, cast
-/// chains, sizeof/offsetof evaluation, and the top-level `eval_const_expr`
-/// entry point. Global-address resolution lives in `const_eval_global_addr`
-/// and initializer-list size computation in `const_eval_init_size`.
-///
-/// Shared pure-evaluation logic (literal eval, builtin folding, sub-int promotion,
-/// binary operation arithmetic) lives in `common::const_eval` and `common::const_arith`,
-/// called by both this module and `sema::const_eval`.
+//! Constant expression evaluation for the IR lowerer.
+//!
+//! Core constant-folding logic: integer and floating-point arithmetic, cast
+//! chains, sizeof/offsetof evaluation, and the top-level `eval_const_expr`
+//! entry point. Global-address resolution lives in `const_eval_global_addr`
+//! and initializer-list size computation in `const_eval_init_size`.
+//!
+//! Shared pure-evaluation logic (literal eval, builtin folding, sub-int promotion,
+//! binary operation arithmetic) lives in `common::const_eval` and `common::const_arith`,
+//! called by both this module and `sema::const_eval`.
 
 use crate::frontend::parser::ast::*;
 use crate::ir::ir::*;
@@ -84,7 +84,7 @@ impl Lowerer {
             | Expr::UIntLiteral(..) | Expr::ULongLiteral(..) | Expr::ULongLongLiteral(..)
             | Expr::CharLiteral(..) | Expr::FloatLiteral(..)
             | Expr::FloatLiteralF32(..) | Expr::FloatLiteralLongDouble(..) => {
-                return shared_const_eval::eval_literal(expr);
+                shared_const_eval::eval_literal(expr)
             }
             Expr::UnaryOp(UnaryOp::Plus, inner, _) => {
                 self.eval_const_expr(inner)
@@ -205,7 +205,7 @@ impl Lowerer {
                 // A non-const local is not a compile-time constant, so return None.
                 // A const local's value is checked below.
                 let is_local = self.func_state.as_ref()
-                    .map_or(false, |fs| fs.locals.contains_key(name));
+                    .is_some_and(|fs| fs.locals.contains_key(name));
 
                 if !is_local {
                     // Look up enum constants (only when not shadowed by a local variable)

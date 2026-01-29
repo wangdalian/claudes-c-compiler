@@ -116,18 +116,11 @@ impl Lowerer {
         match ts {
             TypeSpecifier::Union(tag, _, _, _, _) => {
                 let prefix = "union.";
-                if let Some(name) = tag {
-                    Some(format!("{}{}", prefix, name))
-                } else {
-                    // Anonymous union — find by scanning existing layouts
-                    None
-                }
+                tag.as_ref().map(|name| format!("{}{}", prefix, name))
             }
             TypeSpecifier::TypedefName(name) => {
-                if let Some(ctype) = self.types.typedefs.get(name) {
-                    if let CType::Union(key) = ctype {
-                        return Some(key.to_string());
-                    }
+                if let Some(CType::Union(key)) = self.types.typedefs.get(name) {
+                    return Some(key.to_string());
                 }
                 None
             }
@@ -182,7 +175,7 @@ impl Lowerer {
                     }
                 }
                 let max_field_align = if *is_packed { Some(1) } else { *pragma_pack };
-                Some(Rc::new(self.compute_struct_union_layout_packed(&fields, false, max_field_align)))
+                Some(Rc::new(self.compute_struct_union_layout_packed(fields, false, max_field_align)))
             }
             TypeSpecifier::Struct(Some(tag), None, _, _, _) => {
                 let layouts = self.types.borrow_struct_layouts();
@@ -203,7 +196,7 @@ impl Lowerer {
                     }
                 }
                 let max_field_align = if *is_packed { Some(1) } else { *pragma_pack };
-                Some(Rc::new(self.compute_struct_union_layout_packed(&fields, true, max_field_align)))
+                Some(Rc::new(self.compute_struct_union_layout_packed(fields, true, max_field_align)))
             }
             TypeSpecifier::Union(Some(tag), None, _, _, _) => {
                 let layouts = self.types.borrow_struct_layouts();
@@ -247,7 +240,7 @@ impl Lowerer {
                         return info.alloca;
                     }
                     // Vector types also store data inline at their alloca address
-                    if info.c_type.as_ref().map_or(false, |ct| ct.is_vector()) {
+                    if info.c_type.as_ref().is_some_and(|ct| ct.is_vector()) {
                         return info.alloca;
                     }
                     // It's a pointer to struct: load the pointer
@@ -338,7 +331,7 @@ impl Lowerer {
                         // Indirect call through variable: use struct size to determine ABI
                         struct_size > 8
                     } else {
-                        self.func_meta.sigs.get(name.as_str()).map_or(false, |s| s.sret_size.is_some() || s.two_reg_ret_size.is_some())
+                        self.func_meta.sigs.get(name.as_str()).is_some_and(|s| s.sret_size.is_some() || s.two_reg_ret_size.is_some())
                     }
                 } else {
                     // Indirect call through expression: determine from return type
@@ -446,7 +439,7 @@ impl Lowerer {
                 }
                 // Small struct (<= 8 bytes): produces packed data unless somehow sret
                 if let Expr::Identifier(name, _) = func_expr.as_ref() {
-                    self.func_meta.sigs.get(name.as_str()).map_or(true, |s| s.sret_size.is_none() && s.two_reg_ret_size.is_none())
+                    self.func_meta.sigs.get(name.as_str()).is_none_or(|s| s.sret_size.is_none() && s.two_reg_ret_size.is_none())
                 } else {
                     true
                 }
@@ -466,12 +459,10 @@ impl Lowerer {
             Expr::StmtExpr(compound, _) => {
                 // Statement expression: check if the last expression statement
                 // produces packed struct data (e.g., ({ pfn_pte(...); }))
-                if let Some(last) = compound.items.last() {
-                    if let crate::frontend::parser::ast::BlockItem::Statement(
-                        crate::frontend::parser::ast::Stmt::Expr(Some(inner_expr))
-                    ) = last {
-                        return self.expr_produces_packed_struct_data(inner_expr);
-                    }
+                if let Some(crate::frontend::parser::ast::BlockItem::Statement(
+                    crate::frontend::parser::ast::Stmt::Expr(Some(inner_expr))
+                )) = compound.items.last() {
+                    return self.expr_produces_packed_struct_data(inner_expr);
                 }
                 false
             }
@@ -577,10 +568,8 @@ impl Lowerer {
                 }
                 // Fallback: resolve struct layout from the variable's CType
                 // (handles forward-declared struct pointers where layout was None at decl time)
-                if let Some(ctype) = self.get_expr_ctype(expr) {
-                    if let CType::Pointer(pointee, _) = &ctype {
-                        return self.struct_layout_from_ctype(pointee);
-                    }
+                if let Some(CType::Pointer(pointee, _)) = self.get_expr_ctype(expr).as_ref() {
+                    return self.struct_layout_from_ctype(pointee);
                 }
                 None
             }
@@ -622,18 +611,16 @@ impl Lowerer {
             Expr::Deref(inner, _) => {
                 // *pp where pp is a pointer to pointer to struct
                 // or *pa where pa is a pointer to array of struct (array decays to struct pointer)
-                if let Some(ctype) = self.get_expr_ctype(inner) {
-                    if let CType::Pointer(inner_ct, _) = &ctype {
-                        if let CType::Pointer(pointee, _) = inner_ct.as_ref() {
-                            return self.struct_layout_from_ctype(pointee);
-                        }
-                        // Pointer to array of struct: *pa dereferences to the array,
-                        // which decays to a pointer to the element struct type.
-                        // This handles patterns like cpumask_var_t (typedef struct cpumask[1])
-                        // where &var is pointer-to-array and *&var decays to struct pointer.
-                        if let CType::Array(elem, _) = inner_ct.as_ref() {
-                            return self.struct_layout_from_ctype(elem);
-                        }
+                if let Some(CType::Pointer(inner_ct, _)) = self.get_expr_ctype(inner).as_ref() {
+                    if let CType::Pointer(pointee, _) = inner_ct.as_ref() {
+                        return self.struct_layout_from_ctype(pointee);
+                    }
+                    // Pointer to array of struct: *pa dereferences to the array,
+                    // which decays to a pointer to the element struct type.
+                    // This handles patterns like cpumask_var_t (typedef struct cpumask[1])
+                    // where &var is pointer-to-array and *&var decays to struct pointer.
+                    if let CType::Array(elem, _) = inner_ct.as_ref() {
+                        return self.struct_layout_from_ctype(elem);
                     }
                 }
                 // Fallback: propagate through inner
@@ -641,14 +628,9 @@ impl Lowerer {
             }
             Expr::ArraySubscript(base, _, _) => {
                 // pp[i] where pp is an array of struct pointers
-                if let Some(ctype) = self.get_expr_ctype(base) {
-                    match &ctype {
-                        CType::Array(elem, _) | CType::Pointer(elem, _) => {
-                            if let CType::Pointer(pointee, _) = elem.as_ref() {
-                                return self.struct_layout_from_ctype(pointee);
-                            }
-                        }
-                        _ => {}
+                if let Some(CType::Array(elem, _) | CType::Pointer(elem, _)) = self.get_expr_ctype(base).as_ref() {
+                    if let CType::Pointer(pointee, _) = elem.as_ref() {
+                        return self.struct_layout_from_ctype(pointee);
                     }
                 }
                 // Fallback: try base directly
@@ -830,10 +812,8 @@ impl Lowerer {
                     if let CType::Pointer(pointee, _) = ctype {
                         return self.struct_layout_from_ctype(pointee);
                     }
-                } else {
-                    if let Some(layout) = self.struct_layout_from_ctype(ctype) {
-                        return Some(layout);
-                    }
+                } else if let Some(layout) = self.struct_layout_from_ctype(ctype) {
+                    return Some(layout);
                 }
             }
         }

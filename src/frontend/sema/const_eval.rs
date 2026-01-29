@@ -1,22 +1,22 @@
-/// Constant expression evaluation for semantic analysis.
-///
-/// This module provides compile-time constant evaluation using only sema-available
-/// state (TypeContext, SymbolTable, ExprTypeChecker). It returns `IrConst` values
-/// matching the lowerer's richer result type, enabling:
-/// - Float literal evaluation (F32, F64, LongDouble)
-/// - Proper cast chain evaluation with bit-width tracking
-/// - Binary operations with type-aware signedness semantics
-/// - sizeof/alignof via sema's type resolution
-///
-/// Shared pure-evaluation logic (literal eval, builtin folding, sub-int promotion,
-/// binary operation arithmetic) lives in `common::const_eval` and `common::const_arith`,
-/// called by both this module and `ir::lowering::const_eval`.
-///
-/// The lowerer's const_eval.rs handles additional lowering-specific cases:
-/// - Global address expressions (&x, func, arr)
-/// - func_state const local values
-/// - Pointer arithmetic on global addresses
-/// These remain in the lowerer since they require IR-level state.
+//! Constant expression evaluation for semantic analysis.
+//!
+//! This module provides compile-time constant evaluation using only sema-available
+//! state (TypeContext, SymbolTable, ExprTypeChecker). It returns `IrConst` values
+//! matching the lowerer's richer result type, enabling:
+//! - Float literal evaluation (F32, F64, LongDouble)
+//! - Proper cast chain evaluation with bit-width tracking
+//! - Binary operations with type-aware signedness semantics
+//! - sizeof/alignof via sema's type resolution
+//!
+//! Shared pure-evaluation logic (literal eval, builtin folding, sub-int promotion,
+//! binary operation arithmetic) lives in `common::const_eval` and `common::const_arith`,
+//! called by both this module and `ir::lowering::const_eval`.
+//!
+//! The lowerer's const_eval.rs handles additional lowering-specific cases:
+//! - Global address expressions (&x, func, arr)
+//! - func_state const local values
+//! - Pointer arithmetic on global addresses
+//!   These remain in the lowerer since they require IR-level state.
 
 use crate::common::types::CType;
 use crate::common::types::AddressSpace;
@@ -69,7 +69,7 @@ impl<'a> SemaConstEval<'a> {
         // during the bottom-up sema walk, return it in O(1).
         if let Some(cache) = self.const_values {
             if let Some(cached) = cache.get(&expr.id()) {
-                return Some(cached.clone());
+                return Some(*cached);
             }
         }
 
@@ -79,7 +79,7 @@ impl<'a> SemaConstEval<'a> {
             | Expr::UIntLiteral(..) | Expr::ULongLiteral(..) | Expr::ULongLongLiteral(..)
             | Expr::CharLiteral(..) | Expr::FloatLiteral(..)
             | Expr::FloatLiteralF32(..) | Expr::FloatLiteralLongDouble(..) => {
-                return shared_const_eval::eval_literal(expr);
+                shared_const_eval::eval_literal(expr)
             }
 
             Expr::UnaryOp(UnaryOp::Plus, inner, _) => {
@@ -117,9 +117,9 @@ impl<'a> SemaConstEval<'a> {
                     .or_else(|| Self::ctype_from_ir_const(&r))
                     .or_else(|| self.infer_expr_ctype(rhs));
                 let lhs_size = lhs_ctype.as_ref().map_or(4, |ct| self.ctype_size(ct).max(4));
-                let lhs_unsigned = lhs_ctype.as_ref().map_or(false, |ct| ct.is_unsigned());
+                let lhs_unsigned = lhs_ctype.as_ref().is_some_and(|ct| ct.is_unsigned());
                 let rhs_size = rhs_ctype.as_ref().map_or(4, |ct| self.ctype_size(ct).max(4));
-                let rhs_unsigned = rhs_ctype.as_ref().map_or(false, |ct| ct.is_unsigned());
+                let rhs_unsigned = rhs_ctype.as_ref().is_some_and(|ct| ct.is_unsigned());
                 shared_const_eval::eval_binop_with_types(
                     op, &l, &r, lhs_size, lhs_unsigned, rhs_size, rhs_unsigned,
                 )
@@ -147,7 +147,7 @@ impl<'a> SemaConstEval<'a> {
                     let target_size = self.ctype_size(&target_ctype);
                     // Determine source signedness for int-to-float conversions
                     let src_unsigned = self.lookup_expr_type(inner)
-                        .map_or(false, |ct| ct.is_unsigned());
+                        .is_some_and(|ct| ct.is_unsigned());
                     return self.cast_i128_to_ctype(v128, &target_ctype, target_size, src_unsigned);
                 }
 
@@ -165,7 +165,7 @@ impl<'a> SemaConstEval<'a> {
                     // Determine source signedness: try type map first, then infer, default signed
                     let src_signed = self.lookup_expr_type(inner)
                         .or_else(|| self.infer_expr_ctype(inner))
-                        .map_or(true, |ct| !ct.is_unsigned());
+                        .is_none_or(|ct| !ct.is_unsigned());
                     let v128 = if src_signed {
                         // Sign-extend: u64 -> i64 (reinterpret) -> i128 (sign-extend)
                         (bits as i64) as i128
@@ -192,7 +192,7 @@ impl<'a> SemaConstEval<'a> {
                 if matches!(target_ctype, CType::Float | CType::Double | CType::LongDouble) {
                     let src_signed = self.lookup_expr_type(inner)
                         .or_else(|| self.infer_expr_ctype(inner))
-                        .map_or(true, |ct| !ct.is_unsigned());
+                        .is_none_or(|ct| !ct.is_unsigned());
                     return self.bits_to_irconst(truncated, &target_ctype, src_signed);
                 }
 
@@ -567,7 +567,7 @@ impl<'a> SemaConstEval<'a> {
             }
             4 => {
                 if matches!(target, CType::Float) {
-                    let int_val = if target_signed { bits as i64 as f32 } else { bits as u64 as f32 };
+                    let int_val = if target_signed { bits as i64 as f32 } else { bits as f32 };
                     IrConst::F32(int_val)
                 } else if !target_signed {
                     // Unsigned 32-bit: use I64 to preserve unsigned semantics.
@@ -580,7 +580,7 @@ impl<'a> SemaConstEval<'a> {
             }
             8 => {
                 if matches!(target, CType::Double) {
-                    let int_val = if target_signed { bits as i64 as f64 } else { bits as u64 as f64 };
+                    let int_val = if target_signed { bits as i64 as f64 } else { bits as f64 };
                     IrConst::F64(int_val)
                 } else {
                     IrConst::I64(bits as i64)
@@ -981,7 +981,7 @@ impl<'a> SemaConstEval<'a> {
 
     /// Convert struct field declarations to StructField for layout computation.
     fn convert_struct_fields(&self, fields: &[StructFieldDecl]) -> Vec<crate::common::types::StructField> {
-        fields.iter().filter_map(|f| {
+        fields.iter().map(|f| {
             let ty = ctype_from_type_spec_with_derived(&f.type_spec, &f.derived, self.types);
             let name = f.name.clone().unwrap_or_default();
             let bit_width = f.bit_width.as_ref().and_then(|bw| {
@@ -996,12 +996,12 @@ impl<'a> SemaConstEval<'a> {
                 }
                 align
             };
-            Some(crate::common::types::StructField {
+            crate::common::types::StructField {
                 name,
                 ty,
                 bit_width,
                 alignment: field_alignment,
-            })
+            }
         }).collect()
     }
 }

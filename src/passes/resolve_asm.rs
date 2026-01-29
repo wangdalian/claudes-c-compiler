@@ -45,16 +45,16 @@ fn resolve_in_function(func: &mut IrFunction) {
                     value_defs.insert(dest.0, DefInfo::GlobalAddr(name.clone()));
                 }
                 Instruction::GetElementPtr { dest, base, offset, .. } => {
-                    value_defs.insert(dest.0, DefInfo::Gep(*base, offset.clone()));
+                    value_defs.insert(dest.0, DefInfo::Gep(*base, *offset));
                 }
                 Instruction::BinOp { dest, op: crate::ir::ir::IrBinOp::Add, lhs, rhs, .. } => {
-                    value_defs.insert(dest.0, DefInfo::Add(lhs.clone(), rhs.clone()));
+                    value_defs.insert(dest.0, DefInfo::Add(*lhs, *rhs));
                 }
                 Instruction::Cast { dest, src, .. } => {
-                    value_defs.insert(dest.0, DefInfo::Cast(src.clone()));
+                    value_defs.insert(dest.0, DefInfo::Cast(*src));
                 }
                 Instruction::Copy { dest, src } => {
-                    value_defs.insert(dest.0, DefInfo::Cast(src.clone()));
+                    value_defs.insert(dest.0, DefInfo::Cast(*src));
                 }
                 _ => {}
             }

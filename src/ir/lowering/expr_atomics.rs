@@ -56,7 +56,7 @@ impl Lowerer {
                 };
                 let old_val = self.fresh_value();
                 self.emit(Instruction::AtomicRmw {
-                    dest: old_val, op: rmw_op, ptr, val: val_expr.clone(), ty: val_ty, ordering,
+                    dest: old_val, op: rmw_op, ptr, val: val_expr, ty: val_ty, ordering,
                 });
                 let new_val = self.emit_post_rmw_compute(old_val, val_expr, bin_op, is_nand, val_ty);
                 return Some(Operand::Value(new_val));
@@ -85,7 +85,7 @@ impl Lowerer {
         if name == "__atomic_compare_exchange_n" && args.len() >= 6 {
             let ptr = self.lower_expr(&args[0]);
             let expected_ptr_op = self.lower_expr(&args[1]);
-            let expected = self.load_through_ptr(expected_ptr_op.clone(), val_ty);
+            let expected = self.load_through_ptr(expected_ptr_op, val_ty);
             let desired = self.lower_expr(&args[2]);
             return Some(self.emit_cmpxchg_with_writeback(
                 ptr, expected_ptr_op, expected, desired, val_ty,
@@ -96,7 +96,7 @@ impl Lowerer {
             let ptr = self.lower_expr(&args[0]);
             let expected_ptr_op = self.lower_expr(&args[1]);
             let desired_ptr_op = self.lower_expr(&args[2]);
-            let expected = self.load_through_ptr(expected_ptr_op.clone(), val_ty);
+            let expected = self.load_through_ptr(expected_ptr_op, val_ty);
             let desired = self.load_through_ptr(desired_ptr_op, val_ty);
             return Some(self.emit_cmpxchg_with_writeback(
                 ptr, expected_ptr_op, expected, Operand::Value(desired), val_ty,
@@ -335,10 +335,8 @@ impl Lowerer {
 
     /// Get the IR type of the pointee for a pointer expression.
     pub(super) fn get_pointee_ir_type(&self, expr: &Expr) -> Option<IrType> {
-        if let Some(ctype) = self.get_expr_ctype(expr) {
-            if let crate::common::types::CType::Pointer(inner, _) = ctype {
-                return Some(IrType::from_ctype(&inner));
-            }
+        if let Some(crate::common::types::CType::Pointer(inner, _)) = self.get_expr_ctype(expr) {
+            return Some(IrType::from_ctype(&inner));
         }
         None
     }

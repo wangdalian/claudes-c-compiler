@@ -254,13 +254,11 @@ pub(crate) fn eliminate_dead_static_functions(module: &mut IrModule) {
                         }
                     }
                     Instruction::InlineAsm { input_symbols, .. } => {
-                        for sym in input_symbols {
-                            if let Some(s) = sym {
-                                let base = s.split('+').next().unwrap_or(s);
-                                if let Some(&id) = name_to_id.get(base) {
-                                    if (id as usize) < address_taken.len() {
-                                        address_taken[id as usize] = true;
-                                    }
+                        for s in input_symbols.iter().flatten() {
+                            let base = s.split('+').next().unwrap_or(s);
+                            if let Some(&id) = name_to_id.get(base) {
+                                if (id as usize) < address_taken.len() {
+                                    address_taken[id as usize] = true;
                                 }
                             }
                         }
@@ -332,11 +330,9 @@ pub(crate) fn eliminate_dead_static_functions(module: &mut IrModule) {
                             referenced_symbols.insert(name.as_str());
                         }
                         Instruction::InlineAsm { input_symbols, .. } => {
-                            for sym in input_symbols {
-                                if let Some(s) = sym {
-                                    let base = s.split('+').next().unwrap_or(s);
-                                    referenced_symbols.insert(base);
-                                }
+                            for s in input_symbols.iter().flatten() {
+                                let base = s.split('+').next().unwrap_or(s);
+                                referenced_symbols.insert(base);
                             }
                         }
                         _ => {}
@@ -396,11 +392,9 @@ fn collect_instruction_symbol_refs(
             refs.push(get_or_create(name, name_to_id, next_id));
         }
         Instruction::InlineAsm { input_symbols, .. } => {
-            for sym in input_symbols {
-                if let Some(s) = sym {
-                    let base = s.split('+').next().unwrap_or(s);
-                    refs.push(get_or_create(base, name_to_id, next_id));
-                }
+            for s in input_symbols.iter().flatten() {
+                let base = s.split('+').next().unwrap_or(s);
+                refs.push(get_or_create(base, name_to_id, next_id));
             }
         }
         _ => {}

@@ -1,12 +1,12 @@
-/// Shared constant-expression arithmetic helpers.
-///
-/// Used by both `sema::const_eval` and `ir::lowering::const_eval` for
-/// compile-time constant expression evaluation with proper C semantics.
-///
-/// The functions here handle the pure arithmetic: given IrConst operands and
-/// width/signedness parameters, they compute the result. The callers (sema and
-/// lowering) are responsible for determining width/signedness from their own
-/// type systems (CType vs IrType) before calling these shared functions.
+//! Shared constant-expression arithmetic helpers.
+//!
+//! Used by both `sema::const_eval` and `ir::lowering::const_eval` for
+//! compile-time constant expression evaluation with proper C semantics.
+//!
+//! The functions here handle the pure arithmetic: given IrConst operands and
+//! width/signedness parameters, they compute the result. The callers (sema and
+//! lowering) are responsible for determining width/signedness from their own
+//! type systems (CType vs IrType) before calling these shared functions.
 
 use crate::ir::ir::IrConst;
 use crate::frontend::parser::ast::BinOp;

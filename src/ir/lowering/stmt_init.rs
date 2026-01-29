@@ -752,13 +752,11 @@ impl Lowerer {
                     let dest = self.emit_gep_offset(alloca, field_offset, IrType::I8);
                     self.lower_local_struct_init(sub_items, dest, &sub_layout);
                 }
-            } else {
-                if let Some(first) = sub_items.first() {
-                    if let Initializer::Expr(e) = &first.init {
-                        let field_ir_ty = IrType::from_ctype(&field.ty);
-                        let val = self.lower_and_cast_init_expr(e, field_ir_ty);
-                        self.emit_store_at_offset(alloca, field_offset, val, field_ir_ty);
-                    }
+            } else if let Some(first) = sub_items.first() {
+                if let Initializer::Expr(e) = &first.init {
+                    let field_ir_ty = IrType::from_ctype(&field.ty);
+                    let val = self.lower_and_cast_init_expr(e, field_ir_ty);
+                    self.emit_store_at_offset(alloca, field_offset, val, field_ir_ty);
                 }
             }
         }

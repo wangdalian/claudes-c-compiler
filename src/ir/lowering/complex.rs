@@ -8,7 +8,7 @@
 //!   - _Complex float:       [f32 real, f32 imag] = 8 bytes, align 4
 //!   - _Complex double:      [f64 real, f64 imag] = 16 bytes, align 8
 //!   - _Complex long double: [f128 real, f128 imag] = 32 bytes, align 16 (x86-64)
-//!                                                    24 bytes, align 4  (i686)
+//!     24 bytes, align 4  (i686)
 
 use crate::frontend::parser::ast::*;
 use crate::ir::ir::*;
@@ -45,7 +45,7 @@ impl Lowerer {
         let imag = self.load_complex_imag(ptr, ctype);
         let comp_ty = Self::complex_component_ir_type(ctype);
         let zero = Self::complex_zero(comp_ty);
-        let real_nz = self.emit_cmp_val(IrCmpOp::Ne, real, zero.clone(), comp_ty);
+        let real_nz = self.emit_cmp_val(IrCmpOp::Ne, real, zero, comp_ty);
         let imag_nz = self.emit_cmp_val(IrCmpOp::Ne, imag, zero, comp_ty);
         let result = self.emit_binop_val(IrBinOp::Or, Operand::Value(real_nz), Operand::Value(imag_nz), crate::common::types::target_int_ir_type());
         Operand::Value(result)
@@ -265,9 +265,9 @@ impl Lowerer {
         let d = self.load_complex_imag(rhs_ptr, ctype);
 
         // ac
-        let ac = self.emit_binop_val(IrBinOp::Mul, a.clone(), c.clone(), comp_ty);
+        let ac = self.emit_binop_val(IrBinOp::Mul, a, c, comp_ty);
         // bd
-        let bd = self.emit_binop_val(IrBinOp::Mul, b.clone(), d.clone(), comp_ty);
+        let bd = self.emit_binop_val(IrBinOp::Mul, b, d, comp_ty);
         // ad
         let ad = self.emit_binop_val(IrBinOp::Mul, a, d, comp_ty);
         // bc
@@ -293,13 +293,13 @@ impl Lowerer {
         let d = self.load_complex_imag(rhs_ptr, ctype);
 
         // denom = c*c + d*d
-        let cc = self.emit_binop_val(IrBinOp::Mul, c.clone(), c.clone(), comp_ty);
-        let dd = self.emit_binop_val(IrBinOp::Mul, d.clone(), d.clone(), comp_ty);
+        let cc = self.emit_binop_val(IrBinOp::Mul, c, c, comp_ty);
+        let dd = self.emit_binop_val(IrBinOp::Mul, d, d, comp_ty);
         let denom = self.emit_binop_val(IrBinOp::Add, Operand::Value(cc), Operand::Value(dd), comp_ty);
 
         // real_num = a*c + b*d
-        let ac = self.emit_binop_val(IrBinOp::Mul, a.clone(), c.clone(), comp_ty);
-        let bd = self.emit_binop_val(IrBinOp::Mul, b.clone(), d.clone(), comp_ty);
+        let ac = self.emit_binop_val(IrBinOp::Mul, a, c, comp_ty);
+        let bd = self.emit_binop_val(IrBinOp::Mul, b, d, comp_ty);
         let real_num = self.emit_binop_val(IrBinOp::Add, Operand::Value(ac), Operand::Value(bd), comp_ty);
 
         // imag_num = b*c - a*d
@@ -551,13 +551,13 @@ impl Lowerer {
         // Convert RHS to the LHS complex type
         let rhs_complex = if rhs_ct.is_complex() {
             if rhs_ct == *lhs_ct {
-                rhs_val.clone()
+                rhs_val
             } else {
-                self.convert_to_complex(rhs_val.clone(), &rhs_ct, lhs_ct)
+                self.convert_to_complex(rhs_val, &rhs_ct, lhs_ct)
             }
         } else {
             // Real value -> complex
-            self.real_to_complex(rhs_val.clone(), &rhs_ct, lhs_ct)
+            self.real_to_complex(rhs_val, &rhs_ct, lhs_ct)
         };
 
         // Get LHS pointer
@@ -606,8 +606,8 @@ impl Lowerer {
                 let ct = self.expr_ctype(expr);
                 let elem_size = self.resolve_ctype_size(&ct);
                 let scaled = self.scale_index(idx_val, elem_size);
-                let dest = self.emit_binop_val(IrBinOp::Add, base_val, scaled, crate::common::types::target_int_ir_type());
-                dest
+                
+                self.emit_binop_val(IrBinOp::Add, base_val, scaled, crate::common::types::target_int_ir_type())
             }
             Expr::MemberAccess(base, field, _) => {
                 // Get base struct address and add field offset
@@ -845,7 +845,7 @@ impl Lowerer {
             let should_pack = is_complex_float && (uses_packed_cf || (packs_cf_variadic && is_variadic_arg));
 
             if should_pack {
-                let ptr = self.operand_to_value(val.clone());
+                let ptr = self.operand_to_value(*val);
                 let packed = self.fresh_value();
                 if packs_cf_variadic && is_variadic_arg && !uses_packed_cf {
                     // RISC-V variadic: load as I64 (two packed F32s in one GP register)
@@ -896,7 +896,7 @@ impl Lowerer {
                     if i < args.len() { self.expr_ctype(&args[i]) } else { CType::ComplexDouble }
                 });
                 let comp_ty = Self::complex_component_ir_type(&complex_ct);
-                let ptr = self.operand_to_value(val.clone());
+                let ptr = self.operand_to_value(*val);
 
                 // Load real part
                 let real = self.load_complex_real(ptr, &complex_ct);
@@ -912,7 +912,7 @@ impl Lowerer {
                 new_struct_sizes.push(None); // decomposed scalar
                 new_struct_aligns.push(None);
             } else {
-                new_vals.push(val.clone());
+                new_vals.push(*val);
                 new_types.push(*ty);
                 new_struct_sizes.push(struct_arg_sizes.get(i).copied().flatten());
                 new_struct_aligns.push(struct_arg_aligns.get(i).copied().flatten());

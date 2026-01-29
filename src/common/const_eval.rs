@@ -1,22 +1,22 @@
-/// Shared constant expression evaluation functions.
-///
-/// This module extracts the pure constant-evaluation logic that was duplicated
-/// between `sema::const_eval` (SemaConstEval) and `ir::lowering::const_eval`
-/// (Lowerer). Both evaluate compile-time constant expressions from the same AST,
-/// but differ in how they resolve types:
-/// - Sema uses CType (C-level types from the type checker)
-/// - Lowering uses IrType (IR-level types from the lowerer)
-///
-/// The functions here are parameterized by closures that abstract over these
-/// differences, allowing both callers to share the same evaluation logic for:
-/// - Literal evaluation
-/// - Builtin function constant folding (__builtin_bswap, __builtin_clz, etc.)
-/// - Sub-int promotion for unary operations
-/// - Bit-width evaluation through cast chains
-///
-/// Functions that require caller-specific state (global address resolution,
-/// sizeof/alignof, binary operations with type inference) remain in the
-/// respective callers.
+//! Shared constant expression evaluation functions.
+//!
+//! This module extracts the pure constant-evaluation logic that was duplicated
+//! between `sema::const_eval` (SemaConstEval) and `ir::lowering::const_eval`
+//! (Lowerer). Both evaluate compile-time constant expressions from the same AST,
+//! but differ in how they resolve types:
+//! - Sema uses CType (C-level types from the type checker)
+//! - Lowering uses IrType (IR-level types from the lowerer)
+//!
+//! The functions here are parameterized by closures that abstract over these
+//! differences, allowing both callers to share the same evaluation logic for:
+//! - Literal evaluation
+//! - Builtin function constant folding (__builtin_bswap, __builtin_clz, etc.)
+//! - Sub-int promotion for unary operations
+//! - Bit-width evaluation through cast chains
+//!
+//! Functions that require caller-specific state (global address resolution,
+//! sizeof/alignof, binary operations with type inference) remain in the
+//! respective callers.
 
 use crate::ir::ir::IrConst;
 use crate::frontend::parser::ast::*;
@@ -80,11 +80,11 @@ pub fn eval_builtin_call(
             }
         }
         "__builtin_constant_p" => {
-            let is_const = args.first().map_or(false, |arg| eval_fn(arg).is_some());
+            let is_const = args.first().is_some_and(|arg| eval_fn(arg).is_some());
             Some(IrConst::I32(if is_const { 1 } else { 0 }))
         }
         "__builtin_expect" | "__builtin_expect_with_probability" => {
-            args.first().and_then(|arg| eval_fn(arg))
+            args.first().and_then(eval_fn)
         }
         "__builtin_bswap16" => {
             let val = eval_fn(args.first()?)?;

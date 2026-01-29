@@ -40,7 +40,7 @@ impl Lowerer {
             // Rewrite output constraint for register variables with __asm__("regname")
             if let Expr::Identifier(ref var_name, _) = out.expr {
                 if let Some(asm_reg) = self.get_asm_register(var_name) {
-                    let stripped = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+                    let stripped = constraint.trim_start_matches(['=', '+', '&']);
                     if stripped.contains('r') || stripped == "g" {
                         let prefix: String = constraint.chars().take_while(|c| *c == '=' || *c == '+' || *c == '&').collect();
                         constraint = format!("{}{{{}}}", prefix, asm_reg);
@@ -165,7 +165,7 @@ impl Lowerer {
             // when the constraint allows "r", pin to the exact requested register.
             if let Expr::Identifier(ref var_name, _) = inp.expr {
                 if let Some(asm_reg) = self.get_asm_register(var_name) {
-                    let stripped = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
+                    let stripped = constraint.trim_start_matches(['=', '+', '&']);
                     if stripped.contains('r') || stripped == "g" {
                         constraint = format!("{{{}}}", asm_reg);
                     }
@@ -355,7 +355,7 @@ impl Lowerer {
             // Scan backwards (skip the InlineAsm itself)
             // Stop at function calls, other inline asm, or after 30 instructions
             let start = if instrs_len >= 2 { instrs_len - 2 } else { continue };
-            let limit = if start > 30 { start - 30 } else { 0 };
+            let limit = start.saturating_sub(30);
             for idx in (limit..=start).rev() {
                 match &fs.instrs[idx] {
                     Instruction::Store { ptr, .. } if *ptr == target_alloca => {
@@ -525,7 +525,7 @@ impl Lowerer {
         for inst in fs.instrs.iter().rev().take(20) {
             match inst {
                 Instruction::Store { val: Operand::Const(c), ptr, .. } if *ptr == alloca => {
-                    return Some(Operand::Const(c.clone()));
+                    return Some(Operand::Const(*c));
                 }
                 Instruction::Store { val: Operand::Value(v), ptr, .. } if *ptr == alloca => {
                     // The store holds a Value, not a direct constant. This commonly
@@ -540,12 +540,12 @@ impl Lowerer {
                             Instruction::Cast { dest, src: Operand::Const(c), .. }
                                 if *dest == defining =>
                             {
-                                return Some(Operand::Const(c.clone()));
+                                return Some(Operand::Const(*c));
                             }
                             Instruction::Copy { dest, src: Operand::Const(c) }
                                 if *dest == defining =>
                             {
-                                return Some(Operand::Const(c.clone()));
+                                return Some(Operand::Const(*c));
                             }
                             _ => {}
                         }

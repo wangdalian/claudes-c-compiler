@@ -236,11 +236,7 @@ impl<'a> ExprTypeChecker<'a> {
                     }
                     UnaryOp::PreInc | UnaryOp::PreDec => self.infer_expr_ctype(inner),
                     UnaryOp::RealPart | UnaryOp::ImagPart => {
-                        if let Some(inner_ct) = self.infer_expr_ctype(inner) {
-                            Some(inner_ct.complex_component_type())
-                        } else {
-                            None
-                        }
+                        self.infer_expr_ctype(inner).map(|inner_ct| inner_ct.complex_component_type())
                     }
                 }
             }
@@ -299,20 +295,18 @@ impl<'a> ExprTypeChecker<'a> {
 
             // Statement expression: type of the last expression statement
             Expr::StmtExpr(compound, _) => {
-                if let Some(last) = compound.items.last() {
-                    if let BlockItem::Statement(Stmt::Expr(Some(expr))) = last {
-                        if let Some(ctype) = self.infer_expr_ctype(expr) {
-                            return Some(ctype);
-                        }
-                        // If the last expr is an identifier not in the symbol table
-                        // (e.g., inside typeof where the stmt expr was never executed),
-                        // resolve it from declarations within this compound statement.
-                        // We build a local scope as we iterate so that typeof expressions
-                        // referencing earlier declarations can be resolved (e.g., the
-                        // kernel's xchg macro: typeof(&field) ptr = ...; __typeof__(*ptr) ret = ...; ret;)
-                        if let Expr::Identifier(name, _) = expr {
-                            return self.resolve_var_from_compound(compound, name);
-                        }
+                if let Some(BlockItem::Statement(Stmt::Expr(Some(expr)))) = compound.items.last() {
+                    if let Some(ctype) = self.infer_expr_ctype(expr) {
+                        return Some(ctype);
+                    }
+                    // If the last expr is an identifier not in the symbol table
+                    // (e.g., inside typeof where the stmt expr was never executed),
+                    // resolve it from declarations within this compound statement.
+                    // We build a local scope as we iterate so that typeof expressions
+                    // referencing earlier declarations can be resolved (e.g., the
+                    // kernel's xchg macro: typeof(&field) ptr = ...; __typeof__(*ptr) ret = ...; ret;)
+                    if let Expr::Identifier(name, _) = expr {
+                        return self.resolve_var_from_compound(compound, name);
                     }
                 }
                 None
@@ -690,13 +684,11 @@ impl<'a> ExprTypeChecker<'a> {
         let struct_fields: Vec<StructField> = fields.iter().map(|f| {
             let mut ty = self.resolve_field_ctype(f);
             // GCC treats enum bitfields as unsigned
-            if f.bit_width.is_some() {
-                if matches!(&f.type_spec, TypeSpecifier::Enum(..)) {
-                    if ty == CType::Int {
+            if f.bit_width.is_some()
+                && matches!(&f.type_spec, TypeSpecifier::Enum(..))
+                    && ty == CType::Int {
                         ty = CType::UInt;
                     }
-                }
-            }
             StructField {
                 name: f.name.clone().unwrap_or_default(),
                 ty,

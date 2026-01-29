@@ -220,14 +220,12 @@ impl Lowerer {
             if let Initializer::Expr(ref expr) = item.init {
                 if elem_is_pointer {
                     self.emit_expr_to_compound(elements, expr, ptr_size, None);
+                } else if let Some(val) = self.eval_const_expr(expr) {
+                    let elem_ir_ty = IrType::from_ctype(elem_ty);
+                    let coerced = val.coerce_to(elem_ir_ty);
+                    self.push_const_as_bytes(elements, &coerced, elem_size);
                 } else {
-                    if let Some(val) = self.eval_const_expr(expr) {
-                        let elem_ir_ty = IrType::from_ctype(elem_ty);
-                        let coerced = val.coerce_to(elem_ir_ty);
-                        self.push_const_as_bytes(elements, &coerced, elem_size);
-                    } else {
-                        push_zero_bytes(elements, elem_size);
-                    }
+                    push_zero_bytes(elements, elem_size);
                 }
             } else {
                 // Nested list - zero fill element

@@ -43,7 +43,7 @@ impl Lexer {
         let ch = self.input[self.pos];
 
         // Number literals
-        if ch.is_ascii_digit() || (ch == b'.' && self.peek_next().map_or(false, |c| c.is_ascii_digit())) {
+        if ch.is_ascii_digit() || (ch == b'.' && self.peek_next().is_some_and(|c| c.is_ascii_digit())) {
             return self.lex_number(start);
         }
 
@@ -272,7 +272,7 @@ impl Lexer {
         }
 
         // Handle octal (but not if followed by '.' or 'e'/'E' which makes it a float)
-        if self.input[self.pos] == b'0' && self.peek_next().map_or(false, |c| c.is_ascii_digit()) {
+        if self.input[self.pos] == b'0' && self.peek_next().is_some_and(|c| c.is_ascii_digit()) {
             // Save position to backtrack if this turns out to be a float
             let saved_pos = self.pos;
             self.pos += 1;
@@ -389,7 +389,7 @@ impl Lexer {
                 }
             } else {
                 match float_kind {
-                    1 => Token::new(TokenKind::FloatLiteralF32(value as f64), span),
+                    1 => Token::new(TokenKind::FloatLiteralF32(value), span),
                     2 => {
                         // Parse with full f128 precision for long double
                         let f128_bytes = crate::common::long_double::parse_long_double_to_f128_bytes(&text);

@@ -1,7 +1,7 @@
-/// Conditional compilation tracking for the C preprocessor.
-///
-/// Handles #if, #ifdef, #ifndef, #elif, #else, #endif directives
-/// by maintaining a stack of conditional states.
+//! Conditional compilation tracking for the C preprocessor.
+//!
+//! Handles #if, #ifdef, #ifndef, #elif, #else, #endif directives
+//! by maintaining a stack of conditional states.
 
 use super::macro_defs::MacroTable;
 use super::utils::{is_ident_start, is_ident_cont};
@@ -30,7 +30,7 @@ impl ConditionalStack {
 
     /// Returns true if code should currently be emitted.
     pub fn is_active(&self) -> bool {
-        self.stack.last().map_or(true, |s| s.current_branch_active && s.parent_active)
+        self.stack.last().is_none_or(|s| s.current_branch_active && s.parent_active)
     }
 
     /// Push a new #if/#ifdef/#ifndef.
@@ -743,12 +743,10 @@ impl<'a> ExprParser<'a> {
                     left = (0, u);
                 } else if u {
                     left = ((left.0 as u64).wrapping_rem(right.0 as u64) as i64, true);
+                } else if left.0 == i64::MIN && right.0 == -1 {
+                    left = (0, false);
                 } else {
-                    if left.0 == i64::MIN && right.0 == -1 {
-                        left = (0, false);
-                    } else {
-                        left = (left.0 % right.0, false);
-                    }
+                    left = (left.0 % right.0, false);
                 }
             } else {
                 break;

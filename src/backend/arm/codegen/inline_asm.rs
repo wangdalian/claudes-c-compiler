@@ -255,8 +255,8 @@ impl ArmCodegen {
     /// Convert a d-register name to its s-register counterpart (same register number).
     /// e.g., "d16" -> "s16"
     pub(super) fn d_to_s_reg(reg: &str) -> String {
-        if reg.starts_with('d') {
-            format!("s{}", &reg[1..])
+        if let Some(rest) = reg.strip_prefix('d') {
+            format!("s{rest}")
         } else {
             reg.to_string()
         }

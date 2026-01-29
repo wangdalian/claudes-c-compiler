@@ -160,7 +160,7 @@ pub fn build_cfg(
                     succs[i].push(d as u32);
                     preds[d].push(i32);
                 }
-                for &(_, ref label) in cases {
+                for (_, label) in cases {
                     if let Some(&t) = label_to_idx.get(label) {
                         let t32 = t as u32;
                         if !succs[i].contains(&t32) {

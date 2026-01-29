@@ -4,7 +4,7 @@ use crate::common::fx_hash::FxHashMap;
 use crate::backend::common::PtrDirective;
 use crate::backend::state::{CodegenState, StackSlot};
 use crate::backend::traits::ArchCodegen;
-use crate::backend::generation::{generate_module, is_i128_type, calculate_stack_space_common, find_param_alloca};
+use crate::backend::generation::{is_i128_type, calculate_stack_space_common, find_param_alloca};
 use crate::backend::call_abi::{CallAbiConfig, CallArgClass, compute_stack_push_bytes};
 use crate::backend::call_emit::{ParamClass, classify_params};
 use crate::backend::cast::FloatOp;
@@ -882,7 +882,7 @@ impl ArchCodegen for X86Codegen {
 
     fn emit_branch_nonzero(&mut self, label: &str) {
         self.state.emit("    testq %rax, %rax");
-        self.state.out.emit_jcc_label("    jne", &label);
+        self.state.out.emit_jcc_label("    jne", label);
     }
 
     fn emit_jump_indirect(&mut self) {
@@ -903,7 +903,7 @@ impl ArchCodegen for X86Codegen {
             self.state.out.emit_instr_imm_reg("    movabsq", case_val, "rcx");
             self.state.emit("    cmpq %rcx, %rax");
         }
-        self.state.out.emit_jcc_label("    je", &label);
+        self.state.out.emit_jcc_label("    je", label);
     }
 
     fn emit_switch_jump_table(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId) {
@@ -1118,7 +1118,7 @@ impl ArchCodegen for X86Codegen {
         // They are saved at the bottom of the frame (highest negative offsets from rbp).
         let used_regs = self.used_callee_saved.clone();
         for (i, &reg) in used_regs.iter().enumerate() {
-            let offset = -(frame_size as i64) + (i as i64 * 8);
+            let offset = -frame_size + (i as i64 * 8);
             let reg_name = phys_reg_name(reg);
             self.state.out.emit_instr_reg_rbp("    movq", reg_name, offset);
         }
@@ -1149,7 +1149,7 @@ impl ArchCodegen for X86Codegen {
         // Restore callee-saved registers before frame teardown.
         let used_regs = self.used_callee_saved.clone();
         for (i, &reg) in used_regs.iter().enumerate() {
-            let offset = -(frame_size as i64) + (i as i64 * 8);
+            let offset = -frame_size + (i as i64 * 8);
             let reg_name = phys_reg_name(reg);
             self.state.out.emit_instr_rbp_reg("    movq", offset, reg_name);
         }
@@ -1257,7 +1257,7 @@ impl ArchCodegen for X86Codegen {
                 }
                 ParamClass::StructStack { offset, size } | ParamClass::LargeStructStack { offset, size } => {
                     let src = stack_base + offset;
-                    let n_qwords = (size + 7) / 8;
+                    let n_qwords = size.div_ceil(8);
                     for qi in 0..n_qwords {
                         let src_off = src + (qi as i64 * 8);
                         let dst_off = slot.0 + (qi as i64 * 8);
@@ -2044,7 +2044,7 @@ impl ArchCodegen for X86Codegen {
                 // Register-register form: load LHS to dest, then op RHS into dest.
                 // If RHS is in the same register as dest, load RHS to scratch first.
                 let rhs_phys = self.operand_reg(rhs);
-                let rhs_conflicts = rhs_phys.map_or(false, |r| r.0 == dest_phys.0);
+                let rhs_conflicts = rhs_phys.is_some_and(|r| r.0 == dest_phys.0);
                 let (rhs_reg_name, rhs_reg_name_32): (String, String) = if rhs_conflicts {
                     self.operand_to_rax(rhs);
                     self.operand_to_callee_reg(lhs, dest_phys);
@@ -2098,7 +2098,7 @@ impl ArchCodegen for X86Codegen {
                 } else {
                     // Variable shift: load shift amount into %cl.
                     // If rhs is in the same register as dest, load rhs first.
-                    let rhs_conflicts = self.operand_reg(rhs).map_or(false, |r| r.0 == dest_phys.0);
+                    let rhs_conflicts = self.operand_reg(rhs).is_some_and(|r| r.0 == dest_phys.0);
                     if rhs_conflicts {
                         self.operand_to_rcx(rhs);
                         self.operand_to_callee_reg(lhs, dest_phys);
@@ -2420,7 +2420,7 @@ impl ArchCodegen for X86Codegen {
             IrCmpOp::Uge => "jae",
         };
         self.state.emit_fmt(format_args!("    {} {}", jcc, true_label));
-        self.state.out.emit_jmp_label(&false_label);
+        self.state.out.emit_jmp_label(false_label);
         self.state.reg_cache.invalidate_all();
     }
 
@@ -2550,7 +2550,7 @@ impl ArchCodegen for X86Codegen {
     fn emit_call_stack_args(&mut self, args: &[Operand], arg_classes: &[CallArgClass],
                             _arg_types: &[IrType], stack_arg_space: usize, _fptr_spill: usize, _f128_temp_space: usize) -> i64 {
         // x86 pushes in reverse order, with alignment padding if needed.
-        let need_align_pad = stack_arg_space % 16 != 0;
+        let need_align_pad = !stack_arg_space.is_multiple_of(16);
         if need_align_pad {
             self.state.emit("    subq $8, %rsp");
         }
@@ -2630,7 +2630,7 @@ impl ArchCodegen for X86Codegen {
                 }
                 CallArgClass::StructByValStack { size } | CallArgClass::LargeStructStack { size } => {
                     self.operand_to_rax(&args[si]);
-                    let n_qwords = (size + 7) / 8;
+                    let n_qwords = size.div_ceil(8);
                     for qi in (0..n_qwords).rev() {
                         let offset = qi * 8;
                         if offset + 8 <= size {
@@ -2739,7 +2739,7 @@ impl ArchCodegen for X86Codegen {
             if self.state.needs_plt(name) {
                 self.state.emit_fmt(format_args!("    call {}@PLT", name));
             } else {
-                self.state.out.emit_call(&name);
+                self.state.out.emit_call(name);
             }
         } else if let Some(ptr) = func_ptr {
             self.state.emit("    pushq %rax"); // save AL (float count)
@@ -2757,7 +2757,7 @@ impl ArchCodegen for X86Codegen {
     }
 
     fn emit_call_cleanup(&mut self, stack_arg_space: usize, _f128_temp_space: usize, _indirect: bool) {
-        let need_align_pad = stack_arg_space % 16 != 0;
+        let need_align_pad = !stack_arg_space.is_multiple_of(16);
         let total_cleanup = stack_arg_space + if need_align_pad { 8 } else { 0 };
         if total_cleanup > 0 {
             self.state.out.emit_instr_imm_reg("    addq", total_cleanup as i64, "rsp");
@@ -3196,7 +3196,7 @@ impl ArchCodegen for X86Codegen {
         }
 
         // Copy struct data: read 8 bytes at a time from [rsi] to [rdi]
-        let num_qwords = (size + 7) / 8;
+        let num_qwords = size.div_ceil(8);
         for i in 0..num_qwords {
             let offset = (i * 8) as i64;
             if offset + 8 <= size as i64 {
@@ -3251,7 +3251,7 @@ impl ArchCodegen for X86Codegen {
                 self.state.out.emit_instr_rbp_reg("    movq", slot.0, "rcx");
             }
         }
-        let advance = ((size + 7) / 8) * 8;
+        let advance = size.div_ceil(8) * 8;
         self.state.out.emit_instr_imm_mem("    addq", advance as i64, 8, "rcx");
         self.state.reg_cache.invalidate_all();
     }
