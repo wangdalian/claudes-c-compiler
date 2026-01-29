@@ -480,237 +480,42 @@ impl Lowerer {
                 }
                 Some(Operand::Const(IrConst::I32(0)))
             }
-            // X86 SSE fence/barrier operations (no dest, no meaningful return)
-            BuiltinIntrinsic::X86Lfence => {
-                self.emit(Instruction::Intrinsic { dest: None, op: IntrinsicOp::Lfence, dest_ptr: None, args: vec![] });
-                Some(Operand::Const(IrConst::I64(0)))
-            }
-            BuiltinIntrinsic::X86Mfence => {
-                self.emit(Instruction::Intrinsic { dest: None, op: IntrinsicOp::Mfence, dest_ptr: None, args: vec![] });
-                Some(Operand::Const(IrConst::I64(0)))
-            }
-            BuiltinIntrinsic::X86Sfence => {
-                self.emit(Instruction::Intrinsic { dest: None, op: IntrinsicOp::Sfence, dest_ptr: None, args: vec![] });
-                Some(Operand::Const(IrConst::I64(0)))
-            }
-            BuiltinIntrinsic::X86Pause => {
-                self.emit(Instruction::Intrinsic { dest: None, op: IntrinsicOp::Pause, dest_ptr: None, args: vec![] });
-                Some(Operand::Const(IrConst::I64(0)))
-            }
-            // clflush(ptr)
-            BuiltinIntrinsic::X86Clflush => {
-                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                self.emit(Instruction::Intrinsic { dest: None, op: IntrinsicOp::Clflush, dest_ptr: None, args: arg_ops });
-                Some(Operand::Const(IrConst::I64(0)))
-            }
-            // Non-temporal store: movnti(ptr, val) - 32-bit
-            BuiltinIntrinsic::X86Movnti => {
-                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                let ptr_val = self.operand_to_value(arg_ops[0].clone());
-                self.emit(Instruction::Intrinsic { dest: None, op: IntrinsicOp::Movnti, dest_ptr: Some(ptr_val), args: vec![arg_ops[1].clone()] });
-                Some(Operand::Const(IrConst::I64(0)))
-            }
-            // Non-temporal store: movnti64(ptr, val) - 64-bit
-            BuiltinIntrinsic::X86Movnti64 => {
-                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                let ptr_val = self.operand_to_value(arg_ops[0].clone());
-                self.emit(Instruction::Intrinsic { dest: None, op: IntrinsicOp::Movnti64, dest_ptr: Some(ptr_val), args: vec![arg_ops[1].clone()] });
-                Some(Operand::Const(IrConst::I64(0)))
-            }
-            // Non-temporal store 128-bit: movntdq(ptr, src_ptr)
-            BuiltinIntrinsic::X86Movntdq => {
-                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                let ptr_val = self.operand_to_value(arg_ops[0].clone());
-                self.emit(Instruction::Intrinsic { dest: None, op: IntrinsicOp::Movntdq, dest_ptr: Some(ptr_val), args: vec![arg_ops[1].clone()] });
-                Some(Operand::Const(IrConst::I64(0)))
-            }
-            // Non-temporal store 128-bit double: movntpd(ptr, src_ptr)
-            BuiltinIntrinsic::X86Movntpd => {
-                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                let ptr_val = self.operand_to_value(arg_ops[0].clone());
-                self.emit(Instruction::Intrinsic { dest: None, op: IntrinsicOp::Movntpd, dest_ptr: Some(ptr_val), args: vec![arg_ops[1].clone()] });
-                Some(Operand::Const(IrConst::I64(0)))
-            }
-            // 128-bit operations that return __m128i (16-byte struct via pointer)
-            // These allocate a 16-byte stack slot for the result and return a pointer to it
-            BuiltinIntrinsic::X86Loaddqu
-            | BuiltinIntrinsic::X86Pcmpeqb128
-            | BuiltinIntrinsic::X86Pcmpeqd128
-            | BuiltinIntrinsic::X86Psubusb128
-            | BuiltinIntrinsic::X86Por128
-            | BuiltinIntrinsic::X86Pand128
-            | BuiltinIntrinsic::X86Pxor128
-            | BuiltinIntrinsic::X86Set1Epi8
-            | BuiltinIntrinsic::X86Set1Epi32
-            | BuiltinIntrinsic::X86Aesenc128
-            | BuiltinIntrinsic::X86Aesenclast128
-            | BuiltinIntrinsic::X86Aesdec128
-            | BuiltinIntrinsic::X86Aesdeclast128
-            | BuiltinIntrinsic::X86Aesimc128
-            | BuiltinIntrinsic::X86Aeskeygenassist128
-            | BuiltinIntrinsic::X86Pclmulqdq128
-            | BuiltinIntrinsic::X86Pslldqi128
-            | BuiltinIntrinsic::X86Psrldqi128
-            | BuiltinIntrinsic::X86Psllqi128
-            | BuiltinIntrinsic::X86Psrlqi128
-            | BuiltinIntrinsic::X86Pshufd128
-            | BuiltinIntrinsic::X86Loadldi128
-            // New SSE2 packed operations returning __m128i
-            | BuiltinIntrinsic::X86Paddw128
-            | BuiltinIntrinsic::X86Psubw128
-            | BuiltinIntrinsic::X86Pmulhw128
-            | BuiltinIntrinsic::X86Pmaddwd128
-            | BuiltinIntrinsic::X86Pcmpgtw128
-            | BuiltinIntrinsic::X86Pcmpgtb128
-            | BuiltinIntrinsic::X86Psllwi128
-            | BuiltinIntrinsic::X86Psrlwi128
-            | BuiltinIntrinsic::X86Psrawi128
-            | BuiltinIntrinsic::X86Psradi128
-            | BuiltinIntrinsic::X86Pslldi128
-            | BuiltinIntrinsic::X86Psrldi128
-            | BuiltinIntrinsic::X86Paddd128
-            | BuiltinIntrinsic::X86Psubd128
-            | BuiltinIntrinsic::X86Packssdw128
-            | BuiltinIntrinsic::X86Packuswb128
-            | BuiltinIntrinsic::X86Punpcklbw128
-            | BuiltinIntrinsic::X86Punpckhbw128
-            | BuiltinIntrinsic::X86Punpcklwd128
-            | BuiltinIntrinsic::X86Punpckhwd128
-            | BuiltinIntrinsic::X86Set1Epi16
-            | BuiltinIntrinsic::X86Pinsrw128
-            | BuiltinIntrinsic::X86Cvtsi32Si128
-            | BuiltinIntrinsic::X86Pshuflw128
-            | BuiltinIntrinsic::X86Pshufhw128 => {
-                let sse_op = match intrinsic {
-                    BuiltinIntrinsic::X86Loaddqu => IntrinsicOp::Loaddqu,
-                    BuiltinIntrinsic::X86Pcmpeqb128 => IntrinsicOp::Pcmpeqb128,
-                    BuiltinIntrinsic::X86Pcmpeqd128 => IntrinsicOp::Pcmpeqd128,
-                    BuiltinIntrinsic::X86Psubusb128 => IntrinsicOp::Psubusb128,
-                    BuiltinIntrinsic::X86Por128 => IntrinsicOp::Por128,
-                    BuiltinIntrinsic::X86Pand128 => IntrinsicOp::Pand128,
-                    BuiltinIntrinsic::X86Pxor128 => IntrinsicOp::Pxor128,
-                    BuiltinIntrinsic::X86Set1Epi8 => IntrinsicOp::SetEpi8,
-                    BuiltinIntrinsic::X86Set1Epi32 => IntrinsicOp::SetEpi32,
-                    BuiltinIntrinsic::X86Aesenc128 => IntrinsicOp::Aesenc128,
-                    BuiltinIntrinsic::X86Aesenclast128 => IntrinsicOp::Aesenclast128,
-                    BuiltinIntrinsic::X86Aesdec128 => IntrinsicOp::Aesdec128,
-                    BuiltinIntrinsic::X86Aesdeclast128 => IntrinsicOp::Aesdeclast128,
-                    BuiltinIntrinsic::X86Aesimc128 => IntrinsicOp::Aesimc128,
-                    BuiltinIntrinsic::X86Aeskeygenassist128 => IntrinsicOp::Aeskeygenassist128,
-                    BuiltinIntrinsic::X86Pclmulqdq128 => IntrinsicOp::Pclmulqdq128,
-                    BuiltinIntrinsic::X86Pslldqi128 => IntrinsicOp::Pslldqi128,
-                    BuiltinIntrinsic::X86Psrldqi128 => IntrinsicOp::Psrldqi128,
-                    BuiltinIntrinsic::X86Psllqi128 => IntrinsicOp::Psllqi128,
-                    BuiltinIntrinsic::X86Psrlqi128 => IntrinsicOp::Psrlqi128,
-                    BuiltinIntrinsic::X86Pshufd128 => IntrinsicOp::Pshufd128,
-                    BuiltinIntrinsic::X86Loadldi128 => IntrinsicOp::Loadldi128,
-                    // New SSE2 operations
-                    BuiltinIntrinsic::X86Paddw128 => IntrinsicOp::Paddw128,
-                    BuiltinIntrinsic::X86Psubw128 => IntrinsicOp::Psubw128,
-                    BuiltinIntrinsic::X86Pmulhw128 => IntrinsicOp::Pmulhw128,
-                    BuiltinIntrinsic::X86Pmaddwd128 => IntrinsicOp::Pmaddwd128,
-                    BuiltinIntrinsic::X86Pcmpgtw128 => IntrinsicOp::Pcmpgtw128,
-                    BuiltinIntrinsic::X86Pcmpgtb128 => IntrinsicOp::Pcmpgtb128,
-                    BuiltinIntrinsic::X86Psllwi128 => IntrinsicOp::Psllwi128,
-                    BuiltinIntrinsic::X86Psrlwi128 => IntrinsicOp::Psrlwi128,
-                    BuiltinIntrinsic::X86Psrawi128 => IntrinsicOp::Psrawi128,
-                    BuiltinIntrinsic::X86Psradi128 => IntrinsicOp::Psradi128,
-                    BuiltinIntrinsic::X86Pslldi128 => IntrinsicOp::Pslldi128,
-                    BuiltinIntrinsic::X86Psrldi128 => IntrinsicOp::Psrldi128,
-                    BuiltinIntrinsic::X86Paddd128 => IntrinsicOp::Paddd128,
-                    BuiltinIntrinsic::X86Psubd128 => IntrinsicOp::Psubd128,
-                    BuiltinIntrinsic::X86Packssdw128 => IntrinsicOp::Packssdw128,
-                    BuiltinIntrinsic::X86Packuswb128 => IntrinsicOp::Packuswb128,
-                    BuiltinIntrinsic::X86Punpcklbw128 => IntrinsicOp::Punpcklbw128,
-                    BuiltinIntrinsic::X86Punpckhbw128 => IntrinsicOp::Punpckhbw128,
-                    BuiltinIntrinsic::X86Punpcklwd128 => IntrinsicOp::Punpcklwd128,
-                    BuiltinIntrinsic::X86Punpckhwd128 => IntrinsicOp::Punpckhwd128,
-                    BuiltinIntrinsic::X86Set1Epi16 => IntrinsicOp::SetEpi16,
-                    BuiltinIntrinsic::X86Pinsrw128 => IntrinsicOp::Pinsrw128,
-                    BuiltinIntrinsic::X86Cvtsi32Si128 => IntrinsicOp::Cvtsi32Si128,
-                    BuiltinIntrinsic::X86Pshuflw128 => IntrinsicOp::Pshuflw128,
-                    BuiltinIntrinsic::X86Pshufhw128 => IntrinsicOp::Pshufhw128,
-                    _ => unreachable!("SSE128 dispatch matched non-SSE128 intrinsic: {:?}", intrinsic),
-                };
-                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                // Allocate 16-byte stack slot for result
-                let result_alloca = self.fresh_value();
-                self.emit(Instruction::Alloca { dest: result_alloca, ty: IrType::Ptr, size: 16, align: 0, volatile: false });
-                let dest_val = self.fresh_value();
-                self.emit(Instruction::Intrinsic {
-                    dest: Some(dest_val),
-                    op: sse_op,
-                    dest_ptr: Some(result_alloca),
-                    args: arg_ops,
-                });
-                // Return pointer to the 16-byte result (struct return)
-                Some(Operand::Value(result_alloca))
-            }
-            // storedqu(ptr, src_ptr) - store 128 bits unaligned
-            BuiltinIntrinsic::X86Storedqu => {
-                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                let ptr_val = self.operand_to_value(arg_ops[0].clone());
-                self.emit(Instruction::Intrinsic { dest: None, op: IntrinsicOp::Storedqu, dest_ptr: Some(ptr_val), args: vec![arg_ops[1].clone()] });
-                Some(Operand::Const(IrConst::I64(0)))
-            }
-            // pmovmskb returns i32 scalar
-            BuiltinIntrinsic::X86Pmovmskb128 => {
-                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                let dest_val = self.fresh_value();
-                self.emit(Instruction::Intrinsic {
-                    dest: Some(dest_val),
-                    op: IntrinsicOp::Pmovmskb128,
-                    dest_ptr: None,
-                    args: arg_ops,
-                });
-                Some(Operand::Value(dest_val))
-            }
-            // pextrw / cvtsi128_si32 / cvtsi128_si64 return scalar i32/i64
-            BuiltinIntrinsic::X86Pextrw128
-            | BuiltinIntrinsic::X86Cvtsi128Si32
-            | BuiltinIntrinsic::X86Cvtsi128Si64 => {
-                let sse_op = match intrinsic {
-                    BuiltinIntrinsic::X86Pextrw128 => IntrinsicOp::Pextrw128,
-                    BuiltinIntrinsic::X86Cvtsi128Si32 => IntrinsicOp::Cvtsi128Si32,
-                    BuiltinIntrinsic::X86Cvtsi128Si64 => IntrinsicOp::Cvtsi128Si64,
-                    _ => unreachable!(),
-                };
-                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                let dest_val = self.fresh_value();
-                self.emit(Instruction::Intrinsic {
-                    dest: Some(dest_val),
-                    op: sse_op,
-                    dest_ptr: None,
-                    args: arg_ops,
-                });
-                Some(Operand::Value(dest_val))
-            }
-            // storel_epi64(ptr, src_ptr) - store low 64 bits
-            BuiltinIntrinsic::X86Storeldi128 => {
-                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                let ptr_val = self.operand_to_value(arg_ops[0].clone());
-                self.emit(Instruction::Intrinsic { dest: None, op: IntrinsicOp::Storeldi128, dest_ptr: Some(ptr_val), args: vec![arg_ops[1].clone()] });
-                Some(Operand::Const(IrConst::I64(0)))
-            }
-            // CRC32 operations return scalar i32/i64
-            BuiltinIntrinsic::X86Crc32_8 | BuiltinIntrinsic::X86Crc32_16
+            // X86 SSE/AES/CRC intrinsics - delegated to lower_x86_intrinsic
+            BuiltinIntrinsic::X86Lfence | BuiltinIntrinsic::X86Mfence
+            | BuiltinIntrinsic::X86Sfence | BuiltinIntrinsic::X86Pause
+            | BuiltinIntrinsic::X86Clflush
+            | BuiltinIntrinsic::X86Movnti | BuiltinIntrinsic::X86Movnti64
+            | BuiltinIntrinsic::X86Movntdq | BuiltinIntrinsic::X86Movntpd
+            | BuiltinIntrinsic::X86Loaddqu | BuiltinIntrinsic::X86Pcmpeqb128
+            | BuiltinIntrinsic::X86Pcmpeqd128 | BuiltinIntrinsic::X86Psubusb128
+            | BuiltinIntrinsic::X86Por128 | BuiltinIntrinsic::X86Pand128
+            | BuiltinIntrinsic::X86Pxor128 | BuiltinIntrinsic::X86Set1Epi8
+            | BuiltinIntrinsic::X86Set1Epi32 | BuiltinIntrinsic::X86Aesenc128
+            | BuiltinIntrinsic::X86Aesenclast128 | BuiltinIntrinsic::X86Aesdec128
+            | BuiltinIntrinsic::X86Aesdeclast128 | BuiltinIntrinsic::X86Aesimc128
+            | BuiltinIntrinsic::X86Aeskeygenassist128 | BuiltinIntrinsic::X86Pclmulqdq128
+            | BuiltinIntrinsic::X86Pslldqi128 | BuiltinIntrinsic::X86Psrldqi128
+            | BuiltinIntrinsic::X86Psllqi128 | BuiltinIntrinsic::X86Psrlqi128
+            | BuiltinIntrinsic::X86Pshufd128 | BuiltinIntrinsic::X86Loadldi128
+            | BuiltinIntrinsic::X86Paddw128 | BuiltinIntrinsic::X86Psubw128
+            | BuiltinIntrinsic::X86Pmulhw128 | BuiltinIntrinsic::X86Pmaddwd128
+            | BuiltinIntrinsic::X86Pcmpgtw128 | BuiltinIntrinsic::X86Pcmpgtb128
+            | BuiltinIntrinsic::X86Psllwi128 | BuiltinIntrinsic::X86Psrlwi128
+            | BuiltinIntrinsic::X86Psrawi128 | BuiltinIntrinsic::X86Psradi128
+            | BuiltinIntrinsic::X86Pslldi128 | BuiltinIntrinsic::X86Psrldi128
+            | BuiltinIntrinsic::X86Paddd128 | BuiltinIntrinsic::X86Psubd128
+            | BuiltinIntrinsic::X86Packssdw128 | BuiltinIntrinsic::X86Packuswb128
+            | BuiltinIntrinsic::X86Punpcklbw128 | BuiltinIntrinsic::X86Punpckhbw128
+            | BuiltinIntrinsic::X86Punpcklwd128 | BuiltinIntrinsic::X86Punpckhwd128
+            | BuiltinIntrinsic::X86Set1Epi16 | BuiltinIntrinsic::X86Pinsrw128
+            | BuiltinIntrinsic::X86Cvtsi32Si128 | BuiltinIntrinsic::X86Pshuflw128
+            | BuiltinIntrinsic::X86Pshufhw128
+            | BuiltinIntrinsic::X86Storedqu | BuiltinIntrinsic::X86Storeldi128
+            | BuiltinIntrinsic::X86Pmovmskb128 | BuiltinIntrinsic::X86Pextrw128
+            | BuiltinIntrinsic::X86Cvtsi128Si32 | BuiltinIntrinsic::X86Cvtsi128Si64
+            | BuiltinIntrinsic::X86Crc32_8 | BuiltinIntrinsic::X86Crc32_16
             | BuiltinIntrinsic::X86Crc32_32 | BuiltinIntrinsic::X86Crc32_64 => {
-                let sse_op = match intrinsic {
-                    BuiltinIntrinsic::X86Crc32_8 => IntrinsicOp::Crc32_8,
-                    BuiltinIntrinsic::X86Crc32_16 => IntrinsicOp::Crc32_16,
-                    BuiltinIntrinsic::X86Crc32_32 => IntrinsicOp::Crc32_32,
-                    BuiltinIntrinsic::X86Crc32_64 => IntrinsicOp::Crc32_64,
-                    _ => unreachable!("CRC32 dispatch matched non-CRC32 intrinsic: {:?}", intrinsic),
-                };
-                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
-                let dest_val = self.fresh_value();
-                self.emit(Instruction::Intrinsic {
-                    dest: Some(dest_val),
-                    op: sse_op,
-                    dest_ptr: None,
-                    args: arg_ops,
-                });
-                Some(Operand::Value(dest_val))
+                self.lower_x86_intrinsic(intrinsic, args)
             }
             // __builtin_frame_address(level) / __builtin_return_address(level)
             // Only level 0 is supported; higher levels return 0.
@@ -750,8 +555,156 @@ impl Lowerer {
         }
     }
 
+    /// Lower an X86 SSE/AES/CRC intrinsic to IR.
+    ///
+    /// Classifies the intrinsic into one of four emission patterns:
+    /// - Fence: no args, no dest (lfence, mfence, sfence, pause)
+    /// - PtrStore: first arg is dest pointer, remaining args are data (movnti, storedqu, etc.)
+    /// - Vec128: allocates 16-byte result slot, returns pointer (SSE/AES packed ops)
+    /// - Scalar: returns a scalar value in a dest register (pmovmskb, crc32, pextrw, etc.)
+    fn lower_x86_intrinsic(&mut self, intrinsic: &BuiltinIntrinsic, args: &[Expr]) -> Option<Operand> {
+        let op = x86_intrinsic_op(intrinsic);
+        match x86_intrinsic_kind(intrinsic) {
+            X86IntrinsicKind::Fence => {
+                self.emit(Instruction::Intrinsic { dest: None, op, dest_ptr: None, args: vec![] });
+                Some(Operand::Const(IrConst::I64(0)))
+            }
+            X86IntrinsicKind::VoidArgs => {
+                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
+                self.emit(Instruction::Intrinsic { dest: None, op, dest_ptr: None, args: arg_ops });
+                Some(Operand::Const(IrConst::I64(0)))
+            }
+            X86IntrinsicKind::PtrStore => {
+                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
+                let ptr_val = self.operand_to_value(arg_ops[0].clone());
+                self.emit(Instruction::Intrinsic { dest: None, op, dest_ptr: Some(ptr_val), args: vec![arg_ops[1].clone()] });
+                Some(Operand::Const(IrConst::I64(0)))
+            }
+            X86IntrinsicKind::Vec128 => {
+                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
+                let result_alloca = self.fresh_value();
+                self.emit(Instruction::Alloca { dest: result_alloca, ty: IrType::Ptr, size: 16, align: 0, volatile: false });
+                let dest_val = self.fresh_value();
+                self.emit(Instruction::Intrinsic { dest: Some(dest_val), op, dest_ptr: Some(result_alloca), args: arg_ops });
+                Some(Operand::Value(result_alloca))
+            }
+            X86IntrinsicKind::Scalar => {
+                let arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
+                let dest_val = self.fresh_value();
+                self.emit(Instruction::Intrinsic { dest: Some(dest_val), op, dest_ptr: None, args: arg_ops });
+                Some(Operand::Value(dest_val))
+            }
+        }
+    }
+}
 
+/// Emission pattern for X86 SSE/AES/CRC intrinsics.
+enum X86IntrinsicKind {
+    /// No arguments, no destination (fence/barrier ops).
+    Fence,
+    /// Arguments passed through, no destination (clflush).
+    VoidArgs,
+    /// First arg is dest pointer, second is data (non-temporal stores).
+    PtrStore,
+    /// 128-bit vector result allocated on stack, returns pointer.
+    Vec128,
+    /// Scalar result in a dest register.
+    Scalar,
+}
 
+/// Map a BuiltinIntrinsic to its emission pattern.
+fn x86_intrinsic_kind(intrinsic: &BuiltinIntrinsic) -> X86IntrinsicKind {
+    match intrinsic {
+        BuiltinIntrinsic::X86Lfence | BuiltinIntrinsic::X86Mfence
+        | BuiltinIntrinsic::X86Sfence | BuiltinIntrinsic::X86Pause => X86IntrinsicKind::Fence,
+
+        BuiltinIntrinsic::X86Clflush => X86IntrinsicKind::VoidArgs,
+
+        BuiltinIntrinsic::X86Movnti | BuiltinIntrinsic::X86Movnti64
+        | BuiltinIntrinsic::X86Movntdq | BuiltinIntrinsic::X86Movntpd
+        | BuiltinIntrinsic::X86Storedqu | BuiltinIntrinsic::X86Storeldi128 => X86IntrinsicKind::PtrStore,
+
+        BuiltinIntrinsic::X86Pmovmskb128 | BuiltinIntrinsic::X86Pextrw128
+        | BuiltinIntrinsic::X86Cvtsi128Si32 | BuiltinIntrinsic::X86Cvtsi128Si64
+        | BuiltinIntrinsic::X86Crc32_8 | BuiltinIntrinsic::X86Crc32_16
+        | BuiltinIntrinsic::X86Crc32_32 | BuiltinIntrinsic::X86Crc32_64 => X86IntrinsicKind::Scalar,
+
+        // All remaining X86 intrinsics return 128-bit vector via stack pointer
+        _ => X86IntrinsicKind::Vec128,
+    }
+}
+
+/// Map a BuiltinIntrinsic to its corresponding IntrinsicOp.
+fn x86_intrinsic_op(intrinsic: &BuiltinIntrinsic) -> IntrinsicOp {
+    match intrinsic {
+        BuiltinIntrinsic::X86Lfence => IntrinsicOp::Lfence,
+        BuiltinIntrinsic::X86Mfence => IntrinsicOp::Mfence,
+        BuiltinIntrinsic::X86Sfence => IntrinsicOp::Sfence,
+        BuiltinIntrinsic::X86Pause => IntrinsicOp::Pause,
+        BuiltinIntrinsic::X86Clflush => IntrinsicOp::Clflush,
+        BuiltinIntrinsic::X86Movnti => IntrinsicOp::Movnti,
+        BuiltinIntrinsic::X86Movnti64 => IntrinsicOp::Movnti64,
+        BuiltinIntrinsic::X86Movntdq => IntrinsicOp::Movntdq,
+        BuiltinIntrinsic::X86Movntpd => IntrinsicOp::Movntpd,
+        BuiltinIntrinsic::X86Loaddqu => IntrinsicOp::Loaddqu,
+        BuiltinIntrinsic::X86Pcmpeqb128 => IntrinsicOp::Pcmpeqb128,
+        BuiltinIntrinsic::X86Pcmpeqd128 => IntrinsicOp::Pcmpeqd128,
+        BuiltinIntrinsic::X86Psubusb128 => IntrinsicOp::Psubusb128,
+        BuiltinIntrinsic::X86Por128 => IntrinsicOp::Por128,
+        BuiltinIntrinsic::X86Pand128 => IntrinsicOp::Pand128,
+        BuiltinIntrinsic::X86Pxor128 => IntrinsicOp::Pxor128,
+        BuiltinIntrinsic::X86Set1Epi8 => IntrinsicOp::SetEpi8,
+        BuiltinIntrinsic::X86Set1Epi32 => IntrinsicOp::SetEpi32,
+        BuiltinIntrinsic::X86Aesenc128 => IntrinsicOp::Aesenc128,
+        BuiltinIntrinsic::X86Aesenclast128 => IntrinsicOp::Aesenclast128,
+        BuiltinIntrinsic::X86Aesdec128 => IntrinsicOp::Aesdec128,
+        BuiltinIntrinsic::X86Aesdeclast128 => IntrinsicOp::Aesdeclast128,
+        BuiltinIntrinsic::X86Aesimc128 => IntrinsicOp::Aesimc128,
+        BuiltinIntrinsic::X86Aeskeygenassist128 => IntrinsicOp::Aeskeygenassist128,
+        BuiltinIntrinsic::X86Pclmulqdq128 => IntrinsicOp::Pclmulqdq128,
+        BuiltinIntrinsic::X86Pslldqi128 => IntrinsicOp::Pslldqi128,
+        BuiltinIntrinsic::X86Psrldqi128 => IntrinsicOp::Psrldqi128,
+        BuiltinIntrinsic::X86Psllqi128 => IntrinsicOp::Psllqi128,
+        BuiltinIntrinsic::X86Psrlqi128 => IntrinsicOp::Psrlqi128,
+        BuiltinIntrinsic::X86Pshufd128 => IntrinsicOp::Pshufd128,
+        BuiltinIntrinsic::X86Loadldi128 => IntrinsicOp::Loadldi128,
+        BuiltinIntrinsic::X86Paddw128 => IntrinsicOp::Paddw128,
+        BuiltinIntrinsic::X86Psubw128 => IntrinsicOp::Psubw128,
+        BuiltinIntrinsic::X86Pmulhw128 => IntrinsicOp::Pmulhw128,
+        BuiltinIntrinsic::X86Pmaddwd128 => IntrinsicOp::Pmaddwd128,
+        BuiltinIntrinsic::X86Pcmpgtw128 => IntrinsicOp::Pcmpgtw128,
+        BuiltinIntrinsic::X86Pcmpgtb128 => IntrinsicOp::Pcmpgtb128,
+        BuiltinIntrinsic::X86Psllwi128 => IntrinsicOp::Psllwi128,
+        BuiltinIntrinsic::X86Psrlwi128 => IntrinsicOp::Psrlwi128,
+        BuiltinIntrinsic::X86Psrawi128 => IntrinsicOp::Psrawi128,
+        BuiltinIntrinsic::X86Psradi128 => IntrinsicOp::Psradi128,
+        BuiltinIntrinsic::X86Pslldi128 => IntrinsicOp::Pslldi128,
+        BuiltinIntrinsic::X86Psrldi128 => IntrinsicOp::Psrldi128,
+        BuiltinIntrinsic::X86Paddd128 => IntrinsicOp::Paddd128,
+        BuiltinIntrinsic::X86Psubd128 => IntrinsicOp::Psubd128,
+        BuiltinIntrinsic::X86Packssdw128 => IntrinsicOp::Packssdw128,
+        BuiltinIntrinsic::X86Packuswb128 => IntrinsicOp::Packuswb128,
+        BuiltinIntrinsic::X86Punpcklbw128 => IntrinsicOp::Punpcklbw128,
+        BuiltinIntrinsic::X86Punpckhbw128 => IntrinsicOp::Punpckhbw128,
+        BuiltinIntrinsic::X86Punpcklwd128 => IntrinsicOp::Punpcklwd128,
+        BuiltinIntrinsic::X86Punpckhwd128 => IntrinsicOp::Punpckhwd128,
+        BuiltinIntrinsic::X86Set1Epi16 => IntrinsicOp::SetEpi16,
+        BuiltinIntrinsic::X86Pinsrw128 => IntrinsicOp::Pinsrw128,
+        BuiltinIntrinsic::X86Cvtsi32Si128 => IntrinsicOp::Cvtsi32Si128,
+        BuiltinIntrinsic::X86Pshuflw128 => IntrinsicOp::Pshuflw128,
+        BuiltinIntrinsic::X86Pshufhw128 => IntrinsicOp::Pshufhw128,
+        BuiltinIntrinsic::X86Storedqu => IntrinsicOp::Storedqu,
+        BuiltinIntrinsic::X86Storeldi128 => IntrinsicOp::Storeldi128,
+        BuiltinIntrinsic::X86Pmovmskb128 => IntrinsicOp::Pmovmskb128,
+        BuiltinIntrinsic::X86Pextrw128 => IntrinsicOp::Pextrw128,
+        BuiltinIntrinsic::X86Cvtsi128Si32 => IntrinsicOp::Cvtsi128Si32,
+        BuiltinIntrinsic::X86Cvtsi128Si64 => IntrinsicOp::Cvtsi128Si64,
+        BuiltinIntrinsic::X86Crc32_8 => IntrinsicOp::Crc32_8,
+        BuiltinIntrinsic::X86Crc32_16 => IntrinsicOp::Crc32_16,
+        BuiltinIntrinsic::X86Crc32_32 => IntrinsicOp::Crc32_32,
+        BuiltinIntrinsic::X86Crc32_64 => IntrinsicOp::Crc32_64,
+        _ => unreachable!("x86_intrinsic_op called with non-X86 intrinsic: {:?}", intrinsic),
+    }
 }
 
 /// Classify a CType according to GCC's __builtin_classify_type conventions.
