@@ -333,11 +333,12 @@ impl Lowerer {
         if let Expr::CompoundLiteral(ref cl_type_spec, ref cl_init, _) = expr {
             return Some(self.create_compound_literal_global(cl_type_spec, cl_init));
         }
-        // Cast wrapping a compound literal: (char *)(unsigned char[]){ 0xFD }
-        // Look through the cast to find the compound literal and create an
-        // anonymous global for it.
-        if let Expr::Cast(_, ref inner, _) = expr {
-            if let Expr::CompoundLiteral(ref cl_type_spec, ref cl_init, _) = inner.as_ref() {
+        // Cast-wrapped compound literal used as a pointer value.
+        // e.g., .arr = (char *)(unsigned char[]){ 0xFD, 0x01 }
+        // Unwrap casts (arbitrary depth) to find the inner compound literal.
+        {
+            let stripped = Self::strip_casts(expr);
+            if let Expr::CompoundLiteral(ref cl_type_spec, ref cl_init, _) = stripped {
                 return Some(self.create_compound_literal_global(cl_type_spec, cl_init));
             }
         }

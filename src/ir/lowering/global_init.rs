@@ -151,11 +151,13 @@ impl Lowerer {
                 let target_is_pointer = base_ty == IrType::Ptr
                     && !is_array
                     && struct_layout.is_none();
-                // Handle cast of compound literal in pointer context:
-                // e.g. static char *p = (char *)(unsigned char[]){ 0xFD };
-                if let Expr::Cast(_, ref inner, _) = expr {
-                    if let Expr::CompoundLiteral(ref cl_type_spec, ref cl_init, _) = inner.as_ref() {
-                        if target_is_pointer {
+                // Cast-wrapped compound literal: e.g., (char *)(unsigned char[]){ 0xFD }
+                // Unwrap casts (arbitrary depth) to find the inner compound literal
+                // and create an anonymous global for it (array-to-pointer decay).
+                {
+                    let stripped = Self::strip_casts(expr);
+                    if !std::ptr::eq(expr as *const _, stripped as *const _) {
+                        if let Expr::CompoundLiteral(ref cl_type_spec, ref cl_init, _) = stripped {
                             return self.create_compound_literal_global(cl_type_spec, cl_init);
                         }
                     }
@@ -1412,7 +1414,7 @@ impl Lowerer {
     }
 
     /// Strip cast expressions to find the underlying expression.
-    fn strip_casts(expr: &Expr) -> &Expr {
+    pub(super) fn strip_casts(expr: &Expr) -> &Expr {
         match expr {
             Expr::Cast(_, inner, _) => Self::strip_casts(inner),
             _ => expr,

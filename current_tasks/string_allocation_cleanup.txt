@@ -1,0 +1,14 @@
+Task: Eliminate unnecessary String heap allocations from &'static str literals
+
+Status: in_progress
+
+Scope:
+- Change reg_to_32, reg_to_64, reg_to_16, reg_to_8l, reg_to_8h functions in x86 and i686
+  backends to return Cow<'static, str> instead of String, avoiding heap allocations
+  for known register names
+- Update callers to work with Cow<'static, str> return types
+- Change other hot-path .to_string() on string literals to use &'static str or .into()
+  where the receiving type allows it
+
+Goal: Reduce unnecessary heap allocations in codegen hot paths while maintaining
+identical behavior. Zero functional changes.
