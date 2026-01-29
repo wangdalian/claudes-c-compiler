@@ -1,0 +1,11 @@
+in_progress
+
+Style cleanup: Rust idiom fixes and documentation corrections.
+
+1. Replace push_str(&format!(...)) anti-patterns with write!() macro
+2. Fix .unwrap() after .is_some_and() pattern (use if-let instead)
+3. Fix repeated .last_mut().unwrap() chains (bind once)
+4. Fix documentation inaccuracies (test count, missing x86_common.rs in backend README)
+5. Update docs verification tracking file
+
+No functional changes - style and documentation only.
