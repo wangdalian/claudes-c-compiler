@@ -175,7 +175,7 @@ impl X86Codegen {
                         IntrinsicOp::Por128 => "por",
                         IntrinsicOp::Pand128 => "pand",
                         IntrinsicOp::Pxor128 => "pxor",
-                        _ => unreachable!(),
+                        _ => unreachable!("unexpected SSE binary op: {:?}", op),
                     };
                     self.emit_sse_binary_128(dptr, args, inst);
                 }
@@ -336,7 +336,7 @@ impl X86Codegen {
                         IntrinsicOp::Psrldqi128 => "psrldq",
                         IntrinsicOp::Psllqi128 => "psllq",
                         IntrinsicOp::Psrlqi128 => "psrlq",
-                        _ => unreachable!(),
+                        _ => unreachable!("unexpected SSE shift-by-immediate op: {:?}", op),
                     };
                     self.emit_sse_unary_imm_128(dptr, args, inst);
                 }
@@ -380,7 +380,7 @@ impl X86Codegen {
                         IntrinsicOp::Punpckhbw128 => "punpckhbw",
                         IntrinsicOp::Punpcklwd128 => "punpcklwd",
                         IntrinsicOp::Punpckhwd128 => "punpckhwd",
-                        _ => unreachable!(),
+                        _ => unreachable!("unexpected SSE binary op: {:?}", op),
                     };
                     self.emit_sse_binary_128(dptr, args, inst);
                 }
@@ -397,7 +397,7 @@ impl X86Codegen {
                         IntrinsicOp::Psradi128 => "psrad",
                         IntrinsicOp::Pslldi128 => "pslld",
                         IntrinsicOp::Psrldi128 => "psrld",
-                        _ => unreachable!(),
+                        _ => unreachable!("unexpected SSE element shift op: {:?}", op),
                     };
                     self.emit_sse_unary_imm_128(dptr, args, inst);
                 }
@@ -544,7 +544,7 @@ impl X86Codegen {
                     let inst = match op {
                         IntrinsicOp::Pshuflw128 => "pshuflw",
                         IntrinsicOp::Pshufhw128 => "pshufhw",
-                        _ => unreachable!(),
+                        _ => unreachable!("unexpected SSE shuffle op: {:?}", op),
                     };
                     self.emit_sse_shuffle_imm_128(dptr, args, inst);
                 }

@@ -57,7 +57,8 @@ impl Lowerer {
 
         self.start_block(body_label);
         self.lower_stmt(body);
-        let continue_target = self.func().continue_labels.last().unwrap().0;
+        let continue_target = self.func().continue_labels.last()
+            .expect("continue_labels must be non-empty inside a loop body").0;
         self.terminate(Terminator::Branch(continue_target));
 
         self.func_mut().break_labels.pop();

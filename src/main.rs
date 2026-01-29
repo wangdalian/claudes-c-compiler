@@ -10,11 +10,19 @@ fn main() {
     match result {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
-            eprintln!("error: {}", e);
+            eprintln!("ccc: error: {}", e);
             std::process::exit(1);
         }
-        Err(_) => {
-            // Thread panicked (e.g., stack overflow in recursive descent parser)
+        Err(e) => {
+            // Thread panicked (e.g., stack overflow in recursive descent parser).
+            // Print any available panic message so the failure isn't silent.
+            if let Some(s) = e.downcast_ref::<&str>() {
+                eprintln!("ccc: internal error: {}", s);
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                eprintln!("ccc: internal error: {}", s);
+            } else {
+                eprintln!("ccc: internal error (thread panicked)");
+            }
             std::process::exit(1);
         }
     }

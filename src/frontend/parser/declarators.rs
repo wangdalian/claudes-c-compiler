@@ -247,7 +247,8 @@ impl Parser {
             // Split inner_derived at the last Pointer:
             // - pre_ptr_arrays: arrays before the last pointer (part of pointee type)
             // - post_ptr_arrays: arrays after the last pointer (variable's own array dimensions)
-            let last_ptr_idx = inner_derived.iter().rposition(|d| matches!(d, DerivedDeclarator::Pointer)).unwrap();
+            let last_ptr_idx = inner_derived.iter().rposition(|d| matches!(d, DerivedDeclarator::Pointer))
+                .expect("inner_has_pointer is true, so a Pointer must exist");
             let mut result = outer_pointers;
             // 1. Arrays from inner that come before the pointer (pointee array dimensions)
             for d in &inner_derived[..last_ptr_idx] {

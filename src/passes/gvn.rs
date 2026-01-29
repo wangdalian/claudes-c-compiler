@@ -235,7 +235,8 @@ impl GvnState {
     fn restore_scope(&mut self, checkpoint: &ScopeCheckpoint) {
         // Rollback: restore expr_to_value
         while self.rollback_log.len() > checkpoint.rollback_start {
-            let (key, old_val) = self.rollback_log.pop().unwrap();
+            let (key, old_val) = self.rollback_log.pop()
+                .expect("rollback_log length checked by while condition");
             if let Some(val) = old_val {
                 self.expr_to_value.insert(key, val);
             } else {
@@ -245,7 +246,8 @@ impl GvnState {
 
         // Rollback: restore load_expr_to_value
         while self.load_rollback_log.len() > checkpoint.load_rollback_start {
-            let (key, old_val) = self.load_rollback_log.pop().unwrap();
+            let (key, old_val) = self.load_rollback_log.pop()
+                .expect("load_rollback_log length checked by while condition");
             if let Some(val) = old_val {
                 self.load_expr_to_value.insert(key, val);
             } else {
@@ -255,7 +257,8 @@ impl GvnState {
 
         // Rollback: restore value_numbers
         while self.vn_log.len() > checkpoint.vn_log_start {
-            let (idx, old_vn) = self.vn_log.pop().unwrap();
+            let (idx, old_vn) = self.vn_log.pop()
+                .expect("vn_log length checked by while condition");
             self.value_numbers[idx] = old_vn;
         }
 

@@ -112,7 +112,8 @@ impl Lowerer {
                 let needs_address = constraint_needs_address(&stripped_for_mem_check, self.is_riscv(), self.is_arm());
                 let input_operand = if is_global_reg {
                     if let Expr::Identifier(ref var_name, _) = &out.expr {
-                        let asm_reg = self.get_asm_register(var_name).unwrap();
+                        let asm_reg = self.get_asm_register(var_name)
+                            .expect("global register variable must have an asm register");
                         self.read_global_register(&asm_reg, out_ty)
                     } else {
                         unreachable!("asm output for global register variable must be an identifier")
@@ -322,7 +323,8 @@ impl Lowerer {
         // An input reads from an alloca if:
         //   - It's Operand::Value(v) where v == alloca (direct reference)
         //   - It's Operand::Value(v) where v is a Load from the alloca (found via recent instrs)
-        let fs = self.func_state.as_ref().unwrap();
+        let fs = self.func_state.as_ref()
+            .expect("func_state must exist during asm lowering");
         let mut alloca_read_by_input: Vec<bool> = vec![false; writeonly_allocas.len()];
 
         // Build a set of Values that are Loads from our target allocas
@@ -360,7 +362,8 @@ impl Lowerer {
         }
 
         // For each unread output alloca, find and remove the preceding dead store
-        let fs = self.func_state.as_mut().unwrap();
+        let fs = self.func_state.as_mut()
+            .expect("func_state must exist during asm lowering");
         let instrs_len = fs.instrs.len();
         // The InlineAsm is at instrs[instrs_len - 1], scan backwards from instrs_len - 2
         for (i, is_read) in alloca_read_by_input.iter().enumerate() {

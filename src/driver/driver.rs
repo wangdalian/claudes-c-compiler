@@ -1174,7 +1174,10 @@ impl Driver {
         }
 
         if !result.status.success() {
-            return Err(format!("gcc fallback failed (exit code: {:?})", result.status.code()));
+            return Err(match result.status.code() {
+                Some(code) => format!("gcc fallback failed (exit code: {})", code),
+                None => "gcc fallback failed (killed by signal)".to_string(),
+            });
         }
 
         Ok(())

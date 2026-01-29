@@ -799,7 +799,8 @@ impl Lowerer {
                 // static_call mechanism uses this pattern and requires a direct call
                 // instruction so the call site can be patched at runtime.
                 let direct_func_name = if let Operand::Value(v) = func_ptr {
-                    let instrs = &self.func_state.as_ref().unwrap().instrs;
+                    let instrs = &self.func_state.as_ref()
+                        .expect("func_state must exist during function lowering").instrs;
                     let found = instrs.iter().rev().find_map(|inst| {
                         if let Instruction::GlobalAddr { dest, ref name } = *inst {
                             if dest == v && self.known_functions.contains(name) {

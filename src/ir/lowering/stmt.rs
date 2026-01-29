@@ -178,7 +178,7 @@ impl Lowerer {
             self.resolve_typeof(&decl.type_spec)
         };
         *resolved = Some(ts);
-        resolved.as_ref().unwrap()
+        resolved.as_ref().expect("just assigned Some above")
     }
 
     fn lower_local_typedef(&mut self, decl: &Declaration, type_spec: &TypeSpecifier) {

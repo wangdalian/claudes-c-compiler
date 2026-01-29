@@ -1164,7 +1164,8 @@ pub trait ArchCodegen {
             IrBinOp::Shl | IrBinOp::LShr | IrBinOp::AShr
                 if get_const_i128_shift_amount(rhs).is_some() =>
             {
-                let amount = get_const_i128_shift_amount(rhs).unwrap();
+                let amount = get_const_i128_shift_amount(rhs)
+                    .expect("i128 const shift amount (guarded by is_some)");
                 // Load only the LHS (the value to shift)
                 self.emit_i128_prep_shift_lhs(lhs);
                 match op {

@@ -2028,14 +2028,16 @@ impl ArchCodegen for X86Codegen {
     }
 
     fn emit_alloca_aligned_addr(&mut self, slot: StackSlot, val_id: u32) {
-        let align = self.state.alloca_over_align(val_id).unwrap();
+        let align = self.state.alloca_over_align(val_id)
+            .expect("alloca must have over-alignment for aligned addr emission");
         self.state.out.emit_instr_rbp_reg("    leaq", slot.0, "rcx");
         self.state.out.emit_instr_imm_reg("    addq", (align - 1) as i64, "rcx");
         self.state.out.emit_instr_imm_reg("    andq", -(align as i64), "rcx");
     }
 
     fn emit_alloca_aligned_addr_to_acc(&mut self, slot: StackSlot, val_id: u32) {
-        let align = self.state.alloca_over_align(val_id).unwrap();
+        let align = self.state.alloca_over_align(val_id)
+            .expect("alloca must have over-alignment for aligned addr emission");
         self.state.out.emit_instr_rbp_reg("    leaq", slot.0, "rax");
         self.state.out.emit_instr_imm_reg("    addq", (align - 1) as i64, "rax");
         self.state.out.emit_instr_imm_reg("    andq", -(align as i64), "rax");
@@ -2220,7 +2222,7 @@ impl ArchCodegen for X86Codegen {
                     IrBinOp::Add => "add",
                     IrBinOp::Sub => "sub",
                     IrBinOp::Mul => "imul",
-                    _ => unreachable!(),
+                    _ => unreachable!("unexpected i64 binop: {:?}", op),
                 };
                 if use_32bit {
                     self.state.emit_fmt(format_args!("    {}l %ecx, %eax", mnem));

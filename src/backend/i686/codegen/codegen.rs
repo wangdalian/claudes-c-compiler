@@ -2008,8 +2008,8 @@ impl ArchCodegen for I686Codegen {
             let use_jump_table = if self.state.no_jump_tables {
                 false
             } else if cases.len() >= MIN_JUMP_TABLE_CASES {
-                let min_val = cases.iter().map(|&(v, _)| v).min().unwrap();
-                let max_val = cases.iter().map(|&(v, _)| v).max().unwrap();
+                let min_val = cases.iter().map(|&(v, _)| v).min().expect("switch must have cases");
+                let max_val = cases.iter().map(|&(v, _)| v).max().expect("switch must have cases");
                 let range = (max_val - min_val + 1) as usize;
                 range <= MAX_JUMP_TABLE_RANGE && cases.len() * 100 / range >= MIN_JUMP_TABLE_DENSITY_PERCENT
             } else {
@@ -2417,7 +2417,7 @@ impl ArchCodegen for I686Codegen {
             let arg_classes_vec = classify_call_args(args, arg_types, struct_arg_sizes, struct_arg_aligns, struct_arg_classes, is_variadic, &config);
             let indirect = func_ptr.is_some() && direct_name.is_none();
             if indirect {
-                self.emit_call_spill_fptr(func_ptr.unwrap());
+                self.emit_call_spill_fptr(func_ptr.expect("indirect call requires func_ptr"));
             }
             let stack_arg_space = self.emit_call_compute_stack_space(&arg_classes_vec, arg_types);
             let f128_temp_space = self.emit_call_f128_pre_convert(args, &arg_classes_vec, arg_types, stack_arg_space);

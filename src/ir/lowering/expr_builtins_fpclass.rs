@@ -21,7 +21,7 @@ use super::lowering::Lowerer;
 impl Lowerer {
     /// Helper: get the type of the last argument for fp classification builtins.
     fn lower_fp_classify_arg(&mut self, args: &[Expr]) -> (IrType, Operand) {
-        let arg_expr = args.last().unwrap();
+        let arg_expr = args.last().expect("fp classify builtin requires at least one argument");
         let arg_ty = self.get_expr_type(arg_expr);
         let arg_val = self.lower_expr(arg_expr);
         (arg_ty, arg_val)

@@ -886,13 +886,13 @@ fn build_callee_map(module: &IrModule) -> HashMap<String, CalleeData> {
             && func.blocks.len() <= MAX_INLINE_BLOCKS;
         if !is_always_inline && !is_trivially_empty && !is_small_static && !is_medium_static
             && (!func.is_static || !func.is_inline) {
-                if debug_callee && func.name.contains("write16") {
+                if debug_callee {
                     eprintln!("[INLINE_DEBUG] {} skipped: is_static={}, is_inline={}, is_declaration={}",
                         func.name, func.is_static, func.is_inline, func.is_declaration);
                 }
                 continue;
             }
-        if debug_callee && func.name.contains("write16") {
+        if debug_callee {
             let ic: usize = func.blocks.iter().map(|b| b.instructions.len()).sum();
             eprintln!("[INLINE_DEBUG] {} candidate: blocks={}, inst_count={}, is_variadic={}, params={}",
                 func.name, func.blocks.len(), ic, func.is_variadic, func.params.len());

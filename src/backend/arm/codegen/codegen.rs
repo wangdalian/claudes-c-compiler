@@ -2305,7 +2305,8 @@ impl ArchCodegen for ArmCodegen {
     }
 
     fn emit_alloca_aligned_addr(&mut self, slot: StackSlot, val_id: u32) {
-        let align = self.state.alloca_over_align(val_id).unwrap();
+        let align = self.state.alloca_over_align(val_id)
+            .expect("alloca must have over-alignment for aligned addr emission");
         // Compute sp + slot_offset into x9 (pointer register)
         self.emit_add_sp_offset("x9", slot.0);
         // Align: x9 = (x9 + align-1) & -align
@@ -2316,7 +2317,8 @@ impl ArchCodegen for ArmCodegen {
     }
 
     fn emit_alloca_aligned_addr_to_acc(&mut self, slot: StackSlot, val_id: u32) {
-        let align = self.state.alloca_over_align(val_id).unwrap();
+        let align = self.state.alloca_over_align(val_id)
+            .expect("alloca must have over-alignment for aligned addr emission");
         // Compute sp + slot_offset into x0 (accumulator)
         self.emit_add_sp_offset("x0", slot.0);
         // Align: x0 = (x0 + align-1) & -align
