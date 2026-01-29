@@ -6,6 +6,7 @@
 //! avoid duplicating these across both backends.
 
 use std::borrow::Cow;
+use std::fmt::Write;
 use crate::common::types::IrType;
 use crate::ir::ir::BlockId;
 
@@ -335,11 +336,11 @@ pub(crate) fn emit_operand_common(
     if modifier != Some('a') {
         // Not %a modifier — handle symbol/immediate cases
         if let Some(sym) = has_symbol {
-            result.push_str(&format!("${}", sym));
+            let _ = write!(result, "${}", sym);
             return true;
         }
         if let Some(imm) = has_imm {
-            result.push_str(&format!("${}", imm));
+            let _ = write!(result, "${}", imm);
             return true;
         }
     }

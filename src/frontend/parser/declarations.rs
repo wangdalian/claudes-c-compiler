@@ -464,35 +464,36 @@ impl Parser {
         });
 
         let (extra_ctor, extra_dtor, _, extra_common, extra_aligned, extra_asm_reg) = self.parse_asm_and_attributes();
-        // If the asm register was parsed after the declarator (post-declarator position),
-        // apply it to the first declarator
+        // Merge post-declarator attributes into the most recently pushed declarator.
+        // last_mut() is safe because we just pushed above.
+        let last_decl = declarators.last_mut().expect("declarator just pushed");
         if let Some(reg) = extra_asm_reg {
-            declarators.last_mut().unwrap().attrs.asm_register = Some(reg);
+            last_decl.attrs.asm_register = Some(reg);
         }
         if extra_ctor {
-            declarators.last_mut().unwrap().attrs.set_constructor(true);
+            last_decl.attrs.set_constructor(true);
         }
         if extra_dtor {
-            declarators.last_mut().unwrap().attrs.set_destructor(true);
+            last_decl.attrs.set_destructor(true);
         }
         // Merge weak/alias/visibility from post-declarator attributes
         if self.attrs.parsing_weak() {
-            declarators.last_mut().unwrap().attrs.set_weak(true);
+            last_decl.attrs.set_weak(true);
         }
         if let Some(ref target) = self.attrs.parsing_alias_target {
-            declarators.last_mut().unwrap().attrs.alias_target = Some(target.clone());
+            last_decl.attrs.alias_target = Some(target.clone());
         }
         if let Some(ref vis) = self.attrs.parsing_visibility {
-            declarators.last_mut().unwrap().attrs.visibility = Some(vis.clone());
+            last_decl.attrs.visibility = Some(vis.clone());
         }
         if let Some(ref sect) = self.attrs.parsing_section {
-            declarators.last_mut().unwrap().attrs.section = Some(sect.clone());
+            last_decl.attrs.section = Some(sect.clone());
         }
         if let Some(ref cleanup) = self.attrs.parsing_cleanup_fn {
-            declarators.last_mut().unwrap().attrs.cleanup_fn = Some(cleanup.clone());
+            last_decl.attrs.cleanup_fn = Some(cleanup.clone());
         }
         if self.attrs.parsing_used() {
-            declarators.last_mut().unwrap().attrs.set_used(true);
+            last_decl.attrs.set_used(true);
         }
         self.attrs.set_weak(false);
         self.attrs.parsing_alias_target = None;
@@ -557,7 +558,7 @@ impl Parser {
             });
             let (_, skip_aligned, skip_asm_reg) = self.skip_asm_and_attributes();
             if let Some(reg) = skip_asm_reg {
-                declarators.last_mut().unwrap().attrs.asm_register = Some(reg);
+                declarators.last_mut().expect("declarator just pushed").attrs.asm_register = Some(reg);
             }
             if let Some(a) = skip_aligned {
                 ctx.alignment = Some(ctx.alignment.map_or(a, |prev| prev.max(a)));

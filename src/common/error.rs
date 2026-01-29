@@ -519,16 +519,17 @@ impl DiagnosticEngine {
     /// Render a single diagnostic to stderr, including location, severity,
     /// message, source snippet with caret, and any follow-up notes.
     fn render_diagnostic(&self, diag: &Diagnostic) {
+        use std::fmt::Write;
         let mut msg = String::new();
 
         // Format: "file:line:col: severity: message"
         if let Some(span) = diag.span {
             if let Some(ref sm) = self.source_manager {
                 let loc = sm.resolve_span(span);
-                msg.push_str(&format!("{}:{}:{}: ", loc.file, loc.line, loc.column));
+                let _ = write!(msg, "{}:{}:{}: ", loc.file, loc.line, loc.column);
             }
         }
-        msg.push_str(&format!("{}: {}", diag.severity, diag.message));
+        let _ = write!(msg, "{}: {}", diag.severity, diag.message);
         eprintln!("{}", msg);
 
         // Source snippet with caret underline

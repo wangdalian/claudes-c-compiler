@@ -4,6 +4,7 @@
 //! RISC-V inline assembly, as well as the operand formatting and template
 //! substitution logic used by `emit_inline_asm` in the main codegen module.
 
+use std::fmt::Write;
 use super::codegen::RiscvCodegen;
 
 /// Constraint classification for RISC-V inline asm operands.
@@ -184,7 +185,7 @@ impl RiscvCodegen {
                                 result.push_str(&op_regs[internal_idx]);
                             }
                         } else {
-                            result.push_str(&format!("%z{}", num));
+                            let _ = write!(result, "%z{}", num);
                         }
                     } else {
                         // Not a valid %z pattern, emit as-is
@@ -247,7 +248,7 @@ impl RiscvCodegen {
                     if internal_idx < op_regs.len() {
                         result.push_str(&Self::format_operand(internal_idx, op_regs, op_kinds, op_mem_offsets, op_mem_addrs, op_imm_values, op_imm_symbols, true));
                     } else {
-                        result.push_str(&format!("%{}", num));
+                        let _ = write!(result, "%{}", num);
                     }
                 } else {
                     // Not recognized, emit as-is (e.g., %pcrel_lo, %pcrel_hi, etc.)

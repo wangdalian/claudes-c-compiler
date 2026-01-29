@@ -5,6 +5,7 @@
 //! w/x/s/d/q modifiers for ARM targets. It also contains helpers for
 //! atomic exclusive access instructions (ldxr/stxr) and atomic RMW operations.
 
+use std::fmt::Write;
 use crate::ir::ir::*;
 use crate::common::types::IrType;
 use crate::backend::state::CodegenState;
@@ -97,7 +98,7 @@ impl ArmCodegen {
                             internal_idx, modifier, op_regs, op_imm_values, op_imm_symbols,
                         ));
                     } else {
-                        result.push_str(&format!("x{}", num));
+                        let _ = write!(result, "x{}", num);
                     }
                 } else {
                     // Not a recognized pattern, emit as-is

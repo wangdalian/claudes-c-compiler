@@ -1084,7 +1084,8 @@ pub fn escape_string(s: &str) -> String {
             c if c.is_ascii_graphic() || c == ' ' => result.push(c),
             c => {
                 // Emit the raw byte value (char as u8), not UTF-8 encoding
-                result.push_str(&format!("\\{:03o}", c as u8));
+                use std::fmt::Write;
+                let _ = write!(result, "\\{:03o}", c as u8);
             }
         }
     }

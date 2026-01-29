@@ -45,6 +45,11 @@ Fixes Applied (round 3, 2026-01-29):
   emit_symbol_directives/emit_zero_global as internal helpers
 - src/common/README.md: clarified eval_const_binop_i128 is internal, not public API
 
+Fixes Applied (round 4, 2026-01-29):
+- README.md: test count updated from "~736" to "~762" directories
+- src/backend/README.md: added missing x86_common.rs module documentation
+  (shared x86/i686 register names, condition codes, inline asm template parsing)
+
 Known Stale (informational snapshots, not fixing):
 - ideas/fix_remaining_{arm,x86,riscv}_tests.txt: pass rate numbers from 2026-01-25
   likely improved since then, but these are historical snapshots

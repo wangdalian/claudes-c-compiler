@@ -6,6 +6,7 @@
 //! logic with an x86-64-specific operand emission callback.
 
 use std::borrow::Cow;
+use std::fmt::Write;
 use crate::common::types::IrType;
 use crate::ir::ir::BlockId;
 use crate::backend::x86_common;
@@ -67,13 +68,13 @@ impl X86Codegen {
         if modifier == Some('a') {
             // %a: emit as address reference (x86-64 uses RIP-relative)
             if let Some(sym) = has_symbol {
-                result.push_str(&format!("{}(%rip)", sym));
+                let _ = write!(result, "{}(%rip)", sym);
             } else if let Some(imm) = has_imm {
                 result.push_str(&imm.to_string());
             } else if op_is_memory[idx] {
                 result.push_str(&op_mem_addrs[idx]);
             } else {
-                result.push_str(&format!("(%{})", op_regs[idx]));
+                let _ = write!(result, "(%{})", op_regs[idx]);
             }
         } else {
             // Register operand — apply size modifier, default is 64-bit

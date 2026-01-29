@@ -1071,9 +1071,9 @@ impl IrConst {
             // When the source type is unsigned, we need to zero-extend (not sign-extend)
             // when widening to a larger type. Mask to the source width to get the correct
             // unsigned value (e.g., U32 0xFFFFFFF8 = 4294967288, not -8).
-            if src_ty.is_some_and(|t| t.is_unsigned()) {
+            if let Some(src) = src_ty.filter(|t| t.is_unsigned()) {
                 // Mask to the source type's width to get the correct unsigned value
-                let src_size = src_ty.unwrap().size();
+                let src_size = src.size();
                 let uint_val = match src_size {
                     1 => (int_val as u8) as u64,
                     2 => (int_val as u16) as u64,

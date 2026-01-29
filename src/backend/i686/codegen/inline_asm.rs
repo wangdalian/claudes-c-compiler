@@ -8,6 +8,7 @@
 //! emission differs from x86-64 (no RIP-relative addressing, 32-bit default).
 
 use std::borrow::Cow;
+use std::fmt::Write;
 use crate::common::types::IrType;
 use crate::ir::ir::BlockId;
 use crate::backend::x86_common;
@@ -74,7 +75,7 @@ impl I686Codegen {
             } else if op_is_memory[idx] {
                 result.push_str(&op_mem_addrs[idx]);
             } else {
-                result.push_str(&format!("(%{})", op_regs[idx]));
+                let _ = write!(result, "(%{})", op_regs[idx]);
             }
         } else {
             // Register operand — apply size modifier, default is 32-bit
