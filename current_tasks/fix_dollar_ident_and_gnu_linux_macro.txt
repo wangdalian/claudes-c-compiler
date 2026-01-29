@@ -1,0 +1,9 @@
+Fix: Support $ in identifiers and add __gnu_linux__ predefined macro
+
+1. Lexer: Allow '$' character in identifiers (GCC extension -fdollars-in-identifiers,
+   enabled by default). This fixes the Gravity project which uses $expr and $value
+   as C variable names.
+
+2. Preprocessor: Add __gnu_linux__ as a predefined macro on Linux targets.
+   GCC defines this on Linux/glibc. Missing it breaks femtolisp and potentially
+   8 other projects.
