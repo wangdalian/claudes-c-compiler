@@ -1,0 +1,38 @@
+Project Testing Status (2026-01-29)
+====================================
+
+PASSING projects (confirmed):
+- coremark, dhrystone, whetstone, himeno, STREAM (benchmarks)
+- jsmn, sds, utf8proc, vec, rax, cwalk, sort.h, klib, uthash, c-algorithms, stretchy_buffer (data structures)
+- json-parser, cJSON, tomlc99, jansson, binn (JSON/data formats)
+- bzip2, lz4, miniz, brieflz, lzf, crush, quicklz, wflz, lizard, FSE, finite-state-entropy, rans, huf, blosc2, brotli (compression)
+- wolfssl, mbedtls, monocypher, libtommath (crypto)
+- 2048.c, c4, cello, cmocka, cmark, cgltf (misc)
+- llhttp, picohttpparser, mongoose, darkhttpd, nanomsg, paho.mqtt.c (networking)
+- libyaml (parsing)
+- Lua, TinyScheme, s7, pforth, 8cc (interpreters/compilers)
+- zopfli (compression - FIXED in this session, pointer-to-array-of-pointers stride bug)
+
+FAILING projects (investigated):
+- parson: segfault (139) - many test failures, possibly related to hex char literal sign extension (separate task)
+- yyjson: cmake build fails
+- MuJS: some test failures
+- picoc: linker error
+- femtolisp: test failures
+- Wren: 21 test failures + timeouts
+- Gravity: 1/181 test failures (memory_test.gravity)
+- QuickJS: segfault on test_language.js
+- http-parser: abort/crash in test
+- stc: assertion failure in cspan slice test
+- lzo: 56 semantic analysis errors
+- blosc: build fails (linking)
+- bearssl: 441 parse errors in ghash_pclmul.c (inline asm)
+- libtomcrypt: linker error
+- sqlite: 17 parse errors (function pointer cast syntax)
+- libexpat: linker error
+- libpcap: undeclared HCIGETDEVINFO
+
+NOT TESTED / NO CHECK SCRIPT:
+- map, gb_string, chipmunk2d, civetweb, tweetnacl: missing test files
+- json-c, zlib, hiredis, pcre2, libsodium, nbench: no check_x86.sh
+- arithcode: missing test file
