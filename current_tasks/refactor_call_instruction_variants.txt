@@ -1,0 +1,16 @@
+Refactor: Extract CallInfo struct from Call/CallIndirect instruction variants
+
+The Instruction::Call and Instruction::CallIndirect enum variants each have 11
+fields, sharing 10 of them. This causes:
+- Duplicated match arms across 21+ files (38 Call + 25 CallIndirect = 63 sites)
+- 10+ places with near-identical code for both variants
+- Difficult to add new call-related fields (must update every match site)
+
+Plan:
+1. Create a CallInfo struct with the 10 shared fields
+2. Refactor Call to { info: CallInfo, func: String }
+3. Refactor CallIndirect to { info: CallInfo, func_ptr: Operand }
+4. Update all 21 files to use the new structure
+5. Merge duplicate match arms where possible
+
+This is a purely mechanical refactoring with zero functional changes.
