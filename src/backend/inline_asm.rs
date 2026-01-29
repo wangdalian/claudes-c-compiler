@@ -108,8 +108,6 @@ impl AsmOperand {
 pub trait InlineAsmEmitter {
     /// Mutable access to the codegen state (for emitting instructions).
     fn asm_state(&mut self) -> &mut CodegenState;
-    /// Immutable access to the codegen state.
-    fn asm_state_ref(&self) -> &CodegenState;
 
     /// Classify a constraint string into an AsmOperandKind, and optionally
     /// return the specific register name for Specific constraints.

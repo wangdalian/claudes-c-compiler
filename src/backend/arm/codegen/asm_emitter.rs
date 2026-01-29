@@ -16,7 +16,6 @@ const ARM_FP_SCRATCH: &[&str] = &["d16", "d17", "d18", "d19", "d20", "d21", "d22
 
 impl InlineAsmEmitter for ArmCodegen {
     fn asm_state(&mut self) -> &mut CodegenState { &mut self.state }
-    fn asm_state_ref(&self) -> &CodegenState { &self.state }
 
     // TODO: Support multi-alternative constraint parsing (e.g., "rm", "ri") like x86.
     // NOTE: ARM-specific immediate constraints (K, L, I) are validated in

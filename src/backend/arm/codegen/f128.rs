@@ -37,10 +37,6 @@ impl F128SoftFloat for ArmCodegen {
         self.state.resolve_slot_addr(val_id)
     }
 
-    fn f128_is_alloca(&self, val_id: u32) -> bool {
-        self.state.is_alloca(val_id)
-    }
-
     fn f128_load_const_to_arg1(&mut self, lo: u64, hi: u64) {
         self.emit_load_imm64("x0", lo as i64);
         self.emit_load_imm64("x1", hi as i64);

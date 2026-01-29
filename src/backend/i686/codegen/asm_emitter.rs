@@ -17,7 +17,6 @@ const I686_XMM_SCRATCH: &[&str] = &["xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm
 
 impl InlineAsmEmitter for I686Codegen {
     fn asm_state(&mut self) -> &mut CodegenState { &mut self.state }
-    fn asm_state_ref(&self) -> &CodegenState { &self.state }
 
     fn classify_constraint(&self, constraint: &str) -> AsmOperandKind {
         let c = constraint.trim_start_matches(|c: char| c == '=' || c == '+' || c == '&');
@@ -562,11 +561,6 @@ impl I686Codegen {
     /// Convert register to 8-bit low variant. Delegates to shared x86_common.
     pub(super) fn reg_to_8l<'a>(reg: &'a str) -> Cow<'a, str> {
         crate::backend::x86_common::reg_to_8l(reg)
-    }
-
-    /// Convert register to 8-bit high variant. Delegates to shared x86_common.
-    pub(super) fn reg_to_8h<'a>(reg: &'a str) -> Cow<'a, str> {
-        crate::backend::x86_common::reg_to_8h(reg)
     }
 
     /// Map GCC condition code suffix to x86 SETcc suffix. Delegates to shared x86_common.

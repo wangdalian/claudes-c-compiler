@@ -909,13 +909,6 @@ pub trait ArchCodegen {
         self.state().emit_fmt(format_args!("{}:", end_label));
     }
 
-    /// Emit a conditional branch.
-    fn emit_cond_branch(&mut self, cond: &Operand, true_label: &str, false_label: &str) {
-        self.emit_load_operand(cond);
-        self.emit_branch_nonzero(true_label);
-        self.emit_branch(false_label);
-    }
-
     /// Emit a conditional branch to BlockIds, avoiding String allocations.
     fn emit_cond_branch_blocks(&mut self, cond: &Operand, true_block: BlockId, false_block: BlockId) {
         self.emit_load_operand(cond);

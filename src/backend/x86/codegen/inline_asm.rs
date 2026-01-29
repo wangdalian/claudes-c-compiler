@@ -160,11 +160,6 @@ impl X86Codegen {
         x86_common::reg_to_8l(reg)
     }
 
-    /// Convert 64-bit register name to 8-bit high variant.
-    pub(super) fn reg_to_8h<'a>(reg: &'a str) -> Cow<'a, str> {
-        x86_common::reg_to_8h(reg)
-    }
-
     /// Map GCC inline asm condition code suffix to x86 SETcc suffix.
     pub(super) fn gcc_cc_to_x86(cond: &str) -> &'static str {
         x86_common::gcc_cc_to_x86(cond)

@@ -116,10 +116,6 @@ impl I686Codegen {
         self.set_no_jump_tables(opts.no_jump_tables);
     }
 
-    pub fn generate(mut self, module: &IrModule) -> String {
-        generate_module(&mut self, module, None)
-    }
-
     // --- i686 helper methods ---
 
     fn dest_reg(&self, dest: &Value) -> Option<PhysReg> {

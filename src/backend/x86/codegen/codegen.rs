@@ -175,12 +175,6 @@ impl X86Codegen {
         }
     }
 
-    pub fn new_with_pic(pic: bool) -> Self {
-        let mut s = Self::new();
-        s.state.pic_mode = pic;
-        s
-    }
-
     /// Enable position-independent code generation.
     pub fn set_pic(&mut self, pic: bool) {
         self.state.pic_mode = pic;
@@ -233,11 +227,6 @@ impl X86Codegen {
         self.set_no_sse(opts.no_sse);
         self.set_code_model_kernel(opts.code_model_kernel);
         self.set_no_jump_tables(opts.no_jump_tables);
-    }
-
-    pub fn generate(mut self, module: &IrModule) -> String {
-        let raw = generate_module(&mut self, module, None);
-        super::peephole::peephole_optimize(raw)
     }
 
     // --- x86 helper methods ---

@@ -41,9 +41,6 @@ pub trait F128SoftFloat {
     /// Resolve a value's slot address (Direct/Indirect/OverAligned).
     fn f128_resolve_slot_addr(&self, val_id: u32) -> Option<SlotAddr>;
 
-    /// Check if a value is an alloca.
-    fn f128_is_alloca(&self, val_id: u32) -> bool;
-
     // --- Loading f128 constants ---
 
     /// Load an f128 constant (given as lo:hi u64 halves) into the first argument

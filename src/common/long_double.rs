@@ -53,32 +53,6 @@ fn preparse_long_double(text: &str) -> PreparsedFloat<'_> {
     PreparsedFloat::Decimal(negative, text)
 }
 
-/// Parse a float string to x87 80-bit extended precision bytes.
-/// Returns `[u8; 16]` with the 10 x87 bytes in positions `[0..10]` and zeros in `[10..16]`.
-///
-/// The x87 80-bit format has:
-/// - 1 sign bit
-/// - 15-bit exponent (bias 16383)
-/// - 64-bit mantissa with explicit integer bit
-///
-/// This gives ~18.96 decimal digits of precision (vs ~15.95 for f64).
-pub fn parse_long_double_to_x87_bytes(text: &str) -> [u8; 16] {
-    match preparse_long_double(text) {
-        PreparsedFloat::Hex(neg, text) => parse_hex_float_to_x87(neg, text),
-        PreparsedFloat::Infinity(neg) => make_x87_infinity(neg),
-        PreparsedFloat::NaN(neg) => make_x87_nan(neg),
-        PreparsedFloat::Decimal(neg, text) => parse_decimal_float_to_x87(neg, text),
-    }
-}
-
-/// Parse a decimal float string to x87 80-bit format.
-fn parse_decimal_float_to_x87(negative: bool, text: &str) -> [u8; 16] {
-    match parse_decimal_digits(text, 24) {
-        Some(parsed) => decimal_to_x87_bigint(negative, &parsed.digits, parsed.decimal_exp),
-        None => make_x87_zero(negative),
-    }
-}
-
 // Simple big integer using Vec<u32> limbs (little-endian: limbs[0] is least significant)
 struct BigUint {
     limbs: Vec<u32>,
@@ -204,47 +178,6 @@ impl BigUint {
         // Mask to n bits
         if n < 128 {
             val &= (1u128 << n) - 1;
-        }
-
-        (val, shift as i32)
-    }
-
-    /// Extract the top 64 bits, with the MSB at bit 63.
-    /// Returns (top64, bits_shifted) where the value is approximately top64 * 2^bits_shifted.
-    fn top_64_bits(&self) -> (u64, i32) {
-        let bl = self.bit_length();
-        if bl == 0 {
-            return (0, 0);
-        }
-        if bl <= 64 {
-            // Value fits in 64 bits
-            let mut val: u64 = 0;
-            for (i, &limb) in self.limbs.iter().enumerate() {
-                val |= (limb as u64) << (i * 32);
-            }
-            return (val, 0);
-        }
-
-        // We need bits [bl-1 .. bl-64] of the big integer
-        let shift = bl - 64;
-        let word_shift = (shift / 32) as usize;
-        let bit_shift = shift % 32;
-
-        let mut val: u64 = 0;
-        // We need 3 limbs potentially (due to bit_shift straddling)
-        for j in 0..3 {
-            let idx = word_shift + j;
-            if idx < self.limbs.len() {
-                let limb = self.limbs[idx] as u64;
-                if j == 0 {
-                    val |= limb >> bit_shift;
-                } else {
-                    let bit_pos = j as u32 * 32 - bit_shift;
-                    if bit_pos < 64 {
-                        val |= limb << bit_pos;
-                    }
-                }
-            }
         }
 
         (val, shift as i32)
@@ -448,55 +381,6 @@ fn parse_decimal_digits(text: &str, capacity: usize) -> Option<ParsedDecimal> {
     Some(ParsedDecimal { digits, decimal_exp })
 }
 
-/// Convert decimal digits and exponent to x87 format using big integer arithmetic.
-fn decimal_to_x87_bigint(negative: bool, digits: &[u8], decimal_exp: i32) -> [u8; 16] {
-    if decimal_exp >= 0 {
-        let mut big_val = BigUint::from_decimal_digits(digits);
-        let p10 = pow10_big(decimal_exp as u32);
-        big_val = mul_big(&big_val, &p10);
-
-        if big_val.is_zero() {
-            return make_x87_zero(negative);
-        }
-
-        let (top64, shift) = big_val.top_64_bits();
-        if top64 == 0 {
-            return make_x87_zero(negative);
-        }
-
-        let lz = top64.leading_zeros();
-        let mantissa64 = top64 << lz;
-        let binary_exp = shift + 63 - lz as i32;
-        encode_x87(negative, binary_exp, mantissa64)
-    } else {
-        let neg_exp = (-decimal_exp) as u32;
-        let big_d = BigUint::from_decimal_digits(digits);
-        if big_d.is_zero() {
-            return make_x87_zero(negative);
-        }
-
-        let extra_bits = (80 + neg_exp * 4).min(100000);
-        let mut shifted_d = big_d;
-        shifted_d.shl(extra_bits);
-
-        let p10 = pow10_big(neg_exp);
-        let quotient = BigUint::div_big(&shifted_d, &p10);
-        if quotient.is_zero() {
-            return make_x87_zero(negative);
-        }
-
-        let (top64, shift) = quotient.top_64_bits();
-        if top64 == 0 {
-            return make_x87_zero(negative);
-        }
-
-        let lz = top64.leading_zeros();
-        let mantissa64 = top64 << lz;
-        let binary_exp = shift + 63 - lz as i32 - extra_bits as i32;
-        encode_x87(negative, binary_exp, mantissa64)
-    }
-}
-
 /// Shared decimal-to-float bigint conversion for f128 (113-bit mantissa).
 fn decimal_to_float_bigint_f128(negative: bool, digits: &[u8], decimal_exp: i32) -> [u8; 16] {
     if decimal_exp >= 0 {
@@ -566,48 +450,6 @@ fn mul_big(a: &BigUint, b: &BigUint) -> BigUint {
     BigUint { limbs: result }
 }
 
-/// Encode an x87 80-bit extended value from sign, binary exponent, and 64-bit mantissa.
-/// `binary_exp` is the exponent of the MSB (bit 63) of `mantissa64`.
-/// That is, value = mantissa64 * 2^(binary_exp - 63).
-fn encode_x87(negative: bool, binary_exp: i32, mantissa64: u64) -> [u8; 16] {
-    if mantissa64 == 0 {
-        return make_x87_zero(negative);
-    }
-
-    // x87 format: biased_exponent = unbiased_exponent + 16383
-    // where unbiased_exponent is such that value = 1.fraction * 2^unbiased_exp
-    // Since mantissa64 has bit 63 set (the integer bit = 1),
-    // value = mantissa64 * 2^(binary_exp - 63)
-    // = (1.fraction) * 2^binary_exp  (where fraction is bits 62..0)
-    // So the unbiased exponent = binary_exp
-    let biased_exp = binary_exp + 16383;
-
-    if biased_exp >= 0x7FFF {
-        return make_x87_infinity(negative);
-    }
-
-    if biased_exp <= 0 {
-        // Subnormal or underflow
-        // For subnormals: biased_exp = 0, mantissa shifted right
-        let shift = 1 - biased_exp;
-        if shift >= 64 {
-            return make_x87_zero(negative);
-        }
-        let mantissa_denorm = mantissa64 >> shift as u32;
-        let mut bytes = [0u8; 16];
-        bytes[..8].copy_from_slice(&mantissa_denorm.to_le_bytes());
-        bytes[9] = if negative { 0x80 } else { 0 };
-        return bytes;
-    }
-
-    let exp15 = biased_exp as u16;
-    let mut bytes = [0u8; 16];
-    bytes[..8].copy_from_slice(&mantissa64.to_le_bytes());
-    bytes[8] = (exp15 & 0xFF) as u8;
-    bytes[9] = ((exp15 >> 8) as u8) | (if negative { 0x80 } else { 0 });
-    bytes
-}
-
 fn make_x87_zero(negative: bool) -> [u8; 16] {
     let mut bytes = [0u8; 16];
     if negative {
@@ -631,66 +473,6 @@ fn make_x87_nan(negative: bool) -> [u8; 16] {
     bytes[8] = 0xFF;
     bytes[9] = 0x7F | (if negative { 0x80 } else { 0 });
     bytes
-}
-
-/// Parse a hex float string (0x..p..) to x87 80-bit format.
-fn parse_hex_float_to_x87(negative: bool, text: &str) -> [u8; 16] {
-    // Skip "0x" or "0X"
-    let text = &text[2..];
-
-    // Split at 'p' or 'P'
-    let (mantissa_str, exp_str) = if let Some(pos) = text.find(|c: char| c == 'p' || c == 'P') {
-        (&text[..pos], &text[pos + 1..])
-    } else {
-        (text, "0")
-    };
-
-    // Parse binary exponent
-    let bin_exp_offset: i32 = exp_str.parse().unwrap_or(0);
-
-    // Parse hex mantissa (integer.fraction)
-    let (int_part, frac_part) = if let Some(dot_pos) = mantissa_str.find('.') {
-        (&mantissa_str[..dot_pos], &mantissa_str[dot_pos + 1..])
-    } else {
-        (mantissa_str, "")
-    };
-
-    // Build mantissa as u128
-    let mut mant: u128 = 0;
-    for c in int_part.chars() {
-        if let Some(d) = c.to_digit(16) {
-            mant = (mant << 4) | (d as u128);
-        }
-    }
-    let frac_nibbles = frac_part.len() as i32;
-    for c in frac_part.chars() {
-        if let Some(d) = c.to_digit(16) {
-            mant = (mant << 4) | (d as u128);
-        }
-    }
-
-    if mant == 0 {
-        return make_x87_zero(negative);
-    }
-
-    // The value is: mant * 2^(bin_exp_offset - frac_nibbles*4)
-    let total_bin_exp = bin_exp_offset - frac_nibbles * 4;
-
-    // Normalize to 64-bit mantissa with MSB at bit 63
-    let top_bit = 127 - mant.leading_zeros() as i32;
-    let mantissa64: u64;
-    let binary_exp: i32;
-    if top_bit >= 63 {
-        let shift = top_bit - 63;
-        mantissa64 = (mant >> shift) as u64;
-        binary_exp = total_bin_exp + top_bit;
-    } else {
-        let shift = 63 - top_bit;
-        mantissa64 = (mant << shift) as u64;
-        binary_exp = total_bin_exp + top_bit;
-    }
-
-    encode_x87(negative, binary_exp, mantissa64)
 }
 
 /// Convert x87 80-bit bytes back to f64 (lossy - for computations that need f64).
@@ -808,9 +590,8 @@ pub fn x87_bytes_to_f128_bytes(x87: &[u8; 16]) -> [u8; 16] {
 /// mantissa precision. Used for long double constants on ARM64/RISC-V where long double
 /// is quad precision.
 ///
-/// This is the f128 equivalent of `parse_long_double_to_x87_bytes`. While x87 only has
-/// 64 bits of mantissa, f128 has 112 bits, so parsing directly to f128 preserves more
-/// precision than parsing to x87 and converting.
+/// f128 has 112 bits of mantissa (vs 64 for x87), so parsing directly to f128
+/// preserves more precision than parsing to x87 and converting.
 pub fn parse_long_double_to_f128_bytes(text: &str) -> [u8; 16] {
     match preparse_long_double(text) {
         PreparsedFloat::Hex(neg, text) => parse_hex_float_to_f128(neg, text),
@@ -1217,136 +998,6 @@ pub fn f64_to_x87_bytes_simple(val: f64) -> [u8; 16] {
     bytes[..8].copy_from_slice(&mantissa64.to_le_bytes());
     bytes[8] = (exp15 & 0xFF) as u8;
     bytes[9] = ((exp15 >> 8) as u8) | (if sign == 1 { 0x80 } else { 0 });
-    bytes
-}
-
-/// Convert a signed i64 to x87 80-bit bytes with full precision.
-/// x87 has a 64-bit mantissa, so all i64 values are representable exactly.
-pub fn i64_to_x87_bytes(val: i64) -> [u8; 16] {
-    if val == 0 {
-        return make_x87_zero(false);
-    }
-    let negative = val < 0;
-    // For i64::MIN (-2^63), abs would overflow, handle specially
-    let abs_val: u64 = if val == i64::MIN {
-        1u64 << 63
-    } else if negative {
-        (-val) as u64
-    } else {
-        val as u64
-    };
-    u64_to_x87_bytes_with_sign(abs_val, negative)
-}
-
-/// Convert an unsigned u64 to x87 80-bit bytes with full precision.
-/// x87 has a 64-bit mantissa, so all u64 values are representable exactly.
-pub fn u64_to_x87_bytes(val: u64) -> [u8; 16] {
-    if val == 0 {
-        return make_x87_zero(false);
-    }
-    u64_to_x87_bytes_with_sign(val, false)
-}
-
-/// Internal helper: convert a nonzero u64 magnitude + sign to x87 bytes.
-fn u64_to_x87_bytes_with_sign(val: u64, negative: bool) -> [u8; 16] {
-    // Find the position of the highest set bit
-    let leading_zeros = val.leading_zeros();
-    let msb_pos = 63 - leading_zeros; // 0-indexed position of highest set bit
-
-    // x87 format: mantissa has explicit integer bit at bit 63
-    // Shift the value so the MSB is at bit 63
-    let mantissa64 = val << leading_zeros;
-
-    // Exponent: the value is mantissa64 * 2^(exp - 16383 - 63)
-    // We want mantissa64 * 2^(exp - 16383 - 63) = val
-    // Since mantissa64 = val << leading_zeros = val * 2^leading_zeros,
-    // we need: val * 2^leading_zeros * 2^(exp - 16383 - 63) = val
-    // So: exp = 16383 + 63 - leading_zeros = 16383 + msb_pos
-    let exp15 = (16383 + msb_pos) as u16;
-
-    let mut bytes = [0u8; 16];
-    bytes[..8].copy_from_slice(&mantissa64.to_le_bytes());
-    bytes[8] = (exp15 & 0xFF) as u8;
-    bytes[9] = ((exp15 >> 8) as u8) | (if negative { 0x80 } else { 0 });
-    bytes
-}
-
-/// Convert an unsigned u128 to x87 80-bit bytes.
-/// x87 has a 64-bit mantissa, so values > 2^64 will be rounded to nearest-even.
-/// All u64 values are representable exactly.
-pub fn u128_to_x87_bytes(val: u128) -> [u8; 16] {
-    if val == 0 {
-        return make_x87_zero(false);
-    }
-    // If the value fits in u64, use the exact conversion
-    if val <= u64::MAX as u128 {
-        return u64_to_x87_bytes(val as u64);
-    }
-    u128_to_x87_bytes_with_sign(val, false)
-}
-
-/// Convert a signed i128 to x87 80-bit bytes.
-/// x87 has a 64-bit mantissa, so values with magnitude > 2^64 will be rounded.
-pub fn i128_to_x87_bytes(val: i128) -> [u8; 16] {
-    if val == 0 {
-        return make_x87_zero(false);
-    }
-    let negative = val < 0;
-    let abs_val: u128 = if val == i128::MIN {
-        1u128 << 127
-    } else if negative {
-        (-val) as u128
-    } else {
-        val as u128
-    };
-    // If the absolute value fits in u64, use the exact conversion
-    if abs_val <= u64::MAX as u128 {
-        return u64_to_x87_bytes_with_sign(abs_val as u64, negative);
-    }
-    u128_to_x87_bytes_with_sign(abs_val, negative)
-}
-
-/// Internal helper: convert a nonzero u128 magnitude > u64::MAX + sign to x87 bytes.
-/// Rounds to nearest-even when the value needs more than 64 bits.
-fn u128_to_x87_bytes_with_sign(val: u128, negative: bool) -> [u8; 16] {
-    let leading_zeros = val.leading_zeros();
-    let msb_pos = 127 - leading_zeros; // 0-indexed position of highest set bit
-
-    // We need to fit into 64-bit mantissa. Shift right by (msb_pos - 63).
-    let shift = msb_pos - 63;
-
-    // Round to nearest-even
-    let shifted = val >> shift;
-    let mantissa64 = shifted as u64;
-
-    // Check rounding: look at the bits we shifted away
-    let halfway = 1u128 << (shift - 1);
-    let remainder = val & ((1u128 << shift) - 1);
-    let mantissa64 = if remainder > halfway || (remainder == halfway && (mantissa64 & 1) != 0) {
-        // Round up
-        mantissa64.wrapping_add(1)
-    } else {
-        mantissa64
-    };
-
-    // If rounding caused overflow (mantissa became 0 from 0xFFFF...FFFF + 1), adjust exponent
-    let (mantissa64, msb_pos) = if mantissa64 == 0 {
-        (1u64 << 63, msb_pos + 1) // mantissa overflowed, bump exponent
-    } else {
-        (mantissa64, msb_pos)
-    };
-
-    // Normalize: ensure bit 63 is set (it should be from our shift logic)
-    let lz = mantissa64.leading_zeros();
-    let mantissa64 = mantissa64 << lz;
-    let msb_pos = msb_pos - lz;
-
-    let exp15 = (16383 + msb_pos) as u16;
-
-    let mut bytes = [0u8; 16];
-    bytes[..8].copy_from_slice(&mantissa64.to_le_bytes());
-    bytes[8] = (exp15 & 0xFF) as u8;
-    bytes[9] = ((exp15 >> 8) as u8) | (if negative { 0x80 } else { 0 });
     bytes
 }
 
@@ -2318,78 +1969,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_simple_values() {
-        let bytes = parse_long_double_to_x87_bytes("1.0");
-        let f = x87_bytes_to_f64(&bytes);
-        assert!((f - 1.0).abs() < 1e-15, "1.0: got {}", f);
-
-        let bytes = parse_long_double_to_x87_bytes("0.0");
-        let f = x87_bytes_to_f64(&bytes);
-        assert!(f == 0.0, "0.0: got {}", f);
-
-        let bytes = parse_long_double_to_x87_bytes("1.5");
-        let f = x87_bytes_to_f64(&bytes);
-        assert!((f - 1.5).abs() < 1e-15, "1.5: got {}", f);
-        // GCC: 00 00 00 00 00 00 00 c0 ff 3f
-        assert_eq!(bytes[7], 0xc0);
-        assert_eq!(bytes[8], 0xff);
-        assert_eq!(bytes[9], 0x3f);
-    }
-
-    #[test]
-    fn test_precision_value() {
-        // 922337203685477580.7L - the value that exposes f64 precision loss
-        // GCC x87 bytes: cb cc cc cc cc cc cc cc 3a 40
-        let bytes = parse_long_double_to_x87_bytes("922337203685477580.7");
-        assert_eq!(bytes[0], 0xcb, "byte 0 mismatch");
-        assert_eq!(bytes[1], 0xcc, "byte 1 mismatch");
-        assert_eq!(bytes[7], 0xcc, "byte 7 mismatch");
-        assert_eq!(bytes[8], 0x3a, "byte 8 (exp low) mismatch");
-        assert_eq!(bytes[9], 0x40, "byte 9 (exp high) mismatch");
-    }
-
-    #[test]
-    fn test_pi() {
-        // GCC: 35 c2 68 21 a2 da 0f c9 00 40
-        let bytes = parse_long_double_to_x87_bytes("3.14159265358979323846");
-        assert_eq!(bytes[8], 0x00, "pi exp low");
-        assert_eq!(bytes[9], 0x40, "pi exp high");
-        assert_eq!(bytes[7], 0xc9, "pi mantissa top byte");
-    }
-
-    #[test]
-    fn test_negative() {
-        let bytes = parse_long_double_to_x87_bytes("-1.0");
-        let f = x87_bytes_to_f64(&bytes);
-        assert!((f - (-1.0)).abs() < 1e-15, "-1.0: got {}", f);
-        assert_eq!(bytes[9] & 0x80, 0x80, "sign bit should be set");
-    }
-
-    #[test]
-    fn test_scientific_notation() {
-        let bytes = parse_long_double_to_x87_bytes("5.24288e+5");
-        let f = x87_bytes_to_f64(&bytes);
-        assert!((f - 524288.0).abs() < 1e-10, "5.24288e+5: got {}", f);
-    }
-
-    #[test]
-    fn test_roundtrip_f64() {
-        // Values that fit in f64 should roundtrip correctly
-        let test_vals = [0.0, 1.0, -1.0, 3.14, 1e10, 1e-10, 1e100, 1e-100];
-        for &v in &test_vals {
-            let text = format!("{}", v);
-            let bytes = parse_long_double_to_x87_bytes(&text);
-            let back = x87_bytes_to_f64(&bytes);
-            if v == 0.0 {
-                assert!(back == 0.0, "roundtrip {}: got {}", v, back);
-            } else {
-                let rel_err = ((back - v) / v).abs();
-                assert!(rel_err < 1e-14, "roundtrip {}: got {} (rel_err={})", v, back, rel_err);
-            }
-        }
-    }
-
-    #[test]
     fn test_x87_to_f128() {
         // Test zero
         let x87 = [0u8; 16];
@@ -2397,7 +1976,7 @@ mod tests {
         assert!(f128.iter().all(|&b| b == 0));
 
         // Test 1.0: x87 bytes should be exp=16383=0x3FFF, mantissa=1<<63
-        let bytes_1 = parse_long_double_to_x87_bytes("1.0");
+        let bytes_1 = f64_to_x87_bytes_simple(1.0);
         let f128_1 = x87_bytes_to_f128_bytes(&bytes_1);
         // f128 for 1.0: sign=0, exp=16383=0x3FFF, mantissa=0
         // Bytes (LE): 00..00 FF 3F

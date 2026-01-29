@@ -198,10 +198,6 @@ impl ArmCodegen {
         self.set_general_regs_only(opts.general_regs_only);
     }
 
-    pub fn generate(mut self, module: &IrModule) -> String {
-        generate_module(&mut self, module, None)
-    }
-
     /// Get the physical register assigned to an operand (if it's a Value with a register).
     fn operand_reg(&self, op: &Operand) -> Option<PhysReg> {
         match op {

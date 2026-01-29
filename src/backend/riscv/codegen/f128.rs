@@ -31,10 +31,6 @@ impl F128SoftFloat for RiscvCodegen {
         self.state.resolve_slot_addr(val_id)
     }
 
-    fn f128_is_alloca(&self, val_id: u32) -> bool {
-        self.state.is_alloca(val_id)
-    }
-
     fn f128_load_const_to_arg1(&mut self, lo: u64, hi: u64) {
         self.state.emit_fmt(format_args!("    li a0, {}", lo as i64));
         self.state.emit_fmt(format_args!("    li a1, {}", hi as i64));

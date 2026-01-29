@@ -30,14 +30,6 @@ pub struct LinkerConfig {
     pub extra_args: &'static [&'static str],
 }
 
-/// Assemble text to an object file using an external toolchain.
-///
-/// Uses a unique temporary file for the assembly source to avoid race conditions
-/// when multiple compiler instances target the same output path in parallel builds.
-pub fn assemble(config: &AssemblerConfig, asm_text: &str, output_path: &str) -> Result<(), String> {
-    assemble_with_extra(config, asm_text, output_path, &[])
-}
-
 /// Assemble text to an object file, with additional dynamic arguments.
 ///
 /// The `extra_dynamic_args` are appended after the config's static extra_args,
@@ -275,18 +267,6 @@ impl AsmOutput {
     }
 
     /// Emit: `    {mnemonic} ${imm}, {offset}(%rbp)`
-    /// Used for stores of immediates to stack slots.
-    #[inline]
-    pub fn emit_instr_imm_rbp(&mut self, mnemonic: &str, imm: i64, offset: i64) {
-        self.buf.push_str(mnemonic);
-        self.buf.push_str(" $");
-        write_i64_fast(&mut self.buf, imm);
-        self.buf.push_str(", ");
-        write_i64_fast(&mut self.buf, offset);
-        self.buf.push_str("(%rbp)");
-        self.buf.push('\n');
-    }
-
     /// Emit a block label line: `.L{id}:`
     #[inline]
     pub fn emit_block_label(&mut self, block_id: u32) {
@@ -294,13 +274,6 @@ impl AsmOutput {
         write_u64_fast(&mut self.buf, block_id as u64);
         self.buf.push(':');
         self.buf.push('\n');
-    }
-
-    /// Write a block label reference (no colon, no newline) into the buffer: `.L{id}`
-    #[inline]
-    pub fn write_block_ref(&mut self, block_id: u32) {
-        self.buf.push_str(".L");
-        write_u64_fast(&mut self.buf, block_id as u64);
     }
 
     /// Emit: `    jmp .L{block_id}`

@@ -14,7 +14,6 @@ const RISCV_FP_SCRATCH: &[&str] = &["ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "f
 
 impl InlineAsmEmitter for RiscvCodegen {
     fn asm_state(&mut self) -> &mut CodegenState { &mut self.state }
-    fn asm_state_ref(&self) -> &CodegenState { &self.state }
 
     fn classify_constraint(&self, constraint: &str) -> AsmOperandKind {
         // TODO: RISC-V =@cc not fully implemented — needs SLTU/SEQZ/etc. in store_output_from_reg.

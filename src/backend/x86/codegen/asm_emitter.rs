@@ -20,7 +20,6 @@ const X86_XMM_SCRATCH: &[&str] = &[
 
 impl InlineAsmEmitter for X86Codegen {
     fn asm_state(&mut self) -> &mut CodegenState { &mut self.state }
-    fn asm_state_ref(&self) -> &CodegenState { &self.state }
 
     // TODO: ARM and RISC-V backends should also support multi-alternative constraint
     // parsing (e.g., "rm", "ri") similar to the x86 implementation below. Currently

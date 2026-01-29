@@ -180,11 +180,6 @@ impl RiscvCodegen {
         }
     }
 
-    pub fn generate(mut self, module: &IrModule) -> String {
-        self.emit_pre_directives();
-        generate_module(&mut self, module, None)
-    }
-
     /// Load comparison operands into t1 and t2, then sign/zero-extend
     /// sub-64-bit types. Shared by emit_cmp and emit_fused_cmp_branch.
     fn emit_cmp_operand_load(&mut self, lhs: &Operand, rhs: &Operand, ty: IrType) {

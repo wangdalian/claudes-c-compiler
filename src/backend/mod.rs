@@ -159,22 +159,6 @@ impl Target {
         }
     }
 
-    /// Generate assembly for an IR module using this target's code generator.
-    pub(crate) fn generate_assembly(&self, module: &IrModule) -> String {
-        self.generate_assembly_with_opts(module, &CodegenOptions::default())
-    }
-
-    /// Generate assembly with PIC (position-independent code) option.
-    pub(crate) fn generate_assembly_with_options(&self, module: &IrModule, pic: bool) -> String {
-        let opts = CodegenOptions { pic, ..Default::default() };
-        self.generate_assembly_with_opts(module, &opts)
-    }
-
-    /// Generate assembly with full codegen options.
-    pub(crate) fn generate_assembly_with_opts(&self, module: &IrModule, opts: &CodegenOptions) -> String {
-        self.generate_assembly_with_opts_and_debug(module, opts, None)
-    }
-
     /// Generate assembly with full codegen options and optional source manager for debug info.
     /// When `source_mgr` is provided and `opts.debug_info` is true, the codegen emits
     /// .file/.loc directives for DWARF line number information.
@@ -208,11 +192,6 @@ impl Target {
                 generation::generate_module_with_debug(&mut cg, module, opts.debug_info, source_mgr)
             }
         }
-    }
-
-    /// Assemble text to object file.
-    pub(crate) fn assemble(&self, asm_text: &str, output_path: &str) -> Result<(), String> {
-        common::assemble(&self.assembler_config(), asm_text, output_path)
     }
 
     /// Assemble text to object file with dynamic extra arguments.
