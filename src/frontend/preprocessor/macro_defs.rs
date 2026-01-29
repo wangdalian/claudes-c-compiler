@@ -164,6 +164,116 @@ impl MacroTable {
         }
     }
 
+    /// Append `expanded` text to `result`, inserting spaces as needed to prevent
+    /// accidental token pasting between the end of `result` and the start/end
+    /// of `expanded`, and between the end of `expanded` and `next_byte` (the
+    /// next byte in the source after the expansion site).
+    fn append_with_paste_guard(result: &mut String, expanded: &str, next_byte: Option<u8>) {
+        if expanded.is_empty() {
+            return;
+        }
+        // Leading edge: prevent pasting between result's last byte and expansion's first byte
+        if !result.is_empty() {
+            let last = result.as_bytes()[result.len() - 1];
+            let first = expanded.as_bytes()[0];
+            if would_paste_tokens(last, first) {
+                result.push(' ');
+            } else if is_ident_cont_byte(last) && is_ident_cont_byte(first) {
+                result.push(' ');
+            }
+        }
+        result.push_str(expanded);
+        // Trailing edge: prevent pasting between expansion's last byte and next source byte
+        if let Some(next) = next_byte {
+            let last_expanded = expanded.as_bytes()[expanded.len() - 1];
+            if would_paste_tokens(last_expanded, next) {
+                result.push(' ');
+            }
+        }
+    }
+
+    /// After expanding a function-like macro, check if the result ends with a
+    /// function-like macro name and the remaining source starts with '('.
+    /// If so, expand the trailing macro call, consuming the arguments from the source.
+    /// Returns the updated `expanded` text and new source position.
+    fn expand_trailing_func_macros(
+        &self,
+        mut expanded: String,
+        bytes: &[u8],
+        mut i: usize,
+        expanding: &mut FxHashSet<String>,
+    ) -> (String, usize) {
+        let len = bytes.len();
+        loop {
+            let trailing = extract_trailing_ident(&expanded);
+            if let Some(ref trail_ident) = trailing {
+                if !expanding.contains(trail_ident.as_str()) {
+                    if let Some(trail_mac) = self.macros.get(trail_ident.as_str()) {
+                        if trail_mac.is_function_like {
+                            let mut k = i;
+                            while k < len && bytes[k].is_ascii_whitespace() {
+                                k += 1;
+                            }
+                            if k < len && bytes[k] == b'(' {
+                                let (trail_args, trail_end) = self.parse_macro_args(bytes, k);
+                                i = trail_end;
+                                let trail_mac_clone = trail_mac.clone();
+                                let trimmed_len = expanded.trim_end().len();
+                                let prefix_len = trimmed_len - trail_ident.len();
+                                expanded.truncate(prefix_len);
+                                let trail_expanded = self.expand_function_macro(&trail_mac_clone, &trail_args, expanding);
+                                expanded.push_str(&trail_expanded);
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        (expanded, i)
+    }
+
+    /// After expanding an object-like macro, check if the result is a function-like
+    /// macro name and the remaining source starts with '('. If so, expand the
+    /// function-like macro call, consuming the arguments from the source.
+    /// Returns Some((expanded_text, new_pos)) if resolution succeeded, or None.
+    fn try_resolve_objlike_to_funclike(
+        &self,
+        expanded: &str,
+        bytes: &[u8],
+        i: usize,
+        expanding: &mut FxHashSet<String>,
+    ) -> Option<(String, usize)> {
+        let len = bytes.len();
+        let expanded_trimmed = expanded.trim();
+        if expanded_trimmed.is_empty() {
+            return None;
+        }
+        let et_bytes = expanded_trimmed.as_bytes();
+        if !is_ident_start_byte(et_bytes[0])
+            || !et_bytes.iter().all(|&b| is_ident_cont_byte(b))
+            || expanding.contains(expanded_trimmed)
+        {
+            return None;
+        }
+        let target_mac = self.macros.get(expanded_trimmed)?;
+        if !target_mac.is_function_like {
+            return None;
+        }
+        let mut j = i;
+        while j < len && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j >= len || bytes[j] != b'(' {
+            return None;
+        }
+        let (args, end_pos) = self.parse_macro_args(bytes, j);
+        let target_mac_clone = target_mac.clone();
+        let func_expanded = self.expand_function_macro(&target_mac_clone, &args, expanding);
+        Some((func_expanded, end_pos))
+    }
+
     /// Recursively expand macros in text, tracking which macros are
     /// currently being expanded to prevent infinite recursion.
     ///
@@ -288,65 +398,11 @@ impl MacroTable {
                             if j < len && bytes[j] == b'(' {
                                 let (args, end_pos) = self.parse_macro_args(bytes, j);
                                 i = end_pos;
-                                let mut expanded = self.expand_function_macro(mac, &args, expanding);
-
-                                // After expansion, check if the result ends with a function-like
-                                // macro name and the remaining source starts with '('.
-                                loop {
-                                    let trailing = extract_trailing_ident(&expanded);
-                                    if let Some(ref trail_ident) = trailing {
-                                        if !expanding.contains(trail_ident.as_str()) {
-                                            if let Some(trail_mac) = self.macros.get(trail_ident.as_str()) {
-                                                if trail_mac.is_function_like {
-                                                    let mut k = i;
-                                                    while k < len && bytes[k].is_ascii_whitespace() {
-                                                        k += 1;
-                                                    }
-                                                    if k < len && bytes[k] == b'(' {
-                                                        let (trail_args, trail_end) = self.parse_macro_args(bytes, k);
-                                                        i = trail_end;
-                                                        let trail_mac_clone = trail_mac.clone();
-                                                        let trimmed_len = expanded.trim_end().len();
-                                                        let prefix_len = trimmed_len - trail_ident.len();
-                                                        expanded.truncate(prefix_len);
-                                                        let trail_expanded = self.expand_function_macro(&trail_mac_clone, &trail_args, expanding);
-                                                        expanded.push_str(&trail_expanded);
-                                                        continue;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    break;
-                                }
-
-                                if !expanded.is_empty() {
-                                    // Insert space before expansion to prevent accidental token pasting
-                                    if !result.is_empty() {
-                                        let last = result.as_bytes()[result.len() - 1];
-                                        let first = expanded.as_bytes()[0];
-                                        if would_paste_tokens(last, first) {
-                                            result.push(' ');
-                                        } else if !last.is_ascii_whitespace() && !first.is_ascii_whitespace() {
-                                            // Also add space if the result doesn't end with whitespace
-                                            // and the expansion doesn't start with whitespace
-                                            // (to avoid things like identifier pasting)
-                                            if is_ident_cont_byte(last) && is_ident_cont_byte(first) {
-                                                result.push(' ');
-                                            }
-                                        }
-                                    }
-                                    result.push_str(&expanded);
-                                    // Insert space after expansion to prevent the expanded token
-                                    // from merging with the next source token
-                                    if i < len {
-                                        let last_expanded = expanded.as_bytes()[expanded.len() - 1];
-                                        let next_byte = bytes[i];
-                                        if would_paste_tokens(last_expanded, next_byte) {
-                                            result.push(' ');
-                                        }
-                                    }
-                                }
+                                let expanded = self.expand_function_macro(mac, &args, expanding);
+                                let (expanded, new_i) = self.expand_trailing_func_macros(expanded, bytes, i, expanding);
+                                i = new_i;
+                                let next = if i < len { Some(bytes[i]) } else { None };
+                                Self::append_with_paste_guard(&mut result, &expanded, next);
                                 continue;
                             } else {
                                 result.push_str(ident);
@@ -359,49 +415,16 @@ impl MacroTable {
                             expanding.remove(ident);
 
                             // Check if the expansion result is a function-like macro name
-                            let expanded_trimmed = expanded.trim();
-                            if !expanded_trimmed.is_empty() {
-                                let et_bytes = expanded_trimmed.as_bytes();
-                                if is_ident_start_byte(et_bytes[0])
-                                    && et_bytes.iter().all(|&b| is_ident_cont_byte(b))
-                                    && !expanding.contains(expanded_trimmed)
-                                {
-                                    if let Some(target_mac) = self.macros.get(expanded_trimmed) {
-                                        if target_mac.is_function_like {
-                                            let mut j = i;
-                                            while j < len && bytes[j].is_ascii_whitespace() {
-                                                j += 1;
-                                            }
-                                            if j < len && bytes[j] == b'(' {
-                                                let (args, end_pos) = self.parse_macro_args(bytes, j);
-                                                i = end_pos;
-                                                let target_mac_clone = target_mac.clone();
-                                                let func_expanded = self.expand_function_macro(&target_mac_clone, &args, expanding);
-                                                result.push_str(&func_expanded);
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                }
+                            if let Some((func_expanded, end_pos)) =
+                                self.try_resolve_objlike_to_funclike(&expanded, bytes, i, expanding)
+                            {
+                                i = end_pos;
+                                result.push_str(&func_expanded);
+                                continue;
                             }
 
-                            // Insert space to prevent accidental token pasting (leading edge)
-                            if !expanded.is_empty() && !result.is_empty() {
-                                let last = result.as_bytes()[result.len() - 1];
-                                let first = expanded.as_bytes()[0];
-                                if would_paste_tokens(last, first) {
-                                    result.push(' ');
-                                }
-                            }
-                            result.push_str(&expanded);
-                            // Insert space to prevent accidental token pasting (trailing edge)
-                            if !expanded.is_empty() && i < len {
-                                let last_expanded = expanded.as_bytes()[expanded.len() - 1];
-                                let next_byte = bytes[i];
-                                if would_paste_tokens(last_expanded, next_byte) {
-                                    result.push(' ');
-                                }
-                            }
+                            let next = if i < len { Some(bytes[i]) } else { None };
+                            Self::append_with_paste_guard(&mut result, &expanded, next);
                             continue;
                         }
                     }
