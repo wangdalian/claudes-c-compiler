@@ -1,0 +1,26 @@
+Task: Fix always_inline budget being consumed by non-always_inline callees
+
+Problem: RISC-V (and x86) kernel builds fail with modpost section mismatch errors:
+  idle_init+0xbe (.text) -> fork_idle (.init.text)
+  __calc_tpm2_event_size+0xd0 (.text) -> early_memremap (.init.text)
+
+Root cause: Non-always_inline callees with exceeds_normal_limits (e.g., find_next_bit
+with 77 instructions) consume the always_inline_budget_remaining when inlined into
+section-attributed callers. This depletes the budget, preventing true always_inline
+functions (e.g., idle_init with 57 instructions) from being inlined.
+
+Specifically in idle_threads_init (.init.text):
+1. find_next_bit (77 inst, exceeds_normal_limits, NOT always_inline) is inlined
+2. Budget drops from 100 to 23
+3. idle_init (57 inst, always_inline) cannot be inlined because 57 > 23
+
+Fix approach:
+1. True always_inline functions bypass the budget check entirely (C semantic requirement)
+2. Non-always_inline callees with exceeds_normal_limits deduct from normal budget,
+   not from the always_inline budget
+
+File: src/passes/inline.rs
+
+Note: Related to but different from fix_arm_kernel_section_mismatch which takes a
+narrower approach (bypass budget only when caller has section). This fix addresses
+the root cause by separating the budget tracking.
