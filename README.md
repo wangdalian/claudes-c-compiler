@@ -131,6 +131,7 @@ src/
   backend/                 IR -> textual assembly (delegates to gcc for object/link)
     traits.rs              ArchCodegen trait with shared default implementations
     generation.rs          IR instruction dispatch to trait methods
+    x86_common.rs          Shared x86/i686 register names, condition codes, asm templates
     x86/codegen/           x86-64 (SysV AMD64 ABI) + peephole optimizer
     arm/codegen/           AArch64 (AAPCS64)
     riscv/codegen/         RISC-V 64 (LP64D)

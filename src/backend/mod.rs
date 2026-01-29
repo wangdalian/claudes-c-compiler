@@ -10,6 +10,7 @@ pub(crate) mod call_emit;   // Callee-side parameter classification (shared by e
 pub(crate) mod cast;        // Cast and float operation classification
 pub(crate) mod f128_softfloat; // Shared F128 soft-float orchestration (ARM + RISC-V)
 pub(crate) mod inline_asm;  // InlineAsmEmitter trait and shared framework
+pub(crate) mod x86_common;  // Shared x86/i686 register names, condition codes, asm template parsing
 
 // Register allocation and liveness analysis
 pub(crate) mod liveness;     // Live interval computation

@@ -49,3 +49,13 @@ Items a Rust expert would flag, roughly ordered by impact:
 7. Lowerer split across 37 files (large effort, low priority)
    - Valid Rust pattern but extreme; makes API surface hard to understand
    - Consider grouping related impl blocks or adding a module-level doc
+
+8. [DONE] x86/i686 code duplication -> x86_common module
+   - gcc_cc_to_x86: exact duplicate extracted to shared free function
+   - reg_to_32, reg_to_16, reg_to_8l, reg_to_8h: merged to accept both
+     64-bit and 32-bit register names in a single match
+   - substitute_*_asm_operands: ~150 lines of identical template parsing
+     extracted to shared function parameterized by operand emission callback
+   - emit_operand_common: shared logic for %n/%c/%P/memory/$symbol/$imm
+   - Both backends now delegate through thin wrappers to x86_common
+   - ~400 lines removed, zero functional changes

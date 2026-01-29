@@ -523,9 +523,12 @@ impl InlineAsmEmitter for I686Codegen {
     }
 }
 
-// Helper methods for i686 inline asm register formatting
+// Helper methods for i686 inline asm register formatting.
+// Register conversion and condition code mapping delegate to the shared
+// `x86_common` module to avoid duplication with the x86-64 backend.
 impl I686Codegen {
-    /// Store mnemonic for a given type (for inline asm output stores).
+    /// Return the i686 store mnemonic for a given IR type.
+    /// Uses movb/movw for sub-32-bit types, movl for everything else.
     fn i686_mov_store_for_type(ty: IrType) -> &'static str {
         match ty {
             IrType::I8 | IrType::U8 => "movb",
@@ -534,7 +537,8 @@ impl I686Codegen {
         }
     }
 
-    /// Load mnemonic for a given type (for inline asm input loads).
+    /// Return the i686 load mnemonic for a given IR type.
+    /// Uses sign/zero-extending loads for sub-32-bit types, movl for everything else.
     fn i686_mov_load_for_type(ty: IrType) -> &'static str {
         match ty {
             IrType::I8 => "movsbl",
@@ -545,82 +549,29 @@ impl I686Codegen {
         }
     }
 
-    /// Convert register to 32-bit variant.
+    /// Convert register to 32-bit variant. Delegates to shared x86_common.
     pub(super) fn reg_to_32<'a>(reg: &'a str) -> Cow<'a, str> {
-        match reg {
-            "eax" | "ax" | "al" | "ah" => Cow::Borrowed("eax"),
-            "ebx" | "bx" | "bl" | "bh" => Cow::Borrowed("ebx"),
-            "ecx" | "cx" | "cl" | "ch" => Cow::Borrowed("ecx"),
-            "edx" | "dx" | "dl" | "dh" => Cow::Borrowed("edx"),
-            "esi" | "si" => Cow::Borrowed("esi"),
-            "edi" | "di" => Cow::Borrowed("edi"),
-            "ebp" | "bp" => Cow::Borrowed("ebp"),
-            "esp" | "sp" => Cow::Borrowed("esp"),
-            _ => Cow::Borrowed(reg),
-        }
+        crate::backend::x86_common::reg_to_32(reg)
     }
 
-    /// Convert register to 16-bit variant.
+    /// Convert register to 16-bit variant. Delegates to shared x86_common.
     pub(super) fn reg_to_16<'a>(reg: &'a str) -> Cow<'a, str> {
-        match reg {
-            "eax" | "ax" | "al" | "ah" => Cow::Borrowed("ax"),
-            "ebx" | "bx" | "bl" | "bh" => Cow::Borrowed("bx"),
-            "ecx" | "cx" | "cl" | "ch" => Cow::Borrowed("cx"),
-            "edx" | "dx" | "dl" | "dh" => Cow::Borrowed("dx"),
-            "esi" | "si" => Cow::Borrowed("si"),
-            "edi" | "di" => Cow::Borrowed("di"),
-            "ebp" | "bp" => Cow::Borrowed("bp"),
-            "esp" | "sp" => Cow::Borrowed("sp"),
-            _ => Cow::Borrowed(reg),
-        }
+        crate::backend::x86_common::reg_to_16(reg)
     }
 
-    /// Convert register to 8-bit low variant.
+    /// Convert register to 8-bit low variant. Delegates to shared x86_common.
     pub(super) fn reg_to_8l<'a>(reg: &'a str) -> Cow<'a, str> {
-        match reg {
-            "eax" | "ax" | "al" => Cow::Borrowed("al"),
-            "ebx" | "bx" | "bl" => Cow::Borrowed("bl"),
-            "ecx" | "cx" | "cl" => Cow::Borrowed("cl"),
-            "edx" | "dx" | "dl" => Cow::Borrowed("dl"),
-            // esi/edi/ebp/esp don't have 8-bit low forms in 32-bit mode
-            _ => Cow::Borrowed(reg),
-        }
+        crate::backend::x86_common::reg_to_8l(reg)
     }
 
-    /// Convert register to 8-bit high variant.
+    /// Convert register to 8-bit high variant. Delegates to shared x86_common.
     pub(super) fn reg_to_8h<'a>(reg: &'a str) -> Cow<'a, str> {
-        match reg {
-            "eax" | "ax" | "ah" => Cow::Borrowed("ah"),
-            "ebx" | "bx" | "bh" => Cow::Borrowed("bh"),
-            "ecx" | "cx" | "ch" => Cow::Borrowed("ch"),
-            "edx" | "dx" | "dh" => Cow::Borrowed("dh"),
-            _ => Self::reg_to_8l(reg),
-        }
+        crate::backend::x86_common::reg_to_8h(reg)
     }
 
-    /// Map GCC condition code suffix to x86 SETcc suffix.
+    /// Map GCC condition code suffix to x86 SETcc suffix. Delegates to shared x86_common.
     pub(super) fn gcc_cc_to_x86(cond: &str) -> &'static str {
-        match cond {
-            "e" | "z" => "e",
-            "ne" | "nz" => "ne",
-            "s" => "s",
-            "ns" => "ns",
-            "o" => "o",
-            "no" => "no",
-            "c" => "c",
-            "nc" => "nc",
-            "a" | "nbe" => "a",
-            "ae" | "nb" => "ae",
-            "b" | "nae" => "b",
-            "be" | "na" => "be",
-            "g" | "nle" => "g",
-            "ge" | "nl" => "ge",
-            "l" | "nge" => "l",
-            "le" | "ng" => "le",
-            "p" | "pe" => "p",
-            "np" | "po" => "np",
-            _ => "e", // fallback
-        }
+        crate::backend::x86_common::gcc_cc_to_x86(cond)
     }
 
     /// Get the appropriately-sized source register name for a type.
