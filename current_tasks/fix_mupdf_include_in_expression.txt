@@ -1,0 +1,11 @@
+Task: Fix preprocessor #include inside multi-line expression context
+Status: in_progress
+
+Problem: When #include appears inside a multi-line expression (e.g., inside function
+call arguments spanning multiple lines), the preprocessor outputs the included content
+before the pending accumulated tokens, causing parse errors.
+
+Fix: In preprocessor.rs, flush the pending_line to output before emitting included
+content when an #include directive is encountered during multi-line accumulation.
+
+This fixes the mupdf project which uses #include inside js_dostring() calls.
