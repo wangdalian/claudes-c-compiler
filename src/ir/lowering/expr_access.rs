@@ -276,24 +276,38 @@ impl Lowerer {
 
             match &item.init {
                 Initializer::Expr(expr) => {
-                    let val = self.lower_expr(expr);
-                    // For vector compound literals, cast each element to the vector element type
-                    let val = if let Some(vec_elem_ty) = vector_elem_ir_ty {
-                        let expr_ty = self.get_expr_type(expr);
-                        Operand::Value(self.emit_cast_val(val, expr_ty, vec_elem_ty))
+                    // For struct/union elements, the lowered expression produces an
+                    // alloca pointer (not the struct data itself). We must memcpy
+                    // from that alloca into the array element slot instead of storing
+                    // the pointer value.
+                    let is_struct_elem = matches!(
+                        &elem_ctype,
+                        Some(CType::Struct(_)) | Some(CType::Union(_))
+                    ) && self.struct_value_size(expr).is_some();
+
+                    if is_struct_elem {
+                        let src_addr = self.get_struct_base_addr(expr);
+                        self.emit_memcpy_at_offset(alloca, elem_offset, src_addr, elem_size);
                     } else {
-                        val
-                    };
-                    if current_idx == 0 && items.len() == 1 && elem_size == size {
-                        self.emit(Instruction::Store { val, ptr: alloca, ty , seg_override: AddressSpace::Default });
-                    } else {
-                        let offset_val = Operand::Const(IrConst::ptr_int(elem_offset as i64));
-                        let elem_ptr = self.fresh_value();
-                        self.emit(Instruction::GetElementPtr {
-                            dest: elem_ptr, base: alloca, offset: offset_val, ty,
-                        });
-                        let store_ty = vector_elem_ir_ty.unwrap_or_else(|| Self::ir_type_for_size(elem_size));
-                        self.emit(Instruction::Store { val, ptr: elem_ptr, ty: store_ty , seg_override: AddressSpace::Default });
+                        let val = self.lower_expr(expr);
+                        // For vector compound literals, cast each element to the vector element type
+                        let val = if let Some(vec_elem_ty) = vector_elem_ir_ty {
+                            let expr_ty = self.get_expr_type(expr);
+                            Operand::Value(self.emit_cast_val(val, expr_ty, vec_elem_ty))
+                        } else {
+                            val
+                        };
+                        if current_idx == 0 && items.len() == 1 && elem_size == size {
+                            self.emit(Instruction::Store { val, ptr: alloca, ty , seg_override: AddressSpace::Default });
+                        } else {
+                            let offset_val = Operand::Const(IrConst::ptr_int(elem_offset as i64));
+                            let elem_ptr = self.fresh_value();
+                            self.emit(Instruction::GetElementPtr {
+                                dest: elem_ptr, base: alloca, offset: offset_val, ty,
+                            });
+                            let store_ty = vector_elem_ir_ty.unwrap_or_else(|| Self::ir_type_for_size(elem_size));
+                            self.emit(Instruction::Store { val, ptr: elem_ptr, ty: store_ty , seg_override: AddressSpace::Default });
+                        }
                     }
                 }
                 Initializer::List(sub_items) => {
@@ -312,6 +326,10 @@ impl Lowerer {
                             let inner_elem_size = self.resolve_ctype_size(inner_elem_ty);
                             let inner_ir_ty = IrType::from_ctype(inner_elem_ty);
                             let inner_is_bool = **inner_elem_ty == CType::Bool;
+                            // Zero-init the element region for partial initialization
+                            if sub_items.len() < *inner_size {
+                                self.zero_init_region(alloca, elem_offset, elem_size);
+                            }
                             for (si, sub_item) in sub_items.iter().enumerate() {
                                 if si >= *inner_size { break; }
                                 if let Initializer::Expr(e) = &sub_item.init {

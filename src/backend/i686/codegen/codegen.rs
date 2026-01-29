@@ -1068,6 +1068,7 @@ impl ArchCodegen for I686Codegen {
         let (reg_assigned, cached_liveness) = run_regalloc_and_merge_clobbers(
             func, available_regs, caller_saved_regs, &asm_clobbered_regs,
             &mut self.reg_assignments, &mut self.used_callee_saved,
+            false, // i686 asm emitter does not yet check reg_assignments
         );
 
         // Calculate stack space using the shared framework.

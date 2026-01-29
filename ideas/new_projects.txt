@@ -14,6 +14,7 @@ PASSING projects (confirmed):
 - zopfli (compression - FIXED in this session, pointer-to-array-of-pointers stride bug)
 - parson (JSON - passes all 4 architectures)
 - MuJS (JavaScript interpreter - passes x86/ARM/RISC-V; i686 has pre-existing float issues)
+- stc (C containers library - FIXED compound literal array bugs; passes x86/ARM/RISC-V; i686 39/40 pre-existing regex issue)
 
 FAILING projects (investigated):
 - yyjson: cmake build fails
@@ -23,7 +24,7 @@ FAILING projects (investigated):
 - Gravity: 1/181 test failures (memory_test.gravity)
 - QuickJS: segfault on test_language.js
 - http-parser: abort/crash in test
-- stc: assertion failure in cspan slice test
+- stc: FIXED - compound literal array bugs (struct memcpy, dimension ordering, partial zero-init)
 - lzo: 56 semantic analysis errors
 - blosc: build fails (linking)
 - bearssl: 441 parse errors in ghash_pclmul.c (inline asm)

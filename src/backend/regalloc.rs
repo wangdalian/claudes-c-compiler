@@ -55,6 +55,10 @@ pub struct RegAllocConfig {
     /// Since they don't cross calls, no prologue/epilogue save/restore is needed.
     /// Examples: x86 r11, r10, r8, r9.
     pub caller_saved_regs: Vec<PhysReg>,
+    /// Whether to allow inline asm operands to be register-allocated.
+    /// Only enable this when the backend's asm emitter checks reg_assignments
+    /// before falling back to stack access. Currently only RISC-V does this.
+    pub allow_inline_asm_regalloc: bool,
 }
 
 /// Run the linear scan register allocator on a function.
@@ -227,7 +231,7 @@ pub fn allocate_registers(
 
     // Exclude values used as pointers in instructions whose codegen paths use
     // resolve_slot_addr() directly (not register-aware).
-    remove_ineligible_operands(func, &mut eligible);
+    remove_ineligible_operands(func, &mut eligible, config);
 
     let call_points = &liveness.call_points;
 
@@ -404,7 +408,7 @@ fn collect_non_gpr_values(func: &IrFunction, is_32bit: bool) -> FxHashSet<u32> {
 /// whose codegen paths use resolve_slot_addr() directly (not register-aware).
 /// This includes CallIndirect func pointers, Memcpy pointers, va_arg pointers,
 /// atomic pointers, StackRestore, and InlineAsm operands.
-fn remove_ineligible_operands(func: &IrFunction, eligible: &mut FxHashSet<u32>) {
+fn remove_ineligible_operands(func: &IrFunction, eligible: &mut FxHashSet<u32>, config: &RegAllocConfig) {
     for block in &func.blocks {
         for inst in &block.instructions {
             match inst {
@@ -448,14 +452,22 @@ fn remove_ineligible_operands(func: &IrFunction, eligible: &mut FxHashSet<u32>) 
                     eligible.remove(&ptr.0);
                 }
                 Instruction::InlineAsm { outputs, inputs, .. } => {
-                    for (_, val, _) in outputs {
-                        eligible.remove(&val.0);
-                    }
-                    for (_, op, _) in inputs {
-                        if let Operand::Value(v) = op {
-                            eligible.remove(&v.0);
+                    if !config.allow_inline_asm_regalloc {
+                        // Inline asm operands are accessed via stack slots
+                        // in codegen. Exclude them from register allocation
+                        // unless the backend's asm emitter checks reg_assignments.
+                        for (_, val, _) in outputs {
+                            eligible.remove(&val.0);
+                        }
+                        for (_, op, _) in inputs {
+                            if let Operand::Value(v) = op {
+                                eligible.remove(&v.0);
+                            }
                         }
                     }
+                    // When allow_inline_asm_regalloc is true (RISC-V), the
+                    // asm emitter checks reg_assignments before falling back
+                    // to stack slot access.
                 }
                 _ => {}
             }

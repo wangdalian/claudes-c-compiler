@@ -28,6 +28,14 @@ const MAX_TRACKED_STORE_LOAD_OFFSETS: usize = 4;
 /// to search for the setCC → store/load → test → branch pattern.
 const CMP_FUSION_LOOKAHEAD: usize = 8;
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Check if a register ID refers to a valid general-purpose register (0..=15).
+#[inline]
+fn is_valid_gp_reg(reg: RegId) -> bool {
+    reg != REG_NONE && reg <= REG_GP_MAX
+}
+
 // ── Main entry point ─────────────────────────────────────────────────────────
 
 /// Run peephole optimization on x86-64 assembly text.
@@ -1051,80 +1059,53 @@ fn global_store_forwarding(store: &mut LineStore, infos: &mut [LineInfo]) -> boo
             continue;
         }
 
+        // Default: most instructions are not unconditional jumps.
+        // Only Jmp/JmpIndirect/Ret set this to true below.
+        let was_uncond_jump = prev_was_unconditional_jump;
+        prev_was_unconditional_jump = false;
+
         match infos[i].kind {
             LineKind::Label => {
                 gsf_handle_label(store, infos, i, &jump_targets,
-                    &mut slot_entries, &mut reg_offsets,
-                    prev_was_unconditional_jump);
-                prev_was_unconditional_jump = false;
+                    &mut slot_entries, &mut reg_offsets, was_uncond_jump);
             }
 
             LineKind::StoreRbp { reg, offset, size } => {
                 gsf_handle_store(reg, offset, size,
                     &mut slot_entries, &mut reg_offsets);
-                prev_was_unconditional_jump = false;
             }
 
             LineKind::LoadRbp { reg: load_reg, offset: load_offset, size: load_size } => {
                 changed |= gsf_handle_load(store, infos, i, load_reg, load_offset, load_size,
                     &mut slot_entries, &mut reg_offsets);
-                prev_was_unconditional_jump = false;
             }
 
-            LineKind::Jmp | LineKind::JmpIndirect => {
+            LineKind::Jmp | LineKind::JmpIndirect | LineKind::Ret => {
                 invalidate_all_mappings(&mut slot_entries, &mut reg_offsets);
                 prev_was_unconditional_jump = true;
-            }
-
-            LineKind::CondJmp => {
-                prev_was_unconditional_jump = false;
             }
 
             LineKind::Call => {
                 for &r in &[0u8, 1, 2, 6, 7, 8, 9, 10, 11] {
                     invalidate_reg_flat(&mut slot_entries, &mut reg_offsets, r);
                 }
-                prev_was_unconditional_jump = false;
             }
 
-            LineKind::Ret => {
-                invalidate_all_mappings(&mut slot_entries, &mut reg_offsets);
-                prev_was_unconditional_jump = true;
-            }
-
-            LineKind::Push { .. } => {
-                prev_was_unconditional_jump = false;
-            }
-
-            LineKind::Pop { reg } => {
-                if reg != REG_NONE && reg <= REG_GP_MAX {
+            LineKind::Pop { reg } | LineKind::SetCC { reg } => {
+                if is_valid_gp_reg(reg) {
                     invalidate_reg_flat(&mut slot_entries, &mut reg_offsets, reg);
                 }
-                prev_was_unconditional_jump = false;
             }
-
-            LineKind::Directive => {}
 
             LineKind::Other { dest_reg } => {
                 gsf_handle_other(store, infos, i, dest_reg,
                     &mut slot_entries, &mut reg_offsets);
-                prev_was_unconditional_jump = false;
             }
 
-            LineKind::SetCC { reg } => {
-                if reg != REG_NONE && reg <= REG_GP_MAX {
-                    invalidate_reg_flat(&mut slot_entries, &mut reg_offsets, reg);
-                }
-                prev_was_unconditional_jump = false;
-            }
+            LineKind::CondJmp | LineKind::Cmp | LineKind::Push { .. }
+            | LineKind::Directive => {}
 
-            LineKind::Cmp => {
-                prev_was_unconditional_jump = false;
-            }
-
-            _ => {
-                prev_was_unconditional_jump = false;
-            }
+            _ => {}
         }
     }
 
@@ -1209,16 +1190,9 @@ fn gsf_handle_store(
     slot_entries: &mut Vec<SlotEntry>, reg_offsets: &mut [SmallVec; 16],
 ) {
     // Invalidate overlapping mappings.
-    let store_bytes = size.byte_size();
-    for entry in slot_entries.iter_mut().filter(|e| e.active) {
-        if ranges_overlap(offset, store_bytes, entry.offset, entry.mapping.size.byte_size()) {
-            let old_reg = entry.mapping.reg_id;
-            entry.active = false;
-            reg_offsets[old_reg as usize].remove_val(entry.offset);
-        }
-    }
+    invalidate_slots_at(slot_entries, reg_offsets, offset, size.byte_size());
     // Record new mapping (GP registers only).
-    if reg != REG_NONE && reg <= REG_GP_MAX {
+    if is_valid_gp_reg(reg) {
         slot_entries.push(SlotEntry {
             offset,
             mapping: SlotMapping { reg_id: reg, size },
@@ -1261,7 +1235,7 @@ fn gsf_handle_load(
             }
         }
     }
-    if load_reg != REG_NONE && load_reg <= REG_GP_MAX {
+    if is_valid_gp_reg(load_reg) {
         invalidate_reg_flat(slot_entries, reg_offsets, load_reg);
     }
     changed
@@ -1274,7 +1248,7 @@ fn gsf_handle_other(
     slot_entries: &mut Vec<SlotEntry>, reg_offsets: &mut [SmallVec; 16],
 ) {
     // Invalidate destination register.
-    if dest_reg != REG_NONE && dest_reg <= REG_GP_MAX {
+    if is_valid_gp_reg(dest_reg) {
         invalidate_reg_flat(slot_entries, reg_offsets, dest_reg);
         // div/idiv/mul/cqto/cqo/cdq also clobber rdx (family 2).
         if dest_reg == 0 {
@@ -1290,7 +1264,7 @@ fn gsf_handle_other(
 
     // Read-modify-write instructions with a memory destination at (%rbp) offset.
     if dest_reg == REG_NONE && infos[i].rbp_offset != RBP_OFFSET_NONE {
-        invalidate_slot_exact(slot_entries, reg_offsets, infos[i].rbp_offset);
+        invalidate_slots_at(slot_entries, reg_offsets, infos[i].rbp_offset, 0);
     }
 
     // Indirect memory access: conservatively invalidate everything.
@@ -1299,35 +1273,35 @@ fn gsf_handle_other(
     } else if infos[i].rbp_offset != RBP_OFFSET_NONE {
         // Unrecognized instruction with %rbp offset: conservatively invalidate
         // overlapping slot mappings (unknown access size, use 1-byte overlap).
-        invalidate_slot_overlap(slot_entries, reg_offsets, infos[i].rbp_offset);
+        invalidate_slots_at(slot_entries, reg_offsets, infos[i].rbp_offset, 1);
     }
 }
 
-/// Invalidate all slot mappings at a specific exact offset.
-fn invalidate_slot_exact(
-    slot_entries: &mut Vec<SlotEntry>, reg_offsets: &mut [SmallVec; 16],
-    offset: i32,
-) {
-    for entry in slot_entries.iter_mut().filter(|e| e.active) {
-        if entry.offset == offset {
-            let old_reg = entry.mapping.reg_id;
-            entry.active = false;
-            reg_offsets[old_reg as usize].remove_val(entry.offset);
-        }
-    }
+/// Deactivate a single slot entry and remove its offset from the per-register
+/// tracking. This is the single point of deactivation to avoid duplicating
+/// the `active = false` + `remove_val` pair across multiple functions.
+#[inline]
+fn deactivate_entry(entry: &mut SlotEntry, reg_offsets: &mut [SmallVec; 16]) {
+    let old_reg = entry.mapping.reg_id;
+    entry.active = false;
+    reg_offsets[old_reg as usize].remove_val(entry.offset);
 }
 
-/// Invalidate slot mappings that overlap with a 1-byte access at the given offset.
-fn invalidate_slot_overlap(
+/// Invalidate slot mappings at a given offset. When `access_size == 0`, only
+/// exact-offset matches are invalidated; otherwise, any mapping whose byte
+/// range overlaps `[offset, offset + access_size)` is invalidated.
+fn invalidate_slots_at(
     slot_entries: &mut Vec<SlotEntry>, reg_offsets: &mut [SmallVec; 16],
-    offset: i32,
+    offset: i32, access_size: i32,
 ) {
     for entry in slot_entries.iter_mut().filter(|e| e.active) {
-        let e_bytes = entry.mapping.size.byte_size();
-        if ranges_overlap(offset, 1, entry.offset, e_bytes) {
-            let old_reg = entry.mapping.reg_id;
-            entry.active = false;
-            reg_offsets[old_reg as usize].remove_val(entry.offset);
+        let hit = if access_size == 0 {
+            entry.offset == offset
+        } else {
+            ranges_overlap(offset, access_size, entry.offset, entry.mapping.size.byte_size())
+        };
+        if hit {
+            deactivate_entry(entry, reg_offsets);
         }
     }
 }
@@ -1342,14 +1316,12 @@ struct SlotEntry {
 
 /// Small inline vector for register->offset tracking (avoids heap allocation
 /// for the common case of <=4 offsets per register).
-#[derive(Clone)]
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct SmallVec {
     inline: [i32; 4],
     len: u8,
     overflow: Option<Vec<i32>>,
 }
-
 
 impl SmallVec {
     #[inline]

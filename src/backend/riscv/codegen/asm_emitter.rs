@@ -97,6 +97,16 @@ impl InlineAsmEmitter for RiscvCodegen {
         // so multiple "=m" outputs don't overwrite each other's addresses.
         match val {
             Operand::Value(v) => {
+                // Check register allocation first: if the pointer value lives
+                // in a callee-saved register, copy from there instead of the
+                // stack (which may be stale for register-allocated values).
+                if let Some(&phys) = self.reg_assignments.get(&v.0) {
+                    let tmp_reg = self.assign_scratch_reg(&AsmOperandKind::GpReg, excluded);
+                    let src_name = super::codegen::callee_saved_name(phys);
+                    self.state.emit_fmt(format_args!("    mv {}, {}", tmp_reg, src_name));
+                    op.mem_addr = format!("0({})", tmp_reg);
+                    return true;
+                }
                 if let Some(slot) = self.state.get_slot(v.0) {
                     let tmp_reg = self.assign_scratch_reg(&AsmOperandKind::GpReg, excluded);
                     // Use emit_load_from_s0 to handle large stack offsets (>2047)
@@ -179,6 +189,21 @@ impl InlineAsmEmitter for RiscvCodegen {
                 }
             }
             Operand::Value(v) => {
+                // Check register allocation first: if the value lives in a
+                // callee-saved register, use it directly instead of loading
+                // from the stack. This is critical for correctness when inline
+                // asm changes page tables (e.g., csrw satp) — any stack access
+                // between CSR writes would fault because the new page table
+                // doesn't map the stack.
+                // This also handles Address operands whose pointer value was
+                // register-allocated (e.g., "+A" for AMO instructions).
+                if !self.state.is_alloca(v.0) && !is_fp {
+                    if let Some(&phys) = self.reg_assignments.get(&v.0) {
+                        let src_name = super::codegen::callee_saved_name(phys);
+                        self.state.emit_fmt(format_args!("    mv {}, {}", reg, src_name));
+                        return;
+                    }
+                }
                 if let Some(slot) = self.state.get_slot(v.0) {
                     if is_addr && self.state.is_alloca(v.0) {
                         // Alloca: stack slot IS the variable's memory, compute its address
@@ -212,8 +237,13 @@ impl InlineAsmEmitter for RiscvCodegen {
                         // Alloca: stack slot IS the variable, compute its address
                         self.emit_addi_s0(&reg, slot.0);
                     } else {
-                        // Non-alloca: stack slot holds a pointer value, load it
-                        self.emit_load_from_s0(&reg, slot.0, "ld");
+                        // Non-alloca: pointer may live in a register
+                        if let Some(&phys) = self.reg_assignments.get(&ptr.0) {
+                            let src = super::codegen::callee_saved_name(phys);
+                            self.state.emit_fmt(format_args!("    mv {}, {}", reg, src));
+                        } else {
+                            self.emit_load_from_s0(&reg, slot.0, "ld");
+                        }
                     }
                 }
                 AsmOperandKind::FpReg => {
@@ -226,6 +256,11 @@ impl InlineAsmEmitter for RiscvCodegen {
                     self.emit_load_from_s0(&reg, slot.0, "ld");
                 }
             }
+        } else if let Some(&phys) = self.reg_assignments.get(&ptr.0) {
+            // No stack slot (copy-alias eliminated), but value lives in a
+            // callee-saved register.  Load it into the operand register.
+            let src = super::codegen::callee_saved_name(phys);
+            self.state.emit_fmt(format_args!("    mv {}, {}", reg, src));
         }
     }
 
@@ -269,40 +304,60 @@ impl InlineAsmEmitter for RiscvCodegen {
                 let reg = op.reg.clone();
                 // Use fsw for F32, fsd for F64/other
                 let store_op = if op.operand_type == IrType::F32 { "fsw" } else { "fsd" };
-                if let Some(slot) = self.state.get_slot(ptr.0) {
-                    if self.state.is_direct_slot(ptr.0) {
+                let is_direct = self.state.is_direct_slot(ptr.0);
+                let slot = self.state.get_slot(ptr.0);
+                if is_direct {
+                    if let Some(slot) = slot {
                         self.emit_store_to_s0(&reg, slot.0, store_op);
-                    } else {
-                        // Non-alloca: slot holds a pointer, store through it.
-                        // Pick a scratch register not used by any output operand.
-                        let candidates = ["t0", "t1", "t2", "t3", "t4", "t5", "t6"];
-                        let scratch = candidates.iter()
-                            .find(|&&c| !all_output_regs.contains(&c))
-                            .copied()
-                            .unwrap_or("t0");
-                        // Use emit_load_from_s0 to handle large stack offsets (>2047)
-                        self.emit_load_from_s0(scratch, slot.0, "ld");
-                        self.state.emit_fmt(format_args!("    {} {}, 0({})", store_op, reg, scratch));
                     }
+                } else if let Some(&phys) = self.reg_assignments.get(&ptr.0) {
+                    let candidates = ["t0", "t1", "t2", "t3", "t4", "t5", "t6"];
+                    let scratch = candidates.iter()
+                        .find(|&&c| !all_output_regs.contains(&c))
+                        .copied()
+                        .unwrap_or("t0");
+                    let src_name = super::codegen::callee_saved_name(phys);
+                    self.state.emit_fmt(format_args!("    mv {}, {}", scratch, src_name));
+                    self.state.emit_fmt(format_args!("    {} {}, 0({})", store_op, reg, scratch));
+                } else if let Some(slot) = slot {
+                    let candidates = ["t0", "t1", "t2", "t3", "t4", "t5", "t6"];
+                    let scratch = candidates.iter()
+                        .find(|&&c| !all_output_regs.contains(&c))
+                        .copied()
+                        .unwrap_or("t0");
+                    self.emit_load_from_s0(scratch, slot.0, "ld");
+                    self.state.emit_fmt(format_args!("    {} {}, 0({})", store_op, reg, scratch));
                 }
             }
             _ => {
                 let reg = op.reg.clone();
-                if let Some(slot) = self.state.get_slot(ptr.0) {
-                    if self.state.is_direct_slot(ptr.0) {
+                let is_direct = self.state.is_direct_slot(ptr.0);
+                let slot = self.state.get_slot(ptr.0);
+                if is_direct {
+                    if let Some(slot) = slot {
                         self.emit_store_to_s0(&reg, slot.0, "sd");
-                    } else {
-                        // Non-alloca: slot holds a pointer, store through it.
-                        // Pick a scratch register not used by any output operand.
-                        let candidates = ["t0", "t1", "t2", "t3", "t4", "t5", "t6"];
-                        let scratch = candidates.iter()
-                            .find(|&&c| !all_output_regs.contains(&c))
-                            .copied()
-                            .unwrap_or(if reg != "t0" { "t0" } else { "t1" });
-                        // Use emit_load_from_s0 to handle large stack offsets (>2047)
-                        self.emit_load_from_s0(scratch, slot.0, "ld");
-                        self.state.emit_fmt(format_args!("    sd {}, 0({})", reg, scratch));
                     }
+                } else if let Some(&phys) = self.reg_assignments.get(&ptr.0) {
+                    // Pointer lives in a callee-saved register. Store the asm
+                    // output through the pointer. This avoids stack access
+                    // after CSR writes (e.g., csrw satp changing page tables).
+                    let candidates = ["t0", "t1", "t2", "t3", "t4", "t5", "t6"];
+                    let scratch = candidates.iter()
+                        .find(|&&c| !all_output_regs.contains(&c) && c != reg.as_str())
+                        .copied()
+                        .unwrap_or(if reg != "t0" { "t0" } else { "t1" });
+                    let src_name = super::codegen::callee_saved_name(phys);
+                    self.state.emit_fmt(format_args!("    mv {}, {}", scratch, src_name));
+                    self.state.emit_fmt(format_args!("    sd {}, 0({})", reg, scratch));
+                } else if let Some(slot) = slot {
+                    // Non-alloca: slot holds a pointer, store through it.
+                    let candidates = ["t0", "t1", "t2", "t3", "t4", "t5", "t6"];
+                    let scratch = candidates.iter()
+                        .find(|&&c| !all_output_regs.contains(&c) && c != reg.as_str())
+                        .copied()
+                        .unwrap_or(if reg != "t0" { "t0" } else { "t1" });
+                    self.emit_load_from_s0(scratch, slot.0, "ld");
+                    self.state.emit_fmt(format_args!("    sd {}, 0({})", reg, scratch));
                 }
             }
         }

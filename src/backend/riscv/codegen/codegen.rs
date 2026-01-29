@@ -30,7 +30,7 @@ const CALL_TEMP_CALLEE_SAVED: [PhysReg; 5] = [
 ];
 
 /// Map a PhysReg index to its RISC-V register name.
-fn callee_saved_name(reg: PhysReg) -> &'static str {
+pub(super) fn callee_saved_name(reg: PhysReg) -> &'static str {
     match reg.0 {
         1 => "s1", 2 => "s2", 3 => "s3", 4 => "s4", 5 => "s5",
         6 => "s6", 7 => "s7", 8 => "s8", 9 => "s9", 10 => "s10", 11 => "s11",
@@ -121,7 +121,7 @@ pub struct RiscvCodegen {
     pub(super) asm_fp_scratch_idx: usize,
     /// Register allocation results for the current function.
     /// Maps value ID -> callee-saved register assignment.
-    reg_assignments: FxHashMap<u32, PhysReg>,
+    pub(super) reg_assignments: FxHashMap<u32, PhysReg>,
     /// Which callee-saved registers are used and need save/restore.
     used_callee_saved: Vec<PhysReg>,
     /// Whether to suppress linker relaxation (-mno-relax).
@@ -795,6 +795,7 @@ impl ArchCodegen for RiscvCodegen {
         let (reg_assigned, cached_liveness) = crate::backend::generation::run_regalloc_and_merge_clobbers(
             func, available_regs, Vec::new(), &asm_clobbered_regs,
             &mut self.reg_assignments, &mut self.used_callee_saved,
+            true, // RISC-V asm emitter checks reg_assignments for inline asm operands
         );
         // f128_load_sources is cleared by state.reset_for_function() at the start of each function.
 

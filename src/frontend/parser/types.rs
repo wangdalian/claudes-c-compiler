@@ -837,6 +837,8 @@ impl Parser {
                 } else if matches!(self.peek(), TokenKind::LBracket) || !inner_array_dims.is_empty() {
                     // Pointer to array: (*)[N] or (*[3][4])[2]
                     // First apply outer array dims (after ')') to the base type
+                    // Collect dims and apply in reverse (rightmost is innermost)
+                    let mut outer_dims: Vec<Option<Box<Expr>>> = Vec::new();
                     while matches!(self.peek(), TokenKind::LBracket) {
                         self.advance();
                         let size = if matches!(self.peek(), TokenKind::RBracket) {
@@ -845,7 +847,10 @@ impl Parser {
                             Some(Box::new(self.parse_expr()))
                         };
                         self.expect(&TokenKind::RBracket);
-                        result_type = TypeSpecifier::Array(Box::new(result_type), size);
+                        outer_dims.push(size);
+                    }
+                    for dim in outer_dims.into_iter().rev() {
+                        result_type = TypeSpecifier::Array(Box::new(result_type), dim);
                     }
                     // Then wrap with pointer(s)
                     for _ in 0..ptr_depth {
@@ -864,7 +869,10 @@ impl Parser {
                 self.pos = save;
             }
         }
-        // Parse trailing array dimensions
+        // Parse trailing array dimensions, collecting them first so we can
+        // apply in reverse order. In C, `int[1][3]` is "1 element of int[3]",
+        // so the rightmost dimension wraps first (innermost).
+        let mut array_dims: Vec<Option<Box<Expr>>> = Vec::new();
         while matches!(self.peek(), TokenKind::LBracket) {
             self.advance();
             let size = if matches!(self.peek(), TokenKind::RBracket) {
@@ -873,7 +881,11 @@ impl Parser {
                 Some(Box::new(self.parse_expr()))
             };
             self.expect(&TokenKind::RBracket);
-            result_type = TypeSpecifier::Array(Box::new(result_type), size);
+            array_dims.push(size);
+        }
+        // Apply in reverse: innermost (rightmost) dimension wraps first
+        for dim in array_dims.into_iter().rev() {
+            result_type = TypeSpecifier::Array(Box::new(result_type), dim);
         }
         result_type
     }

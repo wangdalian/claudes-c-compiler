@@ -468,8 +468,9 @@ pub fn run_regalloc_and_merge_clobbers(
     asm_clobbered_regs: &[super::regalloc::PhysReg],
     reg_assignments: &mut FxHashMap<u32, super::regalloc::PhysReg>,
     used_callee_saved: &mut Vec<super::regalloc::PhysReg>,
+    allow_inline_asm_regalloc: bool,
 ) -> (FxHashSet<u32>, Option<super::liveness::LivenessResult>) {
-    let config = super::regalloc::RegAllocConfig { available_regs, caller_saved_regs };
+    let config = super::regalloc::RegAllocConfig { available_regs, caller_saved_regs, allow_inline_asm_regalloc };
     let alloc_result = super::regalloc::allocate_registers(func, &config);
     *reg_assignments = alloc_result.assignments;
     *used_callee_saved = alloc_result.used_regs;

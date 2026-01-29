@@ -1048,6 +1048,7 @@ impl ArchCodegen for X86Codegen {
         let (reg_assigned, cached_liveness) = crate::backend::generation::run_regalloc_and_merge_clobbers(
             func, available_regs, caller_saved_regs, &asm_clobbered_regs,
             &mut self.reg_assignments, &mut self.used_callee_saved,
+            false, // x86 asm emitter does not yet check reg_assignments
         );
 
         let mut space = calculate_stack_space_common(&mut self.state, func, 0, |space, alloc_size, align| {
