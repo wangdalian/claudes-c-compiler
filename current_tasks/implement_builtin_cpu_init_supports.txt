@@ -1,0 +1,20 @@
+Task: Implement __builtin_cpu_init() and __builtin_cpu_supports()
+Status: in_progress
+Started: 2026-01-29
+
+These GCC builtins are used for runtime CPU feature detection:
+- __builtin_cpu_init() - initializes CPU feature detection (no-op, glibc handles it)
+- __builtin_cpu_supports("feature") - returns non-zero if CPU supports named feature
+
+Implementation approach:
+- __builtin_cpu_init() -> no-op (void return)
+- __builtin_cpu_supports("feature") -> return 0 (conservative: assume no feature)
+
+This is used by libucl, blosc, blosc2, nanovg, nuklear, xz_liblzma.
+The conservative approach (return 0) ensures code takes safe fallback paths.
+
+Files to modify:
+- src/frontend/sema/builtins.rs (register the builtins)
+- src/frontend/sema/type_checker.rs (return types)
+- src/ir/lowering/expr_builtins.rs (lowering)
+- src/ir/lowering/expr_types.rs (IR return type)
