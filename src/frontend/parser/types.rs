@@ -10,6 +10,32 @@ use crate::frontend::lexer::token::TokenKind;
 use super::ast::*;
 use super::parser::{ModeKind, Parser};
 
+/// Collected type specifier flags during parsing.
+///
+/// C allows type specifier keywords in any order ("long unsigned int" ==
+/// "unsigned long int"), so we accumulate boolean flags and a `long_count`
+/// while scanning tokens, then resolve them into a concrete `TypeSpecifier`
+/// via `Parser::resolve_type_flags`.
+#[derive(Default)]
+struct TypeSpecFlags {
+    has_void: bool,
+    has_bool: bool,
+    has_float: bool,
+    has_double: bool,
+    has_complex: bool,
+    has_char: bool,
+    has_short: bool,
+    has_int: bool,
+    has_unsigned: bool,
+    has_signed: bool,
+    has_struct: bool,
+    has_union: bool,
+    has_enum: bool,
+    has_typeof: bool,
+    long_count: u32,
+    typedef_name: Option<String>,
+}
+
 impl Parser {
     /// Parse a complete type specifier. Returns None if no type specifier found.
     ///
@@ -20,24 +46,8 @@ impl Parser {
     pub(super) fn parse_type_specifier(&mut self) -> Option<TypeSpecifier> {
         self.skip_gcc_extensions();
 
-        // Flags for collecting type specifier tokens in any order
-        let mut has_signed = false;
-        let mut has_unsigned = false;
-        let mut has_short = false;
-        let mut long_count: u32 = 0;
-        let mut has_int = false;
-        let mut has_char = false;
-        let mut has_void = false;
-        let mut has_float = false;
-        let mut has_double = false;
-        let mut has_bool = false;
-        let mut has_complex = false;
-        let mut has_struct = false;
-        let mut has_union = false;
-        let mut has_enum = false;
-        let mut has_typeof = false;
+        let mut flags = TypeSpecFlags::default();
         let mut mode_kind: Option<ModeKind> = None;
-        let mut typedef_name: Option<String> = None;
         let mut any_base_specifier = false;
 
         // Collect qualifiers, storage classes, and type specifiers
@@ -100,7 +110,7 @@ impl Parser {
                 // _Complex modifier
                 TokenKind::Complex => {
                     self.advance();
-                    has_complex = true;
+                    flags.has_complex = true;
                     any_base_specifier = true;
                 }
                 // GNU extensions
@@ -132,39 +142,39 @@ impl Parser {
                 }
                 // Type specifier tokens
                 TokenKind::Void => {
-                    self.advance(); has_void = true; any_base_specifier = true;
+                    self.advance(); flags.has_void = true; any_base_specifier = true;
                     break; // void can't combine with others
                 }
                 TokenKind::Char => {
-                    self.advance(); has_char = true; any_base_specifier = true;
+                    self.advance(); flags.has_char = true; any_base_specifier = true;
                     break; // char only combines with signed/unsigned
                 }
                 TokenKind::Short => {
-                    self.advance(); has_short = true; any_base_specifier = true;
+                    self.advance(); flags.has_short = true; any_base_specifier = true;
                 }
                 TokenKind::Int => {
-                    self.advance(); has_int = true; any_base_specifier = true;
+                    self.advance(); flags.has_int = true; any_base_specifier = true;
                 }
                 TokenKind::Long => {
-                    self.advance(); long_count += 1; any_base_specifier = true;
+                    self.advance(); flags.long_count += 1; any_base_specifier = true;
                 }
                 TokenKind::Float => {
-                    self.advance(); has_float = true; any_base_specifier = true;
+                    self.advance(); flags.has_float = true; any_base_specifier = true;
                     break;
                 }
                 TokenKind::Double => {
-                    self.advance(); has_double = true; any_base_specifier = true;
+                    self.advance(); flags.has_double = true; any_base_specifier = true;
                     break;
                 }
                 TokenKind::Bool => {
-                    self.advance(); has_bool = true; any_base_specifier = true;
+                    self.advance(); flags.has_bool = true; any_base_specifier = true;
                     break;
                 }
                 TokenKind::Signed => {
-                    self.advance(); has_signed = true; any_base_specifier = true;
+                    self.advance(); flags.has_signed = true; any_base_specifier = true;
                 }
                 TokenKind::Unsigned => {
-                    self.advance(); has_unsigned = true; any_base_specifier = true;
+                    self.advance(); flags.has_unsigned = true; any_base_specifier = true;
                 }
                 // __int128 can combine with signed/unsigned
                 TokenKind::Int128 => {
@@ -176,7 +186,7 @@ impl Parser {
                         return Some(TypeSpecifier::Int);
                     }
                     // __int128 already implies signed unless unsigned is present
-                    if has_unsigned {
+                    if flags.has_unsigned {
                         return Some(TypeSpecifier::UnsignedInt128);
                     } else {
                         return Some(TypeSpecifier::Int128);
@@ -193,24 +203,24 @@ impl Parser {
                     return Some(TypeSpecifier::UnsignedInt128);
                 }
                 TokenKind::Struct => {
-                    self.advance(); has_struct = true; any_base_specifier = true;
+                    self.advance(); flags.has_struct = true; any_base_specifier = true;
                     break;
                 }
                 TokenKind::Union => {
-                    self.advance(); has_union = true; any_base_specifier = true;
+                    self.advance(); flags.has_union = true; any_base_specifier = true;
                     break;
                 }
                 TokenKind::Enum => {
-                    self.advance(); has_enum = true; any_base_specifier = true;
+                    self.advance(); flags.has_enum = true; any_base_specifier = true;
                     break;
                 }
                 TokenKind::Typeof => {
-                    self.advance(); has_typeof = true; any_base_specifier = true;
+                    self.advance(); flags.has_typeof = true; any_base_specifier = true;
                     break;
                 }
                 TokenKind::Builtin => {
                     if !any_base_specifier {
-                        typedef_name = Some("__builtin_va_list".to_string());
+                        flags.typedef_name = Some("__builtin_va_list".to_string());
                         self.advance();
                         any_base_specifier = true;
                         break;
@@ -220,7 +230,7 @@ impl Parser {
                 }
                 TokenKind::Identifier(ref name) if self.typedefs.contains(name) && !self.shadowed_typedefs.contains(name) => {
                     if !any_base_specifier {
-                        typedef_name = Some(name.clone());
+                        flags.typedef_name = Some(name.clone());
                         self.advance();
                         any_base_specifier = true;
                         break;
@@ -234,22 +244,14 @@ impl Parser {
 
         // After the main loop, collect trailing specifiers that can follow
         // certain base types (e.g., "short unsigned int", "double long", "float _Complex")
-        self.collect_trailing_specifiers(
-            &mut has_char, &mut has_short, &mut has_int, &mut long_count,
-            &mut has_signed, &mut has_unsigned, &mut has_float, &mut has_double,
-            &mut has_complex, &mut mode_kind,
-        );
+        self.collect_trailing_specifiers(&mut flags, &mut mode_kind);
 
         if !any_base_specifier {
             return None;
         }
 
         // Resolve collected flags into a TypeSpecifier
-        let base = self.resolve_type_flags(
-            has_void, has_bool, has_float, has_double, has_complex, has_char,
-            has_short, has_int, has_unsigned, has_signed, has_struct, has_union,
-            has_enum, has_typeof, long_count, typedef_name,
-        );
+        let base = self.resolve_type_flags(&flags);
 
         // Handle trailing _Complex, qualifiers, and storage classes after the base type
         let base = self.consume_trailing_qualifiers(base);
@@ -269,21 +271,19 @@ impl Parser {
     /// "float" by "_Complex".
     fn collect_trailing_specifiers(
         &mut self,
-        has_char: &mut bool, has_short: &mut bool, has_int: &mut bool,
-        long_count: &mut u32, has_signed: &mut bool, has_unsigned: &mut bool,
-        has_float: &mut bool, has_double: &mut bool, has_complex: &mut bool,
+        flags: &mut TypeSpecFlags,
         mode_kind: &mut Option<ModeKind>,
     ) {
-        if *has_char || *has_short || *has_int || *long_count > 0 {
+        if flags.has_char || flags.has_short || flags.has_int || flags.long_count > 0 {
             loop {
                 match self.peek() {
-                    TokenKind::Signed => { self.advance(); *has_signed = true; }
-                    TokenKind::Unsigned => { self.advance(); *has_unsigned = true; }
-                    TokenKind::Int => { self.advance(); *has_int = true; }
-                    TokenKind::Long => { self.advance(); *long_count += 1; }
-                    TokenKind::Short => { self.advance(); *has_short = true; }
-                    TokenKind::Char => { self.advance(); *has_char = true; }
-                    TokenKind::Complex => { self.advance(); *has_complex = true; }
+                    TokenKind::Signed => { self.advance(); flags.has_signed = true; }
+                    TokenKind::Unsigned => { self.advance(); flags.has_unsigned = true; }
+                    TokenKind::Int => { self.advance(); flags.has_int = true; }
+                    TokenKind::Long => { self.advance(); flags.long_count += 1; }
+                    TokenKind::Short => { self.advance(); flags.has_short = true; }
+                    TokenKind::Char => { self.advance(); flags.has_char = true; }
+                    TokenKind::Complex => { self.advance(); flags.has_complex = true; }
                     TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict => { self.advance(); }
                     TokenKind::SegGs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegGs; }
                     TokenKind::SegFs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegFs; }
@@ -304,11 +304,11 @@ impl Parser {
                     _ => break,
                 }
             }
-        } else if *has_float {
+        } else if flags.has_float {
             // "float" can be followed by "_Complex" and storage class / qualifiers
             loop {
                 match self.peek() {
-                    TokenKind::Complex => { self.advance(); *has_complex = true; }
+                    TokenKind::Complex => { self.advance(); flags.has_complex = true; }
                     TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict => { self.advance(); }
                     TokenKind::SegGs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegGs; }
                     TokenKind::SegFs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegFs; }
@@ -322,12 +322,12 @@ impl Parser {
                     _ => break,
                 }
             }
-        } else if *has_double {
+        } else if flags.has_double {
             // "double" can be followed by "long", "_Complex", and storage class / qualifiers
             loop {
                 match self.peek() {
-                    TokenKind::Long => { self.advance(); *long_count += 1; }
-                    TokenKind::Complex => { self.advance(); *has_complex = true; }
+                    TokenKind::Long => { self.advance(); flags.long_count += 1; }
+                    TokenKind::Complex => { self.advance(); flags.has_complex = true; }
                     TokenKind::Const | TokenKind::Volatile | TokenKind::Restrict => { self.advance(); }
                     TokenKind::SegGs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegGs; }
                     TokenKind::SegFs => { self.advance(); self.attrs.parsing_address_space = AddressSpace::SegFs; }
@@ -347,12 +347,14 @@ impl Parser {
     /// Resolve the collected type specifier flags into a concrete TypeSpecifier.
     fn resolve_type_flags(
         &mut self,
-        has_void: bool, has_bool: bool, has_float: bool, has_double: bool,
-        has_complex: bool, has_char: bool, has_short: bool, _has_int: bool,
-        has_unsigned: bool, _has_signed: bool, has_struct: bool, has_union: bool,
-        has_enum: bool, has_typeof: bool, long_count: u32,
-        typedef_name: Option<String>,
+        flags: &TypeSpecFlags,
     ) -> TypeSpecifier {
+        let TypeSpecFlags {
+            has_void, has_bool, has_float, has_double, has_complex,
+            has_char, has_short, has_int: _, has_unsigned, has_signed: _,
+            has_struct, has_union, has_enum, has_typeof, long_count,
+            ref typedef_name,
+        } = *flags;
         if has_void {
             TypeSpecifier::Void
         } else if has_bool {
@@ -378,8 +380,8 @@ impl Parser {
             self.parse_enum_specifier()
         } else if has_typeof {
             self.parse_typeof_specifier()
-        } else if let Some(name) = typedef_name {
-            TypeSpecifier::TypedefName(name)
+        } else if let Some(ref name) = typedef_name {
+            TypeSpecifier::TypedefName(name.clone())
         } else if has_char {
             if has_unsigned { TypeSpecifier::UnsignedChar } else { TypeSpecifier::Char }
         } else if has_short {

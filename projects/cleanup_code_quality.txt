@@ -7,11 +7,12 @@ Items a Rust expert would flag, roughly ordered by impact:
    - gvn_dfs had 14 params, process_block had 10 params
    - Fixed by introducing GvnState struct with save_scope/restore_scope
 
-2. Functions with 10-20+ parameters (medium effort)
-   - parse_declaration_rest: 22 params -> should accept DeclAttributes struct
-   - resolve_type_flags: 16 boolean params -> should use a TypeFlags bitflags struct
-   - gvn_dfs: DONE (was 14 params)
-   Files: src/frontend/parser/declarations.rs:397, src/frontend/parser/types.rs:348
+2. [DONE] Functions with 10-20+ parameters
+   - parse_declaration_rest: 22 params -> DeclContext struct (DeclAttributes + alignment info)
+   - parse_function_def: 11 params -> accepts DeclAttributes directly
+   - resolve_type_flags: 16 boolean params -> TypeSpecFlags struct
+   - collect_trailing_specifiers: 10 params -> TypeSpecFlags struct
+   - gvn_dfs: DONE (was 14 params, now GvnState struct)
 
 3. Visibility: 1309 pub items vs 16 pub(crate) (large effort)
    - Nearly every struct field, method, and type is unrestricted pub

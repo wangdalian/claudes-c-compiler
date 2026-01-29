@@ -14,6 +14,25 @@ use crate::frontend::lexer::token::TokenKind;
 use super::ast::*;
 use super::parser::{ModeKind, ParsedDeclAttrs, Parser};
 
+/// Context for declaration-level attributes that flow from `parse_external_decl`
+/// into `parse_declaration_rest` and `parse_function_def`.
+///
+/// This groups the per-declarator GCC attributes, alignment info, and the
+/// `__attribute__((common))` flag that would otherwise be passed as 15+
+/// individual parameters.
+struct DeclContext {
+    /// Per-declarator attributes (constructor, destructor, weak, etc.)
+    attrs: DeclAttributes,
+    /// Combined alignment from `_Alignas`, declarator attrs, and post-declarator attrs
+    alignment: Option<usize>,
+    /// `_Alignas(type)` for deferred alignment resolution
+    alignas_type: Option<TypeSpecifier>,
+    /// `__attribute__((aligned(sizeof(type))))` for deferred sizeof
+    alignment_sizeof_type: Option<TypeSpecifier>,
+    /// `__attribute__((common))` - emit as common symbol
+    is_common: bool,
+}
+
 impl Parser {
     pub(super) fn parse_external_decl(&mut self) -> Option<ExternalDecl> {
         // Reset all declaration-level flags before parsing the next declaration.
@@ -134,6 +153,21 @@ impl Parser {
         let is_used = self.attrs.parsing_used();
         let is_fastcall = self.attrs.parsing_fastcall();
 
+        // Build per-declarator attributes struct from the collected flags
+        let mut decl_attrs = DeclAttributes::default();
+        decl_attrs.set_constructor(is_constructor);
+        decl_attrs.set_destructor(is_destructor);
+        decl_attrs.set_weak(is_weak);
+        decl_attrs.set_error_attr(is_error_attr);
+        decl_attrs.set_noreturn(is_noreturn);
+        decl_attrs.set_used(is_used);
+        decl_attrs.set_fastcall(is_fastcall);
+        decl_attrs.alias_target = alias_target;
+        decl_attrs.visibility = visibility;
+        decl_attrs.section = section;
+        decl_attrs.asm_register = first_asm_reg;
+        decl_attrs.cleanup_fn = cleanup_fn;
+
         // Apply __attribute__((mode(...))): transform type to specified bit-width
         let type_spec = if let Some(mk) = mode_kind {
             mk.apply(type_spec)
@@ -147,9 +181,16 @@ impl Parser {
             && (matches!(self.peek(), TokenKind::LBrace) || self.is_type_specifier());
 
         if is_funcdef {
-            self.parse_function_def(type_spec, name, derived, start, is_constructor, is_destructor, section, visibility, is_weak, is_used, is_fastcall)
+            self.parse_function_def(type_spec, name, derived, start, decl_attrs)
         } else {
-            self.parse_declaration_rest(type_spec, name, derived, start, is_constructor, is_destructor, is_common, merged_alignment, alignas_type, alignment_sizeof_type, is_weak, alias_target, visibility, section, first_asm_reg, is_error_attr, is_noreturn, cleanup_fn, is_used, is_fastcall)
+            let ctx = DeclContext {
+                attrs: decl_attrs,
+                alignment: merged_alignment,
+                alignas_type,
+                alignment_sizeof_type,
+                is_common,
+            };
+            self.parse_declaration_rest(type_spec, name, derived, start, ctx)
         }
     }
 
@@ -160,13 +201,7 @@ impl Parser {
         name: Option<String>,
         derived: Vec<DerivedDeclarator>,
         start: crate::common::source::Span,
-        is_constructor: bool,
-        is_destructor: bool,
-        section: Option<String>,
-        visibility: Option<String>,
-        is_weak: bool,
-        is_used: bool,
-        is_fastcall: bool,
+        decl_attrs: DeclAttributes,
     ) -> Option<ExternalDecl> {
         self.attrs.set_typedef(false); // function defs are never typedefs
         let (params, variadic) = if let Some(DerivedDeclarator::Function(p, v)) = derived.last() {
@@ -219,13 +254,13 @@ impl Parser {
                 attrs.set_gnu_inline(is_gnu_inline);
                 attrs.set_always_inline(is_always_inline);
                 attrs.set_noinline(is_noinline);
-                attrs.set_constructor(is_constructor);
-                attrs.set_destructor(is_destructor);
-                attrs.set_weak(is_weak);
-                attrs.set_used(is_used);
-                attrs.set_fastcall(is_fastcall);
-                attrs.section = section;
-                attrs.visibility = visibility;
+                attrs.set_constructor(decl_attrs.is_constructor());
+                attrs.set_destructor(decl_attrs.is_destructor());
+                attrs.set_weak(decl_attrs.is_weak());
+                attrs.set_used(decl_attrs.is_used());
+                attrs.set_fastcall(decl_attrs.is_fastcall());
+                attrs.section = decl_attrs.section;
+                attrs.visibility = decl_attrs.visibility;
                 attrs
             },
             is_kr: is_kr_style,
@@ -400,22 +435,7 @@ impl Parser {
         name: Option<String>,
         derived: Vec<DerivedDeclarator>,
         start: crate::common::source::Span,
-        is_constructor: bool,
-        is_destructor: bool,
-        mut is_common: bool,
-        mut alignment: Option<usize>,
-        alignas_type: Option<TypeSpecifier>,
-        alignment_sizeof_type: Option<TypeSpecifier>,
-        is_weak: bool,
-        alias_target: Option<String>,
-        visibility: Option<String>,
-        section: Option<String>,
-        first_asm_register: Option<String>,
-        is_error_attr: bool,
-        is_noreturn: bool,
-        cleanup_fn: Option<String>,
-        is_used: bool,
-        is_fastcall: bool,
+        mut ctx: DeclContext,
     ) -> Option<ExternalDecl> {
         let mut declarators = Vec::new();
         let init = if self.consume_if(&TokenKind::Assign) {
@@ -423,26 +443,12 @@ impl Parser {
         } else {
             None
         };
+        let section = ctx.attrs.section.clone();
         declarators.push(InitDeclarator {
             name: name.unwrap_or_default(),
             derived,
             init,
-            attrs: {
-                let mut da = DeclAttributes::default();
-                da.set_constructor(is_constructor);
-                da.set_destructor(is_destructor);
-                da.set_weak(is_weak);
-                da.set_error_attr(is_error_attr);
-                da.set_noreturn(is_noreturn);
-                da.set_used(is_used);
-                da.set_fastcall(is_fastcall);
-                da.alias_target = alias_target;
-                da.visibility = visibility;
-                da.section = section.clone();
-                da.asm_register = first_asm_register;
-                da.cleanup_fn = cleanup_fn;
-                da
-            },
+            attrs: ctx.attrs,
             span: start,
         });
 
@@ -486,16 +492,16 @@ impl Parser {
         self.attrs.parsing_cleanup_fn = None;
         self.attrs.set_used(false);
         self.attrs.set_fastcall(false);
-        is_common = is_common || extra_common;
+        ctx.is_common = ctx.is_common || extra_common;
         if let Some(a) = extra_aligned {
-            alignment = Some(alignment.map_or(a, |prev| prev.max(a)));
+            ctx.alignment = Some(ctx.alignment.map_or(a, |prev| prev.max(a)));
         }
 
         // Parse additional declarators separated by commas
         while self.consume_if(&TokenKind::Comma) {
             let (dname, dderived) = self.parse_declarator();
             let (d_ctor, d_dtor, _, d_common, _, d_asm_reg) = self.parse_asm_and_attributes();
-            is_common = is_common || d_common;
+            ctx.is_common = ctx.is_common || d_common;
             let d_weak = self.attrs.parsing_weak();
             let d_alias = self.attrs.parsing_alias_target.take();
             let d_vis = self.attrs.parsing_visibility.take()
@@ -543,7 +549,7 @@ impl Parser {
                 declarators.last_mut().unwrap().attrs.asm_register = Some(reg);
             }
             if let Some(a) = skip_aligned {
-                alignment = Some(alignment.map_or(a, |prev| prev.max(a)));
+                ctx.alignment = Some(ctx.alignment.map_or(a, |prev| prev.max(a)));
             }
         }
 
@@ -557,7 +563,7 @@ impl Parser {
         let mut d = Declaration::new(
             type_spec,
             declarators,
-            alignment, alignas_type, alignment_sizeof_type,
+            ctx.alignment, ctx.alignas_type, ctx.alignment_sizeof_type,
             self.attrs.parsing_address_space,
             self.attrs.parsing_vector_size.take(),
             start,
@@ -567,7 +573,7 @@ impl Parser {
         d.set_typedef(is_typedef);
         d.set_const(self.attrs.parsing_const());
         d.set_volatile(self.attrs.parsing_volatile());
-        d.set_common(is_common);
+        d.set_common(ctx.is_common);
         d.set_thread_local(self.attrs.parsing_thread_local());
         d.set_transparent_union(is_transparent_union);
         Some(ExternalDecl::Declaration(d))
