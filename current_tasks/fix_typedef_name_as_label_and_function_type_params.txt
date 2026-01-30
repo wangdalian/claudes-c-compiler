@@ -1,0 +1,18 @@
+Task: Fix typedef name as label and function type parameters
+
+Goal: Fix two parser issues:
+1. Typedef names used as labels (e.g., `Ins:` where `Ins` is a typedef) should be parsed
+   as labels, not declarations. Currently the parser sees a typedef name and enters
+   declaration parsing, failing to recognize the label.
+2. Function types used as parameter declarations (e.g., `void (Dat *)` as a parameter
+   in a function declaration) should be parsed correctly as function types that decay
+   to function pointers.
+
+These issues prevent the QBE project from compiling.
+
+Key files:
+- src/frontend/parser/statements.rs (label vs declaration disambiguation)
+- src/frontend/parser/declarators.rs (function type in parameter position)
+
+Status: in_progress
+Started: 2026-01-30
