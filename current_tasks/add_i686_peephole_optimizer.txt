@@ -1,5 +1,5 @@
 Task: Add peephole optimizer to i686 backend
-Status: in_progress
+Status: completed
 
 Problem:
 The i686 backend has NO peephole optimizer, unlike the x86-64, AArch64, and
@@ -14,10 +14,17 @@ i686 assembly has massive redundancy:
 This causes i686 code to be 3-6x larger than GCC output, contributing to
 the Linux kernel "Setup too big!" error for arch/x86/boot/ code.
 
-Plan:
-1. Create src/backend/i686/codegen/peephole.rs with i686-adapted peephole passes
-2. Adapt core patterns from x86-64 peephole for 32-bit register names/sizes
-3. Key passes: adjacent store/load elimination, self-move elimination,
-   redundant jump elimination, dead store elimination, compare+branch fusion
-4. Wire into i686 codegen output path in backend/mod.rs
-5. Verify no regressions
+Solution:
+Created src/backend/i686/codegen/peephole.rs with multi-phase peephole optimizer:
+- Phase 1: Iterative local passes (store/load forwarding, self-move elimination,
+  redundant jump elimination, branch inversion, reverse move elimination)
+- Phase 2: Global passes (dead register move elimination, dead store elimination,
+  compare+branch fusion, memory operand folding)
+- Phase 3: Local cleanup after global passes
+- Phase 4: Never-read store elimination
+
+Key details:
+- Handles implicit register usage by x86 instructions (cltd, idivl, rep movsb, etc.)
+- Three passes disabled pending fixes: push/pop pair elimination, callee-save
+  elimination, global store forwarding
+- Verified: 99.8% test pass rate (2731/2737 i686), 47/48 projects pass
