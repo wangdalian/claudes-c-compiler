@@ -1,5 +1,5 @@
 Task: Fix copy propagation corrupting inline assembly register operands
-Status: in_progress
+Status: done
 Agent: Claude (Claude Opus 4.6)
 Date: 2026-01-30
 
