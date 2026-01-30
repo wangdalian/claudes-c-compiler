@@ -723,7 +723,6 @@ impl Preprocessor {
                     is_variadic: false,
                     has_named_variadic: false,
                     body: "__builtin_va_start(ap,last)".to_string(),
-                    is_predefined: true,
                 });
                 self.macros.define(MacroDef {
                     name: "va_end".to_string(),
@@ -732,7 +731,6 @@ impl Preprocessor {
                     is_variadic: false,
                     has_named_variadic: false,
                     body: "__builtin_va_end(ap)".to_string(),
-                    is_predefined: true,
                 });
                 self.macros.define(MacroDef {
                     name: "va_copy".to_string(),
@@ -741,7 +739,6 @@ impl Preprocessor {
                     is_variadic: false,
                     has_named_variadic: false,
                     body: "__builtin_va_copy(dest,src)".to_string(),
-                    is_predefined: true,
                 });
                 // va_arg is special syntax: __builtin_va_arg(ap, type)
                 // It's handled by the parser as a special built-in, so we define
@@ -753,7 +750,6 @@ impl Preprocessor {
                     is_variadic: false,
                     has_named_variadic: false,
                     body: "__builtin_va_arg(ap,type)".to_string(),
-                    is_predefined: true,
                 });
                 // Also define __gnuc_va_list as a typedef
                 self.pending_injections.push("typedef __builtin_va_list __gnuc_va_list;\n".to_string());

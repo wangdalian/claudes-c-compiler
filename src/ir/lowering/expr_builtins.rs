@@ -234,7 +234,6 @@ impl Lowerer {
             BuiltinKind::Identity => {
                 Some(args.first().map_or(Operand::Const(IrConst::I64(0)), |a| self.lower_expr(a)))
             }
-            BuiltinKind::ConstantI64(val) => Some(Operand::Const(IrConst::I64(*val))),
             BuiltinKind::ConstantF64(val) => {
                 let is_float_variant = name == "__builtin_inff"
                     || name == "__builtin_huge_valf"

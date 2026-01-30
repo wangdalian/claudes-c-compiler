@@ -222,12 +222,6 @@ impl WarningConfig {
         }
     }
 
-    /// Set global -Werror (all warnings become errors).
-    #[allow(dead_code)]
-    pub fn set_werror_all(&mut self, val: bool) {
-        self.werror_all = val;
-    }
-
     /// Promote a specific warning to error (-Werror=<name>).
     pub fn set_werror(&mut self, kind: WarningKind) {
         self.errors.insert(kind);
@@ -488,12 +482,6 @@ impl DiagnosticEngine {
         self.warning_config = config;
     }
 
-    /// Get a reference to the warning configuration.
-    #[allow(dead_code)]
-    pub fn warning_config(&self) -> &WarningConfig {
-        &self.warning_config
-    }
-
     /// Set the source manager for span resolution and snippet display.
     pub fn set_source_manager(&mut self, sm: SourceManager) {
         self.source_manager = Some(sm);
@@ -502,12 +490,6 @@ impl DiagnosticEngine {
     /// Take ownership of the source manager (for passing to codegen for debug info).
     pub fn take_source_manager(&mut self) -> Option<SourceManager> {
         self.source_manager.take()
-    }
-
-    /// Get a reference to the source manager (if set).
-    #[allow(dead_code)]
-    pub fn source_manager(&self) -> Option<&SourceManager> {
-        self.source_manager.as_ref()
     }
 
     /// Set the color mode for diagnostic output.
@@ -598,36 +580,15 @@ impl DiagnosticEngine {
         self.emit(&diag);
     }
 
-    /// Emit an error with just a message (no span).
-    #[allow(dead_code)]
-    pub fn error_no_span(&mut self, message: impl Into<String>) {
-        let diag = Diagnostic::error(message);
-        self.emit(&diag);
-    }
-
     /// Emit a warning with a message and span.
     pub fn warning(&mut self, message: impl Into<String>, span: Span) {
         let diag = Diagnostic::warning(message).with_span(span);
         self.emit(&diag);
     }
 
-    /// Emit a warning with just a message (no span).
-    #[allow(dead_code)]
-    pub fn warning_no_span(&mut self, message: impl Into<String>) {
-        let diag = Diagnostic::warning(message);
-        self.emit(&diag);
-    }
-
     /// Emit a categorized warning with a message, span, and kind.
     pub fn warning_with_kind(&mut self, message: impl Into<String>, span: Span, kind: WarningKind) {
         let diag = Diagnostic::warning_with_kind(message, kind).with_span(span);
-        self.emit(&diag);
-    }
-
-    /// Emit a categorized warning with just a message (no span).
-    #[allow(dead_code)]
-    pub fn warning_with_kind_no_span(&mut self, message: impl Into<String>, kind: WarningKind) {
-        let diag = Diagnostic::warning_with_kind(message, kind);
         self.emit(&diag);
     }
 

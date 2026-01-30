@@ -63,16 +63,16 @@ and PostgreSQL.
 | QuickJS | Closure, language, loop, builtin, bytecode tests |
 | libpng | pngtest |
 | libjpeg-turbo | cjpeg/djpeg roundtrip, jpegtran |
-| SQLite | 622 sqllogictest tests |
+| SQLite | sqllogictest suite |
 | libuv | Loop, timer, idle, async, tcp, fs tests |
 | Redis | SET/GET roundtrip |
 | libffi | Call + closure tests; RISC-V: call_double returns 0 |
 | musl libc | hello, malloc, string, math, io, environ |
-| tcc | 78 tests including tests2 suite; i686: build succeeds but tcc can't find 32-bit system headers at runtime |
+| tcc | Full test suite including tests2; i686: build succeeds but tcc can't find 32-bit system headers at runtime |
 | mbedTLS | AES, RSA, ECP, SHA, ARIA self-tests |
-| jq | All 12 tests on all architectures (x86, ARM, RISC-V, i686) |
+| jq | All tests on all architectures (x86, ARM, RISC-V, i686) |
 | Linux kernel | Builds and boots on x86-64 and AArch64 |
-| PostgreSQL | x86: 216/216; ARM: 216/216; RISC-V: 216/216 |
+| PostgreSQL | Full regression suite on x86, ARM, RISC-V |
 
 ### Known limitations
 
@@ -190,7 +190,7 @@ python3 /verify/verify_compiler.py --compiler target/release/ccc --arch x86
 
 - `src/` -- Compiler source code (Rust)
 - `include/` -- Bundled C headers (SSE/AVX intrinsic stubs)
-- `tests/` -- Test suite (~874 test directories)
+- `tests/` -- Test suite (test directories for each test case)
 - `ideas/` -- Design docs and future work proposals
 - `current_tasks/` -- Active work items (lock files for coordination)
 - `completed_tasks/` -- Finished work items (for reference)

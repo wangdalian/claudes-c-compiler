@@ -13,7 +13,7 @@ Orchestrates the compilation pipeline from command-line arguments through to fin
 
 ## Why This Split
 
-The driver was a single 1625-line file. The split follows natural seams:
+The driver was originally a single monolithic file. The split follows natural seams:
 
 - **CLI parsing** is self-contained: it reads `args`, mutates `Driver` fields, and returns. No coupling to the compilation pipeline.
 - **External tool invocation** centralizes all `std::process::Command` usage. If the compiler later gains a native assembler/linker, only this file changes.

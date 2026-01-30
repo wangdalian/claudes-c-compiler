@@ -1120,10 +1120,6 @@ impl ArchCodegen for X86Codegen {
         self.state.out.emit_instr_reg_reg("    movq", "rax", d_name);
     }
 
-    fn phys_reg_name(&self, reg: PhysReg) -> &'static str {
-        phys_reg_name(reg)
-    }
-
     fn jump_mnemonic(&self) -> &'static str { "jmp" }
     fn trap_instruction(&self) -> &'static str { "ud2" }
 

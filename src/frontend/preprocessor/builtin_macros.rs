@@ -15,7 +15,6 @@ fn def(macros: &mut MacroTable, name: &str, body: &str) {
         is_variadic: false,
         has_named_variadic: false,
         body: body.to_string(),
-        is_predefined: true,
     });
 }
 
@@ -117,7 +116,6 @@ fn define_stdint_macros(macros: &mut MacroTable) {
         is_variadic: false,
         has_named_variadic: false,
         body: "x".to_string(),
-        is_predefined: true,
     });
     macros.define(MacroDef {
         name: "INT16_C".to_string(),
@@ -126,7 +124,6 @@ fn define_stdint_macros(macros: &mut MacroTable) {
         is_variadic: false,
         has_named_variadic: false,
         body: "x".to_string(),
-        is_predefined: true,
     });
     macros.define(MacroDef {
         name: "INT32_C".to_string(),
@@ -135,7 +132,6 @@ fn define_stdint_macros(macros: &mut MacroTable) {
         is_variadic: false,
         has_named_variadic: false,
         body: "x".to_string(),
-        is_predefined: true,
     });
     macros.define(MacroDef {
         name: "INT64_C".to_string(),
@@ -144,7 +140,6 @@ fn define_stdint_macros(macros: &mut MacroTable) {
         is_variadic: false,
         has_named_variadic: false,
         body: "x ## LL".to_string(),
-        is_predefined: true,
     });
     macros.define(MacroDef {
         name: "UINT8_C".to_string(),
@@ -153,7 +148,6 @@ fn define_stdint_macros(macros: &mut MacroTable) {
         is_variadic: false,
         has_named_variadic: false,
         body: "x".to_string(),
-        is_predefined: true,
     });
     macros.define(MacroDef {
         name: "UINT16_C".to_string(),
@@ -162,7 +156,6 @@ fn define_stdint_macros(macros: &mut MacroTable) {
         is_variadic: false,
         has_named_variadic: false,
         body: "x".to_string(),
-        is_predefined: true,
     });
     macros.define(MacroDef {
         name: "UINT32_C".to_string(),
@@ -171,7 +164,6 @@ fn define_stdint_macros(macros: &mut MacroTable) {
         is_variadic: false,
         has_named_variadic: false,
         body: "x ## U".to_string(),
-        is_predefined: true,
     });
     macros.define(MacroDef {
         name: "UINT64_C".to_string(),
@@ -180,7 +172,6 @@ fn define_stdint_macros(macros: &mut MacroTable) {
         is_variadic: false,
         has_named_variadic: false,
         body: "x ## ULL".to_string(),
-        is_predefined: true,
     });
     macros.define(MacroDef {
         name: "INTMAX_C".to_string(),
@@ -189,7 +180,6 @@ fn define_stdint_macros(macros: &mut MacroTable) {
         is_variadic: false,
         has_named_variadic: false,
         body: "x ## LL".to_string(),
-        is_predefined: true,
     });
     macros.define(MacroDef {
         name: "UINTMAX_C".to_string(),
@@ -198,7 +188,6 @@ fn define_stdint_macros(macros: &mut MacroTable) {
         is_variadic: false,
         has_named_variadic: false,
         body: "x ## ULL".to_string(),
-        is_predefined: true,
     });
 }
 
@@ -215,7 +204,6 @@ fn define_stddef_macros(macros: &mut MacroTable) {
         is_variadic: false,
         has_named_variadic: false,
         body: "__builtin_offsetof(type, member)".to_string(),
-        is_predefined: true,
     });
 }
 

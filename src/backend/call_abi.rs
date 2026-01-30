@@ -250,7 +250,7 @@ pub struct CallAbiConfig {
 #[allow(dead_code)]
 pub enum SysvStructRegClass {
     /// All eightbytes are INTEGER class -> GP registers only.
-    AllInt { gp_count: usize },
+    AllInt,
     /// All eightbytes are SSE class -> XMM registers only.
     AllSse { fp_count: usize },
     /// First eightbyte INTEGER, second SSE (mixed).
@@ -290,7 +290,7 @@ pub fn classify_sysv_struct(
         if eb0_is_sse {
             (SysvStructRegClass::AllSse { fp_count: 1 }, 0, 1)
         } else {
-            (SysvStructRegClass::AllInt { gp_count: 1 }, 1, 0)
+            (SysvStructRegClass::AllInt, 1, 0)
         }
     } else if eb0_is_sse && eb1_is_sse {
         (SysvStructRegClass::AllSse { fp_count: 2 }, 0, 2)
@@ -299,7 +299,7 @@ pub fn classify_sysv_struct(
     } else if eb0_is_sse && !eb1_is_sse {
         (SysvStructRegClass::SseInt, 1, 1)
     } else {
-        (SysvStructRegClass::AllInt { gp_count: 2 }, 2, 0)
+        (SysvStructRegClass::AllInt, 2, 0)
     }
 }
 
@@ -325,8 +325,6 @@ pub(crate) struct ArgInfo<'a> {
     pub(crate) eightbyte_classes: &'a [crate::common::types::EightbyteClass],
     /// RISC-V LP64D float struct classification. None if not applicable.
     pub(crate) riscv_float_class: Option<crate::common::types::RiscvFloatClass>,
-    /// The IrType of this argument/param (needed for callee-side stack sizing).
-    pub(crate) ty: Option<IrType>,
 }
 
 // ---------------------------------------------------------------------------
@@ -401,7 +399,7 @@ fn classify_args_core(
                         let hi = if fp_count > 1 { Some(float_idx + 1) } else { None };
                         result.push(CoreArgClass::StructSseReg { lo_fp_idx: float_idx, hi_fp_idx: hi, size });
                     }
-                    SysvStructRegClass::AllInt { .. } => {
+                    SysvStructRegClass::AllInt => {
                         result.push(CoreArgClass::StructByValReg { base_reg_idx: int_idx, size });
                     }
                     SysvStructRegClass::IntSse => {
@@ -578,7 +576,6 @@ pub fn classify_call_args(
             struct_align: struct_arg_aligns.get(i).copied().flatten(),
             eightbyte_classes: struct_arg_classes.get(i).map(|v| v.as_slice()).unwrap_or(&[]),
             riscv_float_class: struct_arg_riscv_float_classes.get(i).copied().flatten(),
-            ty: arg_ty,
         }
     }).collect();
 
@@ -643,7 +640,6 @@ pub fn classify_params_full(func: &IrFunction, config: &CallAbiConfig) -> ParamC
             struct_align: param.struct_align,
             eightbyte_classes: &param.struct_eightbyte_classes,
             riscv_float_class: param.riscv_float_class,
-            ty: Some(param.ty),
         }
     }).collect();
 

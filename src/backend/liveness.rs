@@ -42,8 +42,6 @@ pub struct LiveInterval {
 #[allow(dead_code)]
 pub struct LivenessResult {
     pub intervals: Vec<LiveInterval>,
-    /// Total number of program points (for debugging/sizing).
-    pub num_points: u32,
     /// Program points that are Call or CallIndirect instructions.
     /// Used by the register allocator to identify values that cross call boundaries.
     pub call_points: Vec<u32>,
@@ -155,7 +153,7 @@ struct ProgramPointState {
 pub fn compute_live_intervals(func: &IrFunction) -> LivenessResult {
     let num_blocks = func.blocks.len();
     if num_blocks == 0 {
-        return LivenessResult { intervals: Vec::new(), num_points: 0, call_points: Vec::new(), block_loop_depth: Vec::new() };
+        return LivenessResult { intervals: Vec::new(), call_points: Vec::new(), block_loop_depth: Vec::new() };
     }
 
     let alloca_set = collect_alloca_set(func);
@@ -163,7 +161,7 @@ pub fn compute_live_intervals(func: &IrFunction) -> LivenessResult {
 
     let num_values = value_ids.len();
     if num_values == 0 {
-        return LivenessResult { intervals: Vec::new(), num_points: 0, call_points: Vec::new(), block_loop_depth: Vec::new() };
+        return LivenessResult { intervals: Vec::new(), call_points: Vec::new(), block_loop_depth: Vec::new() };
     }
 
     // Phase 1: Assign program points and build gen/kill sets.
@@ -206,7 +204,6 @@ pub fn compute_live_intervals(func: &IrFunction) -> LivenessResult {
 
     LivenessResult {
         intervals,
-        num_points: ps.num_points,
         call_points: ps.call_points,
         block_loop_depth,
     }

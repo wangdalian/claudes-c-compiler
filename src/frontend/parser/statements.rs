@@ -10,7 +10,6 @@ use super::parser::Parser;
 
 impl Parser {
     pub(super) fn parse_compound_stmt(&mut self) -> CompoundStmt {
-        let start = self.peek_span();
         let open_brace = self.peek_span();
         self.expect(&TokenKind::LBrace);
         let mut items = Vec::new();
@@ -88,7 +87,7 @@ impl Parser {
         self.expect_closing(&TokenKind::RBrace, open_brace);
         self.shadowed_typedefs = saved_shadowed;
         self.attrs.restore_flags(saved_attr_flags);
-        CompoundStmt { items, span: start, local_labels }
+        CompoundStmt { items, local_labels }
     }
 
     pub(super) fn parse_stmt(&mut self) -> Stmt {

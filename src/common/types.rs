@@ -614,19 +614,6 @@ impl StructLayout {
         b.finalize()
     }
 
-    /// Convenience wrapper: compute layout with default (no packing).
-    #[allow(dead_code)]
-    pub fn for_struct(fields: &[StructField], ctx: &dyn StructLayoutProvider) -> Self {
-        Self::for_struct_with_packing(fields, None, ctx)
-    }
-
-    /// Compute the layout for a union (all fields at offset 0, size = max field size).
-    /// Convenience wrapper with no packing.
-    #[allow(dead_code)]
-    pub fn for_union(fields: &[StructField], ctx: &dyn StructLayoutProvider) -> Self {
-        Self::for_union_with_packing(fields, None, ctx)
-    }
-
     /// Compute the layout for a union with optional packing.
     /// `max_field_align`: if Some(N), cap each field's alignment to min(natural, N).
     ///   For __attribute__((packed)), pass Some(1).
@@ -1398,27 +1385,6 @@ impl CType {
         }
     }
 
-    /// Alignment in bytes for non-struct/union types. For struct/union, returns 1.
-    /// Use align_ctx() when you need accurate struct/union alignment.
-    #[allow(dead_code)]
-    pub fn align(&self) -> usize {
-        match self {
-            CType::Struct(_) | CType::Union(_) => 1,
-            _ => {
-                let empty: FxHashMap<String, RcLayout> = FxHashMap::default();
-                self.align_ctx(&empty)
-            }
-        }
-    }
-
-    /// Get the struct/union layout key if this is a CType::Struct or CType::Union.
-    #[allow(dead_code)]
-    pub fn struct_key(&self) -> Option<&str> {
-        match self {
-            CType::Struct(key) | CType::Union(key) => Some(key),
-            _ => None,
-        }
-    }
 
     pub fn is_integer(&self) -> bool {
         matches!(self, CType::Bool | CType::Char | CType::UChar | CType::Short | CType::UShort |
@@ -1489,16 +1455,6 @@ impl CType {
         }
     }
 
-    /// Get the complex type for a given real component type.
-    #[allow(dead_code)]
-    pub fn to_complex(&self) -> CType {
-        match self {
-            CType::Float => CType::ComplexFloat,
-            CType::Double => CType::ComplexDouble,
-            CType::LongDouble => CType::ComplexLongDouble,
-            _ => CType::ComplexDouble, // default: promote to complex double
-        }
-    }
 
     /// Whether this is an unsigned integer type.
     /// Used by usual arithmetic conversions (C11 6.3.1.8).
@@ -1675,32 +1631,6 @@ impl CType {
         }
     }
 
-    /// Get the pointee type if this is a Pointer.
-    #[allow(dead_code)]
-    pub fn pointee(&self) -> Option<&CType> {
-        match self {
-            CType::Pointer(inner, _) => Some(inner),
-            _ => None,
-        }
-    }
-
-    /// Get the array element type if this is an Array.
-    #[allow(dead_code)]
-    pub fn array_element(&self) -> Option<&CType> {
-        match self {
-            CType::Array(elem, _) => Some(elem),
-            _ => None,
-        }
-    }
-
-    /// Get the array length if this is a sized Array.
-    #[allow(dead_code)]
-    pub fn array_len(&self) -> Option<usize> {
-        match self {
-            CType::Array(_, Some(n)) => Some(*n),
-            _ => None,
-        }
-    }
 
     /// Extract the return type from a function pointer CType.
     ///
@@ -1726,18 +1656,6 @@ impl CType {
             CType::Function(ft) => Some(ft.return_type.clone()),
             _ => None,
         }
-    }
-
-    /// Whether this is a struct type.
-    #[allow(dead_code)]
-    pub fn is_struct(&self) -> bool {
-        matches!(self, CType::Struct(_))
-    }
-
-    /// Whether this is a union type.
-    #[allow(dead_code)]
-    pub fn is_union(&self) -> bool {
-        matches!(self, CType::Union(_))
     }
 
     /// Whether this is a struct or union type.
@@ -1874,19 +1792,6 @@ impl IrType {
             IrType::I32 => val as i32 as i64,
             IrType::U32 => val as u32 as i64,
             _ => val,
-        }
-    }
-
-    /// Get the signed counterpart of this type.
-    #[allow(dead_code)]
-    pub fn to_signed(&self) -> Self {
-        match self {
-            IrType::U8 => IrType::I8,
-            IrType::U16 => IrType::I16,
-            IrType::U32 => IrType::I32,
-            IrType::U64 => IrType::I64,
-            IrType::U128 => IrType::I128,
-            other => *other,
         }
     }
 

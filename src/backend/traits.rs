@@ -189,12 +189,6 @@ pub trait ArchCodegen {
         panic!("backend must implement emit_acc_to_phys_reg when get_phys_reg_for_value returns Some");
     }
 
-    /// Get the assembly name for a physical register.
-    #[allow(dead_code)]
-    fn phys_reg_name(&self, _reg: PhysReg) -> &'static str {
-        panic!("backend must implement phys_reg_name when using register allocation");
-    }
-
     /// Compute the runtime-aligned address of an over-aligned alloca into the
     /// pointer register (same register used by emit_load_ptr_from_slot: rcx on x86).
     fn emit_alloca_aligned_addr(&mut self, slot: StackSlot, val_id: u32);
@@ -1369,28 +1363,6 @@ pub fn build_jump_table(cases: &[(i64, BlockId)], default: &BlockId) -> (Vec<Blo
         table[idx] = target;
     }
     (table, min_val, range)
-}
-
-/// Emit the .rodata section containing jump table entries, then restore the text section.
-///
-/// Each entry is a pointer-sized absolute address of the target label,
-/// using the architecture's pointer directive (.quad/.xword/.dword).
-#[allow(dead_code)]
-pub fn emit_jump_table_rodata(cg: &mut (impl ArchCodegen + ?Sized), table_label: &str, table: &[BlockId]) {
-    let ptr_dir = cg.ptr_directive();
-    // x86: .align 8 (byte alignment), ARM/RISC-V: .align 3 (2^3 = 8-byte alignment)
-    let align = if ptr_dir.is_x86() { 8 } else { 3 };
-    cg.state().emit(".section .rodata");
-    cg.state().emit_fmt(format_args!(".align {}", align));
-    cg.state().emit_fmt(format_args!("{}:", table_label));
-    let directive = ptr_dir.as_str();
-    for target in table {
-        let target_label = target.as_label();
-        cg.state().emit_fmt(format_args!("    {} {}", directive, target_label));
-    }
-    // Restore the function's text section (may be custom, e.g. .init.text)
-    let sect = cg.state_ref().current_text_section.clone();
-    cg.state().emit_fmt(format_args!(".section {},\"ax\",@progbits", sect));
 }
 
 // ── Default store/load implementations as free functions ──────────────────────

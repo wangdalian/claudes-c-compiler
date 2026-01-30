@@ -20,8 +20,8 @@ The core IR types were split from a single monolithic `ir.rs` into focused submo
 | **ir.rs** | Re-export hub — imports and re-exports all submodule types |
 | **constants.rs** | `IrConst`, `ConstHashKey`, float encoding (`f64_to_f128_bytes`, `f64_to_x87_bytes`) |
 | **ops.rs** | `IrBinOp`, `IrUnaryOp`, `IrCmpOp`, `AtomicRmwOp`, `AtomicOrdering` with eval methods |
-| **intrinsics.rs** | `IntrinsicOp` — 80+ SIMD/crypto/math intrinsic variants with `is_pure()` |
-| **instruction.rs** | `Instruction` (30+ variants), `Terminator`, `BasicBlock`, `BlockId`, `Value`, `Operand`, `CallInfo` |
+| **intrinsics.rs** | `IntrinsicOp` — SIMD/crypto/math intrinsic variants with `is_pure()` |
+| **instruction.rs** | `Instruction`, `Terminator`, `BasicBlock`, `BlockId`, `Value`, `Operand`, `CallInfo` |
 | **module.rs** | `IrModule`, `IrFunction`, `IrParam`, `IrGlobal`, `GlobalInit` |
 | **analysis.rs** | CFG and dominator tree: `build_cfg`, `compute_dominators` (Cooper-Harvey-Kennedy), `compute_dominance_frontiers` |
 | **lowering/** | AST → IR lowering (see lowering/README.md) |

@@ -52,7 +52,6 @@ impl Lowerer {
                         ParamDecl {
                             type_spec: Self::ctype_to_type_spec(cty),
                             name: name.clone(),
-                            span: crate::common::source::Span::dummy(),
                             fptr_params: None,
                             is_const: false,
                             vla_size_exprs: Vec::new(),
@@ -100,7 +99,6 @@ impl Lowerer {
                     ParamDecl {
                         type_spec: Self::ctype_to_type_spec(cty),
                         name: name.clone(),
-                        span: crate::common::source::Span::dummy(),
                         fptr_params: None,
                         is_const: false,
                         vla_size_exprs: Vec::new(),

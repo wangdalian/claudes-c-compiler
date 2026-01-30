@@ -49,15 +49,8 @@ impl FlatAdj {
         (self.offsets[i + 1] - self.offsets[i]) as usize
     }
 
-    /// Get the number of rows (nodes).
-    #[inline]
-    #[allow(dead_code)]
-    pub fn num_rows(&self) -> usize {
-        if self.offsets.is_empty() { 0 } else { self.offsets.len() - 1 }
-    }
-
-    /// Build a FlatAdj from `Vec<Vec<usize>>` for tests and compatibility.
-    #[allow(dead_code)]
+    /// Build a FlatAdj from `Vec<Vec<usize>>` for tests.
+    #[cfg(test)]
     pub fn from_vecs_usize(vecs: &[Vec<usize>]) -> Self {
         let n = vecs.len();
         let mut offsets = Vec::with_capacity(n + 1);
@@ -344,7 +337,6 @@ pub fn build_dom_tree_children(num_blocks: usize, idom: &[usize]) -> Vec<Vec<usi
 /// `find_natural_loops` calls per function per iteration.
 #[allow(dead_code)]
 pub struct CfgAnalysis {
-    pub label_to_idx: FxHashMap<BlockId, usize>,
     pub preds: FlatAdj,
     pub succs: FlatAdj,
     pub idom: Vec<usize>,
@@ -361,7 +353,6 @@ impl CfgAnalysis {
         let idom = compute_dominators(num_blocks, &preds, &succs);
         let dom_children = build_dom_tree_children(num_blocks, &idom);
         CfgAnalysis {
-            label_to_idx,
             preds,
             succs,
             idom,

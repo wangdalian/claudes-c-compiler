@@ -16,10 +16,9 @@
 //! information for the lowerer. Full type checking is TODO.
 
 use crate::common::error::DiagnosticEngine;
-use crate::common::symbol_table::{Symbol, SymbolTable, StorageClass};
+use crate::common::symbol_table::{Symbol, SymbolTable};
 use crate::common::type_builder;
 use crate::common::types::{AddressSpace, CType, FunctionType, StructLayout};
-use crate::common::source::Span;
 use crate::frontend::parser::ast::{
     BlockItem,
     CompoundStmt,
@@ -73,7 +72,6 @@ pub type ExprTypeMap = FxHashMap<ExprId, CType>;
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct FunctionInfo {
-    pub name: String,
     pub return_type: CType,
     pub params: Vec<(CType, Option<String>)>,
     pub variadic: bool,
@@ -190,12 +188,6 @@ impl SemanticAnalyzer {
         self.result
     }
 
-    /// Get a reference to the analysis results.
-    #[allow(dead_code)]
-    pub fn result(&self) -> &SemaResult {
-        &self.result
-    }
-
     /// Set a pre-configured diagnostic engine on the analyzer.
     pub fn set_diagnostics(&mut self, engine: DiagnosticEngine) {
         self.diagnostics = RefCell::new(engine);
@@ -220,7 +212,6 @@ impl SemanticAnalyzer {
         let prior_noreturn = self.result.functions.get(&func.name)
             .map_or(false, |fi| fi.is_noreturn);
         let func_info = FunctionInfo {
-            name: func.name.clone(),
             return_type: return_type.clone(),
             params: params.clone(),
             variadic: func.variadic,
@@ -237,17 +228,9 @@ impl SemanticAnalyzer {
             params: params.clone(),
             variadic: func.variadic,
         }));
-        let storage_class = if func.attrs.is_static() {
-            StorageClass::Static
-        } else {
-            StorageClass::Extern
-        };
         self.symbol_table.declare(Symbol {
             name: func.name.clone(),
             ty: func_ctype,
-            storage_class,
-            span: func.span,
-            is_defined: true,
             explicit_alignment: None,
         });
 
@@ -263,9 +246,6 @@ impl SemanticAnalyzer {
                 self.symbol_table.declare(Symbol {
                     name: name.clone(),
                     ty,
-                    storage_class: StorageClass::Auto,
-                    span: param.span,
-                    is_defined: true,
                     explicit_alignment: None,
                 });
             }
@@ -300,7 +280,7 @@ impl SemanticAnalyzer {
 
     // === Declaration analysis ===
 
-    fn analyze_declaration(&mut self, decl: &Declaration, is_global: bool) {
+    fn analyze_declaration(&mut self, decl: &Declaration, _is_global: bool) {
         // Register enum constants from this declaration's type specifier.
         // This recursively walks into struct/union fields to find inline
         // enum definitions (e.g., `struct { enum { A, B } mode; }`).
@@ -419,16 +399,6 @@ impl SemanticAnalyzer {
                 }
             }
 
-            let storage = if decl.is_extern() {
-                StorageClass::Extern
-            } else if decl.is_static() {
-                StorageClass::Static
-            } else if is_global {
-                StorageClass::Extern
-            } else {
-                StorageClass::Auto
-            };
-
             // Check if this is a function declaration (prototype)
             if let CType::Function(ref ft) = full_type {
                 let is_noreturn = init_decl.attrs.is_noreturn();
@@ -438,7 +408,6 @@ impl SemanticAnalyzer {
                         existing.is_noreturn = true;
                     } else {
                         let func_info = FunctionInfo {
-                            name: init_decl.name.clone(),
                             return_type: ft.return_type.clone(),
                             params: ft.params.clone(),
                             variadic: ft.variadic,
@@ -449,7 +418,6 @@ impl SemanticAnalyzer {
                     }
                 } else if !self.result.functions.contains_key(&init_decl.name) {
                     let func_info = FunctionInfo {
-                        name: init_decl.name.clone(),
                         return_type: ft.return_type.clone(),
                         params: ft.params.clone(),
                         variadic: ft.variadic,
@@ -500,9 +468,6 @@ impl SemanticAnalyzer {
             self.symbol_table.declare(Symbol {
                 name: init_decl.name.clone(),
                 ty: full_type,
-                storage_class: storage,
-                span: init_decl.span,
-                is_defined: init_decl.init.is_some(),
                 explicit_alignment,
             });
 
@@ -723,9 +688,6 @@ impl SemanticAnalyzer {
             self.symbol_table.declare(Symbol {
                 name: variant.name.clone(),
                 ty: sym_ty,
-                storage_class: StorageClass::Auto, // enum constants are like const int
-                span: Span::dummy(),
-                is_defined: true,
                 explicit_alignment: None,
             });
             self.enum_counter += 1;
@@ -1348,7 +1310,6 @@ impl SemanticAnalyzer {
                             crate::common::error::WarningKind::ImplicitFunctionDeclaration,
                         );
                         let func_info = FunctionInfo {
-                            name: name.clone(),
                             return_type: CType::Int, // implicit return int
                             params: Vec::new(),
                             variadic: true, // unknown params
@@ -1624,7 +1585,6 @@ impl SemanticAnalyzer {
         for (name, ret_type, variadic) in &implicit_funcs {
             let is_noreturn = matches!(*name, "exit" | "abort" | "_Exit" | "quick_exit");
             let func_info = FunctionInfo {
-                name: name.to_string(),
                 return_type: ret_type.clone(),
                 params: Vec::new(),
                 variadic: *variadic,

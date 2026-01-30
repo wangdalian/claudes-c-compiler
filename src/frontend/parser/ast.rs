@@ -150,7 +150,6 @@ pub struct FunctionDef {
 pub struct ParamDecl {
     pub type_spec: TypeSpecifier,
     pub name: Option<String>,
-    pub span: Span,
     /// For function pointer parameters, the parameter types of the pointed-to function.
     /// E.g., for `float (*func)(float, float)`, this holds the two float param decls.
     pub fptr_params: Option<Vec<ParamDecl>>,
@@ -551,7 +550,6 @@ pub struct EnumVariant {
 #[allow(dead_code)]
 pub struct CompoundStmt {
     pub items: Vec<BlockItem>,
-    pub span: Span,
     /// GNU __label__ declarations: local label names scoped to this block.
     /// When non-empty, label definitions and gotos within this block use
     /// scope-qualified names to avoid collisions (e.g., in statement expressions).

@@ -1184,20 +1184,6 @@ impl ArmCodegen {
         }
     }
 
-    /// Add an immediate offset to x17. Used by F128 load/store paths that
-    /// use x17 as the address register instead of x9 (which emit_add_offset_to_addr_reg uses).
-    #[allow(dead_code)]
-    fn emit_add_imm_to_x17(&mut self, offset: i64) {
-        if (0..=4095).contains(&offset) {
-            self.state.emit_fmt(format_args!("    add x17, x17, #{}", offset));
-        } else if offset < 0 && (-offset) <= 4095 {
-            self.state.emit_fmt(format_args!("    sub x17, x17, #{}", -offset));
-        } else {
-            // Use x9 as a temp to load the large immediate, then add to x17
-            self.load_large_imm("x9", offset);
-            self.state.emit("    add x17, x17, x9");
-        }
-    }
     // ── Call register arg helpers ───────────────────────────────────────────
 
     /// Load an operand into the given destination register, accounting for SP adjustment.
@@ -1705,10 +1691,6 @@ impl ArchCodegen for ArmCodegen {
     fn emit_acc_to_phys_reg(&mut self, dest: PhysReg) {
         let d_name = callee_saved_name(dest);
         self.state.emit_fmt(format_args!("    mov {}, x0", d_name));
-    }
-
-    fn phys_reg_name(&self, reg: PhysReg) -> &'static str {
-        callee_saved_name(reg)
     }
 
     fn jump_mnemonic(&self) -> &'static str { "b" }

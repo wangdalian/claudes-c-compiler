@@ -791,7 +791,7 @@ mod tests {
         let mut func = IrFunction::new(
             "f".to_string(),
             IrType::I32,
-            vec![IrParam { name: "cond".to_string(), ty: IrType::I32, struct_size: None, struct_align: None, struct_eightbyte_classes: Vec::new(), riscv_float_class: None }],
+            vec![IrParam { ty: IrType::I32, struct_size: None, struct_align: None, struct_eightbyte_classes: Vec::new(), riscv_float_class: None }],
             false,
         );
 

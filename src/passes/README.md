@@ -71,6 +71,6 @@ rather than being duplicated across passes:
 
 ## Adding New Passes
 
-Each pass implements `fn run(module: &mut IrModule) -> usize` returning the count of changes made.
+Each pass is a function that takes `&mut IrModule` and returns the count of changes made (`usize`).
 Use `module.for_each_function(|func| { ... })` to skip declarations.
 Register new passes in `mod.rs::run_passes()` at the appropriate pipeline position.

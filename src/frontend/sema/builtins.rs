@@ -453,8 +453,6 @@ pub enum BuiltinKind {
     LibcAlias(String),
     /// Return the first argument unchanged (__builtin_expect).
     Identity,
-    /// Evaluate to a compile-time integer constant.
-    ConstantI64(i64),
     /// Evaluate to a compile-time float constant.
     ConstantF64(f64),
     /// Requires special codegen (CLZ, CTZ, popcount, bswap, etc.).
@@ -640,18 +638,6 @@ impl BuiltinInfo {
 /// Look up a function name and return its builtin info, if it's a known builtin.
 pub fn resolve_builtin(name: &str) -> Option<&'static BuiltinInfo> {
     BUILTIN_MAP.get(name)
-}
-
-/// Returns the libc name for a builtin, or None if it's not a simple alias.
-#[allow(dead_code)]
-pub fn builtin_to_libc_name(name: &str) -> Option<&str> {
-    match resolve_builtin(name) {
-        Some(info) => match &info.kind {
-            BuiltinKind::LibcAlias(libc_name) => Some(libc_name),
-            _ => None,
-        },
-        None => None,
-    }
 }
 
 /// Check if a name is a known builtin function.

@@ -15,14 +15,6 @@ impl Span {
         Self { start: 0, end: 0, file_id: 0 }
     }
 
-    #[allow(dead_code)]
-    pub fn merge(self, other: Span) -> Span {
-        Span {
-            start: self.start.min(other.start),
-            end: self.end.max(other.end),
-            file_id: self.file_id,
-        }
-    }
 }
 
 /// A human-readable source location.
@@ -136,11 +128,6 @@ impl SourceManager {
 
     pub fn get_content(&self, file_id: u32) -> &str {
         &self.files[file_id as usize].content
-    }
-
-    #[allow(dead_code)]
-    pub fn get_filename(&self, file_id: u32) -> &str {
-        &self.files[file_id as usize].name
     }
 
     /// Build a line map from GCC-style line markers in preprocessed output.

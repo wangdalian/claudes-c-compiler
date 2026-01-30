@@ -342,7 +342,6 @@ impl Parser {
                 break;
             }
 
-            let span = self.peek_span();
             self.skip_gcc_extensions();
             // Save and reset parsing_const to detect if this parameter's base type is const.
             let saved_const = self.attrs.parsing_const();
@@ -388,7 +387,7 @@ impl Parser {
                 }
 
                 self.attrs.set_const(saved_const);
-                params.push(ParamDecl { type_spec, name, span, fptr_params: fptr_param_decls, is_const: param_is_const, vla_size_exprs, fptr_inner_ptr_depth: inner_ptr_depth });
+                params.push(ParamDecl { type_spec, name, fptr_params: fptr_param_decls, is_const: param_is_const, vla_size_exprs, fptr_inner_ptr_depth: inner_ptr_depth });
             } else {
                 break;
             }
@@ -407,12 +406,10 @@ impl Parser {
         let mut params = Vec::new();
         while let TokenKind::Identifier(ref n) = self.peek() {
             let n = n.clone();
-            let span = self.peek_span();
             self.advance();
             params.push(ParamDecl {
                 type_spec: TypeSpecifier::Int, // K&R default type
                 name: Some(n),
-                span,
                 fptr_params: None,
                 is_const: false,
                 vla_size_exprs: Vec::new(),

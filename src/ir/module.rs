@@ -117,17 +117,6 @@ impl GlobalInit {
         }
     }
 
-    /// Returns true if this initializer contains relocations (addresses of globals/labels).
-    /// Used to decide between .rodata (no relocations) and .data.rel.ro (has relocations).
-    #[allow(dead_code)]
-    pub fn has_relocations(&self) -> bool {
-        match self {
-            GlobalInit::GlobalAddr(_) | GlobalInit::GlobalAddrOffset(_, _) | GlobalInit::GlobalLabelDiff(_, _, _) => true,
-            GlobalInit::Compound(inits) => inits.iter().any(|i| i.has_relocations()),
-            _ => false,
-        }
-    }
-
     /// Returns the byte size of this initializer element in a compound context.
     /// Used when flattening nested Compound elements into a parent Compound.
     pub fn byte_size(&self) -> usize {
@@ -186,7 +175,6 @@ pub struct IrFunction {
     /// True when __attribute__((noinline)) is present.
     /// These functions must never be inlined.
     pub is_noinline: bool,
-    pub stack_size: usize,
     /// Cached upper bound on Value IDs: all Value IDs in this function are < next_value_id.
     /// Set by lowering/mem2reg/phi_eliminate to avoid expensive full-IR scans.
     /// A value of 0 means "not yet computed" (will fall back to scanning).
@@ -232,7 +220,6 @@ pub struct IrFunction {
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct IrParam {
-    pub name: String,
     pub ty: IrType,
     /// If this param is a struct/union passed by value, its byte size. None for non-struct params.
     pub struct_size: Option<usize>,
@@ -289,7 +276,7 @@ impl Default for IrModule {
 }
 
 impl IrFunction {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new(name: String, return_type: IrType, params: Vec<IrParam>, is_variadic: bool) -> Self {
         Self {
             name,
@@ -302,7 +289,6 @@ impl IrFunction {
             is_inline: false,
             is_always_inline: false,
             is_noinline: false,
-            stack_size: 0,
             next_value_id: 0,
             section: None,
             visibility: None,

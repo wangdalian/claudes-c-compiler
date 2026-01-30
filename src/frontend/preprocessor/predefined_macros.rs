@@ -208,7 +208,6 @@ impl Preprocessor {
                 is_variadic: false,
                 has_named_variadic: false,
                 body: body.to_string(),
-                is_predefined: true,
             });
         }
     }
@@ -222,7 +221,6 @@ impl Preprocessor {
             is_variadic: false,
             has_named_variadic: false,
             body: body.to_string(),
-            is_predefined: true,
         });
     }
 

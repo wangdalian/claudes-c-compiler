@@ -71,8 +71,6 @@ pub struct MacroDef {
     pub has_named_variadic: bool,
     /// The replacement body (as raw text)
     pub body: String,
-    /// Whether this is a predefined macro (cannot be #undef'd in strict mode)
-    pub is_predefined: bool,
 }
 
 /// Marker byte used to "blue paint" tokens that were suppressed due to
@@ -181,7 +179,6 @@ impl MacroTable {
                 is_variadic: false,
                 has_named_variadic: false,
                 body,
-                is_predefined: true,
             });
         }
     }
@@ -1282,7 +1279,6 @@ pub fn parse_define(line: &str) -> Option<MacroDef> {
             is_variadic,
             has_named_variadic,
             body,
-            is_predefined: false,
         })
     } else {
         // Object-like macro
@@ -1299,7 +1295,6 @@ pub fn parse_define(line: &str) -> Option<MacroDef> {
             is_variadic: false,
             has_named_variadic: false,
             body,
-            is_predefined: false,
         })
     }
 }

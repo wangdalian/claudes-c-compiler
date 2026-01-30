@@ -571,7 +571,6 @@ impl Preprocessor {
             is_variadic: false,
             has_named_variadic: false,
             body: format!("\"{}\"", filename),
-            is_predefined: true,
         });
         // Push the file path onto the include stack for relative includes.
         // Use make_absolute (not canonicalize) to preserve symlinks, matching GCC
@@ -580,12 +579,6 @@ impl Preprocessor {
         let path = PathBuf::from(filename);
         let abs = super::includes::make_absolute(&path);
         self.include_stack.push(abs);
-    }
-
-    /// Get the list of includes encountered during preprocessing.
-    #[allow(dead_code)]
-    pub fn includes(&self) -> &[String] {
-        &self.includes
     }
 
     /// Get preprocessing errors.
@@ -649,7 +642,6 @@ impl Preprocessor {
             is_variadic: false,
             has_named_variadic: false,
             body: value.to_string(),
-            is_predefined: false,
         });
     }
 

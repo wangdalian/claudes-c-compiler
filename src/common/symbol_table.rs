@@ -1,17 +1,5 @@
-use crate::common::source::Span;
 use crate::common::types::CType;
 use crate::common::fx_hash::FxHashMap;
-
-/// Storage class for a symbol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum StorageClass {
-    Auto,
-    Static,
-    Extern,
-    Register,
-    Typedef,
-}
 
 /// Information about a declared symbol.
 #[derive(Debug, Clone)]
@@ -19,9 +7,6 @@ pub enum StorageClass {
 pub struct Symbol {
     pub name: String,
     pub ty: CType,
-    pub storage_class: StorageClass,
-    pub span: Span,
-    pub is_defined: bool,
     /// Explicit alignment from _Alignas or __attribute__((aligned(N))).
     /// Used by _Alignof(var) to return the correct alignment per C11 6.2.8p3.
     pub explicit_alignment: Option<usize>,

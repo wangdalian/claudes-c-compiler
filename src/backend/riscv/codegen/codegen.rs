@@ -505,10 +505,6 @@ impl ArchCodegen for RiscvCodegen {
         self.state.emit_fmt(format_args!("    mv {}, t0", d_name));
     }
 
-    fn phys_reg_name(&self, reg: PhysReg) -> &'static str {
-        callee_saved_name(reg)
-    }
-
     fn jump_mnemonic(&self) -> &'static str { "j" }
     fn trap_instruction(&self) -> &'static str { "ebreak" }
 

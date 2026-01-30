@@ -381,26 +381,6 @@ impl I686Codegen {
         }
     }
 
-    /// Return the register name for ecx sub-register based on type size.
-    #[allow(dead_code)]
-    pub(super) fn ecx_for_type(&self, ty: IrType) -> &'static str {
-        match ty {
-            IrType::I8 | IrType::U8 => "%cl",
-            IrType::I16 | IrType::U16 => "%cx",
-            _ => "%ecx",
-        }
-    }
-
-    /// Return the register name for edx sub-register based on type size.
-    #[allow(dead_code)]
-    pub(super) fn edx_for_type(&self, ty: IrType) -> &'static str {
-        match ty {
-            IrType::I8 | IrType::U8 => "%dl",
-            IrType::I16 | IrType::U16 => "%dx",
-            _ => "%edx",
-        }
-    }
-
     /// Check if a param type is eligible for fastcall register passing.
     /// Only DWORD-sized or smaller integer/pointer types qualify.
     pub(super) fn is_fastcall_reg_eligible(&self, ty: IrType) -> bool {
@@ -1178,10 +1158,6 @@ impl ArchCodegen for I686Codegen {
     fn emit_acc_to_phys_reg(&mut self, dest: PhysReg) {
         let dest_name = phys_reg_name(dest);
         emit!(self.state, "    movl %eax, %{}", dest_name);
-    }
-
-    fn phys_reg_name(&self, reg: PhysReg) -> &'static str {
-        phys_reg_name(reg)
     }
 
     // ---- Standard trait methods (kept inline - arch-specific) ----
