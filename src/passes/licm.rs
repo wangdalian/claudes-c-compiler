@@ -538,14 +538,35 @@ fn hoist_loop_invariants(
         }
     }
 
-    // Build a set of Value IDs that are defined by GlobalAddr instructions
-    // (anywhere in the function). This is used to identify loads from globals
-    // for hoisting purposes.
+    // Build a set of Value IDs that point to global memory — this includes
+    // direct GlobalAddr instructions AND any GetElementPtr that derives a
+    // pointer from a GlobalAddr (transitively). Stores through any of these
+    // pointers can modify global variables, so they must be tracked to prevent
+    // incorrect hoisting of global loads.
     let mut global_addr_values: FxHashSet<u32> = FxHashSet::default();
     for block in func.blocks.iter() {
         for inst in &block.instructions {
             if let Instruction::GlobalAddr { dest, .. } = inst {
                 global_addr_values.insert(dest.0);
+            }
+        }
+    }
+    // Transitively include GEP values derived from GlobalAddr bases.
+    // A GEP like `%ptr = gep %global_base, %offset` produces a pointer
+    // into global memory; stores through %ptr modify global storage.
+    // Without this, stores like `arr[i] = val` through a GEP pointer
+    // are not recognized as global-derived stores, causing LICM to
+    // incorrectly hoist loads of other globals from the same loop.
+    let mut changed_gep = true;
+    while changed_gep {
+        changed_gep = false;
+        for block in func.blocks.iter() {
+            for inst in &block.instructions {
+                if let Instruction::GetElementPtr { dest, base, .. } = inst {
+                    if global_addr_values.contains(&base.0) && global_addr_values.insert(dest.0) {
+                        changed_gep = true;
+                    }
+                }
             }
         }
     }
