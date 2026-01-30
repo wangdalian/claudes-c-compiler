@@ -1,0 +1,13 @@
+Task: Implement -Wreturn-type warning
+Status: in_progress
+Started: 2026-01-30
+
+Description:
+Add GCC-compatible -Wreturn-type warning to detect non-void functions that
+can fall through without returning a value.
+
+Changes:
+- Add WarningKind::ReturnType variant to error.rs
+- Wire it into -Wall set
+- Add control flow analysis in sema.rs to detect missing returns
+- Emit "control reaches end of non-void function" warning
