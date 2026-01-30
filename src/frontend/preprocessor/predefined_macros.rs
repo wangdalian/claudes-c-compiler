@@ -36,6 +36,9 @@ impl Preprocessor {
             //    types which we don't support; glibc typedefs them for GCC < 7)
             ("__GNUC__", "6"), ("__GNUC_MINOR__", "5"), ("__GNUC_PATCHLEVEL__", "0"),
             ("__VERSION__", "\"6.5.0\""),
+            // C99 inline semantics: tells gnulib and other libraries that
+            // plain `inline` provides an inline definition only (no external symbol).
+            ("__GNUC_STDC_INLINE__", "1"),
             // sizeof macros
             ("__SIZEOF_POINTER__", "8"), ("__SIZEOF_INT__", "4"),
             ("__SIZEOF_LONG__", "8"), ("__SIZEOF_LONG_LONG__", "8"),
@@ -321,6 +324,8 @@ impl Preprocessor {
                 self.define_simple_macro("__ARM_ALIGN_MAX_STACK_PWR", "16");
                 self.define_simple_macro("__AARCH64EL__", "1");
                 self.define_simple_macro("__AARCH64_CMODEL_SMALL__", "1");
+                // ARM: char is unsigned by default
+                self.define_simple_macro("__CHAR_UNSIGNED__", "1");
                 // Replace x86 include paths with aarch64 paths
                 self.system_include_paths.retain(|p| {
                     let s = p.to_string_lossy();

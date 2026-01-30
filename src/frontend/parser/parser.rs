@@ -1078,6 +1078,22 @@ impl Parser {
         }
     }
 
+    /// Check if a type specifier is an unsigned type.
+    /// Used by the parser-level constant evaluator for cast truncation.
+    pub(super) fn is_unsigned_type_spec(ts: &TypeSpecifier) -> bool {
+        matches!(ts,
+            TypeSpecifier::UnsignedChar
+            | TypeSpecifier::UnsignedShort
+            | TypeSpecifier::UnsignedInt
+            | TypeSpecifier::Unsigned
+            | TypeSpecifier::UnsignedLong
+            | TypeSpecifier::UnsignedLongLong
+            | TypeSpecifier::UnsignedInt128
+            | TypeSpecifier::Bool
+            | TypeSpecifier::Pointer(_, _)
+        )
+    }
+
     /// Compute alignment (in bytes) for a type specifier.
     /// Used by _Alignas(type) to determine the alignment value.
     /// The optional `tag_aligns` map provides previously-computed alignments for

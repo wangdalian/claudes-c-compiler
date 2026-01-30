@@ -64,9 +64,15 @@ fn build_gep_fold_map(func: &IrFunction, use_counts: &[u32]) -> FxHashMap<u32, G
                 // Also reasonable for ARM (signed 9-bit unscaled or 12-bit scaled)
                 // and RISC-V (signed 12-bit).
                 // Use i32 range as the safe common limit.
-                if offset_val >= i32::MIN as i64 && offset_val <= i32::MAX as i64 {
-                    gep_map.insert(dest.0, GepFoldInfo { base: *base, offset: offset_val });
-                }
+                // Unsigned type constants (e.g. U32 -1 = 4294967295) are sign-narrowed.
+                let offset_val = if offset_val >= i32::MIN as i64 && offset_val <= i32::MAX as i64 {
+                    offset_val
+                } else if offset_val > i32::MAX as i64 && offset_val <= u32::MAX as i64 {
+                    offset_val as i32 as i64
+                } else {
+                    continue;
+                };
+                gep_map.insert(dest.0, GepFoldInfo { base: *base, offset: offset_val });
             }
         }
     }

@@ -514,10 +514,11 @@ impl Lowerer {
             }
         }
 
-        // extern inline with __attribute__((gnu_inline)) should be treated as local
-        // (no external definition emitted), even if the function is referenced and lowered.
-        // But plain inline + gnu_inline (without extern) provides an external definition
-        // in GNU89 semantics, so it should be GLOBAL.
+        // C99 inline linkage rules:
+        //   extern inline + gnu_inline = inline definition only, no external def → static
+        //   inline + gnu_inline (no extern) = external definition → global (GNU89 semantics)
+        //   plain inline (no extern, no gnu_inline) = inline definition only → static (C99)
+        //   extern inline (no gnu_inline) = external definition → global (C99)
         let is_gnu_inline_no_extern_def = func.attrs.is_gnu_inline() && func.attrs.is_inline()
             && func.attrs.is_extern();
         // C99 6.7.4p7: A plain `inline` definition (without `extern`) does not
@@ -529,7 +530,8 @@ impl Lowerer {
         let is_c99_inline_def = func.attrs.is_inline() && !func.attrs.is_extern()
             && !func.attrs.is_static() && !func.attrs.is_gnu_inline();
         let is_static = func.attrs.is_static() || self.static_functions.contains(&func.name)
-            || is_gnu_inline_no_extern_def;
+            || is_gnu_inline_no_extern_def
+            || is_c99_inline_def;
         let next_val = self.func_mut().next_value;
         let param_alloca_vals = std::mem::take(&mut self.func_mut().param_alloca_values);
         let global_init_labels = std::mem::take(&mut self.func_mut().global_init_label_blocks);

@@ -395,9 +395,11 @@ fn define_type_traits_macros(macros: &mut MacroTable) {
     def(macros, "__ORDER_BIG_ENDIAN__", "4321");
     def(macros, "__ORDER_PDP_ENDIAN__", "3412");
 
-    // GCC builtins that are often used in macros
-    def(macros, "__CHAR_UNSIGNED__", "0");
-    def(macros, "__WCHAR_UNSIGNED__", "0");
+    // __CHAR_UNSIGNED__: NOT defined for x86/i686/riscv where char is signed.
+    // Only ARM defines char as unsigned by default. This is set per-target
+    // in predefined_macros.rs set_target().
+    // __WCHAR_UNSIGNED__: wchar_t is signed on Linux (unlike Windows).
+    // Do not define it (it would be detected as "defined" by #ifdef).
 
     // Additional GCC version macros
     def(macros, "__GNUC_PATCHLEVEL__", "0");

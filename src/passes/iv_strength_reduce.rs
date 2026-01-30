@@ -480,8 +480,20 @@ fn find_derived_exprs(
             }
             for inst in &func.blocks[bi].instructions {
                 match inst {
-                    Instruction::Cast { dest, src: Operand::Value(v), .. }
-                    | Instruction::Copy { dest, src: Operand::Value(v) } => {
+                    Instruction::Cast { dest, src: Operand::Value(v), from_ty, to_ty } => {
+                        // Only treat widening casts as IV-derived.
+                        // Truncating casts (e.g. I32->U8) change the value
+                        // and must not be strength-reduced as if linear.
+                        if to_ty.size() >= from_ty.size() {
+                            let idx = iv_values.get(&v.0).or_else(|| iv_derived.get(&v.0));
+                            if let Some(&iv_idx) = idx {
+                                if !iv_derived.contains_key(&dest.0) {
+                                    new_entries.push((dest.0, iv_idx));
+                                }
+                            }
+                        }
+                    }
+                    Instruction::Copy { dest, src: Operand::Value(v) } => {
                         let idx = iv_values.get(&v.0).or_else(|| iv_derived.get(&v.0));
                         if let Some(&iv_idx) = idx {
                             if !iv_derived.contains_key(&dest.0) {

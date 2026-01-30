@@ -533,6 +533,22 @@ pub trait ArchCodegen {
                 IrConst::I8(n) => Some(*n as i64),
                 _ => None,
             };
+            // Backend displacement fields are signed 32-bit (x86 disp32, ARM imm9/12,
+            // RISC-V imm12).  If the offset doesn't fit in i32, sign-narrow it:
+            // unsigned type constants (e.g. U32 -1 stored as 4294967295) must be
+            // re-interpreted as signed 32-bit for pointer arithmetic.  Offsets that
+            // truly exceed i32 after narrowing fall through to the general (register)
+            // path.
+            let const_offset = const_offset.and_then(|off| {
+                if off >= i32::MIN as i64 && off <= i32::MAX as i64 {
+                    Some(off)
+                } else if off > i32::MAX as i64 && off <= u32::MAX as i64 {
+                    // U32-range: reinterpret as signed 32-bit
+                    Some(off as i32 as i64)
+                } else {
+                    None
+                }
+            });
             if let Some(off) = const_offset {
                 if let Some(addr) = self.state_ref().resolve_slot_addr(base.0) {
                     match addr {

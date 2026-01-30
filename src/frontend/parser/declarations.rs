@@ -865,16 +865,47 @@ impl Parser {
                     BinOp::Div if r != 0 => Some(l.wrapping_div(r)),
                     BinOp::Mod if r != 0 => Some(l.wrapping_rem(r)),
                     BinOp::Shl => Some(l.wrapping_shl(r as u32)),
-                    BinOp::Shr => Some(l.wrapping_shr(r as u32)),
+                    BinOp::Shr => {
+                        // Use logical (unsigned) shift when the LHS appears unsigned
+                        if Self::is_unsigned_int_expr(lhs) {
+                            Some((l as u64).wrapping_shr(r as u32) as i64)
+                        } else {
+                            Some(l.wrapping_shr(r as u32))
+                        }
+                    }
                     BinOp::BitAnd => Some(l & r),
                     BinOp::BitOr => Some(l | r),
                     BinOp::BitXor => Some(l ^ r),
                     BinOp::Eq => Some(if l == r { 1 } else { 0 }),
                     BinOp::Ne => Some(if l != r { 1 } else { 0 }),
-                    BinOp::Lt => Some(if l < r { 1 } else { 0 }),
-                    BinOp::Le => Some(if l <= r { 1 } else { 0 }),
-                    BinOp::Gt => Some(if l > r { 1 } else { 0 }),
-                    BinOp::Ge => Some(if l >= r { 1 } else { 0 }),
+                    BinOp::Lt => {
+                        if Self::is_unsigned_int_expr(lhs) || Self::is_unsigned_int_expr(rhs) {
+                            Some(if (l as u64) < (r as u64) { 1 } else { 0 })
+                        } else {
+                            Some(if l < r { 1 } else { 0 })
+                        }
+                    }
+                    BinOp::Le => {
+                        if Self::is_unsigned_int_expr(lhs) || Self::is_unsigned_int_expr(rhs) {
+                            Some(if (l as u64) <= (r as u64) { 1 } else { 0 })
+                        } else {
+                            Some(if l <= r { 1 } else { 0 })
+                        }
+                    }
+                    BinOp::Gt => {
+                        if Self::is_unsigned_int_expr(lhs) || Self::is_unsigned_int_expr(rhs) {
+                            Some(if (l as u64) > (r as u64) { 1 } else { 0 })
+                        } else {
+                            Some(if l > r { 1 } else { 0 })
+                        }
+                    }
+                    BinOp::Ge => {
+                        if Self::is_unsigned_int_expr(lhs) || Self::is_unsigned_int_expr(rhs) {
+                            Some(if (l as u64) >= (r as u64) { 1 } else { 0 })
+                        } else {
+                            Some(if l >= r { 1 } else { 0 })
+                        }
+                    }
                     BinOp::LogicalAnd => Some(if l != 0 && r != 0 { 1 } else { 0 }),
                     BinOp::LogicalOr => Some(if l != 0 || r != 0 { 1 } else { 0 }),
                     _ => None,
@@ -910,8 +941,39 @@ impl Parser {
                     Self::eval_const_int_expr_with_enums(else_expr, enum_consts, tag_aligns)
                 }
             }
-            Expr::Cast(_, inner, _) => {
-                Self::eval_const_int_expr_with_enums(inner, enum_consts, tag_aligns)
+            Expr::Cast(target_type, inner, _) => {
+                let val = Self::eval_const_int_expr_with_enums(inner, enum_consts, tag_aligns)?;
+                // Apply the cast: truncate to target type's bit width
+                if let Some(size) = Self::try_sizeof_type_spec(target_type) {
+                    let bits = size * 8;
+                    if bits >= 64 && Self::is_unsigned_type_spec(target_type) {
+                        // 64-bit unsigned cast: the parser evaluator uses i64 which can't
+                        // represent the full unsigned range. Return None to defer to sema.
+                        return None;
+                    }
+                    if bits == 0 || bits >= 64 {
+                        Some(val)
+                    } else {
+                        let mask = (1u64 << bits) - 1;
+                        let truncated = (val as u64) & mask;
+                        if Self::is_unsigned_type_spec(target_type) {
+                            // Unsigned: zero-extend
+                            Some(truncated as i64)
+                        } else {
+                            // Signed: sign-extend
+                            let sign_bit = 1u64 << (bits - 1);
+                            if truncated & sign_bit != 0 {
+                                Some((truncated | !mask) as i64)
+                            } else {
+                                Some(truncated as i64)
+                            }
+                        }
+                    }
+                } else {
+                    // Can't determine type size (typedef, struct, etc.) -
+                    // return None so static_assert defers to sema-level evaluation
+                    None
+                }
             }
             Expr::Sizeof(arg, _) => {
                 match arg.as_ref() {
@@ -943,19 +1005,17 @@ impl Parser {
     /// handled by the sema-level evaluator which has full type information.
     fn is_unsigned_int_expr(expr: &Expr) -> bool {
         match expr {
-            Expr::UIntLiteral(..) => true,
+            Expr::UIntLiteral(..) | Expr::ULongLiteral(..) | Expr::ULongLongLiteral(..) => true,
             Expr::Cast(ts, _, _) => {
-                // Check if cast target is unsigned int
-                Self::is_unsigned_int_type_spec(ts)
+                Self::is_unsigned_type_spec(ts)
             }
             Expr::UnaryOp(UnaryOp::Plus, inner, _) => Self::is_unsigned_int_expr(inner),
+            // Binary ops: unsigned if either operand is unsigned (C promotion)
+            Expr::BinaryOp(_, lhs, rhs, _) => {
+                Self::is_unsigned_int_expr(lhs) || Self::is_unsigned_int_expr(rhs)
+            }
             _ => false,
         }
-    }
-
-    /// Check if a type specifier represents unsigned int (32-bit).
-    fn is_unsigned_int_type_spec(ts: &TypeSpecifier) -> bool {
-        matches!(ts, TypeSpecifier::UnsignedInt | TypeSpecifier::Unsigned)
     }
 
     /// Check if a type specifier contains an unresolvable typedef name.

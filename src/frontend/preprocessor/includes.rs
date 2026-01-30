@@ -179,7 +179,8 @@ impl Preprocessor {
                 }
             }
         } else {
-            // Could not resolve; fall back to builtin macro behavior
+            // Header not found - emit a fatal error
+            self.errors.push(format!("fatal error: '{}': No such file or directory", include_path));
             None
         }
     }
@@ -218,13 +219,11 @@ impl Preprocessor {
             return None;
         }
 
-        // Find which include path the current file is in
-        let current_file_dir = self.include_stack.last()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_path_buf());
+        // Get the current file path for include_next resolution
+        let current_file = self.include_stack.last().cloned();
 
         // Resolve using include_next semantics
-        if let Some(resolved_path) = self.resolve_include_next_path(&include_path, current_file_dir.as_ref()) {
+        if let Some(resolved_path) = self.resolve_include_next_path(&include_path, current_file.as_ref()) {
             // Check for #pragma once
             if self.pragma_once_files.contains(&resolved_path) {
                 return Some(String::new());
@@ -285,24 +284,31 @@ impl Preprocessor {
 
     /// Resolve an include path using #include_next semantics: search from the
     /// next include path after the one containing the current file.
-    pub(super) fn resolve_include_next_path(&self, include_path: &str, current_file_dir: Option<&PathBuf>) -> Option<PathBuf> {
+    /// `current_file` is the full path to the file containing the #include_next.
+    pub(super) fn resolve_include_next_path(&self, include_path: &str, current_file: Option<&PathBuf>) -> Option<PathBuf> {
         // Collect all search paths in order
         let all_paths: Vec<&Path> = self.include_paths.iter()
             .chain(self.system_include_paths.iter())
             .map(|p| p.as_path())
             .collect();
 
-        // Find which path contains the current file
+        // Canonicalize the current file path for comparison
+        let current_file_canon = current_file.and_then(|f| std::fs::canonicalize(f).ok());
+
+        // Find which search path contains the current file by checking if
+        // search_path/include_path resolves to the same file as the current file.
+        // This correctly handles subdirectory includes (e.g., sys/types.h).
         let mut found_current = false;
-        if let Some(cur_dir) = current_file_dir {
-            // Use canonicalize for COMPARISON only (to match paths through symlinks)
-            let cur_dir_canon = std::fs::canonicalize(cur_dir).unwrap_or_else(|_| cur_dir.clone());
+        if let Some(ref cur_canon) = current_file_canon {
             for search_path in &all_paths {
-                let search_canon = std::fs::canonicalize(search_path)
-                    .unwrap_or_else(|_| search_path.to_path_buf());
-                if search_canon == cur_dir_canon {
-                    found_current = true;
-                    continue;
+                let candidate = search_path.join(include_path);
+                if candidate.is_file() {
+                    if let Ok(candidate_canon) = std::fs::canonicalize(&candidate) {
+                        if &candidate_canon == cur_canon {
+                            found_current = true;
+                            continue;
+                        }
+                    }
                 }
                 if found_current {
                     let candidate = search_path.join(include_path);
@@ -313,22 +319,14 @@ impl Preprocessor {
             }
         }
 
-        // If we didn't find the current directory in search paths, the file was
-        // included via relative-to-source resolution. For #include_next semantics,
-        // search all include paths but skip any candidate that resolves to the same
-        // file as the one currently being processed (to avoid infinite self-inclusion).
+        // Fallback: if we couldn't find the current file in any search path,
+        // search all paths but skip any that resolve to the current file.
         if !found_current {
-            let current_file_canon = current_file_dir
-                .and_then(|d| {
-                    let current_candidate = d.join(include_path);
-                    std::fs::canonicalize(&current_candidate).ok()
-                });
             for search_path in &all_paths {
                 let candidate = search_path.join(include_path);
                 if candidate.is_file() {
                     // Use canonicalize for comparison to detect same-file
                     let candidate_canon = std::fs::canonicalize(&candidate).ok();
-                    // Skip if this resolves to the same file we're currently in
                     if let (Some(ref cur), Some(ref cand)) = (&current_file_canon, &candidate_canon) {
                         if cur == cand {
                             continue;
