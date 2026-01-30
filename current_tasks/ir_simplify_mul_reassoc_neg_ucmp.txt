@@ -1,0 +1,24 @@
+IR Simplify Pass: Multiply Reassociation, Neg Conversion, and Unsigned Cmp Simplification
+========================================================================================
+Status: in_progress
+
+Adding several missing algebraic simplifications to the IR simplify pass:
+
+1. Multiply reassociation: (x * C1) * C2 => x * (C1 * C2)
+   - Reduces two multiply instructions to one
+   - Common in array indexing and struct offset calculations
+
+2. Multiply by -1 => UnaryOp::Neg
+   - x * (-1) => neg(x) produces a single neg instruction instead of imul
+   - Common in negation expressions
+
+3. Subtract of negation => addition
+   - x - (neg y) => x + y  (when rhs is defined by UnaryOp::Neg)
+   - Eliminates an unnecessary negation
+
+4. Unsigned comparison simplifications
+   - Cmp(Ule, x, 0) => Cmp(Eq, x, 0)   (unsigned x <= 0 is same as x == 0)
+   - Cmp(Ugt, x, 0) => Cmp(Ne, x, 0)   (unsigned x > 0 is same as x != 0)
+
+Key files:
+- src/passes/simplify.rs
