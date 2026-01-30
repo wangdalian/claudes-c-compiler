@@ -528,60 +528,64 @@ impl MacroTable {
 
     /// Parse function-like macro arguments from bytes starting at the opening paren.
     /// Returns (args, position after closing paren).
+    ///
+    /// Optimized to track byte spans directly into the source text, avoiding
+    /// per-argument String allocations in the common case where arguments contain
+    /// no string/char literals. When all content is plain text, arguments are
+    /// extracted as trimmed `&str` slices and converted to String only once.
     fn parse_macro_args(&self, bytes: &[u8], start: usize) -> (Vec<String>, usize) {
         let len = bytes.len();
         let mut i = start + 1; // skip '('
-        let mut args = Vec::new();
-        let mut current_arg = String::new();
+        let mut args: Vec<String> = Vec::new();
         let mut paren_depth = 0;
+        // Start position of the current argument in bytes
+        let mut arg_start = i;
 
         while i < len {
             match bytes[i] {
                 b'(' => {
                     paren_depth += 1;
-                    current_arg.push('(');
                     i += 1;
                 }
                 b')' => {
                     if paren_depth == 0 {
-                        let trimmed = current_arg.trim().to_string();
+                        // Extract the argument as a trimmed &str from the byte span
+                        let arg_slice = std::str::from_utf8(&bytes[arg_start..i])
+                            .unwrap_or("");
+                        let trimmed = arg_slice.trim();
                         if !trimmed.is_empty() || !args.is_empty() {
-                            args.push(trimmed);
+                            args.push(trimmed.to_string());
                         }
                         return (args, i + 1);
                     } else {
                         paren_depth -= 1;
-                        current_arg.push(')');
                         i += 1;
                     }
                 }
                 b',' if paren_depth == 0 => {
-                    args.push(current_arg.trim().to_string());
-                    current_arg = String::new();
+                    let arg_slice = std::str::from_utf8(&bytes[arg_start..i])
+                        .unwrap_or("");
+                    args.push(arg_slice.trim().to_string());
                     i += 1;
+                    arg_start = i;
                 }
                 b'"' | b'\'' => {
-                    i = copy_literal_bytes_to_string(bytes, i, bytes[i], &mut current_arg);
-                }
-                b if b < 0x80 => {
-                    current_arg.push(b as char);
-                    i += 1;
+                    // Skip past string/char literal (they are part of the argument
+                    // text and will be included in the byte span)
+                    i = skip_literal_bytes(bytes, i, bytes[i]);
                 }
                 _ => {
-                    // Multi-byte UTF-8: reconstruct string from raw bytes
-                    let s = std::str::from_utf8(&bytes[i..])
-                        .expect("macro arg parsing: source text is not valid UTF-8");
-                    let ch = s.chars().next().unwrap();
-                    current_arg.push(ch);
-                    i += ch.len_utf8();
+                    i += 1;
                 }
             }
         }
 
         // Unterminated - return what we have
-        let trimmed = current_arg.trim().to_string();
+        let arg_slice = std::str::from_utf8(&bytes[arg_start..i])
+            .unwrap_or("");
+        let trimmed = arg_slice.trim();
         if !trimmed.is_empty() || !args.is_empty() {
-            args.push(trimmed);
+            args.push(trimmed.to_string());
         }
         (args, i)
     }
@@ -646,7 +650,7 @@ impl MacroTable {
             return std::borrow::Cow::Borrowed(body);
         }
 
-        let mut result = String::new();
+        let mut result = String::with_capacity(body.len());
         let mut i = 0;
 
         while i < len {
@@ -826,7 +830,7 @@ impl MacroTable {
         is_variadic: bool,
         has_named_variadic: bool,
     ) -> String {
-        let mut result = String::new();
+        let mut result = String::with_capacity(body.len() + 32);
         let bytes = body.as_bytes();
         let len = bytes.len();
         let mut i = 0;

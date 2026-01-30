@@ -2,9 +2,15 @@
 //!
 //! Handles #if, #ifdef, #ifndef, #elif, #else, #endif directives
 //! by maintaining a stack of conditional states.
+//!
+//! Performance: All scanning operates on byte slices (`&[u8]`) to avoid
+//! the overhead of `Vec<char>` allocation. Since C preprocessor expressions
+//! are ASCII, this is safe and efficient. Identifiers and numbers are parsed
+//! directly from byte spans using `bytes_to_str()`, eliminating intermediate
+//! String allocations.
 
 use super::macro_defs::MacroTable;
-use super::utils::{is_ident_start, is_ident_cont};
+use super::utils::{is_ident_start_byte, is_ident_cont_byte, bytes_to_str};
 
 /// State of a single conditional (#if/#ifdef/#ifndef block).
 #[derive(Debug, Clone, Copy)]
@@ -94,90 +100,82 @@ pub fn evaluate_condition(expr: &str, macros: &MacroTable) -> bool {
 
 /// Expand macros in a condition expression, handling `defined(X)` and `defined X` specially.
 /// Character and string literals are preserved verbatim (not subject to macro expansion).
+///
+/// Operates on byte slices for performance: avoids allocating Vec<char>.
 fn expand_condition_macros(expr: &str, macros: &MacroTable) -> String {
-    let mut result = String::new();
-    let chars: Vec<char> = expr.chars().collect();
-    let len = chars.len();
+    let mut result = String::with_capacity(expr.len());
+    let bytes = expr.as_bytes();
+    let len = bytes.len();
     let mut i = 0;
 
     while i < len {
+        let b = bytes[i];
+
         // Skip character literals verbatim (don't expand macros inside)
-        if chars[i] == '\'' {
-            result.push(chars[i]);
+        if b == b'\'' {
+            let start = i;
             i += 1;
-            while i < len && chars[i] != '\'' {
-                if chars[i] == '\\' && i + 1 < len {
-                    result.push(chars[i]);
-                    i += 1;
-                    result.push(chars[i]);
-                    i += 1;
+            while i < len && bytes[i] != b'\'' {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
                 } else {
-                    result.push(chars[i]);
                     i += 1;
                 }
             }
-            if i < len && chars[i] == '\'' {
-                result.push(chars[i]);
-                i += 1;
+            if i < len {
+                i += 1; // closing quote
             }
+            result.push_str(bytes_to_str(bytes, start, i));
             continue;
         }
 
         // Skip string literals verbatim
-        if chars[i] == '"' {
-            result.push(chars[i]);
+        if b == b'"' {
+            let start = i;
             i += 1;
-            while i < len && chars[i] != '"' {
-                if chars[i] == '\\' && i + 1 < len {
-                    result.push(chars[i]);
-                    i += 1;
-                    result.push(chars[i]);
-                    i += 1;
+            while i < len && bytes[i] != b'"' {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    i += 2;
                 } else {
-                    result.push(chars[i]);
                     i += 1;
                 }
             }
-            if i < len && chars[i] == '"' {
-                result.push(chars[i]);
-                i += 1;
+            if i < len {
+                i += 1; // closing quote
             }
+            result.push_str(bytes_to_str(bytes, start, i));
             continue;
         }
 
-        if i + 7 <= len && &expr[i..i + 7] == "defined" {
+        if i + 7 <= len && &bytes[i..i + 7] == b"defined" {
             // Check it's not part of a larger identifier
-            let before_ok = i == 0 || !is_ident_cont(chars[i - 1]);
-            let after_ok = i + 7 >= len || !is_ident_cont(chars[i + 7]);
+            let before_ok = i == 0 || !is_ident_cont_byte(bytes[i - 1]);
+            let after_ok = i + 7 >= len || !is_ident_cont_byte(bytes[i + 7]);
             if before_ok && after_ok {
-                result.push_str("defined");
+                let start = i;
                 i += 7;
 
                 // Skip whitespace
-                while i < len && (chars[i] == ' ' || chars[i] == '\t') {
-                    result.push(chars[i]);
+                while i < len && (bytes[i] == b' ' || bytes[i] == b'\t') {
                     i += 1;
                 }
 
-                if i < len && chars[i] == '(' {
-                    // defined(MACRO)
-                    result.push('(');
+                if i < len && bytes[i] == b'(' {
+                    // defined(MACRO) -- copy through closing paren
                     i += 1;
-                    while i < len && chars[i] != ')' {
-                        result.push(chars[i]);
+                    while i < len && bytes[i] != b')' {
                         i += 1;
                     }
                     if i < len {
-                        result.push(')');
-                        i += 1;
+                        i += 1; // closing paren
                     }
-                } else if i < len && is_ident_start(chars[i]) {
+                } else if i < len && is_ident_start_byte(bytes[i]) {
                     // defined MACRO
-                    while i < len && is_ident_cont(chars[i]) {
-                        result.push(chars[i]);
+                    while i < len && is_ident_cont_byte(bytes[i]) {
                         i += 1;
                     }
                 }
+                result.push_str(bytes_to_str(bytes, start, i));
                 continue;
             }
         }
@@ -185,30 +183,31 @@ fn expand_condition_macros(expr: &str, macros: &MacroTable) -> String {
         // Skip pp-number tokens: a digit (or .digit) followed by alphanumeric chars,
         // dots, underscores, and exponent signs (e+, e-, p+, p-).
         // This prevents macro expansion of suffixes like 'u' in '1u', 'L' in '1L', etc.
-        if chars[i].is_ascii_digit() || (chars[i] == '.' && i + 1 < len && chars[i + 1].is_ascii_digit()) {
+        if b.is_ascii_digit() || (b == b'.' && i + 1 < len && bytes[i + 1].is_ascii_digit()) {
+            let start = i;
             while i < len {
-                if chars[i].is_ascii_alphanumeric() || chars[i] == '.' || chars[i] == '_' {
-                    result.push(chars[i]);
+                if bytes[i].is_ascii_alphanumeric() || bytes[i] == b'.' || bytes[i] == b'_' {
                     i += 1;
-                } else if (chars[i] == '+' || chars[i] == '-')
+                } else if (bytes[i] == b'+' || bytes[i] == b'-')
                     && i > 0
-                    && matches!(chars[i - 1], 'e' | 'E' | 'p' | 'P')
+                    && matches!(bytes[i - 1], b'e' | b'E' | b'p' | b'P')
                 {
-                    result.push(chars[i]);
                     i += 1;
                 } else {
                     break;
                 }
             }
+            result.push_str(bytes_to_str(bytes, start, i));
             continue;
         }
 
-        if is_ident_start(chars[i]) {
+        if is_ident_start_byte(b) {
             let start = i;
-            while i < len && is_ident_cont(chars[i]) {
+            i += 1;
+            while i < len && is_ident_cont_byte(bytes[i]) {
                 i += 1;
             }
-            let ident: String = chars[start..i].iter().collect();
+            let ident = bytes_to_str(bytes, start, i);
 
             // Check if this identifier is a pp-number suffix (e.g., 1u, 0xFFULL, 1.0f).
             // If the previous character in result is a digit, this is part of a number
@@ -218,25 +217,25 @@ fn expand_condition_macros(expr: &str, macros: &MacroTable) -> String {
                 !rb.is_empty() && rb[rb.len() - 1].is_ascii_alphanumeric()
             };
             if is_ppnum_suffix {
-                result.push_str(&ident);
+                result.push_str(ident);
                 continue;
             }
 
             // Expand macro if it exists
-            if let Some(mac) = macros.get(&ident) {
+            if let Some(mac) = macros.get(ident) {
                 if !mac.is_function_like {
                     result.push_str(&mac.body);
                 } else {
-                    result.push_str(&ident);
+                    result.push_str(ident);
                 }
             } else {
                 // Undefined identifiers become 0 in #if expressions
-                result.push_str(&ident);
+                result.push_str(ident);
             }
             continue;
         }
 
-        result.push(chars[i]);
+        result.push(b as char);
         i += 1;
     }
 
@@ -272,48 +271,54 @@ enum ExprToken {
     Defined,
 }
 
+/// Tokenize a preprocessor expression, operating on byte slices for performance.
+/// Avoids allocating Vec<char>; numbers are parsed directly from byte spans.
 fn tokenize_expr(expr: &str) -> Vec<ExprToken> {
     let mut tokens = Vec::new();
-    let chars: Vec<char> = expr.chars().collect();
-    let len = chars.len();
+    let bytes = expr.as_bytes();
+    let len = bytes.len();
     let mut i = 0;
 
     while i < len {
+        let b = bytes[i];
+
         // Skip whitespace
-        if chars[i].is_whitespace() {
+        if b.is_ascii_whitespace() {
             i += 1;
             continue;
         }
 
         // Number (decimal, hex, octal)
-        if chars[i].is_ascii_digit() {
+        if b.is_ascii_digit() {
             let start = i;
-            let (raw_val, is_hex_or_oct) = if chars[i] == '0' && i + 1 < len && (chars[i + 1] == 'x' || chars[i + 1] == 'X') {
+            let (raw_val, is_hex_or_oct) = if b == b'0' && i + 1 < len && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X') {
                 i += 2;
-                while i < len && chars[i].is_ascii_hexdigit() {
+                let hex_start = i;
+                while i < len && bytes[i].is_ascii_hexdigit() {
                     i += 1;
                 }
-                let hex_str: String = chars[start + 2..i].iter().collect();
-                (u64::from_str_radix(&hex_str, 16).unwrap_or(0), true)
-            } else if chars[i] == '0' && i + 1 < len && chars[i + 1].is_ascii_digit() {
+                let hex_str = bytes_to_str(bytes, hex_start, i);
+                (u64::from_str_radix(hex_str, 16).unwrap_or(0), true)
+            } else if b == b'0' && i + 1 < len && bytes[i + 1].is_ascii_digit() {
                 // Octal
                 i += 1;
-                while i < len && chars[i].is_ascii_digit() {
+                let oct_start = i;
+                while i < len && bytes[i].is_ascii_digit() {
                     i += 1;
                 }
-                let oct_str: String = chars[start + 1..i].iter().collect();
-                (u64::from_str_radix(&oct_str, 8).unwrap_or(0), true)
+                let oct_str = bytes_to_str(bytes, oct_start, i);
+                (u64::from_str_radix(oct_str, 8).unwrap_or(0), true)
             } else {
-                while i < len && chars[i].is_ascii_digit() {
+                while i < len && bytes[i].is_ascii_digit() {
                     i += 1;
                 }
-                let num_str: String = chars[start..i].iter().collect();
+                let num_str = bytes_to_str(bytes, start, i);
                 (num_str.parse::<u64>().unwrap_or(0), false)
             };
             // Parse suffixes (U, L, UL, LL, ULL) - track unsigned
             let mut is_unsigned = false;
-            while i < len && (chars[i] == 'u' || chars[i] == 'U' || chars[i] == 'l' || chars[i] == 'L') {
-                if chars[i] == 'u' || chars[i] == 'U' {
+            while i < len && matches!(bytes[i], b'u' | b'U' | b'l' | b'L') {
+                if bytes[i] == b'u' || bytes[i] == b'U' {
                     is_unsigned = true;
                 }
                 i += 1;
@@ -337,39 +342,39 @@ fn tokenize_expr(expr: &str) -> Vec<ExprToken> {
         }
 
         // Character literal
-        if chars[i] == '\'' {
+        if b == b'\'' {
             i += 1;
-            let val = if i < len && chars[i] == '\\' {
+            let val = if i < len && bytes[i] == b'\\' {
                 i += 1;
                 let c = if i < len {
-                    let c = match chars[i] {
-                        'n' => '\n',
-                        't' => '\t',
-                        'r' => '\r',
-                        '0' => '\0',
-                        '\\' => '\\',
-                        '\'' => '\'',
-                        'a' => '\x07',
-                        'b' => '\x08',
-                        'f' => '\x0C',
-                        'v' => '\x0B',
-                        _ => chars[i],
+                    let c = match bytes[i] {
+                        b'n' => b'\n',
+                        b't' => b'\t',
+                        b'r' => b'\r',
+                        b'0' => b'\0',
+                        b'\\' => b'\\',
+                        b'\'' => b'\'',
+                        b'a' => 0x07,
+                        b'b' => 0x08,
+                        b'f' => 0x0C,
+                        b'v' => 0x0B,
+                        other => other,
                     };
                     i += 1;
                     c
                 } else {
-                    '\0'
+                    0
                 };
                 c as i64
             } else if i < len {
-                let c = chars[i] as i64;
+                let c = bytes[i] as i64;
                 i += 1;
                 c
             } else {
                 0
             };
             // Skip closing quote
-            if i < len && chars[i] == '\'' {
+            if i < len && bytes[i] == b'\'' {
                 i += 1;
             }
             tokens.push(ExprToken::Num(val, false));
@@ -377,95 +382,61 @@ fn tokenize_expr(expr: &str) -> Vec<ExprToken> {
         }
 
         // Identifier or 'defined'
-        if is_ident_start(chars[i]) {
+        if is_ident_start_byte(b) {
             let start = i;
-            while i < len && is_ident_cont(chars[i]) {
+            i += 1;
+            while i < len && is_ident_cont_byte(bytes[i]) {
                 i += 1;
             }
-            let ident: String = chars[start..i].iter().collect();
+            let ident = bytes_to_str(bytes, start, i);
             if ident == "defined" {
                 tokens.push(ExprToken::Defined);
             } else {
-                tokens.push(ExprToken::Ident(ident));
+                tokens.push(ExprToken::Ident(ident.to_string()));
             }
             continue;
         }
 
-        // Operators
-        if chars[i] == '(' {
-            tokens.push(ExprToken::LParen);
-            i += 1;
-        } else if chars[i] == ')' {
-            tokens.push(ExprToken::RParen);
-            i += 1;
-        } else if chars[i] == '!' && i + 1 < len && chars[i + 1] == '=' {
-            tokens.push(ExprToken::Op("!="));
-            i += 2;
-        } else if chars[i] == '!' {
-            tokens.push(ExprToken::Op("!"));
-            i += 1;
-        } else if chars[i] == '&' && i + 1 < len && chars[i + 1] == '&' {
-            tokens.push(ExprToken::Op("&&"));
-            i += 2;
-        } else if chars[i] == '&' {
-            tokens.push(ExprToken::Op("&"));
-            i += 1;
-        } else if chars[i] == '|' && i + 1 < len && chars[i + 1] == '|' {
-            tokens.push(ExprToken::Op("||"));
-            i += 2;
-        } else if chars[i] == '|' {
-            tokens.push(ExprToken::Op("|"));
-            i += 1;
-        } else if chars[i] == '=' && i + 1 < len && chars[i + 1] == '=' {
-            tokens.push(ExprToken::Op("=="));
-            i += 2;
-        } else if chars[i] == '<' && i + 1 < len && chars[i + 1] == '=' {
-            tokens.push(ExprToken::Op("<="));
-            i += 2;
-        } else if chars[i] == '<' && i + 1 < len && chars[i + 1] == '<' {
-            tokens.push(ExprToken::Op("<<"));
-            i += 2;
-        } else if chars[i] == '<' {
-            tokens.push(ExprToken::Op("<"));
-            i += 1;
-        } else if chars[i] == '>' && i + 1 < len && chars[i + 1] == '=' {
-            tokens.push(ExprToken::Op(">="));
-            i += 2;
-        } else if chars[i] == '>' && i + 1 < len && chars[i + 1] == '>' {
-            tokens.push(ExprToken::Op(">>"));
-            i += 2;
-        } else if chars[i] == '>' {
-            tokens.push(ExprToken::Op(">"));
-            i += 1;
-        } else if chars[i] == '+' {
-            tokens.push(ExprToken::Op("+"));
-            i += 1;
-        } else if chars[i] == '-' {
-            tokens.push(ExprToken::Op("-"));
-            i += 1;
-        } else if chars[i] == '*' {
-            tokens.push(ExprToken::Op("*"));
-            i += 1;
-        } else if chars[i] == '/' {
-            tokens.push(ExprToken::Op("/"));
-            i += 1;
-        } else if chars[i] == '%' {
-            tokens.push(ExprToken::Op("%"));
-            i += 1;
-        } else if chars[i] == '~' {
-            tokens.push(ExprToken::Op("~"));
-            i += 1;
-        } else if chars[i] == '^' {
-            tokens.push(ExprToken::Op("^"));
-            i += 1;
-        } else if chars[i] == '?' {
-            tokens.push(ExprToken::Op("?"));
-            i += 1;
-        } else if chars[i] == ':' {
-            tokens.push(ExprToken::Op(":"));
-            i += 1;
-        } else {
-            i += 1; // skip unknown
+        // Operators (two-character operators checked first)
+        if i + 1 < len {
+            let next = bytes[i + 1];
+            let two_char_op: Option<&'static str> = match (b, next) {
+                (b'!', b'=') => Some("!="),
+                (b'&', b'&') => Some("&&"),
+                (b'|', b'|') => Some("||"),
+                (b'=', b'=') => Some("=="),
+                (b'<', b'=') => Some("<="),
+                (b'<', b'<') => Some("<<"),
+                (b'>', b'=') => Some(">="),
+                (b'>', b'>') => Some(">>"),
+                _ => None,
+            };
+            if let Some(op) = two_char_op {
+                tokens.push(ExprToken::Op(op));
+                i += 2;
+                continue;
+            }
+        }
+
+        // Single-character operators and parens
+        match b {
+            b'(' => { tokens.push(ExprToken::LParen); i += 1; }
+            b')' => { tokens.push(ExprToken::RParen); i += 1; }
+            b'!' => { tokens.push(ExprToken::Op("!")); i += 1; }
+            b'&' => { tokens.push(ExprToken::Op("&")); i += 1; }
+            b'|' => { tokens.push(ExprToken::Op("|")); i += 1; }
+            b'+' => { tokens.push(ExprToken::Op("+")); i += 1; }
+            b'-' => { tokens.push(ExprToken::Op("-")); i += 1; }
+            b'*' => { tokens.push(ExprToken::Op("*")); i += 1; }
+            b'/' => { tokens.push(ExprToken::Op("/")); i += 1; }
+            b'%' => { tokens.push(ExprToken::Op("%")); i += 1; }
+            b'~' => { tokens.push(ExprToken::Op("~")); i += 1; }
+            b'^' => { tokens.push(ExprToken::Op("^")); i += 1; }
+            b'?' => { tokens.push(ExprToken::Op("?")); i += 1; }
+            b':' => { tokens.push(ExprToken::Op(":")); i += 1; }
+            b'<' => { tokens.push(ExprToken::Op("<")); i += 1; }
+            b'>' => { tokens.push(ExprToken::Op(">")); i += 1; }
+            _ => { i += 1; } // skip unknown
         }
     }
 
@@ -838,4 +809,3 @@ impl<'a> ExprParser<'a> {
         }
     }
 }
-
