@@ -1,0 +1,17 @@
+Task: Add parser fix-it hints and improved error recovery
+
+Goal: Improve the parser's error messages to match GCC-style diagnostics with:
+1. Fix-it hints (e.g., "expected ';' after return statement")
+2. Context-aware error messages that explain what construct is being parsed
+3. Better error recovery for common mistakes (missing semicolons, unmatched parens)
+4. Note diagnostics pointing to matching brackets/parens
+
+Key files:
+- src/common/error.rs (add fix_hint field to Diagnostic)
+- src/frontend/parser/parser.rs (enhance expect() with context)
+- src/frontend/parser/statements.rs (add context to statement parsing)
+- src/frontend/parser/expressions.rs (add context to expression parsing)
+- src/frontend/parser/declarations.rs (add context to declaration parsing)
+
+Status: in_progress
+Started: 2026-01-30
