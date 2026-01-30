@@ -1,0 +1,19 @@
+Lock: fix_vector_binop_type_inference (in_progress)
+
+Bug: Vector binary operation type inference returns scalar type instead of vector type.
+
+When a binary operation involves a vector and a scalar (e.g., `float4_vec * float_scalar`),
+get_binop_ctype calls usual_arithmetic_conversion which doesn't handle vector types. It
+returns the scalar element type (e.g., Float) instead of the vector type (e.g., Vector(Float, 16)).
+
+This causes nested vector expressions like `vec_a + vec_b * scalar_f` to miscompile:
+the inner `vec_b * scalar_f` is correctly lowered to a vector alloca, but the outer `+`
+sees its RHS type as scalar Float (from get_binop_ctype), so it tries to broadcast the
+alloca pointer as a scalar float value, producing garbage results.
+
+Fix: Add vector type handling to get_binop_ctype: when either operand of an arithmetic/bitwise
+binary op is a vector type, return that vector type (per GCC vector extension semantics).
+
+Affects: gifsicle (segfault in scale_image_data_mix), likely other projects using GCC vector
+extensions with complex expressions.
+Status: in_progress
