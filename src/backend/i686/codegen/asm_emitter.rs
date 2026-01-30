@@ -272,7 +272,10 @@ impl InlineAsmEmitter for I686Codegen {
             return;
         }
 
-        // GP register
+        // GP register - check for 64-bit register pair
+        let reg_hi = &op.reg_hi;
+        let is_pair = !reg_hi.is_empty() && matches!(ty, IrType::I64 | IrType::U64);
+
         match val {
             Operand::Const(c) => {
                 let imm = match c {
@@ -280,11 +283,26 @@ impl InlineAsmEmitter for I686Codegen {
                     IrConst::F64(v) => v.to_bits() as i64,
                     _ => c.to_i64().unwrap_or(0),
                 };
-                let imm32 = imm as i32;
-                if imm32 == 0 {
-                    self.state.emit_fmt(format_args!("    xorl %{}, %{}", Self::reg_to_32(reg), Self::reg_to_32(reg)));
+                if is_pair {
+                    let lo = imm as u32;
+                    let hi = (imm as u64 >> 32) as u32;
+                    if lo == 0 {
+                        self.state.emit_fmt(format_args!("    xorl %{}, %{}", reg, reg));
+                    } else {
+                        self.state.emit_fmt(format_args!("    movl ${}, %{}", lo as i32, reg));
+                    }
+                    if hi == 0 {
+                        self.state.emit_fmt(format_args!("    xorl %{}, %{}", reg_hi, reg_hi));
+                    } else {
+                        self.state.emit_fmt(format_args!("    movl ${}, %{}", hi as i32, reg_hi));
+                    }
                 } else {
-                    self.state.emit_fmt(format_args!("    movl ${}, %{}", imm32, Self::reg_to_32(reg)));
+                    let imm32 = imm as i32;
+                    if imm32 == 0 {
+                        self.state.emit_fmt(format_args!("    xorl %{}, %{}", Self::reg_to_32(reg), Self::reg_to_32(reg)));
+                    } else {
+                        self.state.emit_fmt(format_args!("    movl ${}, %{}", imm32, Self::reg_to_32(reg)));
+                    }
                 }
             }
             Operand::Value(v) => {
@@ -297,6 +315,10 @@ impl InlineAsmEmitter for I686Codegen {
                         } else {
                             self.state.emit_fmt(format_args!("    leal {}(%ebp), %{}", slot.0, reg));
                         }
+                    } else if is_pair {
+                        // Load 64-bit value as register pair: low 32 bits into reg, high into reg_hi
+                        self.state.emit_fmt(format_args!("    movl {}(%ebp), %{}", slot.0, reg));
+                        self.state.emit_fmt(format_args!("    movl {}(%ebp), %{}", slot.0 + 4, reg_hi));
                     } else {
                         let load_instr = Self::i686_mov_load_for_type(ty);
                         // For zero/sign-extending loads (movzbl, movzwl, movsbl, movswl),
@@ -337,6 +359,8 @@ impl InlineAsmEmitter for I686Codegen {
         }
         let reg = &op.reg;
         let ty = op.operand_type;
+        let reg_hi = &op.reg_hi;
+        let is_pair = !reg_hi.is_empty() && matches!(ty, IrType::I64 | IrType::U64);
         let is_xmm = reg.starts_with("xmm");
         if let Some(slot) = self.state.get_slot(ptr.0) {
             if self.state.is_alloca(ptr.0) {
@@ -347,6 +371,10 @@ impl InlineAsmEmitter for I686Codegen {
                         _ => "movdqu",
                     };
                     self.state.emit_fmt(format_args!("    {} {}(%ebp), %{}", load_instr, slot.0, reg));
+                } else if is_pair {
+                    // 64-bit register pair: load low and high halves
+                    self.state.emit_fmt(format_args!("    movl {}(%ebp), %{}", slot.0, reg));
+                    self.state.emit_fmt(format_args!("    movl {}(%ebp), %{}", slot.0 + 4, reg_hi));
                 } else {
                     let load_instr = Self::i686_mov_load_for_type(ty);
                     // For zero/sign-extending loads, destination must be 32-bit
@@ -359,22 +387,30 @@ impl InlineAsmEmitter for I686Codegen {
                 }
             } else {
                 // Non-alloca: slot holds a pointer — do indirect load
-                self.state.emit_fmt(format_args!("    movl {}(%ebp), %{}", slot.0, reg));
-                if is_xmm {
-                    let load_instr = match ty {
-                        IrType::F32 => "movss",
-                        _ => "movsd",
-                    };
-                    self.state.emit_fmt(format_args!("    {} (%{}), %{}", load_instr, reg, reg));
+                if is_pair {
+                    // For 64-bit register pair with pointer indirection:
+                    // Load pointer into reg, then load both halves through it
+                    self.state.emit_fmt(format_args!("    movl {}(%ebp), %{}", slot.0, reg));
+                    self.state.emit_fmt(format_args!("    movl 4(%{}), %{}", reg, reg_hi));
+                    self.state.emit_fmt(format_args!("    movl (%{}), %{}", reg, reg));
                 } else {
-                    let load_instr = Self::i686_mov_load_for_type(ty);
-                    // For zero/sign-extending loads, destination must be 32-bit
-                    let dest = if Self::is_extending_load(load_instr) {
-                        Self::reg_to_32(reg)
+                    self.state.emit_fmt(format_args!("    movl {}(%ebp), %{}", slot.0, reg));
+                    if is_xmm {
+                        let load_instr = match ty {
+                            IrType::F32 => "movss",
+                            _ => "movsd",
+                        };
+                        self.state.emit_fmt(format_args!("    {} (%{}), %{}", load_instr, reg, reg));
                     } else {
-                        Self::dest_reg_for_type(reg, ty)
-                    };
-                    self.state.emit_fmt(format_args!("    {} (%{}), %{}", load_instr, reg, dest));
+                        let load_instr = Self::i686_mov_load_for_type(ty);
+                        // For zero/sign-extending loads, destination must be 32-bit
+                        let dest = if Self::is_extending_load(load_instr) {
+                            Self::reg_to_32(reg)
+                        } else {
+                            Self::dest_reg_for_type(reg, ty)
+                        };
+                        self.state.emit_fmt(format_args!("    {} (%{}), %{}", load_instr, reg, dest));
+                    }
                 }
             }
         }
@@ -462,6 +498,8 @@ impl InlineAsmEmitter for I686Codegen {
 
         let reg = &op.reg;
         let ty = op.operand_type;
+        let reg_hi = &op.reg_hi;
+        let is_pair = !reg_hi.is_empty() && matches!(ty, IrType::I64 | IrType::U64);
         let is_xmm = reg.starts_with("xmm");
         if let Some(slot) = self.state.get_slot(ptr.0) {
             if is_xmm {
@@ -481,6 +519,23 @@ impl InlineAsmEmitter for I686Codegen {
                     self.state.emit_fmt(format_args!("    movl {}(%ebp), %ecx", slot.0));
                     self.state.emit_fmt(format_args!("    {} %{}, (%ecx)", store_instr, reg));
                     self.state.emit("    popl %ecx");
+                }
+            } else if is_pair {
+                // 64-bit register pair store
+                if self.state.is_direct_slot(ptr.0) {
+                    self.state.emit_fmt(format_args!("    movl %{}, {}(%ebp)", reg, slot.0));
+                    self.state.emit_fmt(format_args!("    movl %{}, {}(%ebp)", reg_hi, slot.0 + 4));
+                } else {
+                    // Indirect store through pointer - need a scratch register
+                    // Find a scratch register not used by the pair
+                    let scratch = if reg != "ecx" && reg_hi != "ecx" { "ecx" }
+                        else if reg != "edx" && reg_hi != "edx" { "edx" }
+                        else { "esi" };
+                    self.state.emit_fmt(format_args!("    pushl %{}", scratch));
+                    self.state.emit_fmt(format_args!("    movl {}(%ebp), %{}", slot.0, scratch));
+                    self.state.emit_fmt(format_args!("    movl %{}, (%{})", reg, scratch));
+                    self.state.emit_fmt(format_args!("    movl %{}, 4(%{})", reg_hi, scratch));
+                    self.state.emit_fmt(format_args!("    popl %{}", scratch));
                 }
             } else if self.state.is_direct_slot(ptr.0) {
                 let store_instr = Self::i686_mov_store_for_type(ty);
@@ -516,6 +571,11 @@ impl InlineAsmEmitter for I686Codegen {
                 op.imm_value = c.to_i64();
             }
         }
+    }
+
+    fn needs_register_pair(&self, ty: IrType) -> bool {
+        // On i686, 64-bit integer types need two 32-bit GP registers (a register pair).
+        matches!(ty, IrType::I64 | IrType::U64)
     }
 
     fn reset_scratch_state(&mut self) {

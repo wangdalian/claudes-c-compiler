@@ -1396,7 +1396,7 @@ impl ArchCodegen for I686Codegen {
     }
 
     /// Override emit_switch to handle 64-bit switch values on i686.
-    fn emit_switch(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId) {
+    fn emit_switch(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId, ty: IrType) {
         let is_wide = match val {
             Operand::Value(v) => self.state.is_wide_value(v.0),
             Operand::Const(IrConst::I64(_)) => true,
@@ -1416,12 +1416,12 @@ impl ArchCodegen for I686Codegen {
                 false
             };
             if use_jump_table {
-                self.emit_switch_jump_table(val, cases, default);
+                self.emit_switch_jump_table(val, cases, default, ty);
             } else {
                 self.emit_load_operand(val);
                 for &(case_val, target) in cases {
                     let label = target.as_label();
-                    self.emit_switch_case_branch(case_val, &label);
+                    self.emit_switch_case_branch(case_val, &label, ty);
                 }
                 self.emit_branch_to_block(*default);
             }
@@ -1456,7 +1456,7 @@ impl ArchCodegen for I686Codegen {
         self.state.reg_cache.invalidate_all();
     }
 
-    fn emit_switch_case_branch(&mut self, case_val: i64, label: &str) {
+    fn emit_switch_case_branch(&mut self, case_val: i64, label: &str, _ty: IrType) {
         let val = case_val as i32;
         if val == 0 {
             self.state.emit("    testl %eax, %eax");
@@ -1466,7 +1466,7 @@ impl ArchCodegen for I686Codegen {
         emit!(self.state, "    je {}", label);
     }
 
-    fn emit_switch_jump_table(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId) {
+    fn emit_switch_jump_table(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId, _ty: IrType) {
         use crate::backend::traits::build_jump_table;
         let (table, min_val, range) = build_jump_table(cases, default);
         let table_label = self.state.fresh_label("jt");

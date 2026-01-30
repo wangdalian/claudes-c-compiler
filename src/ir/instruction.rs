@@ -367,6 +367,7 @@ pub enum Terminator {
         val: Operand,
         cases: Vec<(i64, BlockId)>,
         default: BlockId,
+        ty: IrType,
     },
 
     /// Unreachable (e.g., after noreturn call)

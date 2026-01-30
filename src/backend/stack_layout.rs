@@ -1162,6 +1162,19 @@ fn classify_instructions(
                             8
                         };
                         state.asm_output_values.insert(out_val.0);
+                        // On 32-bit targets, track 64-bit asm output values as "wide"
+                        // so that Copy instructions referencing them use the multi-word
+                        // copy path (copying both 32-bit halves) instead of only copying
+                        // the low 32 bits. Without this, mem2reg-promoted 64-bit inline
+                        // asm outputs (e.g., "+r" on unsigned long long) lose their high
+                        // 32 bits when the value is copied to subsequent uses.
+                        if crate::common::types::target_is_32bit() && out_idx < operand_types.len() {
+                            let is_wide = matches!(operand_types[out_idx],
+                                IrType::F64 | IrType::I64 | IrType::U64);
+                            if is_wide {
+                                state.wide_values.insert(out_val.0);
+                            }
+                        }
                         multi_block_values.push(MultiBlockValue {
                             dest_id: out_val.0,
                             slot_size,

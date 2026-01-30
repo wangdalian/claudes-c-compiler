@@ -531,15 +531,23 @@ impl ArchCodegen for RiscvCodegen {
         self.state.emit("    jr t0");
     }
 
-    fn emit_switch_case_branch(&mut self, case_val: i64, label: &str) {
+    fn emit_switch_case_branch(&mut self, case_val: i64, label: &str, ty: IrType) {
         let skip = self.state.fresh_label("sw_skip");
-        self.state.emit_fmt(format_args!("    li t1, {}", case_val));
-        self.state.emit_fmt(format_args!("    bne t0, t1, {}", skip));
+        let use_32bit = matches!(ty, IrType::I32 | IrType::U32 | IrType::I16 | IrType::U16 | IrType::I8 | IrType::U8);
+        if use_32bit {
+            // Sign-extend both values to match; li already sign-extends on RV64
+            self.state.emit_fmt(format_args!("    li t1, {}", case_val as i32 as i64));
+            self.state.emit("    sext.w t2, t0");
+            self.state.emit_fmt(format_args!("    bne t2, t1, {}", skip));
+        } else {
+            self.state.emit_fmt(format_args!("    li t1, {}", case_val));
+            self.state.emit_fmt(format_args!("    bne t0, t1, {}", skip));
+        }
         self.state.emit_fmt(format_args!("    jump {}, t6", label));
         self.state.emit_fmt(format_args!("{}:", skip));
     }
 
-    fn emit_switch_jump_table(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId) {
+    fn emit_switch_jump_table(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId, _ty: IrType) {
         use crate::backend::traits::build_jump_table;
         let (table, min_val, range) = build_jump_table(cases, default);
         let table_label = self.state.fresh_label("jt");

@@ -342,7 +342,7 @@ fn fold_constant_switches(func: &mut IrFunction, label_to_idx: &FxHashMap<BlockI
     let mut folds: Vec<(usize, BlockId, Vec<BlockId>, BlockId)> = Vec::new();
 
     for (idx, block) in func.blocks.iter().enumerate() {
-        if let Terminator::Switch { val, cases, default } = &block.terminator {
+        if let Terminator::Switch { val, cases, default, .. } = &block.terminator {
             let resolved_const = match val {
                 Operand::Const(c) => Some(*c),
                 Operand::Value(v) => resolve_value_to_const_in_block(block, *v),
@@ -1417,6 +1417,7 @@ mod tests {
                 val: Operand::Const(IrConst::I64(37)),
                 cases: vec![(10, BlockId(1)), (20, BlockId(2)), (30, BlockId(3))],
                 default: BlockId(4),
+                ty: IrType::I64,
             },
         ));
         func.blocks.push(make_block(BlockId(1), vec![], Terminator::Return(Some(Operand::Const(IrConst::I32(100))))));
@@ -1442,6 +1443,7 @@ mod tests {
                 val: Operand::Const(IrConst::I64(20)),
                 cases: vec![(10, BlockId(1)), (20, BlockId(2)), (30, BlockId(3))],
                 default: BlockId(4),
+                ty: IrType::I64,
             },
         ));
         func.blocks.push(make_block(BlockId(1), vec![], Terminator::Return(Some(Operand::Const(IrConst::I32(100))))));
@@ -1486,6 +1488,7 @@ mod tests {
                 val: Operand::Const(IrConst::I64(10)),
                 cases: vec![(10, BlockId(2))],
                 default: BlockId(3),
+                ty: IrType::I64,
             },
         ));
         func.blocks.push(make_block(BlockId(2), vec![], Terminator::Return(Some(Operand::Const(IrConst::I32(42))))));

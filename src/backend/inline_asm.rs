@@ -58,6 +58,10 @@ pub enum AsmOperandKind {
 pub struct AsmOperand {
     pub kind: AsmOperandKind,
     pub reg: String,
+    /// High register for 64-bit register pairs on i686. Empty when not a pair.
+    /// On i686, 64-bit values in "r" constraints require two 32-bit GP registers:
+    /// `reg` holds the low 32 bits, `reg_hi` holds the high 32 bits.
+    pub reg_hi: String,
     pub name: Option<String>,
     /// x86: memory address string like "offset(%rbp)".
     pub mem_addr: String,
@@ -79,13 +83,14 @@ pub struct AsmOperand {
 
 impl AsmOperand {
     pub fn new(kind: AsmOperandKind, name: Option<String>) -> Self {
-        Self { kind, reg: String::new(), name, mem_addr: String::new(), mem_offset: 0, imm_value: None, imm_symbol: None, operand_type: IrType::I64, constraint: String::new(), seg_prefix: String::new() }
+        Self { kind, reg: String::new(), reg_hi: String::new(), name, mem_addr: String::new(), mem_offset: 0, imm_value: None, imm_symbol: None, operand_type: IrType::I64, constraint: String::new(), seg_prefix: String::new() }
     }
 
     /// Copy register assignment and addressing metadata from another operand.
     /// Used for tied operands and "+" read-write propagation.
     pub fn copy_metadata_from(&mut self, source: &AsmOperand) {
         self.reg = source.reg.clone();
+        self.reg_hi = source.reg_hi.clone();
         self.mem_addr = source.mem_addr.clone();
         self.mem_offset = source.mem_offset;
         if matches!(source.kind, AsmOperandKind::Memory) {
@@ -154,6 +159,11 @@ pub trait InlineAsmEmitter {
         // Default: no-op. Only i686 needs this because it's the only backend that
         // can exhaust all GP registers. x86-64/ARM/RISC-V have enough registers.
     }
+
+    /// Returns true if the given type requires a register pair for GP register constraints.
+    /// On i686, 64-bit types (I64/U64) need two 32-bit registers to represent a single value.
+    /// Defaults to false (most architectures have 64-bit GP registers).
+    fn needs_register_pair(&self, _ty: IrType) -> bool { false }
 
     /// Reset scratch register allocation state (called at start of each inline asm).
     fn reset_scratch_state(&mut self);
@@ -418,6 +428,13 @@ pub fn emit_inline_asm_common_impl(
 
     // Phase 1: Classify all operands and assign registers
     let (mut operands, input_tied_to) = classify_all_operands(emitter, outputs, inputs);
+    // Pre-populate operand types early so assign_scratch_registers can use them
+    // for register pair decisions on i686 (64-bit types need two 32-bit registers).
+    for (i, ty) in operand_types.iter().enumerate() {
+        if i < operands.len() {
+            operands[i].operand_type = *ty;
+        }
+    }
     resolve_symbols_and_immediates(&mut operands, outputs, input_symbols);
     let specific_regs = collect_excluded_registers(&operands, clobbers);
     assign_scratch_registers(emitter, &mut operands, &input_tied_to, &specific_regs, outputs, inputs);
@@ -699,6 +716,12 @@ fn assign_scratch_registers(
                     }
                 } else {
                     operands[i].reg = reg;
+                    // For 64-bit register pairs on 32-bit architectures (i686),
+                    // allocate a second GP register for the high 32 bits.
+                    if matches!(kind, AsmOperandKind::GpReg) && emitter.needs_register_pair(operands[i].operand_type) {
+                        let reg_hi = emitter.assign_scratch_reg(kind, specific_regs);
+                        operands[i].reg_hi = reg_hi;
+                    }
                 }
             }
         }

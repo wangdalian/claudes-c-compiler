@@ -1106,7 +1106,7 @@ pub trait ArchCodegen {
     ///   4. Indirect branch to addr
     ///
     /// For sparse cases, falls back to a linear chain of compare-and-branch.
-    fn emit_switch(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId) {
+    fn emit_switch(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId, ty: IrType) {
         // Check density for jump table eligibility (disabled by -fno-jump-tables)
         let use_jump_table = if self.state_ref().no_jump_tables {
             false
@@ -1120,13 +1120,13 @@ pub trait ArchCodegen {
         };
 
         if use_jump_table {
-            self.emit_switch_jump_table(val, cases, default);
+            self.emit_switch_jump_table(val, cases, default, ty);
         } else {
             // Sparse: linear compare-and-branch chain
             self.emit_load_operand(val);
             for &(case_val, target) in cases {
                 let label = target.as_label();
-                self.emit_switch_case_branch(case_val, &label);
+                self.emit_switch_case_branch(case_val, &label, ty);
             }
             self.emit_branch_to_block(*default);
         }
@@ -1139,12 +1139,12 @@ pub trait ArchCodegen {
     /// section with pointer-sized absolute entries) to avoid duplicating the table
     /// construction and data emission logic. x86 overrides this entirely to handle
     /// PIC mode (relative .long entries).
-    fn emit_switch_jump_table(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId);
+    fn emit_switch_jump_table(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId, ty: IrType);
 
     /// Emit a compare-and-branch for a single switch case:
     /// compare the accumulator against `case_val` and branch to `label` if equal.
     /// The accumulator value must be preserved across the call.
-    fn emit_switch_case_branch(&mut self, case_val: i64, label: &str);
+    fn emit_switch_case_branch(&mut self, case_val: i64, label: &str, ty: IrType);
 
     /// Emit a label address load (GCC &&label extension).
     fn emit_label_addr(&mut self, dest: &Value, label: &str) {

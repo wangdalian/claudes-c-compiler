@@ -131,6 +131,7 @@ impl Lowerer {
                 val: Operand::Value(loaded),
                 cases: cases.to_vec(),
                 default: fallback,
+                ty: switch_ty,
             });
             return;
         }
@@ -145,6 +146,7 @@ impl Lowerer {
                 val: Operand::Value(loaded),
                 cases: cases.to_vec(),
                 default: range_check_block,
+                ty: switch_ty,
             });
             if !case_ranges.is_empty() {
                 self.start_block(range_check_block);

@@ -1,0 +1,17 @@
+Task: Add missing SSE2 cast intrinsics (_mm_castps_si128 etc.) for flatcc
+Status: in_progress
+Started: 2026-01-30
+
+flatcc uses xxhash which calls _mm_castps_si128 (and related cast intrinsics)
+to reinterpret __m128 as __m128i. These zero-cost type-punning intrinsics
+were missing from our emmintrin.h.
+
+Fix: Add all 6 cast intrinsics to emmintrin.h:
+- _mm_castps_si128: __m128 -> __m128i
+- _mm_castsi128_ps: __m128i -> __m128
+- _mm_castps_pd: __m128 -> __m128d
+- _mm_castpd_ps: __m128d -> __m128
+- _mm_castpd_si128: __m128d -> __m128i
+- _mm_castsi128_pd: __m128i -> __m128d
+
+All use __builtin_memcpy for safe type-punning since our SSE types are structs.

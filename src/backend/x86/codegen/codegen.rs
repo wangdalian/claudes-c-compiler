@@ -1136,9 +1136,17 @@ impl ArchCodegen for X86Codegen {
         }
     }
 
-    fn emit_switch_case_branch(&mut self, case_val: i64, label: &str) {
+    fn emit_switch_case_branch(&mut self, case_val: i64, label: &str, ty: IrType) {
+        let use_32bit = matches!(ty, IrType::I32 | IrType::U32 | IrType::I16 | IrType::U16 | IrType::I8 | IrType::U8);
         if case_val == 0 {
-            self.state.emit("    testq %rax, %rax");
+            if use_32bit {
+                self.state.emit("    testl %eax, %eax");
+            } else {
+                self.state.emit("    testq %rax, %rax");
+            }
+        } else if use_32bit {
+            // Use 32-bit comparison to avoid sign-extension mismatch for int-sized values
+            self.state.out.emit_instr_imm_reg("    cmpl", case_val as i32 as i64, "eax");
         } else if case_val >= i32::MIN as i64 && case_val <= i32::MAX as i64 {
             self.state.out.emit_instr_imm_reg("    cmpq", case_val, "rax");
         } else {
@@ -1148,13 +1156,25 @@ impl ArchCodegen for X86Codegen {
         self.state.out.emit_jcc_label("    je", label);
     }
 
-    fn emit_switch_jump_table(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId) {
+    fn emit_switch_jump_table(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId, ty: IrType) {
         use crate::backend::traits::build_jump_table;
         let (table, min_val, range) = build_jump_table(cases, default);
         let table_label = self.state.fresh_label("jt");
         let default_label = default.as_label();
 
         self.operand_to_rax(val);
+
+        // For 32-bit switch types, sign-extend to 64-bit for the jump table indexing
+        let use_32bit = matches!(ty, IrType::I32 | IrType::U32 | IrType::I16 | IrType::U16 | IrType::I8 | IrType::U8);
+        if use_32bit {
+            if ty.is_unsigned() {
+                // Zero-extend: mov %eax, %eax clears upper 32 bits
+                self.state.emit("    movl %eax, %eax");
+            } else {
+                // Sign-extend 32-bit to 64-bit
+                self.state.emit("    cltq");
+            }
+        }
 
         if min_val != 0 {
             if min_val >= i32::MIN as i64 && min_val <= i32::MAX as i64 {

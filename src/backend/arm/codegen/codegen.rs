@@ -1707,16 +1707,22 @@ impl ArchCodegen for ArmCodegen {
         self.state.emit("    br x0");
     }
 
-    fn emit_switch_case_branch(&mut self, case_val: i64, label: &str) {
-        self.emit_load_imm64("x1", case_val);
-        self.state.emit("    cmp x0, x1");
+    fn emit_switch_case_branch(&mut self, case_val: i64, label: &str, ty: IrType) {
+        let use_32bit = matches!(ty, IrType::I32 | IrType::U32 | IrType::I16 | IrType::U16 | IrType::I8 | IrType::U8);
+        if use_32bit {
+            self.emit_load_imm64("w1", case_val as i32 as i64);
+            self.state.emit("    cmp w0, w1");
+        } else {
+            self.emit_load_imm64("x1", case_val);
+            self.state.emit("    cmp x0, x1");
+        }
         let skip = self.state.fresh_label("skip");
         self.state.emit_fmt(format_args!("    b.ne {}", skip));
         self.state.emit_fmt(format_args!("    b {}", label));
         self.state.emit_fmt(format_args!("{}:", skip));
     }
 
-    fn emit_switch_jump_table(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId) {
+    fn emit_switch_jump_table(&mut self, val: &Operand, cases: &[(i64, BlockId)], default: &BlockId, _ty: IrType) {
         use crate::backend::traits::build_jump_table;
         let (table, min_val, range) = build_jump_table(cases, default);
         let table_label = self.state.fresh_label("jt");
