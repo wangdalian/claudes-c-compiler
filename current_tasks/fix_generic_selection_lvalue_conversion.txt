@@ -1,0 +1,10 @@
+Fix _Generic selection lvalue conversion (array decay, function decay, const matching)
+
+The _Generic controlling expression must undergo lvalue conversion per C11 6.5.1.1p2:
+1. Array-to-pointer decay: char[] should match char* (currently matches int8_t)
+2. Function-to-pointer decay: function types should match function pointer types
+3. Enum-to-int equivalence in the lowering path
+4. The lowering ctype_matches_generic currently uses simple == comparison,
+   but needs the same array-decay and enum-int logic as the sema version.
+
+This fixes mpack and potentially other projects using _Generic with arrays.
