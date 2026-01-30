@@ -91,6 +91,10 @@ impl I686Codegen {
     // ---- emit_prologue ----
 
     pub(super) fn emit_prologue_impl(&mut self, _func: &IrFunction, frame_size: i64) {
+        // TODO: when omit_frame_pointer is true, skip the frame pointer setup
+        // and use ESP-relative addressing for all slot accesses. This requires
+        // tracking ESP offset at each instruction point and adjusting all
+        // slot references accordingly.
         self.state.emit("    pushl %ebp");
         self.state.emit("    movl %esp, %ebp");
 
@@ -297,8 +301,41 @@ impl I686Codegen {
                     emit!(self.state, "    fstpt {}(%ebp)", slot.0);
                     self.state.f128_direct_slots.insert(dest_id);
                 }
+                ParamClass::IntReg { reg_idx } => {
+                    // regparm: param arrives in EAX/EDX/ECX (reg_idx 0/1/2)
+                    let regparm_regs_full = ["%eax", "%edx", "%ecx"];
+                    let regparm_regs_byte = ["%al", "%dl", "%cl"];
+                    let regparm_regs_word = ["%ax", "%dx", "%cx"];
+                    let src_full = regparm_regs_full[reg_idx];
+                    match ty {
+                        IrType::I8 => {
+                            let src_byte = regparm_regs_byte[reg_idx];
+                            emit!(self.state, "    movsbl {}, {}", src_byte, src_full);
+                            emit!(self.state, "    movl {}, {}(%ebp)", src_full, slot.0);
+                        }
+                        IrType::U8 => {
+                            let src_byte = regparm_regs_byte[reg_idx];
+                            emit!(self.state, "    movzbl {}, {}", src_byte, src_full);
+                            emit!(self.state, "    movl {}, {}(%ebp)", src_full, slot.0);
+                        }
+                        IrType::I16 => {
+                            let src_word = regparm_regs_word[reg_idx];
+                            emit!(self.state, "    movswl {}, {}", src_word, src_full);
+                            emit!(self.state, "    movl {}, {}(%ebp)", src_full, slot.0);
+                        }
+                        IrType::U16 => {
+                            let src_word = regparm_regs_word[reg_idx];
+                            emit!(self.state, "    movzwl {}, {}", src_word, src_full);
+                            emit!(self.state, "    movl {}, {}(%ebp)", src_full, slot.0);
+                        }
+                        _ => {
+                            emit!(self.state, "    movl {}, {}(%ebp)", src_full, slot.0);
+                        }
+                    }
+                }
                 _ => {
-                    // IntReg/FloatReg classes don't apply to i686 cdecl
+                    // Remaining register classes (FloatReg, StructByValReg, etc.)
+                    // don't apply to i686's ABI classification.
                 }
             }
         }
@@ -361,6 +398,12 @@ impl I686Codegen {
                 ParamClass::I128Stack { offset } |
                 ParamClass::F128Stack { offset } |
                 ParamClass::LargeStructByRefStack { offset, .. } => stack_base + offset - stack_offset_adjust,
+                ParamClass::IntReg { .. } => {
+                    // Regparm: param was stored to its alloca slot in emit_store_params.
+                    // This should have been handled by the alloca_slot path above.
+                    // If we get here, just use a fallback offset.
+                    stack_base + (param_idx as i64) * 4
+                }
                 _ => stack_base + (param_idx as i64) * 4,
             }
         } else {

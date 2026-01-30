@@ -11,7 +11,7 @@ use crate::backend::generation::is_i128_type;
 impl I686Codegen {
     pub(super) fn call_abi_config_impl(&self) -> call_abi::CallAbiConfig {
         call_abi::CallAbiConfig {
-            max_int_regs: 0,
+            max_int_regs: self.regparm as usize,
             max_float_regs: 0,
             align_i128_pairs: false,
             f128_in_fp_regs: false,
@@ -40,6 +40,7 @@ impl I686Codegen {
                 call_abi::CallArgClass::StructByValStack { size } => total += (*size + 3) & !3,
                 call_abi::CallArgClass::LargeStructStack { size } => total += (*size + 3) & !3,
                 call_abi::CallArgClass::ZeroSizeSkip => {}
+                call_abi::CallArgClass::IntReg { .. } => {} // regparm: in register, no stack space
                 _ => total += 4,
             }
         }
@@ -86,6 +87,7 @@ impl I686Codegen {
                     }
                 }
                 call_abi::CallArgClass::ZeroSizeSkip => {}
+                call_abi::CallArgClass::IntReg { .. } => {} // regparm: handled in emit_call_reg_args
                 _ => {
                     self.operand_to_eax(&args[i]);
                     emit!(self.state, "    movl %eax, {}(%esp)", stack_offset);
@@ -97,11 +99,38 @@ impl I686Codegen {
         stack_arg_space as i64
     }
 
-    pub(super) fn emit_call_reg_args_impl(&mut self, _args: &[Operand], _arg_classes: &[call_abi::CallArgClass],
+    pub(super) fn emit_call_reg_args_impl(&mut self, args: &[Operand], arg_classes: &[call_abi::CallArgClass],
                           _arg_types: &[IrType], _total_sp_adjust: i64,
                           _f128_temp_space: usize, _stack_arg_space: usize,
                           _struct_arg_riscv_float_classes: &[Option<crate::common::types::RiscvFloatClass>]) {
-        // cdecl: no register args, nothing to do
+        if self.regparm == 0 {
+            return; // cdecl: no register args
+        }
+        // regparm register order: EAX (reg_idx 0), EDX (reg_idx 1), ECX (reg_idx 2).
+        // We must load args into registers in reverse order to avoid clobbering
+        // EAX (the accumulator) before we're done using it to load other values.
+        // Collect register args first, then emit in reverse order.
+        let regparm_regs: &[&str] = &["%eax", "%edx", "%ecx"];
+        let mut reg_args: Vec<(usize, usize)> = Vec::new(); // (arg_idx, reg_idx)
+        for (i, ac) in arg_classes.iter().enumerate() {
+            if let call_abi::CallArgClass::IntReg { reg_idx } = ac {
+                reg_args.push((i, *reg_idx));
+            }
+        }
+        // Emit in reverse order so we load into edx/ecx before eax
+        // (since operand_to_eax uses eax as accumulator).
+        for &(arg_i, reg_idx) in reg_args.iter().rev() {
+            if reg_idx < regparm_regs.len() {
+                let dest_reg = regparm_regs[reg_idx];
+                if dest_reg == "%eax" {
+                    self.operand_to_eax(&args[arg_i]);
+                } else {
+                    self.operand_to_eax(&args[arg_i]);
+                    emit!(self.state, "    movl %eax, {}", dest_reg);
+                    self.state.reg_cache.invalidate_acc();
+                }
+            }
+        }
     }
 
     pub(super) fn emit_call_instruction_impl(&mut self, direct_name: Option<&str>, func_ptr: Option<&Operand>,

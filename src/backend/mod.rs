@@ -92,6 +92,16 @@ pub(crate) struct CodegenOptions {
     /// that will run in 16-bit real mode, adding operand/address-size override
     /// prefixes as needed. Used by the Linux kernel boot code.
     pub(crate) code16gcc: bool,
+    /// Number of integer arguments passed in registers (i686 only, -mregparm=N).
+    /// 0 = standard cdecl (all args on stack), 1-3 = pass first N integer args
+    /// in EAX, EDX, ECX respectively. Used by the Linux kernel boot code
+    /// (-mregparm=3) to reduce code size in 16-bit real mode.
+    pub(crate) regparm: u8,
+    /// Whether to omit the frame pointer (-fomit-frame-pointer).
+    /// When true, functions do not set up EBP as a frame pointer, freeing it
+    /// as a general register and saving prologue/epilogue instructions.
+    /// Used by the Linux kernel boot code to reduce code size.
+    pub(crate) omit_frame_pointer: bool,
 }
 
 /// Target architecture.

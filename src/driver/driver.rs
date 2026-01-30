@@ -193,6 +193,11 @@ pub struct Driver {
     /// When false (-fno-common, the default), tentative definitions go to BSS with
     /// strong linkage, and duplicate definitions cause link errors.
     pub(super) fcommon: bool,
+    /// Number of integer arguments to pass in registers for i686 (-mregparm=N).
+    /// 0 = standard cdecl (all on stack), 1-3 = pass first N int args in EAX/EDX/ECX.
+    pub(super) regparm: u8,
+    /// Whether to omit the frame pointer (-fomit-frame-pointer).
+    pub(super) omit_frame_pointer: bool,
 }
 
 impl Driver {
@@ -246,6 +251,8 @@ impl Driver {
             dump_defines: false,
             color_mode: ColorMode::Auto,
             fcommon: false,
+            regparm: 0,
+            omit_frame_pointer: false,
         }
     }
 
@@ -888,6 +895,8 @@ impl Driver {
             function_sections: self.function_sections,
             data_sections: self.data_sections,
             code16gcc: self.code16gcc,
+            regparm: self.regparm,
+            omit_frame_pointer: self.omit_frame_pointer,
         };
         let asm = self.target.generate_assembly_with_opts_and_debug(
             &module, &opts, source_manager.as_ref(),

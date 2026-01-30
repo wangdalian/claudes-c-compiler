@@ -57,6 +57,11 @@ pub struct I686Codegen {
     pub(super) fastcall_reg_param_count: usize,
     /// Whether the __x86.get_pc_thunk.bx helper needs to be emitted.
     pub(super) needs_pc_thunk_bx: bool,
+    /// Number of integer arguments to pass in registers (-mregparm=N).
+    /// 0 = standard cdecl, 1-3 = pass first N int args in EAX, EDX, ECX.
+    pub(super) regparm: u8,
+    /// Whether to omit the frame pointer (-fomit-frame-pointer).
+    pub(super) omit_frame_pointer: bool,
 }
 
 // Callee-saved physical register indices for i686
@@ -109,6 +114,8 @@ impl I686Codegen {
             fastcall_stack_cleanup: 0,
             fastcall_reg_param_count: 0,
             needs_pc_thunk_bx: false,
+            regparm: 0,
+            omit_frame_pointer: false,
         }
     }
 
@@ -124,6 +131,8 @@ impl I686Codegen {
     pub fn apply_options(&mut self, opts: &crate::backend::CodegenOptions) {
         self.set_pic(opts.pic);
         self.set_no_jump_tables(opts.no_jump_tables);
+        self.regparm = opts.regparm;
+        self.omit_frame_pointer = opts.omit_frame_pointer;
     }
 
     // --- i686 helper methods ---

@@ -343,6 +343,10 @@ impl Driver {
                     self.riscv_march = Some(arg["-march=".len()..].to_string());
                 }
                 "-mno-relax" => self.riscv_no_relax = true,
+                arg if arg.starts_with("-mregparm=") => {
+                    let n: u8 = arg["-mregparm=".len()..].parse().unwrap_or(0);
+                    self.regparm = n.min(3);
+                }
                 arg if arg.starts_with("-m") => {}
 
                 // Feature flags
@@ -357,6 +361,8 @@ impl Driver {
                     let before: u32 = if parts.len() > 1 { parts[1].parse().unwrap_or(0) } else { 0 };
                     self.patchable_function_entry = Some((total, before));
                 }
+                "-fomit-frame-pointer" => self.omit_frame_pointer = true,
+                "-fno-omit-frame-pointer" => self.omit_frame_pointer = false,
                 "-fno-jump-tables" => self.no_jump_tables = true,
                 "-ffunction-sections" => self.function_sections = true,
                 "-fno-function-sections" => self.function_sections = false,
