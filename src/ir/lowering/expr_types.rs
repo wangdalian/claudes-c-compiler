@@ -1007,16 +1007,26 @@ impl Lowerer {
     /// lowering state (variable allocas, global metadata) that may produce
     /// more precise types than sema's symbol-table-only inference.
     pub(super) fn get_expr_ctype(&self, expr: &Expr) -> Option<CType> {
-        // For identifiers, always consult the lowerer's local/global state
-        // directly rather than the ExprId-keyed cache.  The allocator can
-        // reuse heap addresses across different expression nodes within the
-        // same function (e.g., a macro-expanded `_old` identifier may be
-        // allocated at the address previously used by `n`), and since ExprId
-        // is currently address-based, this could cause stale hits.  The
-        // lowerer's lookup_var_info is O(1) and always reflects the current
-        // scope, so bypassing the cache for identifiers is both correct and
-        // cheap.
-        if let Expr::Identifier(..) = expr {
+        // For identifiers and dereferences of identifiers, always consult
+        // the lowerer's local/global state directly rather than the
+        // ExprId-keyed cache.  The allocator can reuse heap addresses across
+        // different expression nodes within the same function (e.g., a
+        // macro-expanded `_old` identifier may be allocated at the address
+        // previously used by `n`), and since ExprId is currently
+        // address-based, this could cause stale hits.  The lowerer's
+        // lookup_var_info is O(1) and always reflects the current scope, so
+        // bypassing the cache for identifiers is both correct and cheap.
+        //
+        // The Deref/Cast bypass is essential for typeof() inside offsetof()
+        // macros: `offsetof(typeof(*a), field)` and
+        // `offsetof(typeof(*b), field)` may allocate the Deref and Cast
+        // nodes at the same heap address, causing the cache to return the
+        // wrong struct type for the second call.  Similarly,
+        // typeof(*(type *)0) patterns (e.g., LIST_ELEM macro) reuse
+        // Deref(Cast(...)) addresses.  Cast is also bypassed since
+        // type_spec_to_ctype is cheap and always correct.
+        let bypass_cache = matches!(expr, Expr::Identifier(..) | Expr::Deref(..) | Expr::Cast(..));
+        if bypass_cache {
             let result = self.get_expr_ctype_lowerer(expr);
             if result.is_some() {
                 return result;

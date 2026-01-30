@@ -355,10 +355,9 @@ _mm_cmpgt_epi32(__m128i __a, __m128i __b)
     return __r;
 }
 
-/* === 32-bit Unsigned Multiply === */
-
-/* _mm_mul_epu32: Multiply the low unsigned 32-bit integers from each
- * 64-bit element of __a and __b, producing two unsigned 64-bit results. */
+/* _mm_mul_epu32: unsigned 32x32->64 multiply (PMULUDQ)
+ * Multiplies the low 32-bit unsigned integers from each 64-bit lane:
+ * result[0] = (u32)a[0] * (u32)b[0], result[1] = (u32)a[2] * (u32)b[2] */
 static __inline__ __m128i __attribute__((__always_inline__))
 _mm_mul_epu32(__m128i __a, __m128i __b)
 {
@@ -367,6 +366,24 @@ _mm_mul_epu32(__m128i __a, __m128i __b)
     unsigned long long __a1 = (unsigned long long)(unsigned int)__a.__val[1];
     unsigned long long __b1 = (unsigned long long)(unsigned int)__b.__val[1];
     return (__m128i){ { (long long)(__a0 * __b0), (long long)(__a1 * __b1) } };
+}
+
+/* _mm_mullo_epi16: low 16 bits of 16x16 signed multiply (PMULLW) */
+static __inline__ __m128i __attribute__((__always_inline__))
+_mm_mullo_epi16(__m128i __a, __m128i __b)
+{
+    unsigned long long __r0 = 0, __r1 = 0;
+    for (int __i = 0; __i < 4; __i++) {
+        unsigned short __va = (unsigned short)((unsigned long long)__a.__val[0] >> (__i * 16));
+        unsigned short __vb = (unsigned short)((unsigned long long)__b.__val[0] >> (__i * 16));
+        __r0 |= ((unsigned long long)(unsigned short)(__va * __vb)) << (__i * 16);
+    }
+    for (int __i = 0; __i < 4; __i++) {
+        unsigned short __va = (unsigned short)((unsigned long long)__a.__val[1] >> (__i * 16));
+        unsigned short __vb = (unsigned short)((unsigned long long)__b.__val[1] >> (__i * 16));
+        __r1 |= ((unsigned long long)(unsigned short)(__va * __vb)) << (__i * 16);
+    }
+    return (__m128i){ { (long long)__r0, (long long)__r1 } };
 }
 
 /* === 64-bit Arithmetic === */
@@ -553,6 +570,13 @@ _mm_setr_epi8(char __b0, char __b1, char __b2, char __b3,
                         __b11, __b10, __b9, __b8,
                         __b7, __b6, __b5, __b4,
                         __b3, __b2, __b1, __b0);
+}
+
+/* _mm_set_epi64x: set two 64-bit integers (high, low) */
+static __inline__ __m128i __attribute__((__always_inline__))
+_mm_set_epi64x(long long __hi, long long __lo)
+{
+    return (__m128i){ { __lo, __hi } };
 }
 
 /* _mm_set1_epi64x: broadcast 64-bit integer to both lanes */

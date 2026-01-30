@@ -25,9 +25,9 @@ const ARM_FP_SCRATCH: &[&str] = &["v16", "v17", "v18", "v19", "v20", "v21", "v22
 impl InlineAsmEmitter for ArmCodegen {
     fn asm_state(&mut self) -> &mut CodegenState { &mut self.state }
 
-    // TODO: Support multi-alternative constraint parsing (e.g., "rm", "ri") like x86.
-    // NOTE: ARM-specific immediate constraints (K, L, I) are validated in
-    // constant_fits_immediate() below; classify_constraint returns GpReg for these.
+    // Multi-alternative constraint parsing (e.g., "rm", "ri") matching x86 behavior.
+    // Priority: specific register > GP register > FP register > memory > immediate.
+    // Registers are preferred over memory for performance.
     fn classify_constraint(&self, constraint: &str) -> AsmOperandKind {
         let c = constraint.trim_start_matches(['=', '+', '&']);
         // Explicit register constraint from register variable: {regname}
@@ -49,14 +49,35 @@ impl InlineAsmEmitter for ArmCodegen {
                 return AsmOperandKind::Tied(n);
             }
         }
-        if c == "m" || c == "Q" { return AsmOperandKind::Memory; }
-        // Multi-char constraints containing Q (e.g., "Qm") — treat as memory if Q is present
-        if c.contains('Q') || c.contains('m') { return AsmOperandKind::Memory; }
-        // "w" = AArch64 floating-point/SIMD register (d0-d31/s0-s31)
-        if c == "w" { return AsmOperandKind::FpReg; }
-        // ARM doesn't use specific single-letter constraints like x86,
-        // all "r" constraints get GP scratch registers.
-        AsmOperandKind::GpReg
+
+        // Parse multi-alternative constraints character by character.
+        let mut has_gp = false;
+        let mut has_fp = false;
+        let mut has_mem = false;
+        let mut has_imm = false;
+
+        for ch in c.chars() {
+            match ch {
+                'r' => has_gp = true,
+                'g' => { has_gp = true; has_mem = true; has_imm = true; }
+                'w' => has_fp = true,
+                'm' | 'Q' | 'o' | 'V' | 'p' => has_mem = true,
+                'i' | 'n' | 'I' | 'K' | 'L' => has_imm = true,
+                _ => {}
+            }
+        }
+
+        if has_gp {
+            AsmOperandKind::GpReg
+        } else if has_fp {
+            AsmOperandKind::FpReg
+        } else if has_mem {
+            AsmOperandKind::Memory
+        } else if has_imm {
+            AsmOperandKind::Immediate
+        } else {
+            AsmOperandKind::GpReg
+        }
     }
 
     fn setup_operand_metadata(&self, op: &mut AsmOperand, val: &Operand, _is_output: bool) {

@@ -181,12 +181,20 @@ impl ArmCodegen {
         let class = self.state.param_classes[param_idx];
         let frame_size = self.current_frame_size;
 
+        // AArch64 ABI: sret shifts GP register indices
+        let sret_shift = if self.state.uses_sret { 1usize } else { 0 };
+
         match class {
             ParamClass::IntReg { reg_idx } => {
-                let src = Self::reg_for_type(ARM_ARG_REGS[reg_idx], ty);
+                let actual_reg = if sret_shift > 0 && reg_idx == 0 && param_idx == 0 {
+                    Self::reg_for_type("x8", ty)
+                } else {
+                    let actual_idx = if reg_idx >= sret_shift { reg_idx - sret_shift } else { reg_idx };
+                    Self::reg_for_type(ARM_ARG_REGS[actual_idx], ty)
+                };
                 let dst = Self::reg_for_type("x0", ty);
-                if src != dst {
-                    self.state.emit_fmt(format_args!("    mov {}, {}", dst, src));
+                if actual_reg != dst {
+                    self.state.emit_fmt(format_args!("    mov {}, {}", dst, actual_reg));
                 }
                 self.store_x0_to(dest);
             }

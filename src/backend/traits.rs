@@ -435,7 +435,27 @@ pub trait ArchCodegen {
                  ret_eightbyte_classes: &[crate::common::types::EightbyteClass]) {
         use super::call_abi::*;
         let config = self.call_abi_config();
-        let arg_classes = classify_call_args(args, arg_types, struct_arg_sizes, struct_arg_aligns, struct_arg_classes, struct_arg_riscv_float_classes, is_variadic, &config);
+        let mut arg_classes = classify_call_args(args, arg_types, struct_arg_sizes, struct_arg_aligns, struct_arg_classes, struct_arg_riscv_float_classes, is_variadic, &config);
+
+        // AArch64 ABI: the sret pointer goes in x8 (indirect result register),
+        // NOT in x0 as a regular argument.  Reclassify: mark arg[0] as ZeroSizeSkip
+        // (it will be handled by emit_call_sret_setup) and shift all other GP
+        // register indices down by one so that x0 is available for the first
+        // real argument.
+        let sret_operand = if is_sret && self.sret_uses_dedicated_reg() && !args.is_empty() {
+            arg_classes[0] = CallArgClass::ZeroSizeSkip;
+            for cls in arg_classes.iter_mut().skip(1) {
+                match cls {
+                    CallArgClass::IntReg { reg_idx } if *reg_idx > 0 => { *reg_idx -= 1; }
+                    CallArgClass::I128RegPair { base_reg_idx } if *base_reg_idx > 0 => { *base_reg_idx -= 1; }
+                    CallArgClass::StructByValReg { base_reg_idx, .. } if *base_reg_idx > 0 => { *base_reg_idx -= 1; }
+                    _ => {}
+                }
+            }
+            Some(&args[0])
+        } else {
+            None
+        };
 
         // Phase 0: Spill indirect function pointer before any stack manipulation.
         let indirect = func_ptr.is_some() && direct_name.is_none();
@@ -463,6 +483,11 @@ pub trait ArchCodegen {
         // Phase 3: Load register args (GP, FP, i128, struct-by-val, F128).
         self.emit_call_reg_args(args, &arg_classes, arg_types, total_sp_adjust, f128_temp_space, stack_arg_space,
                                 struct_arg_riscv_float_classes);
+
+        // Phase 3.5: Set up sret pointer in dedicated register (x8 on AArch64).
+        if let Some(sret_op) = sret_operand {
+            self.emit_call_sret_setup(sret_op, total_sp_adjust);
+        }
 
         // Phase 4: Emit the actual call instruction.
         self.emit_call_instruction(direct_name, func_ptr, indirect, stack_arg_space);
@@ -518,6 +543,15 @@ pub trait ArchCodegen {
 
     /// Clean up stack space after the call returns.
     fn emit_call_cleanup(&mut self, stack_arg_space: usize, f128_temp_space: usize, indirect: bool);
+
+    /// Returns true if this architecture uses a dedicated register (not part of the
+    /// normal argument sequence) for the sret pointer.  AArch64 uses x8; x86-64, RISC-V
+    /// and i686 pass it as the first normal argument.
+    fn sret_uses_dedicated_reg(&self) -> bool { false }
+
+    /// Emit the sret pointer into the dedicated register (e.g., x8 on AArch64).
+    /// Only called when `sret_uses_dedicated_reg()` returns true.
+    fn emit_call_sret_setup(&mut self, _sret_operand: &Operand, _total_sp_adjust: i64) {}
 
     /// Returns the number of bytes the callee pops from the stack on return.
     /// On i386 SysV, functions returning via sret do `ret $4` to pop the hidden

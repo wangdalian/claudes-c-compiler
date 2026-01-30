@@ -112,6 +112,17 @@ impl Lowerer {
             if declarator.attrs.is_noreturn() && !declarator.name.is_empty() {
                 self.noreturn_functions.insert(declarator.name.clone());
             }
+            // Propagate __attribute__((weak)) and __attribute__((visibility(...)))
+            // from block-scope extern function declarations.
+            if !declarator.name.is_empty()
+                && (declarator.attrs.is_weak() || declarator.attrs.visibility.is_some())
+            {
+                self.module.symbol_attrs.push((
+                    declarator.name.clone(),
+                    declarator.attrs.is_weak(),
+                    declarator.attrs.visibility.clone(),
+                ));
+            }
             return true;
         }
 
@@ -127,6 +138,13 @@ impl Lowerer {
                     }
                     if declarator.attrs.is_noreturn() && !declarator.name.is_empty() {
                         self.noreturn_functions.insert(declarator.name.clone());
+                    }
+                    if declarator.attrs.is_weak() || declarator.attrs.visibility.is_some() {
+                        self.module.symbol_attrs.push((
+                            declarator.name.clone(),
+                            declarator.attrs.is_weak(),
+                            declarator.attrs.visibility.clone(),
+                        ));
                     }
                     return true;
                 }

@@ -193,6 +193,9 @@ impl Lowerer {
             Expr::UnaryOp(_, inner, _) => {
                 self.materialize_compound_literals_in_expr(inner);
             }
+            Expr::AddressOf(inner, _) => {
+                self.materialize_compound_literals_in_expr(inner);
+            }
             Expr::Conditional(cond, then_e, else_e, _) => {
                 self.materialize_compound_literals_in_expr(cond);
                 self.materialize_compound_literals_in_expr(then_e);

@@ -1153,6 +1153,7 @@ impl ArmCodegen {
             "x5" => if use_w { "w5" } else { "x5" },
             "x6" => if use_w { "w6" } else { "x6" },
             "x7" => if use_w { "w7" } else { "x7" },
+            "x8" => if use_w { "w8" } else { "x8" },
             _ => "x0",
         }
     }
@@ -1491,6 +1492,11 @@ impl ArmCodegen {
 
     /// Phase 1: Store GP register params to alloca slots.
     pub(super) fn emit_store_gp_params(&mut self, func: &IrFunction, param_classes: &[ParamClass]) {
+        // AArch64 ABI: when a function uses sret, the hidden pointer comes in x8
+        // (not x0). All other GP register params shift down by one so that the
+        // first real argument is in x0 instead of x1.
+        let sret_shift = if self.state.uses_sret { 1usize } else { 0 };
+
         for (i, _) in func.params.iter().enumerate() {
             let class = param_classes[i];
             if !class.uses_gp_reg() { continue; }
@@ -1502,22 +1508,31 @@ impl ArmCodegen {
 
             match class {
                 ParamClass::IntReg { reg_idx } => {
-                    let store_instr = Self::str_for_type(ty);
-                    let reg = Self::reg_for_type(ARM_ARG_REGS[reg_idx], ty);
-                    self.emit_store_to_sp(reg, slot.0, store_instr);
+                    if sret_shift > 0 && reg_idx == 0 && i == 0 {
+                        // sret pointer: comes in x8 on AArch64
+                        self.emit_store_to_sp("x8", slot.0, "str");
+                    } else {
+                        let actual_idx = if reg_idx >= sret_shift { reg_idx - sret_shift } else { reg_idx };
+                        let store_instr = Self::str_for_type(ty);
+                        let reg = Self::reg_for_type(ARM_ARG_REGS[actual_idx], ty);
+                        self.emit_store_to_sp(reg, slot.0, store_instr);
+                    }
                 }
                 ParamClass::I128RegPair { base_reg_idx } => {
-                    self.emit_store_to_sp(ARM_ARG_REGS[base_reg_idx], slot.0, "str");
-                    self.emit_store_to_sp(ARM_ARG_REGS[base_reg_idx + 1], slot.0 + 8, "str");
+                    let actual_idx = if base_reg_idx >= sret_shift { base_reg_idx - sret_shift } else { base_reg_idx };
+                    self.emit_store_to_sp(ARM_ARG_REGS[actual_idx], slot.0, "str");
+                    self.emit_store_to_sp(ARM_ARG_REGS[actual_idx + 1], slot.0 + 8, "str");
                 }
                 ParamClass::StructByValReg { base_reg_idx, size } => {
-                    self.emit_store_to_sp(ARM_ARG_REGS[base_reg_idx], slot.0, "str");
+                    let actual_idx = if base_reg_idx >= sret_shift { base_reg_idx - sret_shift } else { base_reg_idx };
+                    self.emit_store_to_sp(ARM_ARG_REGS[actual_idx], slot.0, "str");
                     if size > 8 {
-                        self.emit_store_to_sp(ARM_ARG_REGS[base_reg_idx + 1], slot.0 + 8, "str");
+                        self.emit_store_to_sp(ARM_ARG_REGS[actual_idx + 1], slot.0 + 8, "str");
                     }
                 }
                 ParamClass::LargeStructByRefReg { reg_idx, size } => {
-                    let src_reg = ARM_ARG_REGS[reg_idx];
+                    let actual_idx = if reg_idx >= sret_shift { reg_idx - sret_shift } else { reg_idx };
+                    let src_reg = ARM_ARG_REGS[actual_idx];
                     let n_dwords = size.div_ceil(8);
                     for qi in 0..n_dwords {
                         let src_off = (qi * 8) as i64;
@@ -1784,6 +1799,14 @@ impl ArchCodegen for ArmCodegen {
     fn emit_call_fptr_spill_size(&self) -> usize { 16 }
     fn emit_call_move_f32_to_acc(&mut self) { self.state.emit("    fmov w0, s0"); }
     fn emit_call_move_f64_to_acc(&mut self) { self.state.emit("    fmov x0, d0"); }
+
+    // AArch64 ABI: sret pointer goes in x8, not x0.
+    fn sret_uses_dedicated_reg(&self) -> bool { true }
+    fn emit_call_sret_setup(&mut self, sret_operand: &Operand, total_sp_adjust: i64) {
+        let slot_adjust = if self.state.has_dyn_alloca { 0 } else { total_sp_adjust };
+        let needs_adjusted = total_sp_adjust > 0;
+        self.emit_load_arg_to_reg(sret_operand, "x8", slot_adjust, 0, needs_adjusted);
+    }
 
     // ---- Inline asm / intrinsics (kept inline - has extra logic) ----
     fn emit_inline_asm(&mut self, template: &str, outputs: &[(String, Value, Option<String>)], inputs: &[(String, Operand, Option<String>)], clobbers: &[String], operand_types: &[IrType], goto_labels: &[(String, BlockId)], input_symbols: &[Option<String>]) {

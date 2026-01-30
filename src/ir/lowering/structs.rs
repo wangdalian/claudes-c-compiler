@@ -784,6 +784,17 @@ impl Lowerer {
             Expr::Comma(_, last, _) => {
                 self.get_pointed_struct_layout(last)
             }
+            Expr::StmtExpr(..) => {
+                // Statement expression: use CType resolution to find the
+                // pointed-to struct type, since inner variables may not be
+                // in scope yet during layout lookup.
+                if let Some(ctype) = self.get_expr_ctype(expr) {
+                    if let CType::Pointer(pointee, _) = &ctype {
+                        return self.struct_layout_from_ctype(pointee);
+                    }
+                }
+                None
+            }
             Expr::Assign(lhs, rhs, _) | Expr::CompoundAssign(_, lhs, rhs, _) => {
                 // For assignment, the result has the LHS type; try LHS first, then RHS
                 if let Some(layout) = self.get_pointed_struct_layout(lhs) {
@@ -900,6 +911,15 @@ impl Lowerer {
             }
             Expr::Comma(_, last, _) => {
                 self.get_layout_for_expr(last)
+            }
+            Expr::StmtExpr(..) => {
+                // Statement expression: use CType resolution (which handles
+                // inner scopes via sema) to find the struct type, since the
+                // inner variables may not be in scope yet during layout lookup.
+                if let Some(ctype) = self.get_expr_ctype(expr) {
+                    return self.struct_layout_from_ctype(&ctype);
+                }
+                None
             }
             Expr::VaArg(_, type_spec, _) => {
                 self.get_struct_layout_for_type(type_spec)

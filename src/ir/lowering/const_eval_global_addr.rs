@@ -100,6 +100,12 @@ impl Lowerer {
                     Expr::PointerMemberAccess(base, field, _) => {
                         self.resolve_pointer_member_access_addr(base, field)
                     }
+                    // &(compound_literal) - look up previously materialized compound literal
+                    Expr::CompoundLiteral(_, _, _) => {
+                        let key = inner.as_ref() as *const Expr as usize;
+                        self.materialized_compound_literals.get(&key)
+                            .map(|label| GlobalInit::GlobalAddr(label.clone()))
+                    }
                     _ => None,
                 }
             }
