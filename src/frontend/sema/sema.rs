@@ -276,9 +276,11 @@ impl SemanticAnalyzer {
         // Skip the check for:
         //   - void functions (no return value expected)
         //   - noreturn functions (never return by contract)
+        //   - naked functions (body is pure inline asm; return is handled by asm)
         //   - main() (C99 5.1.2.2.3: reaching } is equivalent to return 0)
         if !matches!(return_type, CType::Void)
             && !func.attrs.is_noreturn()
+            && !func.attrs.is_naked()
             && func.name != "main"
             && self.compound_can_fall_through(&func.body)
         {

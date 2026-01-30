@@ -1,0 +1,11 @@
+Status: in_progress
+Task: Fix ImageMagick compilation - noreturn attribute leak + ARM branch range
+
+Two compiler bugs fixed:
+1. Parser: __attribute__((noreturn)) in comma-separated declarations leaked to
+   subsequent declarators (e.g. extern void fatal() __attribute__((noreturn)), warning();
+   incorrectly marked warning() as noreturn too)
+2. ARM peephole: fuse_branch_over_branch collapsed safe trampoline patterns into
+   bare b.cond instructions that could exceed the ±1MB range limit on large functions
+
+Also requires check_arm.sh and check_riscv.sh build script fix: add -no-pie to LDFLAGS

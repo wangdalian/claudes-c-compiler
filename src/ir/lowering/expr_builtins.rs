@@ -620,6 +620,7 @@ impl Lowerer {
     }
 
     /// Lower __builtin_constant_p(expr): 1 if compile-time constant, 0 otherwise.
+    /// Per GCC semantics, the argument is NOT evaluated (no side effects).
     /// In inline candidates, emits a deferred IsConstant instruction for post-optimization resolution.
     fn lower_constant_p(&mut self, args: &[Expr]) -> Option<Operand> {
         let Some(arg) = args.first() else {
@@ -630,12 +631,15 @@ impl Lowerer {
             return Some(Operand::Const(IrConst::I32(1)));
         }
         // In non-inline-candidate functions, non-constant expressions always resolve to 0.
-        // Only inline candidates need deferred resolution via IsConstant.
+        // The argument is NOT evaluated per GCC semantics -- __builtin_constant_p
+        // never has side effects regardless of its argument.
         if !self.func().is_inline_candidate {
-            self.lower_expr(arg);
             return Some(Operand::Const(IrConst::I32(0)));
         }
-        // Emit an IsConstant instruction to be resolved after optimization
+        // For inline candidates, emit an IsConstant instruction to be resolved after
+        // optimization. We lower the expression to get a value reference, but it will
+        // only be used to check constness, not for side effects. After inlining,
+        // if the argument becomes constant, constant_fold resolves IsConstant to 1.
         let src = self.lower_expr(arg);
         let src_ty = self.get_expr_type(arg);
         let dest = self.fresh_value();
