@@ -279,7 +279,6 @@ impl AsmOutput {
         self.buf.push('\n');
     }
 
-    /// Emit: `    {mnemonic} ${imm}, {offset}(%rbp)`
     /// Emit a block label line: `.LBB{id}:`
     #[inline]
     pub fn emit_block_label(&mut self, block_id: u32) {
@@ -892,9 +891,11 @@ fn emit_compound_element(out: &mut AsmOutput, elem: &GlobalInit, fallback_ty: Ir
             // Zero element in compound: emit a single pointer-sized zero
             out.emit_fmt(format_args!("    {} 0", ptr_dir.as_str()));
         }
-        GlobalInit::Compound(_) => {
-            // Nested compound: emit pointer-sized zero as fallback
-            out.emit_fmt(format_args!("    {} 0", ptr_dir.as_str()));
+        GlobalInit::Compound(elements) => {
+            // Nested compound: recurse into each element
+            for inner in elements {
+                emit_compound_element(out, inner, fallback_ty, ptr_dir);
+            }
         }
         // All other variants (GlobalAddr, GlobalAddrOffset, WideString, etc.)
         // delegate to the shared handler with zero total_size (no padding).
@@ -943,6 +944,14 @@ fn emit_label_diff(out: &mut AsmOutput, lab1: &str, lab2: &str, byte_size: usize
     out.emit_fmt(format_args!("    {} {}-{}", dir, lab1, lab2));
 }
 
+/// Emit a 64-bit value as two `.long` directives in little-endian order.
+/// Used on i686 (32-bit) targets where 64-bit values must be split.
+#[inline]
+fn emit_u64_as_long_pair(out: &mut AsmOutput, bits: u64) {
+    out.emit_fmt(format_args!("    .long {}", bits as u32));
+    out.emit_fmt(format_args!("    .long {}", (bits >> 32) as u32));
+}
+
 pub fn emit_const_data(out: &mut AsmOutput, c: &IrConst, ty: IrType, ptr_dir: PtrDirective) {
     match c {
         // Integer constants: all share the same widening/narrowing logic.
@@ -957,11 +966,7 @@ pub fn emit_const_data(out: &mut AsmOutput, c: &IrConst, ty: IrType, ptr_dir: Pt
         IrConst::F64(v) => {
             let bits = v.to_bits();
             if ptr_dir.is_32bit() {
-                // On i686, split 64-bit double into two .long (low word first, little-endian)
-                let lo = bits as u32;
-                let hi = (bits >> 32) as u32;
-                out.emit_fmt(format_args!("    .long {}", lo));
-                out.emit_fmt(format_args!("    .long {}", hi));
+                emit_u64_as_long_pair(out, bits);
             } else {
                 out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), bits));
             }
@@ -974,9 +979,8 @@ pub fn emit_const_data(out: &mut AsmOutput, c: &IrConst, ty: IrType, ptr_dir: Pt
                 let lo = u64::from_le_bytes(x87[0..8].try_into().unwrap());
                 let hi = u64::from_le_bytes([x87[8], x87[9], 0, 0, 0, 0, 0, 0]);
                 if ptr_dir.is_32bit() {
-                    // i686: split each 64-bit value into two .long directives
-                    out.emit_fmt(format_args!("    .long {}", lo as u32));
-                    out.emit_fmt(format_args!("    .long {}", (lo >> 32) as u32));
+                    emit_u64_as_long_pair(out, lo);
+                    // x87 80-bit: third .long holds the upper 2 bytes
                     out.emit_fmt(format_args!("    .long {}", hi as u32));
                 } else {
                     out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), lo as i64));
@@ -999,11 +1003,8 @@ pub fn emit_const_data(out: &mut AsmOutput, c: &IrConst, ty: IrType, ptr_dir: Pt
             let lo = *v as u64;
             let hi = (*v >> 64) as u64;
             if ptr_dir.is_32bit() {
-                // i686: emit as four .long directives (little-endian)
-                out.emit_fmt(format_args!("    .long {}", lo as u32));
-                out.emit_fmt(format_args!("    .long {}", (lo >> 32) as u32));
-                out.emit_fmt(format_args!("    .long {}", hi as u32));
-                out.emit_fmt(format_args!("    .long {}", (hi >> 32) as u32));
+                emit_u64_as_long_pair(out, lo);
+                emit_u64_as_long_pair(out, hi);
             } else {
                 // 64-bit targets: emit as two 64-bit values (little-endian: low quad first)
                 out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), lo as i64));
@@ -1030,10 +1031,7 @@ fn emit_int_data(out: &mut AsmOutput, val: i64, ty: IrType, ptr_dir: PtrDirectiv
         }
         _ => {
             if ptr_dir.is_32bit() {
-                // i686: split 64-bit value into two .long directives (little-endian)
-                let bits = val as u64;
-                out.emit_fmt(format_args!("    .long {}", bits as u32));
-                out.emit_fmt(format_args!("    .long {}", (bits >> 32) as u32));
+                emit_u64_as_long_pair(out, val as u64);
             } else {
                 out.emit_fmt(format_args!("    {} {}", ptr_dir.as_str(), val));
             }

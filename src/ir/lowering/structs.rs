@@ -435,8 +435,13 @@ impl Lowerer {
                 let struct_size = self.struct_value_size(expr).unwrap_or(8);
 
                 // Check if this is an sret call (struct > 16 bytes with hidden pointer)
-                // or a two-register return (9-16 bytes) - both return an alloca address
-                let returns_address = if let Expr::Identifier(name, _) = func_expr.as_ref() {
+                // or a two-register return (9-16 bytes) - both return an alloca address.
+                // On i686 (32-bit), ALL struct returns use sret regardless of size.
+                let is_32bit = crate::common::types::target_is_32bit();
+                let returns_address = if is_32bit {
+                    // i686: all struct returns use hidden pointer (sret)
+                    true
+                } else if let Expr::Identifier(name, _) = func_expr.as_ref() {
                     // Detect function pointer variables: identifiers that are
                     // local/global variables rather than known function names
                     let is_fptr_var = (self.func_mut().locals.contains_key(name) && !self.known_functions.contains(name))
@@ -546,6 +551,10 @@ impl Lowerer {
     pub(super) fn expr_produces_packed_struct_data(&self, expr: &Expr) -> bool {
         match expr {
             Expr::FunctionCall(func_expr, _, _) => {
+                // On i686 (32-bit), ALL struct returns use sret, never packed data
+                if crate::common::types::target_is_32bit() {
+                    return false;
+                }
                 let struct_size = self.struct_value_size(expr).unwrap_or(8);
                 if struct_size > 8 {
                     // 9+ byte structs: sret or two-reg return, both produce addresses

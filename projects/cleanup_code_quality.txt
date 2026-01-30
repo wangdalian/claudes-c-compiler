@@ -41,10 +41,14 @@ Items a Rust expert would flag, roughly ordered by impact:
    - Remaining: builtin_macros.rs (41 calls), preprocessor includes (33),
      other frontend/IR files (~260 remaining calls)
 
-5. format! in codegen hot paths, zero write! usage (medium effort)
-   - 320 format! calls across the codebase, 0 write!/writeln!
-   - ARM codegen loops allocate 2 Strings per iteration for register names
-   - Could use static lookup tables for register names
+5. [PARTIAL] format! in codegen hot paths (medium effort)
+   - Was 320 format! calls, improved via emit_fmt and static &str replacements
+   - emit(&format!(...)) anti-pattern eliminated (variadic.rs: 3 calls fixed)
+   - RISC-V alu.rs: format!("add{}", w) mnemonic construction replaced with
+     static &str table (13 format! allocations eliminated)
+   - 32-bit .long splitting pattern extracted to emit_u64_as_long_pair helper
+   - Remaining: ~28 format!("%{}", reg) in x86 asm_emitter.rs (inline asm),
+     ARM codegen register name allocations, label generation format! calls
 
 6. Deep nesting (16 levels) in global_init.rs (small-medium effort)
    - Nested match/if-let chains at src/ir/lowering/global_init.rs:490-522

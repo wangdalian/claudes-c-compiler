@@ -195,7 +195,7 @@ impl X86Codegen {
                 need_fp_check = false;
             } else {
                 self.state.emit("    movl (%rcx), %eax");
-                self.state.emit(&format!("    cmpl ${}, %eax", gp_threshold));
+                self.state.emit_fmt(format_args!("    cmpl ${}, %eax", gp_threshold));
                 self.state.out.emit_jcc_label("    ja", &label_mem);
             }
         }
@@ -205,7 +205,7 @@ impl X86Codegen {
                 self.state.out.emit_jmp_label(&label_mem);
             } else {
                 self.state.emit("    movl 4(%rcx), %eax");
-                self.state.emit(&format!("    cmpl ${}, %eax", fp_threshold));
+                self.state.emit_fmt(format_args!("    cmpl ${}, %eax", fp_threshold));
                 self.state.out.emit_jcc_label("    ja", &label_mem);
             }
         }
@@ -229,7 +229,7 @@ impl X86Codegen {
                         self.state.emit("    movl 4(%rcx), %eax");
                         self.state.emit("    movslq %eax, %rdx");
                         self.state.emit("    movsd (%rsi,%rdx), %xmm0");
-                        self.state.emit(&format!("    movsd %xmm0, {}(%rdi)", dest_offset));
+                        self.state.emit_fmt(format_args!("    movsd %xmm0, {}(%rdi)", dest_offset));
                         self.state.emit("    addl $16, 4(%rcx)");
                     }
                     EightbyteClass::NoClass => {

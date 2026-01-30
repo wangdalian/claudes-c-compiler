@@ -37,22 +37,31 @@ impl RiscvCodegen {
         self.state.emit("    mv t2, t0");
 
         let use_32bit = ty == IrType::I32 || ty == IrType::U32;
-        let w = if use_32bit { "w" } else { "" };
 
-        let mnemonic = match op {
-            IrBinOp::Add => format!("add{}", w),
-            IrBinOp::Sub => format!("sub{}", w),
-            IrBinOp::Mul => format!("mul{}", w),
-            IrBinOp::SDiv => format!("div{}", w),
-            IrBinOp::UDiv => format!("divu{}", w),
-            IrBinOp::SRem => format!("rem{}", w),
-            IrBinOp::URem => format!("remu{}", w),
-            IrBinOp::And => "and".to_string(),
-            IrBinOp::Or => "or".to_string(),
-            IrBinOp::Xor => "xor".to_string(),
-            IrBinOp::Shl => format!("sll{}", w),
-            IrBinOp::AShr => format!("sra{}", w),
-            IrBinOp::LShr => format!("srl{}", w),
+        let mnemonic = match (op, use_32bit) {
+            (IrBinOp::Add, false) => "add",
+            (IrBinOp::Add, true) => "addw",
+            (IrBinOp::Sub, false) => "sub",
+            (IrBinOp::Sub, true) => "subw",
+            (IrBinOp::Mul, false) => "mul",
+            (IrBinOp::Mul, true) => "mulw",
+            (IrBinOp::SDiv, false) => "div",
+            (IrBinOp::SDiv, true) => "divw",
+            (IrBinOp::UDiv, false) => "divu",
+            (IrBinOp::UDiv, true) => "divuw",
+            (IrBinOp::SRem, false) => "rem",
+            (IrBinOp::SRem, true) => "remw",
+            (IrBinOp::URem, false) => "remu",
+            (IrBinOp::URem, true) => "remuw",
+            (IrBinOp::And, _) => "and",
+            (IrBinOp::Or, _) => "or",
+            (IrBinOp::Xor, _) => "xor",
+            (IrBinOp::Shl, false) => "sll",
+            (IrBinOp::Shl, true) => "sllw",
+            (IrBinOp::AShr, false) => "sra",
+            (IrBinOp::AShr, true) => "sraw",
+            (IrBinOp::LShr, false) => "srl",
+            (IrBinOp::LShr, true) => "srlw",
         };
         self.state.emit_fmt(format_args!("    {} t0, t1, t2", mnemonic));
 
