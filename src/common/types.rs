@@ -1533,6 +1533,16 @@ impl CType {
     /// real type of the complex is compared with the other operand's type to
     /// determine the wider type, and the result is the complex version.
     pub fn usual_arithmetic_conversion(lhs: &CType, rhs: &CType) -> CType {
+        // Handle vector types per GCC vector extension semantics:
+        // When one operand is a vector and the other is a scalar, the result
+        // is the vector type. The scalar is implicitly splatted to all elements.
+        if lhs.is_vector() {
+            return lhs.clone();
+        }
+        if rhs.is_vector() {
+            return rhs.clone();
+        }
+
         // First apply integer promotions
         let l = lhs.integer_promoted();
         let r = rhs.integer_promoted();

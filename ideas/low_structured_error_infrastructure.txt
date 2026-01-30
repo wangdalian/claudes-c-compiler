@@ -100,6 +100,17 @@ COMPLETED (2026-01-30):
   - __uint128_t on 32-bit: now emits "__uint128_t is not supported on this target"
   - TI mode on 32-bit: now emits "TI mode is not supported on 32-bit targets"
 
+COMPLETED (2026-01-30):
+- Added macro expansion tracing: "note: in expansion of macro 'X'" diagnostic notes
+  - MacroTable tracks which macros are expanded during each expand_line_reuse() call
+  - Preprocessor collects per-line macro expansion metadata during preprocessing
+  - SourceManager stores and indexes macro expansion info by pp output line number
+  - DiagnosticEngine renders "in expansion of macro 'X'" notes for errors/warnings
+    in macro-expanded code, showing up to 3 levels of nested expansion chain
+  - Filters out uninteresting macros (__builtin_*, NULL, INT_MAX, etc.) to reduce noise
+  - Supports ANSI color output matching GCC's color scheme
+  - Driver threads macro expansion info from preprocessor to source manager
+
 REMAINING FOLLOW-UPS:
 1. Add spans to preprocessor errors (#error directives)
 2. Add more WarningKind categories as compiler implements more warnings
@@ -108,7 +119,10 @@ REMAINING FOLLOW-UPS:
 3. Add more "note:" follow-ups: "previous declaration was here", "did you mean to include <header>?"
 4. Add more lowering diagnostics: unresolved lvalue in assignments, unresolved typedefs,
    vector type mismatches in compound assignment
-5. Add macro expansion tracing ("in expansion of macro 'X'")
+5. [DONE] Add macro expansion tracing ("in expansion of macro 'X'")
+6. Improve macro expansion tracing to token-level granularity (currently line-level)
+   - Would require preprocessor to track byte ranges per expansion, not just line numbers
+   - Current approach tracks which macros were expanded on each output line
 
 Key files:
 - src/common/error.rs (DiagnosticEngine, Diagnostic, Severity, with_note, with_fix_hint)

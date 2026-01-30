@@ -62,6 +62,17 @@ pub struct IncludeOrigin {
     pub line: u32,
 }
 
+/// Records that macros were expanded on a particular line of preprocessed output.
+/// Used by the diagnostic engine to emit "in expansion of macro 'X'" notes.
+#[derive(Debug, Clone)]
+pub struct MacroExpansionInfo {
+    /// Line number in the preprocessed output (0-based) where the expansion occurred.
+    pub pp_line: u32,
+    /// Names of macros that were expanded (outermost first).
+    /// Only the first (outermost) macro is typically shown in diagnostics.
+    pub macro_names: Vec<String>,
+}
+
 /// Manages source files and provides span-to-location resolution.
 ///
 /// Supports two modes:
@@ -75,6 +86,10 @@ pub struct IncludeOrigin {
 /// (`# 1 "file.h" 1`), it records that file.h was included from the
 /// previously active file at the line of the preceding marker. This enables
 /// "In file included from X:Y:" diagnostic traces.
+///
+/// Also tracks macro expansion info: when the preprocessor records that a
+/// line involved macro expansion, the diagnostic engine can query this to
+/// emit "in expansion of macro 'X'" notes.
 #[derive(Debug, Default)]
 pub struct SourceManager {
     files: Vec<SourceFile>,
@@ -88,6 +103,9 @@ pub struct SourceManager {
     /// Records where each included file was included from.
     /// Only populated for files that have flag 1 (enter-include) markers.
     include_origins: Vec<Option<IncludeOrigin>>,
+    /// Macro expansion info: maps preprocessed output line numbers to the
+    /// macros that were expanded on that line. Sorted by pp_line for binary search.
+    macro_expansions: Vec<MacroExpansionInfo>,
 }
 
 #[derive(Debug)]
@@ -104,6 +122,7 @@ impl SourceManager {
             line_map: Vec::new(),
             line_map_filenames: Vec::new(),
             include_origins: Vec::new(),
+            macro_expansions: Vec::new(),
         }
     }
 
@@ -487,6 +506,38 @@ impl SourceManager {
         }
 
         chain
+    }
+
+    /// Set macro expansion metadata collected by the preprocessor.
+    /// Each entry maps a preprocessed output line to the macros expanded on it.
+    /// Entries should be sorted by pp_line for efficient lookup.
+    pub fn set_macro_expansions(&mut self, expansions: Vec<MacroExpansionInfo>) {
+        self.macro_expansions = expansions;
+    }
+
+    /// Look up macro expansion info for a given span.
+    /// Returns the list of macro names if the span falls on a line that had
+    /// macro expansion, or None if the span is not in a macro expansion region.
+    pub fn get_macro_expansion_at(&self, span: Span) -> Option<&[String]> {
+        if self.macro_expansions.is_empty() || self.files.is_empty() {
+            return None;
+        }
+
+        // Convert byte offset to preprocessed output line number
+        let line_offsets = &self.files[0].line_offsets;
+        let pp_line = match line_offsets.binary_search(&span.start) {
+            Ok(i) => i as u32,
+            Err(i) => if i > 0 { (i - 1) as u32 } else { 0 },
+        };
+
+        // Binary search for this pp_line in the macro expansions
+        match self.macro_expansions.binary_search_by_key(&pp_line, |e| e.pp_line) {
+            Ok(idx) => {
+                let names = &self.macro_expansions[idx].macro_names;
+                if names.is_empty() { None } else { Some(names) }
+            }
+            Err(_) => None,
+        }
     }
 }
 

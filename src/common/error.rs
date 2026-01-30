@@ -760,9 +760,73 @@ impl DiagnosticEngine {
             }
         }
 
+        // Render "in expansion of macro 'X'" note for errors in macro expansions.
+        // Only for primary diagnostics (errors/warnings), not for sub-notes.
+        if diag.severity != Severity::Note {
+            self.render_macro_expansion_trace(diag);
+        }
+
         // Render any follow-up notes
         for note in &diag.notes {
             self.render_diagnostic(note);
+        }
+    }
+
+    /// Render "note: in expansion of macro 'X'" traces for diagnostics that
+    /// occur in lines produced by macro expansion.
+    ///
+    /// GCC emits these notes when an error or warning is triggered inside
+    /// macro-expanded code, helping the user understand that the error is
+    /// in the expansion of a specific macro.
+    ///
+    /// Example output:
+    /// ```text
+    /// file.c:10:5: error: expected ';' before '}' token
+    ///    10 |   FOO(x)
+    ///       |   ^
+    /// file.c:10:5: note: in expansion of macro 'FOO'
+    /// ```
+    fn render_macro_expansion_trace(&self, diag: &Diagnostic) {
+        let span = match diag.span {
+            Some(s) => s,
+            None => return,
+        };
+
+        let sm = match &self.source_manager {
+            Some(sm) => sm,
+            None => return,
+        };
+
+        let macro_names = match sm.get_macro_expansion_at(span) {
+            Some(names) => names,
+            None => return,
+        };
+
+        // Filter out predefined/builtin macros that are expanded ubiquitously
+        // and would produce noise in diagnostics. Only show user-defined macros
+        // that are likely relevant to the error.
+        let interesting: Vec<&str> = macro_names.iter()
+            .filter(|name| !is_uninteresting_macro(name))
+            .map(|s| s.as_str())
+            .collect();
+
+        if interesting.is_empty() {
+            return;
+        }
+
+        let loc = sm.resolve_span(span);
+
+        // Emit a note for each macro in the expansion chain (outermost first).
+        // Typically there is only one, but nested expansions may have several.
+        // Limit to 3 levels to avoid noisy output for deeply nested macros.
+        for name in interesting.iter().take(3) {
+            if self.use_color {
+                eprintln!("\x1b[1m{}:{}:{}: \x1b[0m\x1b[1;36mnote:\x1b[0m \x1b[1min expansion of macro '{}'\x1b[0m",
+                    loc.file, loc.line, loc.column, name);
+            } else {
+                eprintln!("{}:{}:{}: note: in expansion of macro '{}'",
+                    loc.file, loc.line, loc.column, name);
+            }
         }
     }
 
@@ -821,4 +885,31 @@ impl Default for DiagnosticEngine {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Check if a macro name is a predefined/builtin macro that should not be shown
+/// in "in expansion of macro" diagnostic notes. These macros are expanded
+/// ubiquitously in C code and showing them would produce noise rather than
+/// helping the user understand the error.
+fn is_uninteresting_macro(name: &str) -> bool {
+    // GCC/Clang builtin function-style macros
+    if name.starts_with("__builtin_") {
+        return true;
+    }
+    // Common standard library macros that are uninteresting
+    matches!(name, "NULL" | "EOF" | "CHAR_BIT" | "CHAR_MAX" | "CHAR_MIN" |
+        "INT_MAX" | "INT_MIN" | "UINT_MAX" | "LONG_MAX" | "LONG_MIN" |
+        "ULONG_MAX" | "LLONG_MAX" | "LLONG_MIN" | "ULLONG_MAX" |
+        "SIZE_MAX" | "PTRDIFF_MAX" | "PTRDIFF_MIN" |
+        "true" | "false" | "bool" |
+        "INT8_MAX" | "INT16_MAX" | "INT32_MAX" | "INT64_MAX" |
+        "UINT8_MAX" | "UINT16_MAX" | "UINT32_MAX" | "UINT64_MAX" |
+        "INT8_MIN" | "INT16_MIN" | "INT32_MIN" | "INT64_MIN" |
+        "WCHAR_MAX" | "WCHAR_MIN" |
+        "INTPTR_MAX" | "INTPTR_MIN" | "UINTPTR_MAX" |
+        "SSIZE_MAX" | "PATH_MAX" |
+        "SEEK_SET" | "SEEK_CUR" | "SEEK_END" |
+        "STDIN_FILENO" | "STDOUT_FILENO" | "STDERR_FILENO" |
+        "EXIT_SUCCESS" | "EXIT_FAILURE"
+    )
 }

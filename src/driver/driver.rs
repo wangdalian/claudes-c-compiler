@@ -1350,6 +1350,10 @@ impl Driver {
         // Build line map from preprocessor line markers for source location tracking.
         // Uses stored content from add_file() and reuses already-computed line offsets.
         source_manager.build_line_map();
+        // Transfer macro expansion metadata from preprocessor to source manager
+        // for "in expansion of macro 'X'" diagnostic notes.
+        let macro_expansions = preprocessor.take_macro_expansion_info();
+        source_manager.set_macro_expansions(macro_expansions);
         let mut lexer = Lexer::new(source_manager.get_content(file_id), file_id);
         lexer.set_gnu_extensions(self.gnu_extensions);
         let tokens = lexer.tokenize();

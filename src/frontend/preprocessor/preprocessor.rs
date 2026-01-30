@@ -15,6 +15,18 @@ use super::builtin_macros::define_builtin_macros;
 use super::utils::{is_ident_start, is_ident_cont};
 use super::text_processing::{strip_line_comment, split_first_word, LineMap};
 
+/// Deduplicate a list of macro names, preserving order (first occurrence wins).
+/// Used to remove duplicate names from nested macro expansions.
+fn dedup_macro_names(names: Vec<String>) -> Vec<String> {
+    let mut unique = Vec::new();
+    for name in names {
+        if !unique.contains(&name) {
+            unique.push(name);
+        }
+    }
+    unique
+}
+
 /// Maximum number of newlines to accumulate while joining lines for unbalanced
 /// parentheses in macro arguments. Prevents runaway accumulation when a source
 /// file has a genuinely unbalanced parenthesis.
@@ -78,6 +90,10 @@ pub struct Preprocessor {
     /// Reusable FxHashSet for directive-level macro expansion (handle_if, handle_elif,
     /// handle_line_directive, #error). Avoids allocating a new FxHashSet per directive.
     directive_expanding: FxHashSet<String>,
+    /// Macro expansion metadata: maps preprocessed output line numbers to
+    /// the macros expanded on that line. Populated during preprocessing and
+    /// passed to the SourceManager for diagnostic rendering.
+    macro_expansion_info: Vec<crate::common::source::MacroExpansionInfo>,
 }
 
 impl Preprocessor {
@@ -103,6 +119,7 @@ impl Preprocessor {
             include_resolve_cache: FxHashMap::default(),
             include_guard_macros: FxHashMap::default(),
             directive_expanding: FxHashSet::default(),
+            macro_expansion_info: Vec::new(),
         };
         pp.define_predefined_macros();
         define_builtin_macros(&mut pp.macros);
@@ -116,16 +133,26 @@ impl Preprocessor {
         let line_marker = format!("# 1 \"{}\"\n", self.filename);
         let main_output = self.preprocess_source(source, false);
         // Prepend any output from force-included files (e.g., pragma synthetic tokens)
-        if self.force_include_output.is_empty() {
+        let (result, prefix_lines) = if self.force_include_output.is_empty() {
+            let prefix_lines = line_marker.as_bytes().iter().filter(|&&b| b == b'\n').count() as u32;
             let mut result = line_marker;
             result.push_str(&main_output);
-            result
+            (result, prefix_lines)
         } else {
             let mut result = std::mem::take(&mut self.force_include_output);
             result.push_str(&line_marker);
+            let prefix_lines = result.as_bytes().iter().filter(|&&b| b == b'\n').count() as u32;
             result.push_str(&main_output);
-            result
+            (result, prefix_lines)
+        };
+        // Adjust macro expansion line numbers to account for prepended content
+        // (line markers, force-include output) that shifts all line numbers.
+        if prefix_lines > 0 {
+            for info in &mut self.macro_expansion_info {
+                info.pp_line += prefix_lines;
+            }
         }
+        result
     }
 
     /// Process source code from an included file. Same pipeline as preprocess()
@@ -165,11 +192,21 @@ impl Preprocessor {
         let mut pending_line = String::new();
         let mut pending_newlines: usize = 0;
 
+        // Track current line number in the preprocessed output for macro expansion metadata.
+        // Incremented whenever a newline is appended to the output string.
+        let mut pp_output_line: u32 = 0;
+
         // Reusable FxHashSet for macro expansion, avoiding per-line allocation.
         // This set tracks which macros are currently being expanded (to prevent
         // infinite recursion per C11 §6.10.3.4). It's cleared before each use
         // by expand_line_reuse().
         let mut expanding = crate::common::fx_hash::FxHashSet::default();
+
+        // Enable macro expansion tracking for diagnostic "in expansion of macro" notes.
+        // Only track at top level (not within included files) to avoid duplicate entries.
+        if !is_include {
+            self.macros.set_track_expansions(true);
+        }
 
         for (line_num, line) in source.lines().enumerate() {
             let trimmed = line.trim();
@@ -232,6 +269,7 @@ impl Preprocessor {
                 // that was active when those tokens were encountered, not the definition
                 // (or lack thereof) after the directive. Per C standard, directives take
                 // effect for tokens that follow them, not tokens that precede them.
+                let output_len_before_directive = output.len();
                 if !pending_line.is_empty() && !is_include {
                     let after_hash = trimmed[1..].trim_start();
                     if after_hash.starts_with("define") || after_hash.starts_with("undef") {
@@ -283,20 +321,46 @@ impl Preprocessor {
                     } else {
                         output.push('\n');
                     }
+                    // Update pp_output_line for directive path
+                    let added = &output.as_bytes()[output_len_before_directive..];
+                    pp_output_line += added.iter().filter(|&&b| b == b'\n').count() as u32;
                 }
             } else if self.conditionals.is_active() {
                 // Regular line (or directive during include with pending line) -
                 // expand macros, handling multi-line macro invocations
+                let output_len_before = output.len();
                 self.accumulate_and_expand(
                     line, &mut pending_line, &mut pending_newlines, &mut output,
                     &mut expanding,
                 );
+                // Collect macro expansion info for diagnostics.
+                // If expansion added content to the output, check if macros were used.
+                if !is_include && output.len() > output_len_before {
+                    let expanded_names = self.macros.take_expanded_macros();
+                    if !expanded_names.is_empty() {
+                        let unique_names = dedup_macro_names(expanded_names);
+                        self.macro_expansion_info.push(
+                            crate::common::source::MacroExpansionInfo {
+                                pp_line: pp_output_line,
+                                macro_names: unique_names,
+                            }
+                        );
+                    }
+                }
+                // Update pp_output_line by counting newlines in the newly added content
+                if !is_include {
+                    let added = &output.as_bytes()[output_len_before..];
+                    pp_output_line += added.iter().filter(|&&b| b == b'\n').count() as u32;
+                }
             } else {
                 // Inactive conditional block - skip the line but preserve numbering
                 if !pending_line.is_empty() {
                     pending_newlines += 1;
                 } else {
                     output.push('\n');
+                    if !is_include {
+                        pp_output_line += 1;
+                    }
                 }
             }
         }
@@ -306,6 +370,24 @@ impl Preprocessor {
             let expanded = self.macros.expand_line_reuse(&pending_line, &mut expanding);
             output.push_str(&expanded);
             output.push('\n');
+            // Collect macro expansion info for the flushed line
+            if !is_include {
+                let expanded_names = self.macros.take_expanded_macros();
+                if !expanded_names.is_empty() {
+                    let unique_names = dedup_macro_names(expanded_names);
+                    self.macro_expansion_info.push(
+                        crate::common::source::MacroExpansionInfo {
+                            pp_line: pp_output_line,
+                            macro_names: unique_names,
+                        }
+                    );
+                }
+            }
+        }
+
+        // Disable macro expansion tracking
+        if !is_include {
+            self.macros.set_track_expansions(false);
         }
 
         // Restore conditional stack and line override for included files
@@ -483,6 +565,13 @@ impl Preprocessor {
     /// Get preprocessing warnings.
     pub fn warnings(&self) -> &[String] {
         &self.warnings
+    }
+
+    /// Take macro expansion metadata collected during preprocessing.
+    /// This metadata maps preprocessed output line numbers to the macros
+    /// that were expanded on each line, for use in diagnostic rendering.
+    pub fn take_macro_expansion_info(&mut self) -> Vec<crate::common::source::MacroExpansionInfo> {
+        std::mem::take(&mut self.macro_expansion_info)
     }
 
     /// Dump all macro definitions in GCC `-dM` format.

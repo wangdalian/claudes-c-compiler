@@ -112,6 +112,14 @@ pub struct MacroTable {
     counter: Cell<usize>,
     /// Cached __LINE__ value. Updated by set_line(), expanded specially in expand_text.
     line_value: Cell<usize>,
+    /// Collects names of macros expanded during the current expand_line_reuse() call.
+    /// Used by the preprocessor to build macro expansion metadata for diagnostics
+    /// ("in expansion of macro 'X'" notes). Wrapped in RefCell because expansion
+    /// methods take &self.
+    expanded_macros: std::cell::RefCell<Vec<String>>,
+    /// Whether to track macro expansions (disabled by default for performance;
+    /// enabled by the preprocessor for the main expansion pass).
+    track_expansions: Cell<bool>,
 }
 
 impl MacroTable {
@@ -120,6 +128,8 @@ impl MacroTable {
             macros: FxHashMap::default(),
             counter: Cell::new(0),
             line_value: Cell::new(1),
+            expanded_macros: std::cell::RefCell::new(Vec::new()),
+            track_expansions: Cell::new(false),
         }
     }
 
@@ -181,6 +191,19 @@ impl MacroTable {
         self.macros.get("__FILE__").map(|m| m.body.as_str())
     }
 
+    /// Enable or disable macro expansion tracking.
+    /// When enabled, expand_line_reuse() records which macros were expanded,
+    /// retrievable via take_expanded_macros().
+    pub fn set_track_expansions(&self, enabled: bool) {
+        self.track_expansions.set(enabled);
+    }
+
+    /// Take the list of macro names expanded during the last expand_line_reuse() call.
+    /// Returns an empty Vec if tracking is disabled or no macros were expanded.
+    pub fn take_expanded_macros(&self) -> Vec<String> {
+        std::mem::take(&mut *self.expanded_macros.borrow_mut())
+    }
+
     /// Expand macros in a line of text.
     /// Returns the expanded text.
     pub fn expand_line(&self, line: &str) -> String {
@@ -194,6 +217,9 @@ impl MacroTable {
     /// overhead when preprocessing kernel headers with thousands of lines).
     pub fn expand_line_reuse(&self, line: &str, expanding: &mut FxHashSet<String>) -> String {
         expanding.clear();
+        if self.track_expansions.get() {
+            self.expanded_macros.borrow_mut().clear();
+        }
         let result = self.expand_text(line, expanding);
         // Strip internal marker bytes from the final output:
         // - 0x01 (BLUE_PAINT_MARKER): prevents re-expansion per C11 §6.10.3.4
@@ -485,6 +511,10 @@ impl MacroTable {
     fn expand_macro_invocation(&self, _text: &str, bytes: &[u8], i: usize, ident: &str,
                                mac: &MacroDef, result: &mut String,
                                expanding: &mut FxHashSet<String>) -> usize {
+        // Record this macro expansion for diagnostic tracing
+        if self.track_expansions.get() {
+            self.expanded_macros.borrow_mut().push(ident.to_string());
+        }
         let len = bytes.len();
         if mac.is_function_like {
             let mut j = i;
