@@ -1,0 +1,23 @@
+Fix peephole trampoline coalescing: follow jmp targets in fall-through check
+
+Bug: The fall-through safety check in eliminate_loop_trampolines stops at
+unconditional jumps (jmp) without checking whether the jump target reads
+src_fam or dst_fam. When the fall-through path ends with "jmp .exit_block"
+and the exit block reads src_fam (which was NOPped by coalescing), the
+exit block reads an uninitialized register.
+
+Example pattern:
+    addq $1, %r9        ; r9 = p+1 (was r11 before coalescing)
+    cmpq %r8, %r9
+    jb .loop_back        ; conditional back-edge
+    jmp .exit_block      ; fall-through check stops here (approved!)
+  .exit_block:
+    movq %r11, %r12      ; r11 was never written! Should be r9
+
+Fix: When the fall-through scan ends at an unconditional jmp, follow the
+jump target and continue checking for src_fam/dst_fam reads there.
+
+Affects: any do-while loop with pointer increment where exit uses the pointer
+after the loop (e.g., count_bytes, string scanning patterns).
+
+Status: in_progress
