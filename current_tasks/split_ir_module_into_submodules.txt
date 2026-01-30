@@ -1,0 +1,16 @@
+Task: Split ir/ir.rs (1915 lines) into focused submodules
+
+Status: in_progress
+
+The ir/ir.rs file is a monolith containing multiple unrelated concerns:
+- Core IR types (BlockId, Value, Operand)
+- IrConst with 35 methods + float encoding utilities
+- 30+ variant Instruction enum + impl methods
+- IntrinsicOp (80+ variants)
+- IrBinOp, IrCmpOp, IrUnaryOp with eval methods
+- IrModule, IrGlobal, IrFunction definitions
+- AtomicRmwOp, AtomicOrdering
+
+Plan: Split into ir/types.rs, ir/constants.rs, ir/instruction.rs, ir/ops.rs,
+ir/intrinsics.rs, ir/module.rs while keeping ir.rs as a re-export hub.
+Pure refactoring - no behavior changes.

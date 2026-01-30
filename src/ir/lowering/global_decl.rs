@@ -541,13 +541,15 @@ impl Lowerer {
                     // For arrays of pointers (e.g., `const struct S *ptrs[] = {&a, &b}`),
                     // struct_layout refers to the pointee struct, NOT the array element.
                     // Each element is a pointer, not a struct, so use plain item counting.
-                    let actual_count = if let Some(ref layout) = da.struct_layout {
-                        if da.is_array_of_pointers || da.is_array_of_func_ptrs {
-                            // Array of pointers: each init item is one pointer element
-                            self.compute_init_list_array_size_for_char_array(items, da.base_ty)
-                        } else {
-                            self.compute_struct_array_init_count(items, layout)
-                        }
+                    // Also, arrays of pointers must NOT use the char-array string literal
+                    // expansion path: `const char *a[] = {"hello"}` has 1 element (a pointer),
+                    // not 6 (the string length). Use plain item counting for pointer arrays.
+                    let actual_count = if da.is_array_of_pointers || da.is_array_of_func_ptrs {
+                        // Array of pointers/func ptrs: each init item is one pointer element.
+                        // Must not use char-array path which would expand string literals.
+                        self.compute_init_list_array_size(items)
+                    } else if let Some(ref layout) = da.struct_layout {
+                        self.compute_struct_array_init_count(items, layout)
                     } else {
                         self.compute_init_list_array_size_for_char_array(items, da.base_ty)
                     };
