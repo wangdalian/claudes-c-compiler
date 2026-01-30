@@ -1,0 +1,10 @@
+Optimize preprocessor performance for faster kernel compilation
+
+The preprocessor accounts for ~40% of compile time on kernel builds.
+This task optimizes several hotspots:
+
+1. Reuse FxHashSet in expand_line() instead of allocating per line
+2. Avoid unconditional string allocations in strip_blue_paint()
+3. Avoid unconditional string allocations in strip_line_comment()
+4. Reduce redundant has_unbalanced_parens() calls
+5. Use Cow<str> where possible to avoid cloning
