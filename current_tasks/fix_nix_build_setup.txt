@@ -1,13 +1,8 @@
-Task: Fix Nix build setup for offline use
-Status: in_progress (STOLEN - implementing --param flag support and nix pipeline fixes)
+Task: Fix Nix build setup - add --param support
+Status: STOLEN - implementing --param flag support and nix build pipeline
 
-Problem: /verify/setup_nix.sh and subsequent nix build commands fail because:
-1. The nix CC wrapper passes --param ssp-buffer-size=4 as two arguments
-2. ccc doesn't recognize --param as a flag that takes an argument
-3. ccc treats ssp-buffer-size=4 as a source filename and errors out
-
-Solution:
-1. Add --param <name>=<value> support to ccc's CLI argument parser (silently ignore)
-2. Also handle --param=<name>=<value> (single-argument form)
-3. Ensure /verify/setup_nix.sh runs successfully
-4. Ensure nix build --impure .#hello works end-to-end
+Plan:
+1. Add --param <name>=<value> and --param=<name>=<value> support to CLI parser
+2. Run /verify/setup_nix.sh
+3. Test: cd /workspace/nix-build && CCC_PATH=/workspace/code/target/release/ccc nix build --impure .#hello
+4. Run regression tests to ensure no regressions
