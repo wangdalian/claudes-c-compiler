@@ -1694,7 +1694,14 @@ impl ArchCodegen for I686Codegen {
         if op == IrBinOp::Mul {
             if let Some(imm) = Self::const_as_imm32(rhs) {
                 self.operand_to_eax(lhs);
-                emit!(self.state, "    imull ${}, %eax, %eax", imm);
+                // LEA strength reduction: x*3/5/9 → leal (%eax, %eax, scale), %eax.
+                // lea has 1-cycle latency vs 3 cycles for imul on modern x86.
+                match imm {
+                    3 => emit!(self.state, "    leal (%eax, %eax, 2), %eax"),
+                    5 => emit!(self.state, "    leal (%eax, %eax, 4), %eax"),
+                    9 => emit!(self.state, "    leal (%eax, %eax, 8), %eax"),
+                    _ => emit!(self.state, "    imull ${}, %eax, %eax", imm),
+                }
                 self.state.reg_cache.invalidate_acc();
                 self.store_eax_to(dest);
                 return;

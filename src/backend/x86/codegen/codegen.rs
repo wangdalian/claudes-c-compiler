@@ -871,6 +871,18 @@ impl X86Codegen {
         }
     }
 
+    /// LEA scale factor for multiply strength reduction.
+    /// Returns the LEA scale factor for multipliers 3, 5, 9 (which decompose
+    /// as reg + reg*2, reg + reg*4, reg + reg*8 respectively).
+    fn lea_scale_for_mul(imm: i64) -> Option<u8> {
+        match imm {
+            3 => Some(2),
+            5 => Some(4),
+            9 => Some(8),
+            _ => None,
+        }
+    }
+
     /// Register-direct path for simple ALU ops (add/sub/and/or/xor/mul).
     fn emit_alu_reg_direct(&mut self, op: IrBinOp, lhs: &Operand, rhs: &Operand,
                            dest_phys: PhysReg, use_32bit: bool, is_unsigned: bool) {
@@ -881,7 +893,19 @@ impl X86Codegen {
         if let Some(imm) = Self::const_as_imm32(rhs) {
             self.operand_to_callee_reg(lhs, dest_phys);
             if op == IrBinOp::Mul {
-                if use_32bit {
+                // LEA strength reduction: replace imul by 3/5/9 with lea.
+                // lea (%reg, %reg, scale), %reg computes reg + reg*scale = reg*(scale+1).
+                // lea has 1-cycle latency vs 3 cycles for imul on modern x86.
+                if let Some(scale) = Self::lea_scale_for_mul(imm) {
+                    if use_32bit {
+                        self.state.emit_fmt(format_args!(
+                            "    leal (%{}, %{}, {}), %{}", dest_name_32, dest_name_32, scale, dest_name_32));
+                        self.emit_sext32_if_needed(dest_name_32, dest_name, is_unsigned);
+                    } else {
+                        self.state.emit_fmt(format_args!(
+                            "    leaq (%{}, %{}, {}), %{}", dest_name, dest_name, scale, dest_name));
+                    }
+                } else if use_32bit {
                     self.state.emit_fmt(format_args!("    imull ${}, %{}, %{}", imm, dest_name_32, dest_name_32));
                     self.emit_sext32_if_needed(dest_name_32, dest_name, is_unsigned);
                 } else {
@@ -1001,7 +1025,16 @@ impl X86Codegen {
         if op == IrBinOp::Mul {
             if let Some(imm) = Self::const_as_imm32(rhs) {
                 self.operand_to_rax(lhs);
-                if use_32bit {
+                // LEA strength reduction: x*3/5/9 → lea (%rax, %rax, scale), %rax.
+                // lea has 1-cycle latency vs 3 cycles for imul on modern x86.
+                if let Some(scale) = Self::lea_scale_for_mul(imm) {
+                    if use_32bit {
+                        self.state.emit_fmt(format_args!("    leal (%eax, %eax, {}), %eax", scale));
+                        if !is_unsigned { self.state.emit("    cltq"); }
+                    } else {
+                        self.state.emit_fmt(format_args!("    leaq (%rax, %rax, {}), %rax", scale));
+                    }
+                } else if use_32bit {
                     self.state.emit_fmt(format_args!("    imull ${}, %eax, %eax", imm));
                     if !is_unsigned { self.state.emit("    cltq"); }
                 } else {
