@@ -106,12 +106,68 @@ _mm_cmpeq_epi32(__m128i __a, __m128i __b)
     return __CCC_M128I_FROM_BUILTIN(__builtin_ia32_pcmpeqd128(__a, __b));
 }
 
+static __inline__ __m128i __attribute__((__always_inline__))
+_mm_cmpeq_epi16(__m128i __a, __m128i __b)
+{
+    /* Compare 8 x 16-bit elements for equality. Returns 0xFFFF for equal, 0x0000 otherwise. */
+    unsigned long long __r0 = 0, __r1 = 0;
+    unsigned long long __a0 = (unsigned long long)__a.__val[0];
+    unsigned long long __b0 = (unsigned long long)__b.__val[0];
+    unsigned long long __a1 = (unsigned long long)__a.__val[1];
+    unsigned long long __b1 = (unsigned long long)__b.__val[1];
+    for (int __i = 0; __i < 4; __i++) {
+        unsigned short __va = (unsigned short)(__a0 >> (__i * 16));
+        unsigned short __vb = (unsigned short)(__b0 >> (__i * 16));
+        if (__va == __vb) __r0 |= (0xFFFFULL << (__i * 16));
+    }
+    for (int __i = 0; __i < 4; __i++) {
+        unsigned short __va = (unsigned short)(__a1 >> (__i * 16));
+        unsigned short __vb = (unsigned short)(__b1 >> (__i * 16));
+        if (__va == __vb) __r1 |= (0xFFFFULL << (__i * 16));
+    }
+    return (__m128i){ { (long long)__r0, (long long)__r1 } };
+}
+
+static __inline__ __m128i __attribute__((__always_inline__))
+_mm_cmplt_epi16(__m128i __a, __m128i __b)
+{
+    /* Returns 0xFFFF for lanes where a < b (signed), 0 otherwise.
+     * Equivalent to _mm_cmpgt_epi16(b, a). */
+    return __CCC_M128I_FROM_BUILTIN(__builtin_ia32_pcmpgtw128(__b, __a));
+}
+
 /* === Arithmetic === */
 
 static __inline__ __m128i __attribute__((__always_inline__))
 _mm_subs_epu8(__m128i __a, __m128i __b)
 {
     return __CCC_M128I_FROM_BUILTIN(__builtin_ia32_psubusb128(__a, __b));
+}
+
+static __inline__ __m128i __attribute__((__always_inline__))
+_mm_avg_epu8(__m128i __a, __m128i __b)
+{
+    /* Unsigned byte average with rounding: (a + b + 1) >> 1 for each byte. */
+    unsigned char *__pa = (unsigned char *)&__a;
+    unsigned char *__pb = (unsigned char *)&__b;
+    __m128i __r;
+    unsigned char *__pr = (unsigned char *)&__r;
+    for (int __i = 0; __i < 16; __i++)
+        __pr[__i] = (unsigned char)(((unsigned int)__pa[__i] + (unsigned int)__pb[__i] + 1) >> 1);
+    return __r;
+}
+
+static __inline__ __m128i __attribute__((__always_inline__))
+_mm_min_epi16(__m128i __a, __m128i __b)
+{
+    /* Signed 16-bit minimum for each of 8 lanes. */
+    short *__pa = (short *)&__a;
+    short *__pb = (short *)&__b;
+    __m128i __r;
+    short *__pr = (short *)&__r;
+    for (int __i = 0; __i < 8; __i++)
+        __pr[__i] = __pa[__i] < __pb[__i] ? __pa[__i] : __pb[__i];
+    return __r;
 }
 
 /* === Bitwise === */
@@ -131,10 +187,49 @@ _mm_and_si128(__m128i __a, __m128i __b)
 }
 
 static __inline__ __m128i __attribute__((__always_inline__))
+_mm_andnot_si128(__m128i __a, __m128i __b)
+{
+    return (__m128i){ { ~__a.__val[0] & __b.__val[0],
+                        ~__a.__val[1] & __b.__val[1] } };
+}
+
+static __inline__ __m128i __attribute__((__always_inline__))
 _mm_xor_si128(__m128i __a, __m128i __b)
 {
     return (__m128i){ { __a.__val[0] ^ __b.__val[0],
                         __a.__val[1] ^ __b.__val[1] } };
+}
+
+/* === 8-bit Arithmetic === */
+
+static __inline__ __m128i __attribute__((__always_inline__))
+_mm_add_epi8(__m128i __a, __m128i __b)
+{
+    /* Byte-level add using carry-free byte addition trick:
+     * For each byte, (a+b) mod 256.  We use a mask to isolate the low
+     * bit of each byte pair to propagate carries correctly within bytes
+     * but not across byte boundaries. */
+    unsigned long long __mask = 0x7f7f7f7f7f7f7f7fULL;
+    unsigned long long __a0 = (unsigned long long)__a.__val[0];
+    unsigned long long __b0 = (unsigned long long)__b.__val[0];
+    unsigned long long __a1 = (unsigned long long)__a.__val[1];
+    unsigned long long __b1 = (unsigned long long)__b.__val[1];
+    unsigned long long __lo = ((__a0 & __mask) + (__b0 & __mask)) ^ ((__a0 ^ __b0) & ~__mask);
+    unsigned long long __hi = ((__a1 & __mask) + (__b1 & __mask)) ^ ((__a1 ^ __b1) & ~__mask);
+    return (__m128i){ { (long long)__lo, (long long)__hi } };
+}
+
+static __inline__ __m128i __attribute__((__always_inline__))
+_mm_sub_epi8(__m128i __a, __m128i __b)
+{
+    unsigned long long __mask = 0x8080808080808080ULL;
+    unsigned long long __a0 = (unsigned long long)__a.__val[0];
+    unsigned long long __b0 = (unsigned long long)__b.__val[0];
+    unsigned long long __a1 = (unsigned long long)__a.__val[1];
+    unsigned long long __b1 = (unsigned long long)__b.__val[1];
+    unsigned long long __lo = ((__a0 | __mask) - (__b0 & ~__mask)) ^ ((__a0 ^ ~__b0) & __mask);
+    unsigned long long __hi = ((__a1 | __mask) - (__b1 & ~__mask)) ^ ((__a1 ^ ~__b1) & __mask);
+    return (__m128i){ { (long long)__lo, (long long)__hi } };
 }
 
 /* === 16-bit Arithmetic === */

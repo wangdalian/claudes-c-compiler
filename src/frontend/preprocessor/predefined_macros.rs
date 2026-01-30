@@ -173,6 +173,12 @@ impl Preprocessor {
             // Critical: must match the GCC that assembles .S files, because
             // libffi's trampoline sizes depend on ENDBR_PRESENT which checks __CET__.
             ("__CET__", "3"),
+            // SSE/MMX feature macros: SSE2 is baseline for x86_64.
+            // Removed for non-x86_64 targets in set_target().
+            // Many projects (dr_libs, minimp3, stb_image, etc.) use #ifdef __SSE2__
+            // to enable SIMD code paths.
+            ("__SSE__", "1"), ("__SSE2__", "1"), ("__MMX__", "1"),
+            ("__SSE_MATH__", "1"), ("__SSE2_MATH__", "1"),
             // Pragma support flags
             ("__PRAGMA_REDEFINE_EXTNAME", "1"),
         ];
@@ -342,6 +348,11 @@ impl Preprocessor {
                 self.macros.undefine("__amd64__");
                 self.macros.undefine("__amd64");
                 self.macros.undefine("__CET__");
+                self.macros.undefine("__SSE__");
+                self.macros.undefine("__SSE2__");
+                self.macros.undefine("__MMX__");
+                self.macros.undefine("__SSE_MATH__");
+                self.macros.undefine("__SSE2_MATH__");
                 // Define aarch64 macros
                 self.define_simple_macro("__aarch64__", "1");
                 self.define_simple_macro("__ARM_64BIT_STATE", "1");
@@ -397,6 +408,11 @@ impl Preprocessor {
                 self.macros.undefine("__amd64__");
                 self.macros.undefine("__amd64");
                 self.macros.undefine("__CET__");
+                self.macros.undefine("__SSE__");
+                self.macros.undefine("__SSE2__");
+                self.macros.undefine("__MMX__");
+                self.macros.undefine("__SSE_MATH__");
+                self.macros.undefine("__SSE2_MATH__");
                 // Define riscv64 macros
                 self.define_simple_macro("__riscv", "1");
                 self.define_simple_macro("__riscv_xlen", "64");
@@ -448,6 +464,13 @@ impl Preprocessor {
                 self.macros.undefine("__LP64__");
                 self.macros.undefine("_LP64");
                 self.macros.undefine("__SIZEOF_INT128__");
+                // i686 baseline does not include SSE (GCC only enables SSE with
+                // -march=pentium4 or higher). Remove SSE macros to match GCC.
+                self.macros.undefine("__SSE__");
+                self.macros.undefine("__SSE2__");
+                self.macros.undefine("__MMX__");
+                self.macros.undefine("__SSE_MATH__");
+                self.macros.undefine("__SSE2_MATH__");
                 // i686-linux-gnu-gcc -m32 does NOT define __CET__ (CET is
                 // disabled by -m32).  We must match this because .S assembly
                 // files are assembled by GCC, and if the C code expects

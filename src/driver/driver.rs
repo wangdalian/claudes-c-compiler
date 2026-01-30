@@ -768,6 +768,7 @@ impl Driver {
             sema_result.expr_types,
             sema_result.const_values,
             diagnostics,
+            self.gnu89_inline,
         );
         let (mut module, diagnostics) = lowerer.lower(&ast);
 

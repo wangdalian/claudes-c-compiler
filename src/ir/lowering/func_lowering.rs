@@ -508,22 +508,28 @@ impl Lowerer {
             }
         }
 
-        // C99 inline linkage rules:
-        //   extern inline + gnu_inline = inline definition only, no external def → static
-        //   inline + gnu_inline (no extern) = external definition → global (GNU89 semantics)
-        //   plain inline (no extern, no gnu_inline) = inline definition only → weak global (C99)
-        //   extern inline (no gnu_inline) = external definition → global (C99)
+        // Inline linkage rules (GNU89 vs C99):
+        //
+        // GNU89 mode (explicit __attribute__((gnu_inline)) OR -fgnu89-inline / -std=c89):
+        //   extern inline = inline definition only, no external def → static
+        //   inline (no extern) = external definition → global
+        //
+        // C99 mode (default for -std=c99 and later):
+        //   extern inline = provides external definition → global
+        //   plain inline (no extern) = inline definition only → weak global
         //
         // C99 6.7.4p7 additional rule: if ANY file-scope declaration of the function
         // does NOT include `inline`, then the definition provides an external definition.
         // This handles cases like jq's tsd_dtoa_context_get() where the header declares
         // the function without `inline` and the .c file defines it with `inline`.
-        let is_gnu_inline_no_extern_def = func.attrs.is_gnu_inline() && func.attrs.is_inline()
-            && func.attrs.is_extern();
+        let is_gnu_inline_no_extern_def = self.is_gnu_inline_no_extern_def(&func.attrs);
         // C99 6.7.4p7: A plain `inline` definition (without `extern`) does not
         // provide an external definition ONLY if ALL file-scope declarations include
         // `inline`. If any declaration lacks `inline`, this is an external definition.
-        let is_c99_inline_def = func.attrs.is_inline() && !func.attrs.is_extern()
+        // Note: in GNU89 mode, `inline` without `extern` provides an external def,
+        // so this rule does not apply.
+        let is_c99_inline_def = !self.gnu89_inline
+            && func.attrs.is_inline() && !func.attrs.is_extern()
             && !func.attrs.is_static() && !func.attrs.is_gnu_inline()
             && !self.has_non_inline_decl.contains(&func.name);
         // C99 inline definitions should be emitted as weak global symbols, not

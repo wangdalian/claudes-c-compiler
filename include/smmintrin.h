@@ -2,7 +2,7 @@
 #ifndef _SMMINTRIN_H_INCLUDED
 #define _SMMINTRIN_H_INCLUDED
 
-#include <emmintrin.h>
+#include <tmmintrin.h>
 
 /* === SSE4.1 insert/extract intrinsics === */
 
@@ -29,6 +29,23 @@
 /* _mm_insert_epi64: insert 64-bit int at lane (PINSRQ) */
 #define _mm_insert_epi64(a, i, imm) \
     __CCC_M128I_FROM_BUILTIN(__builtin_ia32_pinsrq128((a), (i), (imm)))
+
+/* === SSE4.1 blending === */
+
+/* _mm_blendv_epi8: byte-level blend using mask high bits (PBLENDVB) */
+static __inline__ __m128i __attribute__((__always_inline__))
+_mm_blendv_epi8(__m128i __a, __m128i __b, __m128i __mask)
+{
+    /* For each byte: result = (mask_byte & 0x80) ? b_byte : a_byte */
+    unsigned char *__pa = (unsigned char *)&__a;
+    unsigned char *__pb = (unsigned char *)&__b;
+    unsigned char *__pm = (unsigned char *)&__mask;
+    __m128i __r;
+    unsigned char *__pr = (unsigned char *)&__r;
+    for (int __i = 0; __i < 16; __i++)
+        __pr[__i] = (__pm[__i] & 0x80) ? __pb[__i] : __pa[__i];
+    return __r;
+}
 
 /* === CRC32 intrinsics (SSE4.2) === */
 

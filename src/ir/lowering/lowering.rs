@@ -147,6 +147,11 @@ pub struct Lowerer {
     /// compound literals in arithmetic contexts must first call
     /// `materialize_compound_literals_in_expr()` to populate this map.
     pub(super) materialized_compound_literals: FxHashMap<usize, String>,
+    /// Whether GNU89 inline semantics are in effect (-fgnu89-inline, -std=c89, etc).
+    /// When true, `extern inline` without `__attribute__((gnu_inline__))` is treated
+    /// as an inline-only definition (no external def emitted), matching the behaviour
+    /// of GCC in GNU89 mode. The default (false) uses C99 inline semantics.
+    pub(super) gnu89_inline: bool,
 }
 
 impl Lowerer {
@@ -171,6 +176,7 @@ impl Lowerer {
         sema_expr_types: ExprTypeMap,
         sema_const_values: ConstMap,
         diagnostics: DiagnosticEngine,
+        gnu89_inline: bool,
     ) -> Self {
         // Pre-populate known_functions from sema's function map.
         // This means the lowerer knows about all functions before the first pass,
@@ -208,6 +214,7 @@ impl Lowerer {
             expr_ctype_cache: RefCell::new(FxHashMap::default()),
             diagnostics: RefCell::new(diagnostics),
             materialized_compound_literals: FxHashMap::default(),
+            gnu89_inline,
         }
     }
 
@@ -241,6 +248,17 @@ impl Lowerer {
     /// ARM64 stores full IEEE binary128 long doubles in memory.
     pub(super) fn is_arm(&self) -> bool {
         self.target == Target::Aarch64
+    }
+
+    /// Returns true if the function has `extern inline` semantics that do NOT
+    /// emit an external definition. This covers two cases:
+    ///   1. `extern inline` + `__attribute__((gnu_inline__))` (explicit GNU inline attr)
+    ///   2. `extern inline` in GNU89 mode (`-std=c89`, `-fgnu89-inline`) without the attr
+    /// In both cases, the function body is available for inlining but the compiler
+    /// must not emit a standalone global symbol.
+    pub(super) fn is_gnu_inline_no_extern_def(&self, attrs: &crate::frontend::parser::ast::FunctionAttributes) -> bool {
+        attrs.is_inline() && attrs.is_extern() &&
+            (attrs.is_gnu_inline() || self.gnu89_inline)
     }
 
     /// Returns true if the target uses x86-64 style packed _Complex float ABI
@@ -665,21 +683,24 @@ impl Lowerer {
                     // Skip unreferenced static/static-inline functions (e.g., static inline
                     // from headers that are never called).
                     //
-                    // __attribute__((gnu_inline)) forces GNU89 inline semantics:
-                    //   extern inline + gnu_inline = inline definition only, no external def
+                    // GNU89/gnu_inline semantics (explicit __attribute__((gnu_inline)) OR
+                    // -fgnu89-inline / -std=c89 mode):
+                    //   extern inline = inline definition only, no external def
                     //   → treat like static inline (can skip if unreferenced, local if emitted)
-                    //   inline + gnu_inline (no extern) = external definition (must emit, global)
+                    //   inline (no extern) = external definition (must emit, global)
                     //
-                    // Without gnu_inline (C99 semantics):
+                    // C99 semantics (default for -std=c99 and later):
                     //   extern inline = provides external definition (must emit, global)
                     //   inline (alone) = inline definition only (no external def)
-                    let is_gnu_inline_no_extern_def = func.attrs.is_gnu_inline() && func.attrs.is_inline()
-                        && func.attrs.is_extern();
+                    let is_gnu_inline_no_extern_def = self.is_gnu_inline_no_extern_def(&func.attrs);
                     // C99 6.7.4p7: A plain `inline` definition (without `extern`)
                     // does not provide an external definition. The TU must not emit
                     // a standalone function body; call sites reference the external
                     // symbol provided by the TU that uses `extern inline`.
-                    let is_c99_inline_only = func.attrs.is_inline() && !func.attrs.is_extern()
+                    // Note: this only applies in C99 mode; in GNU89 mode, `inline`
+                    // without `extern` provides the external definition.
+                    let is_c99_inline_only = !self.gnu89_inline
+                        && func.attrs.is_inline() && !func.attrs.is_extern()
                         && !func.attrs.is_static() && !func.attrs.is_gnu_inline()
                         && !self.has_non_inline_decl.contains(&func.name);
                     if is_c99_inline_only {
@@ -689,7 +710,7 @@ impl Lowerer {
                         // static or static inline: internal linkage, safe to skip if unreferenced
                         true
                     } else if is_gnu_inline_no_extern_def {
-                        // extern inline with gnu_inline: no external definition, skip if unreferenced
+                        // extern inline (gnu89 or gnu_inline attr): no external def, skip if unreferenced
                         true
                     } else {
                         false
