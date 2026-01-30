@@ -1221,6 +1221,10 @@ impl ArchCodegen for X86Codegen {
     fn emit_memcpy_store_dest_from_acc(&mut self) { self.emit_memcpy_store_dest_from_acc_impl() }
     fn emit_memcpy_store_src_from_acc(&mut self) { self.emit_memcpy_store_src_from_acc_impl() }
     fn emit_memcpy_impl(&mut self, size: usize) { self.emit_memcpy_impl_impl(size) }
+    fn emit_seg_load(&mut self, dest: &Value, ptr: &Value, ty: IrType, seg: AddressSpace) { self.emit_seg_load_impl(dest, ptr, ty, seg) }
+    fn emit_seg_load_symbol(&mut self, dest: &Value, sym: &str, ty: IrType, seg: AddressSpace) { self.emit_seg_load_symbol_impl(dest, sym, ty, seg) }
+    fn emit_seg_store(&mut self, val: &Operand, ptr: &Value, ty: IrType, seg: AddressSpace) { self.emit_seg_store_impl(val, ptr, ty, seg) }
+    fn emit_seg_store_symbol(&mut self, val: &Operand, sym: &str, ty: IrType, seg: AddressSpace) { self.emit_seg_store_symbol_impl(val, sym, ty, seg) }
 
     // ---- Delegated to alu.rs ----
     fn emit_float_neg(&mut self, ty: IrType) { self.emit_float_neg_impl(ty) }

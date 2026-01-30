@@ -1,0 +1,11 @@
+Task: Clean up ArchCodegen delegation boilerplate and dead code
+Status: in_progress
+
+What I'm doing:
+1. Remove completed task lock files (arm_peephole_global_store_forwarding, fix_do_while_loop_pointer_register_mistrack, fix_generic_type_dispatch, fix_sema_builtin_typedef_seeding, fix_x86_struct_return_sse_classification)
+2. Replace ~770 lines of ArchCodegen trait delegation boilerplate across all 4 backends with a macro
+3. Remove dead code (unused x87_bytes_to_* functions in long_double.rs)
+
+Each backend's codegen.rs has a massive `impl ArchCodegen for XxxCodegen` block that is ~95% one-line delegations like:
+  fn emit_prologue(&mut self, ...) { self.emit_prologue_impl(...) }
+This is pure boilerplate. A macro will eliminate it.

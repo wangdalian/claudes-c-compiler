@@ -24,6 +24,7 @@ use crate::common::const_arith;
 use crate::common::const_eval as shared_const_eval;
 use crate::ir::ir::IrConst;
 use crate::frontend::parser::ast::{
+    BinOp,
     DerivedDeclarator,
     Expr,
     ExprId,
@@ -130,34 +131,69 @@ impl<'a> SemaConstEval<'a> {
 
             // Logical NOT
             Expr::UnaryOp(UnaryOp::LogicalNot, inner, _) => {
-                let val = self.eval_const_expr(inner)?;
-                Some(IrConst::I64(if val.is_nonzero() { 0 } else { 1 }))
+                if let Some(val) = self.eval_const_expr(inner) {
+                    Some(IrConst::I64(if val.is_nonzero() { 0 } else { 1 }))
+                } else if Self::expr_is_always_nonzero(inner) {
+                    Some(IrConst::I64(0))
+                } else {
+                    None
+                }
             }
 
             // Binary operations
             Expr::BinaryOp(op, lhs, rhs, _) => {
-                let l = self.eval_const_expr(lhs)?;
-                let r = self.eval_const_expr(rhs)?;
-                // Derive operand CTypes for signedness/width determination.
-                // Priority: (1) pre-annotated expr_types from sema (O(1), preserves
-                // unsigned info), (2) infer_expr_ctype (accurate type inference),
-                // (3) ctype_from_ir_const (O(1), but loses unsigned — only used as
-                // last resort). We must prefer infer_expr_ctype over ctype_from_ir_const
-                // because IrConst::I64 cannot distinguish signed Long from unsigned Long,
-                // and incorrect signedness breaks unsigned comparisons and shifts.
-                let lhs_ctype = self.lookup_expr_type(lhs)
-                    .or_else(|| self.infer_expr_ctype(lhs))
-                    .or_else(|| Self::ctype_from_ir_const(&l));
-                let rhs_ctype = self.lookup_expr_type(rhs)
-                    .or_else(|| self.infer_expr_ctype(rhs))
-                    .or_else(|| Self::ctype_from_ir_const(&r));
-                let lhs_size = lhs_ctype.as_ref().map_or(4, |ct| self.ctype_size(ct).max(4));
-                let lhs_unsigned = lhs_ctype.as_ref().is_some_and(|ct| ct.is_unsigned());
-                let rhs_size = rhs_ctype.as_ref().map_or(4, |ct| self.ctype_size(ct).max(4));
-                let rhs_unsigned = rhs_ctype.as_ref().is_some_and(|ct| ct.is_unsigned());
-                shared_const_eval::eval_binop_with_types(
-                    op, &l, &r, lhs_size, lhs_unsigned, rhs_size, rhs_unsigned,
-                )
+                let l = self.eval_const_expr(lhs);
+                let r = self.eval_const_expr(rhs);
+                if let (Some(ref lv), Some(ref rv)) = (&l, &r) {
+                    // Derive operand CTypes for signedness/width determination.
+                    let lhs_ctype = self.lookup_expr_type(lhs)
+                        .or_else(|| self.infer_expr_ctype(lhs))
+                        .or_else(|| Self::ctype_from_ir_const(lv));
+                    let rhs_ctype = self.lookup_expr_type(rhs)
+                        .or_else(|| self.infer_expr_ctype(rhs))
+                        .or_else(|| Self::ctype_from_ir_const(rv));
+                    let lhs_size = lhs_ctype.as_ref().map_or(4, |ct| self.ctype_size(ct).max(4));
+                    let lhs_unsigned = lhs_ctype.as_ref().is_some_and(|ct| ct.is_unsigned());
+                    let rhs_size = rhs_ctype.as_ref().map_or(4, |ct| self.ctype_size(ct).max(4));
+                    let rhs_unsigned = rhs_ctype.as_ref().is_some_and(|ct| ct.is_unsigned());
+                    let result = shared_const_eval::eval_binop_with_types(
+                        op, lv, rv, lhs_size, lhs_unsigned, rhs_size, rhs_unsigned,
+                    );
+                    if result.is_some() {
+                        return result;
+                    }
+                }
+                // For LogicalOr/LogicalAnd, handle string literals and other
+                // always-nonzero expressions that can't be folded to numeric values.
+                if *op == BinOp::LogicalOr {
+                    let l_nonzero = l.as_ref().map_or(false, |v| v.is_nonzero())
+                        || Self::expr_is_always_nonzero(lhs);
+                    let r_nonzero = r.as_ref().map_or(false, |v| v.is_nonzero())
+                        || Self::expr_is_always_nonzero(rhs);
+                    if l_nonzero || r_nonzero {
+                        return Some(IrConst::I64(1));
+                    }
+                    if l.as_ref().map_or(false, |v| !v.is_nonzero())
+                        && r.as_ref().map_or(false, |v| !v.is_nonzero())
+                    {
+                        return Some(IrConst::I64(0));
+                    }
+                }
+                if *op == BinOp::LogicalAnd {
+                    if l.as_ref().map_or(false, |v| !v.is_nonzero())
+                        || r.as_ref().map_or(false, |v| !v.is_nonzero())
+                    {
+                        return Some(IrConst::I64(0));
+                    }
+                    let l_nonzero = l.as_ref().map_or(false, |v| v.is_nonzero())
+                        || Self::expr_is_always_nonzero(lhs);
+                    let r_nonzero = r.as_ref().map_or(false, |v| v.is_nonzero())
+                        || Self::expr_is_always_nonzero(rhs);
+                    if l_nonzero && r_nonzero {
+                        return Some(IrConst::I64(1));
+                    }
+                }
+                None
             }
 
             // Cast expressions with proper bit-width tracking
@@ -1038,6 +1074,20 @@ impl<'a> SemaConstEval<'a> {
                 alignment: field_alignment,
             }
         }).collect()
+    }
+
+    /// Check if an expression is always non-zero at compile time, even if we
+    /// can't compute its exact numeric value. String literals are always
+    /// non-null pointers, so `"hello" || 0` should evaluate to 1 in static
+    /// initializers.
+    fn expr_is_always_nonzero(expr: &Expr) -> bool {
+        match expr {
+            Expr::StringLiteral(..)
+            | Expr::WideStringLiteral(..)
+            | Expr::Char16StringLiteral(..) => true,
+            Expr::Cast(_, inner, _) => Self::expr_is_always_nonzero(inner),
+            _ => false,
+        }
     }
 }
 

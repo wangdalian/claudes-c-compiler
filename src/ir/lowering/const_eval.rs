@@ -116,6 +116,44 @@ impl Lowerer {
                         return result;
                     }
                 }
+                // For LogicalOr/LogicalAnd, handle cases where one operand is a
+                // string literal or other always-nonzero expression (e.g., address-of).
+                // String literals are always non-null pointers, so:
+                //   "str" || x  =>  1
+                //   x || "str"  =>  1
+                //   "str" && x  =>  bool(x) if x is evaluable, else 1 if x is also nonzero
+                //   0 && "str"  =>  0
+                if *op == BinOp::LogicalOr {
+                    let l_nonzero = l.as_ref().map_or(false, |v| v.is_nonzero())
+                        || Self::expr_is_always_nonzero(lhs);
+                    let r_nonzero = r.as_ref().map_or(false, |v| v.is_nonzero())
+                        || Self::expr_is_always_nonzero(rhs);
+                    if l_nonzero || r_nonzero {
+                        return Some(IrConst::I64(1));
+                    }
+                    // Both are zero constants => result is 0
+                    if l.as_ref().map_or(false, |v| !v.is_nonzero())
+                        && r.as_ref().map_or(false, |v| !v.is_nonzero())
+                    {
+                        return Some(IrConst::I64(0));
+                    }
+                }
+                if *op == BinOp::LogicalAnd {
+                    // If either side is a known zero, result is 0
+                    if l.as_ref().map_or(false, |v| !v.is_nonzero())
+                        || r.as_ref().map_or(false, |v| !v.is_nonzero())
+                    {
+                        return Some(IrConst::I64(0));
+                    }
+                    // If both sides are known nonzero (including string literals), result is 1
+                    let l_nonzero = l.as_ref().map_or(false, |v| v.is_nonzero())
+                        || Self::expr_is_always_nonzero(lhs);
+                    let r_nonzero = r.as_ref().map_or(false, |v| v.is_nonzero())
+                        || Self::expr_is_always_nonzero(rhs);
+                    if l_nonzero && r_nonzero {
+                        return Some(IrConst::I64(1));
+                    }
+                }
                 // For subtraction, try evaluating as pointer difference:
                 // &arr[5] - &arr[0], (char*)&s.c - (char*)&s.a, etc.
                 // Both operands may be global address expressions referring to the
@@ -178,8 +216,14 @@ impl Lowerer {
                 }
             }
             Expr::UnaryOp(UnaryOp::LogicalNot, inner, _) => {
-                let val = self.eval_const_expr(inner)?;
-                Some(IrConst::I64(if val.is_nonzero() { 0 } else { 1 }))
+                if let Some(val) = self.eval_const_expr(inner) {
+                    Some(IrConst::I64(if val.is_nonzero() { 0 } else { 1 }))
+                } else if Self::expr_is_always_nonzero(inner) {
+                    // !("string_literal") is always 0
+                    Some(IrConst::I64(0))
+                } else {
+                    None
+                }
             }
             // Handle &((type*)0)->member pattern (offsetof)
             Expr::AddressOf(inner, _) => {
@@ -592,6 +636,24 @@ impl Lowerer {
             return self.const_to_i64(&val);
         }
         None
+    }
+
+    /// Check if an expression is always non-zero at compile time, even if we
+    /// can't compute its exact numeric value.
+    ///
+    /// String literals, for example, are always non-null pointers, so they are
+    /// always truthy in boolean context. This is needed for static initializers
+    /// like `static const int NEED_OPTIONS = 0 || "Lcmwl" || 0;` (used by toybox).
+    fn expr_is_always_nonzero(expr: &Expr) -> bool {
+        match expr {
+            Expr::StringLiteral(..)
+            | Expr::WideStringLiteral(..)
+            | Expr::Char16StringLiteral(..) => true,
+            // A cast of a string literal is also always nonzero
+            // (e.g., (int)"hello" in constant context)
+            Expr::Cast(_, inner, _) => Self::expr_is_always_nonzero(inner),
+            _ => false,
+        }
     }
 }
 

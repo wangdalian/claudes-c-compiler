@@ -1850,7 +1850,7 @@ impl ArchCodegen for I686Codegen {
         let seg_prefix = match seg {
             AddressSpace::SegGs => "%gs:",
             AddressSpace::SegFs => "%fs:",
-            _ => "",
+            AddressSpace::Default => unreachable!("segment-prefixed op called with default address space"),
         };
         let load_instr = self.mov_load_for_type(ty);
         emit!(self.state, "    {} {}(%ecx), %eax", load_instr, seg_prefix);
@@ -1866,7 +1866,7 @@ impl ArchCodegen for I686Codegen {
         let seg_prefix = match seg {
             AddressSpace::SegGs => "%gs:",
             AddressSpace::SegFs => "%fs:",
-            _ => "",
+            AddressSpace::Default => unreachable!("segment-prefixed op called with default address space"),
         };
         let store_instr = self.mov_store_for_type(ty);
         let reg = match ty {
@@ -1875,6 +1875,35 @@ impl ArchCodegen for I686Codegen {
             _ => "%edx",
         };
         emit!(self.state, "    {} {}, {}(%ecx)", store_instr, reg, seg_prefix);
+    }
+
+    fn emit_seg_load_symbol(&mut self, dest: &Value, sym: &str, ty: IrType, seg: AddressSpace) {
+        let seg_prefix = match seg {
+            AddressSpace::SegGs => "%gs:",
+            AddressSpace::SegFs => "%fs:",
+            AddressSpace::Default => unreachable!("segment-prefixed op called with default address space"),
+        };
+        let load_instr = self.mov_load_for_type(ty);
+        // i686 uses absolute addressing (no RIP-relative)
+        emit!(self.state, "    {} {}{}, %eax", load_instr, seg_prefix, sym);
+        self.state.reg_cache.invalidate_acc();
+        self.store_eax_to(dest);
+    }
+
+    fn emit_seg_store_symbol(&mut self, val: &Operand, sym: &str, ty: IrType, seg: AddressSpace) {
+        self.operand_to_eax(val);
+        let seg_prefix = match seg {
+            AddressSpace::SegGs => "%gs:",
+            AddressSpace::SegFs => "%fs:",
+            AddressSpace::Default => unreachable!("segment-prefixed op called with default address space"),
+        };
+        let store_instr = self.mov_store_for_type(ty);
+        let reg = match ty {
+            IrType::I8 | IrType::U8 => "%al",
+            IrType::I16 | IrType::U16 => "%ax",
+            _ => "%eax",
+        };
+        emit!(self.state, "    {} {}, {}{}", store_instr, reg, seg_prefix, sym);
     }
 
     fn emit_runtime_stubs(&mut self) {
