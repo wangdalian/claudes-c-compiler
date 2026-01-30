@@ -1,0 +1,22 @@
+Fix C99 inline always_inline functions being skipped during lowering
+
+Problem:
+C99 inline functions (inline without static/extern) that have __attribute__((always_inline))
+are completely skipped during IR lowering (line 685-686 of lowering.rs: `continue`).
+This means their function body is never available for the inliner, so calls to them
+become undefined references at link time.
+
+Example:
+  inline __attribute__((always_inline)) int my_func(void) { return 42; }
+  int main(void) { return my_func(); }  // undefined reference to my_func
+
+This is correct for plain C99 inline functions (they don't provide an external definition),
+but when always_inline is set, the compiler MUST inline them and thus needs their body.
+
+Fix: When a C99 inline-only function has always_inline, still lower it but mark it as static
+(internal linkage) so no external definition is emitted but the body is available for inlining.
+
+Affected projects: cute_headers, and likely many others using always_inline without static.
+
+Status: in_progress
+Started: 2026-01-30
