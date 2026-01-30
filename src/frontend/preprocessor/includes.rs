@@ -347,7 +347,32 @@ impl Preprocessor {
     /// Returns the path WITHOUT resolving symlinks, matching GCC behavior.
     /// This ensures that `#include "..."` searches relative to the directory
     /// where the including file was found (through symlinks), not the target.
-    pub(super) fn resolve_include_path(&self, include_path: &str, is_system: bool) -> Option<PathBuf> {
+    ///
+    /// Uses a cache to avoid repeated filesystem probing for the same include
+    /// path from the same context. The cache key includes the current directory
+    /// for quoted includes (since resolution depends on it).
+    pub(super) fn resolve_include_path(&mut self, include_path: &str, is_system: bool) -> Option<PathBuf> {
+        // Compute cache key: (include_path, is_system, current_dir_for_quoted_includes)
+        let current_dir_key = if !is_system {
+            self.include_stack.last()
+                .and_then(|f| f.parent().map(|p| p.to_path_buf()))
+                .unwrap_or_default()
+        } else {
+            PathBuf::new()
+        };
+        let cache_key = (include_path.to_string(), is_system, current_dir_key);
+
+        if let Some(cached) = self.include_resolve_cache.get(&cache_key) {
+            return cached.clone();
+        }
+
+        let result = self.resolve_include_path_uncached(include_path, is_system);
+        self.include_resolve_cache.insert(cache_key, result.clone());
+        result
+    }
+
+    /// Uncached include path resolution. Called by `resolve_include_path` on cache miss.
+    fn resolve_include_path_uncached(&self, include_path: &str, is_system: bool) -> Option<PathBuf> {
         // For quoted includes, first search relative to the current file's directory
         if !is_system {
             if let Some(current_file) = self.include_stack.last() {

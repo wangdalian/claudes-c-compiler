@@ -56,6 +56,13 @@ pub struct Preprocessor {
     /// Prepended to the main source's preprocessed output so that pragma
     /// synthetic tokens (e.g., visibility push/pop) take effect.
     force_include_output: String,
+    /// Cache for include path resolution.
+    /// Maps (include_path, is_system, current_dir_key) to the resolved filesystem path.
+    /// This avoids repeated `stat()` calls when the same header is included from
+    /// multiple locations with the same include search path configuration.
+    /// The current_dir_key is the parent directory of the including file for quoted
+    /// includes (since resolution depends on it), or empty for system includes.
+    pub(super) include_resolve_cache: FxHashMap<(String, bool, PathBuf), Option<PathBuf>>,
 }
 
 impl Preprocessor {
@@ -78,6 +85,7 @@ impl Preprocessor {
             weak_pragmas: Vec::new(),
             redefine_extname_pragmas: Vec::new(),
             force_include_output: String::new(),
+            include_resolve_cache: FxHashMap::default(),
         };
         pp.define_predefined_macros();
         define_builtin_macros(&mut pp.macros);
@@ -139,6 +147,12 @@ impl Preprocessor {
         // Buffer for accumulating multi-line macro invocations
         let mut pending_line = String::new();
         let mut pending_newlines: usize = 0;
+
+        // Reusable FxHashSet for macro expansion, avoiding per-line allocation.
+        // This set tracks which macros are currently being expanded (to prevent
+        // infinite recursion per C11 §6.10.3.4). It's cleared before each use
+        // by expand_line_reuse().
+        let mut expanding = crate::common::fx_hash::FxHashSet::default();
 
         for (line_num, line) in source.lines().enumerate() {
             let trimmed = line.trim();
@@ -204,7 +218,7 @@ impl Preprocessor {
                 if !pending_line.is_empty() && !is_include {
                     let after_hash = trimmed[1..].trim_start();
                     if after_hash.starts_with("define") || after_hash.starts_with("undef") {
-                        let expanded = self.macros.expand_line(&pending_line);
+                        let expanded = self.macros.expand_line_reuse(&pending_line, &mut expanding);
                         pending_line.clear();
                         pending_line.push_str(&expanded);
                     } else if after_hash.starts_with("include") {
@@ -212,7 +226,7 @@ impl Preprocessor {
                         // (e.g. a function call with args spanning lines), flush the
                         // pending tokens to output first. The included content must appear
                         // after the preceding tokens, not before them.
-                        let expanded = self.macros.expand_line(&pending_line);
+                        let expanded = self.macros.expand_line_reuse(&pending_line, &mut expanding);
                         output.push_str(&expanded);
                         output.push('\n');
                         for _ in 1..pending_newlines {
@@ -257,6 +271,7 @@ impl Preprocessor {
                 // expand macros, handling multi-line macro invocations
                 self.accumulate_and_expand(
                     line, &mut pending_line, &mut pending_newlines, &mut output,
+                    &mut expanding,
                 );
             } else {
                 // Inactive conditional block - skip the line but preserve numbering
@@ -270,7 +285,7 @@ impl Preprocessor {
 
         // Flush any remaining pending line
         if !pending_line.is_empty() {
-            let expanded = self.macros.expand_line(&pending_line);
+            let expanded = self.macros.expand_line_reuse(&pending_line, &mut expanding);
             output.push_str(&expanded);
             output.push('\n');
         }
@@ -289,12 +304,16 @@ impl Preprocessor {
     /// Accumulate lines for multi-line macro invocations (unbalanced parens)
     /// and expand when complete. This is the shared logic for both preprocess
     /// paths, avoiding the previous duplication of ~40 lines.
+    ///
+    /// The `expanding` parameter is a reusable FxHashSet that avoids per-line
+    /// allocation for macro expansion tracking.
     fn accumulate_and_expand(
         &self,
         line: &str,
         pending_line: &mut String,
         pending_newlines: &mut usize,
         output: &mut String,
+        expanding: &mut crate::common::fx_hash::FxHashSet<String>,
     ) {
         if pending_line.is_empty() {
             if Self::has_unbalanced_parens(line) {
@@ -307,7 +326,7 @@ impl Preprocessor {
                 *pending_line = line.to_string();
                 *pending_newlines = 1;
             } else {
-                let expanded = self.macros.expand_line(line);
+                let expanded = self.macros.expand_line_reuse(line, expanding);
                 // After expansion, check if the expanded result ends with a
                 // function-like macro name. This handles chained macros like:
                 //   #define STEP1(x) x STEP2
@@ -336,7 +355,7 @@ impl Preprocessor {
             if needs_more {
                 // Was accumulating for unbalanced parens
                 if !Self::has_unbalanced_parens(pending_line) || *pending_newlines > MAX_PENDING_NEWLINES {
-                    let expanded = self.macros.expand_line(pending_line);
+                    let expanded = self.macros.expand_line_reuse(pending_line, expanding);
                     // Check if the expanded result ends with a function-like macro
                     // that needs args from the next line (chained macros).
                     if self.ends_with_funclike_macro(&expanded) && *pending_newlines <= MAX_PENDING_NEWLINES {
@@ -359,7 +378,7 @@ impl Preprocessor {
                     // Keep accumulating.
                 } else {
                     // Parens balanced or next line didn't start with '(' - expand now.
-                    let expanded = self.macros.expand_line(pending_line);
+                    let expanded = self.macros.expand_line_reuse(pending_line, expanding);
                     // Check if the expanded result itself ends with a function-like
                     // macro name that needs args from the next line (chained macros).
                     if self.ends_with_funclike_macro(&expanded) && *pending_newlines <= MAX_PENDING_NEWLINES {

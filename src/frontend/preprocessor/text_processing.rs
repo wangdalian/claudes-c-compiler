@@ -158,8 +158,10 @@ impl Preprocessor {
 }
 
 /// Strip a // comment from a directive line, but not inside string literals.
-/// Returns a String; avoids Vec<char> allocation by operating on bytes.
-pub(super) fn strip_line_comment(line: &str) -> String {
+/// Returns a `Cow<str>` to avoid allocation when no comment is found (the
+/// common case). Only allocates a new String when a `//` comment is present
+/// and needs to be stripped.
+pub(super) fn strip_line_comment(line: &str) -> std::borrow::Cow<'_, str> {
     let bytes = line.as_bytes();
     let len = bytes.len();
     let mut i = 0;
@@ -170,13 +172,13 @@ pub(super) fn strip_line_comment(line: &str) -> String {
                 i = skip_literal_bytes(bytes, i, bytes[i]);
             }
             b'/' if i + 1 < len && bytes[i + 1] == b'/' => {
-                return line[..i].trim_end().to_string();
+                return std::borrow::Cow::Owned(line[..i].trim_end().to_string());
             }
             _ => i += 1,
         }
     }
 
-    line.to_string()
+    std::borrow::Cow::Borrowed(line)
 }
 
 /// Split a string into the first word and the rest.

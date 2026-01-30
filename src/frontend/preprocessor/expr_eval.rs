@@ -98,7 +98,7 @@ impl Preprocessor {
     /// Replace `defined(X)`, `defined X`, `__has_builtin(X)`, `__has_attribute(X)`,
     /// `__has_feature(X)`, `__has_extension(X)`, `__has_include(X)`, and
     /// `__has_include_next(X)` with 0 or 1 in a #if expression.
-    pub(super) fn resolve_defined_in_expr(&self, expr: &str) -> String {
+    pub(super) fn resolve_defined_in_expr(&mut self, expr: &str) -> String {
         let mut result = String::new();
         let bytes = expr.as_bytes();
         let len = bytes.len();
@@ -228,7 +228,7 @@ impl Preprocessor {
 
     /// Parse `(<header.h>)` or `("header.h")` after `__has_include` / `__has_include_next`
     /// and return "1" or "0" based on whether the header can be found.
-    fn resolve_has_include_call_bytes(&self, bytes: &[u8], i: &mut usize, is_next: bool) -> &'static str {
+    fn resolve_has_include_call_bytes(&mut self, bytes: &[u8], i: &mut usize, is_next: bool) -> &'static str {
         let len = bytes.len();
         // Skip whitespace
         while *i < len && (bytes[*i] == b' ' || bytes[*i] == b'\t') {

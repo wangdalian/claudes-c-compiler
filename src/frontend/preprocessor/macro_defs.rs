@@ -93,11 +93,14 @@ const PASTE_PROTECT_END: u8 = 0x03;
 /// Used when substituting arguments into ## token paste operations,
 /// since the pasted result is a new token that should be rescanned
 /// without inheriting blue paint from its operands.
-fn strip_blue_paint(s: &str) -> String {
+///
+/// Returns a `Cow<str>` to avoid allocation when no markers are present
+/// (the common case).
+fn strip_blue_paint(s: &str) -> std::borrow::Cow<'_, str> {
     if s.as_bytes().contains(&BLUE_PAINT_MARKER) {
-        s.replace(BLUE_PAINT_MARKER as char, "")
+        std::borrow::Cow::Owned(s.replace(BLUE_PAINT_MARKER as char, ""))
     } else {
-        s.to_string()
+        std::borrow::Cow::Borrowed(s)
     }
 }
 
@@ -150,7 +153,16 @@ impl MacroTable {
     /// Returns the expanded text.
     pub fn expand_line(&self, line: &str) -> String {
         let mut expanding = FxHashSet::default();
-        let result = self.expand_text(line, &mut expanding);
+        self.expand_line_reuse(line, &mut expanding)
+    }
+
+    /// Expand macros in a line of text, reusing the provided `expanding` set.
+    /// The set is cleared before use. This avoids allocating a new FxHashSet
+    /// for every line (the previous per-line allocation was a measurable
+    /// overhead when preprocessing kernel headers with thousands of lines).
+    pub fn expand_line_reuse(&self, line: &str, expanding: &mut FxHashSet<String>) -> String {
+        expanding.clear();
+        let result = self.expand_text(line, expanding);
         // Strip internal marker bytes from the final output:
         // - 0x01 (BLUE_PAINT_MARKER): prevents re-expansion per C11 §6.10.3.4
         // - 0x02/0x03 (PASTE_PROTECT_START/END): should already be consumed by
@@ -588,13 +600,13 @@ impl MacroTable {
             self.expand_text(arg, expanding)
         }).collect();
 
-        let mut body = mac.body.clone();
-
-        // Step 3: Handle stringification (#param) and token pasting (##)
-        body = self.handle_stringify_and_paste(&body, &mac.params, args, mac.is_variadic, mac.has_named_variadic);
+        // Step 3: Handle stringification (#param) and token pasting (##).
+        // Returns Cow::Borrowed(&mac.body) when the body has no '#' (common case),
+        // avoiding a String clone.
+        let body = self.handle_stringify_and_paste(&mac.body, &mac.params, args, mac.is_variadic, mac.has_named_variadic);
 
         // Step 4: Substitute parameters with expanded arguments
-        body = self.substitute_params(&body, &mac.params, &expanded_args, mac.is_variadic, mac.has_named_variadic);
+        let body = self.substitute_params(&body, &mac.params, &expanded_args, mac.is_variadic, mac.has_named_variadic);
 
         // Step 5: Rescan with the current macro name suppressed
         expanding.insert(mac.name.clone());
@@ -604,20 +616,22 @@ impl MacroTable {
     }
 
     /// Handle # (stringify) and ## (token paste) operators.
-    fn handle_stringify_and_paste(
+    /// Returns `Cow::Borrowed` when the body has no `#` (the common case),
+    /// avoiding a String allocation.
+    fn handle_stringify_and_paste<'a>(
         &self,
-        body: &str,
+        body: &'a str,
         params: &[String],
         args: &[String],
         is_variadic: bool,
         has_named_variadic: bool,
-    ) -> String {
+    ) -> std::borrow::Cow<'a, str> {
         let bytes = body.as_bytes();
         let len = bytes.len();
 
         // Short-circuit: if body contains no '#', nothing to do
         if !body.contains('#') {
-            return body.to_string();
+            return std::borrow::Cow::Borrowed(body);
         }
 
         let mut result = String::new();
@@ -633,7 +647,8 @@ impl MacroTable {
                 let left_token = extract_trailing_ident(&result);
                 if let Some(ref left_ident) = left_token {
                     if left_ident == "__VA_ARGS__" && is_variadic {
-                        let va_args = strip_blue_paint(&self.get_va_args(params, args));
+                        let va_args_raw = self.get_va_args(params, args);
+                        let va_args = strip_blue_paint(&va_args_raw);
                         let trim_len = result.len() - "__VA_ARGS__".len();
                         result.truncate(trim_len);
                         if va_args.is_empty() {
@@ -677,7 +692,8 @@ impl MacroTable {
                     let right_ident = bytes_to_str(bytes, start, i);
 
                     if right_ident == "__VA_ARGS__" && is_variadic {
-                        let va_args = strip_blue_paint(&self.get_va_args(params, args));
+                        let va_args_raw = self.get_va_args(params, args);
+                        let va_args = strip_blue_paint(&va_args_raw);
                         if va_args.is_empty() {
                             while result.ends_with(' ') || result.ends_with('\t') {
                                 result.pop();
@@ -695,7 +711,8 @@ impl MacroTable {
                     } else if let Some(idx) = params.iter().position(|p| p == right_ident) {
                         let is_named_variadic_param = is_variadic && has_named_variadic && idx == params.len() - 1;
                         if is_named_variadic_param {
-                            let va_args = strip_blue_paint(&self.get_named_va_args(idx, args));
+                            let va_args_raw = self.get_named_va_args(idx, args);
+                            let va_args = strip_blue_paint(&va_args_raw);
                             if va_args.is_empty() {
                                 while result.ends_with(' ') || result.ends_with('\t') {
                                     result.pop();
@@ -785,7 +802,7 @@ impl MacroTable {
             i += 1;
         }
 
-        result
+        std::borrow::Cow::Owned(result)
     }
 
     /// Substitute parameter names with argument values in macro body.
