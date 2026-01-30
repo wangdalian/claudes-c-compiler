@@ -1,0 +1,18 @@
+Fix va_arg struct SSE register/stack boundary bug on x86-64
+
+Bug: When va_arg fetches a struct classified as (SSE, SSE) (e.g., struct {double, double})
+and there's only 1 SSE register slot remaining in the register save area, the compiler
+incorrectly splits the fetch - taking the first double from the register save area and the
+second from the overflow area. Per the SysV ABI, if there aren't enough register slots for
+the entire struct, the whole struct must be fetched from the overflow area.
+
+Root cause: In lower_va_arg_struct (src/ir/lowering/expr_access.rs), each eightbyte of a
+small struct emits an independent VaArg IR instruction. The backend's emit_va_arg then
+independently checks fp_offset < 176 for each, allowing the struct to straddle the boundary.
+
+Fix approach: In lower_va_arg_struct, when a struct has multiple SSE-classified eightbytes,
+use VaArgStruct (which always reads from overflow area) instead of individual VaArg
+instructions, OR add a pre-check in IR that verifies all needed SSE slots are available
+before fetching from registers.
+
+Affects: x86-64 only (the SysV AMD64 ABI register save area mechanism)
