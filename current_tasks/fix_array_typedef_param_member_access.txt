@@ -1,0 +1,16 @@
+Fix: array typedef parameter member access generates wrong offsets
+
+Bug: When a function parameter has a typedef array type (e.g., `typedef struct S my_arr[1]`),
+accessing struct members through the parameter (e.g., `val->b`) uses offset 0 for all members
+instead of the correct struct field offset.
+
+Example:
+  typedef struct S { long a; long b; } my_arr[1];
+  void func(my_arr val) { val->b; } // accesses offset 0 instead of 8
+
+The array parameter decays to a pointer, but the compiler loses the element type info
+when computing member access offsets, treating the pointer as pointing to the start
+of the struct regardless of which member is accessed.
+
+This bug causes segfaults in toaruos_misaka (kuroko) and likely other projects that use
+the GMP-style "typedef T name[1]" parameter passing pattern.
