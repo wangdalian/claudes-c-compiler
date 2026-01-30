@@ -1,0 +1,33 @@
+Task: Fix include guard optimization skipping headers with #else at guard level
+Status: in_progress
+Started: 2026-01-30
+
+Problem:
+The preprocessor's include guard detection (detect_include_guard) incorrectly
+identifies headers that use #ifndef/#define/#else/#undef/#endif patterns as
+having a standard include guard. These headers are designed to be included
+multiple times: the first include defines macros, and the second include
+(via the #else branch) undefines them.
+
+Example: libev's ev_wrap.h uses this pattern:
+  #ifndef EV_WRAP_H
+  #define EV_WRAP_H
+  #define backend ((loop)->backend)
+  ...
+  #else
+  #undef EV_WRAP_H
+  #undef backend
+  ...
+  #endif
+
+The guard optimization skips the second include, so the macros are never
+undefined, causing compilation errors in code that follows.
+
+Fix:
+detect_include_guard() should return None when an #else or #elif directive
+is encountered at the outermost guard level (if_depth == 1), since such
+headers deliberately have different behavior on re-inclusion.
+
+Impact:
+Fixes libev standalone compilation and potentially other projects using
+similar include/undef header patterns.
