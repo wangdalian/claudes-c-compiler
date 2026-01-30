@@ -1,0 +1,30 @@
+Task: Comprehensive -Wreturn-type analysis fixes for kernel build
+Status: in_progress
+Started: 2026-01-30
+
+Problem:
+The -Wreturn-type warning produces false positives that block kernel compilation
+with -Werror. Multiple issues:
+
+1. Switch statements with default case: treated as always able to fall through,
+   even when every case returns/diverges.
+2. __builtin_unreachable() and noreturn functions: expression statements calling
+   these are not recognized as diverging.
+3. do-while(0) body divergence: do { __builtin_unreachable(); } while(0) treated
+   as falling through when the body actually diverges.
+4. Constant expression evaluation: if(!(0)) patterns not recognized as constant-true.
+5. User-declared noreturn functions: __attribute__((noreturn)) on function
+   declarations not checked in is_noreturn_call().
+6. Local extern declaration attributes: parse_local_declaration() does NOT propagate
+   noreturn, constructor, destructor, weak, fastcall, naked, or error_attr from
+   parsed attributes to InitDeclarator.attrs. This causes local extern noreturn
+   function declarations (like BUILD_BUG() in the kernel) to lose their noreturn
+   attribute.
+
+Fixes:
+1. Switch exhaustiveness analysis with segment-based approach matching GCC.
+2. is_noreturn_call() checks both builtins and user-declared noreturn functions.
+3. do-while body divergence check in stmt_can_fall_through.
+4. try_eval_constant_bool() with UnaryOp::LogicalNot and Cast support.
+5. FunctionInfo.is_noreturn field populated from declaration attributes.
+6. parse_local_declaration() now propagates all relevant DeclAttributes.
