@@ -112,7 +112,10 @@ COMPLETED (2026-01-30):
   - Driver threads macro expansion info from preprocessor to source manager
 
 REMAINING FOLLOW-UPS:
-1. Add spans to preprocessor errors (#error directives)
+1. [DONE] Add source locations to preprocessor errors (#error, #warning, missing #include)
+   - Added PreprocessorDiagnostic struct with file:line:col in preprocessor.rs
+   - Added explicit_location field to Diagnostic for pre-SourceManager diagnostics
+   - Driver now forwards preprocessor diagnostics with GCC-compatible file:line:col: prefix
 2. Add more WarningKind categories as compiler implements more warnings
    (UnusedVariable, SignCompare, ImplicitConversion, etc.)
    NOTE: ReturnType was implemented (2026-01-30) — -Wreturn-type warning in sema
@@ -130,5 +133,5 @@ Key files:
 - src/frontend/parser/parser.rs (uses emit_error/emit_warning, expect_after, expect_closing, expect_context)
 - src/frontend/sema/sema.rs (uses diagnostics.error/warning_with_kind with spans)
 - src/ir/lowering/lowering.rs (uses RefCell<DiagnosticEngine> for &self methods)
-- src/frontend/preprocessor/preprocessor.rs (collects errors and warnings Vecs)
+- src/frontend/preprocessor/preprocessor.rs (PreprocessorDiagnostic, collects errors and warnings)
 - src/driver/driver.rs (creates and threads DiagnosticEngine through phases)

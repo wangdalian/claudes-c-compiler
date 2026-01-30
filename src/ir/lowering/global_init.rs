@@ -1179,6 +1179,11 @@ impl Lowerer {
             let field_idx = self.resolve_struct_init_field_idx(item, layout, current_field_idx);
 
             if field_idx >= layout.fields.len() {
+                // Item is beyond all fields. Still check if it has address expressions
+                // since brace-elided counting may have caused us to skip past the layout.
+                if self.init_has_addr_exprs(&item.init) {
+                    return true;
+                }
                 item_idx += 1;
                 continue;
             }
@@ -1196,6 +1201,55 @@ impl Lowerer {
 
             if self.field_init_has_addr_refs(item, field_ty, items, item_idx) {
                 return true;
+            }
+
+            // For brace-elided sub-struct fields, advance by the number of
+            // scalar leaf fields, checking each consumed item for address exprs.
+            if matches!(field_ty, CType::Struct(_) | CType::Union(_))
+                && matches!(&item.init, Initializer::Expr(_))
+                && item.designators.is_empty()
+            {
+                let scalars_needed = h::count_flat_init_scalars(field_ty, &*self.types.borrow_struct_layouts());
+                if scalars_needed > 1 {
+                    // Check remaining consumed items for address expressions
+                    for offset in 1..scalars_needed {
+                        let idx = item_idx + offset;
+                        if idx >= items.len() { break; }
+                        if !items[idx].designators.is_empty() { break; }
+                        if self.init_has_addr_exprs(&items[idx].init) {
+                            return true;
+                        }
+                    }
+                    item_idx += scalars_needed;
+                    current_field_idx = field_idx + 1;
+                    continue;
+                }
+            }
+
+            // Also for array fields with flat init, advance by the total scalars count
+            if let CType::Array(elem_ty, Some(arr_size)) = field_ty {
+                if matches!(&item.init, Initializer::Expr(_))
+                    && item.designators.is_empty()
+                {
+                    let is_string_literal = matches!(&item.init, Initializer::Expr(Expr::StringLiteral(..)));
+                    let is_char_array = matches!(elem_ty.as_ref(), CType::Char | CType::UChar);
+                    if !(is_string_literal && is_char_array) {
+                        let scalars_per_elem = h::count_flat_init_scalars(elem_ty, &*self.types.borrow_struct_layouts());
+                        let total_scalars = arr_size * scalars_per_elem;
+                        // Check all consumed items for address expressions
+                        for offset in 0..total_scalars {
+                            let idx = item_idx + offset;
+                            if idx >= items.len() { break; }
+                            if !items[idx].designators.is_empty() && offset > 0 { break; }
+                            if self.init_has_addr_exprs(&items[idx].init) {
+                                return true;
+                            }
+                        }
+                        item_idx += total_scalars.min(items.len() - item_idx);
+                        current_field_idx = field_idx + 1;
+                        continue;
+                    }
+                }
             }
 
             current_field_idx = field_idx + 1;

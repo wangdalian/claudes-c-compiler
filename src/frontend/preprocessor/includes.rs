@@ -275,7 +275,9 @@ fn normalize_include_path(path: String) -> String {
 impl Preprocessor {
     /// Handle #include directive. Returns the preprocessed content of the included file,
     /// or None if the include couldn't be resolved (falls back to old behavior).
-    pub(super) fn handle_include(&mut self, path: &str) -> Option<String> {
+    /// `line_num` is the 1-based source line and `col` is the 1-based column of `#`
+    /// for diagnostics.
+    pub(super) fn handle_include(&mut self, path: &str, line_num: usize, col: usize) -> Option<String> {
         let path = path.trim();
 
         // Expand macros in include path (for computed includes)
@@ -379,8 +381,16 @@ impl Preprocessor {
                 }
             }
         } else {
-            // Header not found - emit a fatal error
-            self.errors.push(format!("fatal error: '{}': No such file or directory", include_path));
+            // Header not found - emit a fatal error with source location.
+            // Compute approximate column of the include path for better diagnostics.
+            // The include path token is at col (of '#') + len("include") + whitespace.
+            let include_path_col = col + "include ".len();
+            self.errors.push(super::preprocessor::PreprocessorDiagnostic {
+                file: self.current_file(),
+                line: line_num,
+                col: include_path_col,
+                message: format!("{}: No such file or directory", include_path),
+            });
             None
         }
     }
@@ -388,7 +398,9 @@ impl Preprocessor {
     /// Handle #include_next directive (GCC extension).
     /// Searches for the header starting from the next include path after the one
     /// that contained the current file.
-    pub(super) fn handle_include_next(&mut self, path: &str) -> Option<String> {
+    /// `line_num` is the 1-based source line and `col` is the 1-based column of `#`
+    /// for diagnostics.
+    pub(super) fn handle_include_next(&mut self, path: &str, line_num: usize, col: usize) -> Option<String> {
         let path = path.trim();
 
         // Parse the include path
@@ -476,7 +488,7 @@ impl Preprocessor {
             }
         } else {
             // Fall back to regular include if include_next can't find it
-            self.handle_include(path)
+            self.handle_include(path, line_num, col)
         }
     }
 

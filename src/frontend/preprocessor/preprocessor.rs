@@ -32,14 +32,31 @@ fn dedup_macro_names(names: Vec<String>) -> Vec<String> {
 /// file has a genuinely unbalanced parenthesis.
 const MAX_PENDING_NEWLINES: usize = 200;
 
+/// A preprocessor diagnostic with source location information.
+///
+/// Stores the file name, line number, and column where the diagnostic was
+/// generated, enabling GCC-compatible `file:line:col: error:` / `file:line:col: warning:`
+/// output for `#error`, `#warning`, and missing `#include` errors.
+#[derive(Debug, Clone)]
+pub struct PreprocessorDiagnostic {
+    /// The source file where the diagnostic originated.
+    pub file: String,
+    /// The 1-based line number in the source file.
+    pub line: usize,
+    /// The 1-based column number in the source file.
+    pub col: usize,
+    /// The diagnostic message text (e.g., `#error "bad config"`).
+    pub message: String,
+}
+
 pub struct Preprocessor {
     pub(super) macros: MacroTable,
     conditionals: ConditionalStack,
     pub(super) includes: Vec<String>,
     pub(super) filename: String,
-    pub(super) errors: Vec<String>,
+    pub(super) errors: Vec<PreprocessorDiagnostic>,
     /// Collected preprocessor warnings (e.g., #warning directives).
-    pub(super) warnings: Vec<String>,
+    pub(super) warnings: Vec<PreprocessorDiagnostic>,
     /// Include search paths (from -I flags)
     pub(super) include_paths: Vec<PathBuf>,
     /// Quote include paths (from -iquote flags), searched only for #include "..."
@@ -260,7 +277,9 @@ impl Preprocessor {
             // accumulating until the closing ')'.
             if is_conditional_directive && !pending_line.is_empty() {
                 // Process the conditional directive (updates conditional stack)
-                self.process_directive(trimmed, source_line_num + 1);
+                // Column of the directive keyword (1-based, after '#')
+                let hash_col = line.find('#').map(|i| i + 2).unwrap_or(1);
+                self.process_directive(trimmed, source_line_num + 1, hash_col);
                 // Don't add the directive line to pending_line, don't flush.
                 // Just count a newline for line numbering preservation.
                 pending_newlines += 1;
@@ -300,7 +319,9 @@ impl Preprocessor {
                         pending_newlines = 0;
                     }
                 }
-                let include_result = self.process_directive(trimmed, source_line_num + 1);
+                // Column of the directive keyword (1-based, after '#')
+                let hash_col = line.find('#').map(|i| i + 2).unwrap_or(1);
+                let include_result = self.process_directive(trimmed, source_line_num + 1, hash_col);
                 if let Some(included_content) = include_result {
                     output.push_str(&included_content);
                     // After included content, emit a return-to-parent line marker
@@ -567,13 +588,22 @@ impl Preprocessor {
     }
 
     /// Get preprocessing errors.
-    pub fn errors(&self) -> &[String] {
+    pub fn errors(&self) -> &[PreprocessorDiagnostic] {
         &self.errors
     }
 
     /// Get preprocessing warnings.
-    pub fn warnings(&self) -> &[String] {
+    pub fn warnings(&self) -> &[PreprocessorDiagnostic] {
         &self.warnings
+    }
+
+    /// Get the current source file name for diagnostic purposes.
+    /// Returns the top of the include stack (the file currently being preprocessed),
+    /// falling back to `self.filename` for the main translation unit.
+    pub(super) fn current_file(&self) -> String {
+        self.include_stack.last()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| self.filename.clone())
     }
 
     /// Take macro expansion metadata collected during preprocessing.
@@ -697,7 +727,9 @@ impl Preprocessor {
 
     /// Process a preprocessor directive line.
     /// Returns Some(content) if an #include was processed and should be inserted.
-    fn process_directive(&mut self, line: &str, line_num: usize) -> Option<String> {
+    /// `line_num` is the 1-based source line number, `col` is the 1-based column
+    /// of the `#` character (used for diagnostic source locations).
+    fn process_directive(&mut self, line: &str, line_num: usize, col: usize) -> Option<String> {
         // Strip leading # and whitespace
         let after_hash = line.trim_start_matches('#').trim();
 
@@ -749,12 +781,12 @@ impl Preprocessor {
         // Process directive in active block
         match keyword {
             "include" => {
-                return self.handle_include(rest);
+                return self.handle_include(rest, line_num, col);
             }
             "include_next" => {
                 // GCC extension: include_next searches from the next path after the
                 // current file's directory in the include search list
-                return self.handle_include_next(rest);
+                return self.handle_include_next(rest, line_num, col);
             }
             "define" => self.handle_define(rest),
             "undef" => self.handle_undef(rest),
@@ -767,11 +799,21 @@ impl Preprocessor {
             "error" => {
                 // Expand macros in error message
                 let expanded = self.macros.expand_line_reuse(rest, &mut self.directive_expanding);
-                self.errors.push(format!("#error {}", expanded));
+                self.errors.push(PreprocessorDiagnostic {
+                    file: self.current_file(),
+                    line: line_num,
+                    col,
+                    message: format!("#error {}", expanded),
+                });
             }
             "warning" => {
                 // GCC extension, collect warning for structured diagnostic output
-                self.warnings.push(format!("#warning {}", rest));
+                self.warnings.push(PreprocessorDiagnostic {
+                    file: self.current_file(),
+                    line: line_num,
+                    col,
+                    message: format!("#warning {}", rest),
+                });
             }
             "line" => {
                 self.handle_line_directive(rest, line_num);

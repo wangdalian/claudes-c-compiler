@@ -123,6 +123,39 @@ impl Lowerer {
                 }
             }
 
+            // Check if this is a flat (brace-elided) init filling a struct/union field.
+            // When a sub-struct field is initialized without inner braces, we need to
+            // consume enough flat items to fill all scalar leaf fields of the sub-struct,
+            // rather than just consuming one item and advancing to the next outer field.
+            // e.g., `struct { Inner x; void *y; } = {1, 2, 3, ptr}` where Inner has 3 fields:
+            // items 0-2 should fill x, and item 3 should fill y.
+            if matches!(field_ty, CType::Struct(_) | CType::Union(_))
+                && matches!(&item.init, Initializer::Expr(_))
+                && item.designators.is_empty()
+            {
+                let scalars_needed = h::count_flat_init_scalars(field_ty, &*self.types.borrow_struct_layouts());
+                if scalars_needed > 1 {
+                    let mut consumed = 0;
+                    while consumed < scalars_needed && (item_idx + consumed) < items.len() {
+                        let cur_item = &items[item_idx + consumed];
+                        // Stop if we hit a designator targeting a different field
+                        if !cur_item.designators.is_empty() && consumed > 0 {
+                            break;
+                        }
+                        if matches!(&cur_item.init, Initializer::List(_)) && consumed > 0 {
+                            break;
+                        }
+                        field_inits[field_idx].push(cur_item);
+                        consumed += 1;
+                    }
+                    item_idx += consumed;
+                    current_field_idx = field_idx + 1;
+                    let has_designator = !item.designators.is_empty();
+                    if layout.is_union && !has_designator { break; }
+                    continue;
+                }
+            }
+
             field_inits[field_idx].push(item);
             current_field_idx = field_idx + 1;
             item_idx += 1;
@@ -623,6 +656,19 @@ impl Lowerer {
                 let sub_items: Vec<InitializerItem> = inits.iter().map(|item| {
                     InitializerItem {
                         designators: item.designators.clone(),
+                        init: item.init.clone(),
+                    }
+                }).collect();
+                let sub_layout = self.get_struct_layout_for_ctype(&field.ty)
+                    .unwrap_or_else(StructLayout::empty_rc);
+                self.emit_sub_struct_to_compound(elements, &sub_items, &sub_layout, field_size);
+            } else if field_is_struct && inits.iter().all(|item| item.designators.is_empty()) {
+                // Brace-elided sub-struct initialization: multiple flat items
+                // (no designators) targeting a struct field. Convert them into
+                // positional initializer items for the sub-struct.
+                let sub_items: Vec<InitializerItem> = inits.iter().map(|item| {
+                    InitializerItem {
+                        designators: vec![],
                         init: item.init.clone(),
                     }
                 }).collect();

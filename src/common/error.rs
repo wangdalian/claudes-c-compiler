@@ -349,6 +349,11 @@ pub struct Diagnostic {
     /// Optional fix-it hint: a short suggestion for how to fix the problem.
     /// Rendered below the snippet as "fix-it hint: insert ';'" etc.
     pub fix_hint: Option<String>,
+    /// Explicit source location string for diagnostics without a span.
+    /// Used for preprocessor-phase diagnostics (e.g., `#error`, `#warning`,
+    /// missing `#include`) where the source manager is not yet available.
+    /// Format: "file:line:" (rendered as the location prefix in output).
+    pub explicit_location: Option<String>,
 }
 
 impl Diagnostic {
@@ -361,6 +366,7 @@ impl Diagnostic {
             warning_kind: None,
             notes: Vec::new(),
             fix_hint: None,
+            explicit_location: None,
         }
     }
 
@@ -373,6 +379,7 @@ impl Diagnostic {
             warning_kind: None,
             notes: Vec::new(),
             fix_hint: None,
+            explicit_location: None,
         }
     }
 
@@ -385,6 +392,7 @@ impl Diagnostic {
             warning_kind: Some(kind),
             notes: Vec::new(),
             fix_hint: None,
+            explicit_location: None,
         }
     }
 
@@ -397,6 +405,7 @@ impl Diagnostic {
             warning_kind: None,
             notes: Vec::new(),
             fix_hint: None,
+            explicit_location: None,
         }
     }
 
@@ -417,6 +426,15 @@ impl Diagnostic {
     /// Rendered below the source snippet, e.g., "fix-it hint: insert ';' after expression".
     pub fn with_fix_hint(mut self, hint: impl Into<String>) -> Self {
         self.fix_hint = Some(hint.into());
+        self
+    }
+
+    /// Set an explicit source location string for diagnostics without a span.
+    /// Used for preprocessor-phase diagnostics where the source manager is
+    /// not yet available. The location string is rendered as the prefix
+    /// (e.g., "file.c:10:1:") before the severity label.
+    pub fn with_location(mut self, file: &str, line: usize, col: usize) -> Self {
+        self.explicit_location = Some(format!("{}:{}:{}:", file, line, col));
         self
     }
 }
@@ -521,6 +539,7 @@ impl DiagnosticEngine {
                             warning_kind: diag.warning_kind,
                             notes: diag.notes.clone(),
                             fix_hint: diag.fix_hint.clone(),
+                            explicit_location: diag.explicit_location.clone(),
                         };
                         self.render_diagnostic(&promoted);
                         self.error_count += 1;
@@ -535,6 +554,7 @@ impl DiagnosticEngine {
                         warning_kind: diag.warning_kind,
                         notes: diag.notes.clone(),
                         fix_hint: diag.fix_hint.clone(),
+                        explicit_location: diag.explicit_location.clone(),
                     };
                     self.render_diagnostic(&annotated);
                     self.warning_count += 1;
@@ -548,6 +568,7 @@ impl DiagnosticEngine {
                             warning_kind: None,
                             notes: diag.notes.clone(),
                             fix_hint: diag.fix_hint.clone(),
+                            explicit_location: diag.explicit_location.clone(),
                         };
                         self.render_diagnostic(&promoted);
                         self.error_count += 1;
@@ -725,6 +746,8 @@ impl DiagnosticEngine {
                     let _ = write!(msg, "\x1b[1m{}:{}:{}: \x1b[0m",
                         loc.file, loc.line, loc.column);
                 }
+            } else if let Some(ref loc) = diag.explicit_location {
+                let _ = write!(msg, "\x1b[1m{} \x1b[0m", loc);
             }
             // Severity label in its color, message in bold white
             let (sev_color, sev_text) = match diag.severity {
@@ -741,6 +764,8 @@ impl DiagnosticEngine {
                     let loc = sm.resolve_span(span);
                     let _ = write!(msg, "{}:{}:{}: ", loc.file, loc.line, loc.column);
                 }
+            } else if let Some(ref loc) = diag.explicit_location {
+                let _ = write!(msg, "{} ", loc);
             }
             let _ = write!(msg, "{}: {}", diag.severity, diag.message);
         }

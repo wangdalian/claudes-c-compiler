@@ -1414,19 +1414,23 @@ impl Driver {
         diagnostics.set_color_mode(self.color_mode);
 
         // Emit preprocessor warnings through diagnostic engine with Cpp kind
-        // so they can be controlled via -Wcpp / -Wno-cpp / -Werror=cpp
+        // so they can be controlled via -Wcpp / -Wno-cpp / -Werror=cpp.
+        // Preprocessor diagnostics carry file:line:col location info for GCC-compatible output.
         for warn in preprocessor.warnings() {
-            diagnostics.warning_with_kind_no_span(
-                warn.clone(),
+            let diag = crate::common::error::Diagnostic::warning_with_kind(
+                warn.message.clone(),
                 crate::common::error::WarningKind::Cpp,
-            );
+            ).with_location(&warn.file, warn.line, warn.col);
+            diagnostics.emit(&diag);
         }
 
-        // Check for #error directives
+        // Check for #error directives and missing #include errors
         let pp_errors = preprocessor.errors();
         if !pp_errors.is_empty() {
             for err in pp_errors {
-                diagnostics.error_no_span(err.clone());
+                let diag = crate::common::error::Diagnostic::error(err.message.clone())
+                    .with_location(&err.file, err.line, err.col);
+                diagnostics.emit(&diag);
             }
             return Err(format!("{} preprocessor error(s) in {}", pp_errors.len(), input_file));
         }
