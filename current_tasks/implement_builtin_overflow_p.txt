@@ -1,0 +1,22 @@
+Task: Implement __builtin_{add,sub,mul}_overflow_p builtins
+Status: in_progress
+Started: 2026-01-30
+
+Description:
+The Linux kernel defconfig build fails because __builtin_add_overflow_p is not
+implemented. This is used in drivers/gpu/drm/i915/i915_utils.h, gated by
+GCC_VERSION >= 70000 (we claim GCC 14.2).
+
+These are the predicate-only variants of the overflow builtins:
+- __builtin_add_overflow_p(a, b, (T)0) -> returns 1 if a+b overflows type T
+- __builtin_sub_overflow_p(a, b, (T)0) -> returns 1 if a-b overflows type T
+- __builtin_mul_overflow_p(a, b, (T)0) -> returns 1 if a*b overflows type T
+
+Unlike __builtin_add_overflow, these don't write a result to a pointer - they
+just return a boolean (int) predicate.
+
+Plan:
+1. Add BuiltinIntrinsic variants for the _p versions
+2. Add sema entries for the three builtins
+3. Add IR lowering that reuses the overflow logic but discards the result
+4. Add test case
