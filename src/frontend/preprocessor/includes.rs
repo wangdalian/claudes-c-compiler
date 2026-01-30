@@ -565,7 +565,7 @@ impl Preprocessor {
     /// Uses a cache to avoid repeated filesystem probing for the same include
     /// path from the same context. The cache key includes the current directory
     /// for quoted includes (since resolution depends on it).
-    pub(super) fn resolve_include_path(&mut self, include_path: &str, is_system: bool) -> Option<PathBuf> {
+    pub fn resolve_include_path(&mut self, include_path: &str, is_system: bool) -> Option<PathBuf> {
         // Compute cache key: (include_path, is_system, current_dir_for_quoted_includes)
         let current_dir_key = if !is_system {
             self.include_stack.last()

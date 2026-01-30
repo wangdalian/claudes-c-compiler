@@ -1,9 +1,0 @@
-Fix -include flag to search include paths
-
-The -include flag was only resolving files relative to CWD.
-When -include is given a system header name (e.g., -include ctype.h),
-it should search the include paths (-I, -isystem, system defaults)
-like #include "file" would, not just look in CWD.
-
-This fix enables tdb to compile (it uses -include ctype.h).
-Status: in_progress

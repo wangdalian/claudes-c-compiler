@@ -622,20 +622,27 @@ impl Driver {
     }
 
     /// Process force-included files (-include flag) through the preprocessor before
-    /// the main source. This matches GCC's behavior where -include files are processed
-    /// as if they were #include'd at the top of the source, with paths resolved relative
-    /// to the current working directory (unlike regular #include which resolves relative
-    /// to the source file's directory).
+    /// the main source. Matches GCC's behavior: `-include file` acts as if
+    /// `#include "file"` appeared at the top of the primary source file.
+    /// The file is searched in this order:
+    /// 1. Current working directory (for relative paths)
+    /// 2. Include paths (-I, -isystem, system defaults, -idirafter)
     fn process_force_includes(&self, preprocessor: &mut Preprocessor) -> Result<(), String> {
         for path in &self.force_includes {
-            // Resolve relative to CWD (matching GCC behavior)
-            let resolved = std::path::Path::new(path);
-            let resolved = if resolved.is_absolute() {
-                resolved.to_path_buf()
-            } else if let Ok(cwd) = std::env::current_dir() {
-                cwd.join(resolved)
+            let resolved = if std::path::Path::new(path).is_absolute() {
+                std::path::PathBuf::from(path)
             } else {
-                resolved.to_path_buf()
+                // Try CWD first
+                let cwd_path = std::env::current_dir()
+                    .map(|cwd| cwd.join(path))
+                    .unwrap_or_else(|_| std::path::PathBuf::from(path));
+                if cwd_path.is_file() {
+                    cwd_path
+                } else {
+                    // Search include paths (like #include "file")
+                    preprocessor.resolve_include_path(path, false)
+                        .unwrap_or(cwd_path)
+                }
             };
 
             let content = Self::read_c_source_file(&resolved.to_string_lossy())
