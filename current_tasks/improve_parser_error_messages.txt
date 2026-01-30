@@ -1,0 +1,15 @@
+Task: Improve parser error messages to be human-readable (GCC-style)
+
+Currently the parser uses Rust's Debug formatting for tokens in error messages,
+producing messages like:
+  expected Semicolon, got Identifier("foo")
+  expected RParen, got Int
+
+GCC would say:
+  expected ';' before 'foo'
+  expected ')' before 'int'
+
+Plan:
+1. Add Display impl for TokenKind with GCC-style human-readable names
+2. Update parser's expect() and all emit_error() sites to use Display
+3. Use GCC-style "expected X before Y" phrasing
