@@ -270,6 +270,21 @@ impl Preprocessor {
         paths
     }
 
+    /// Set inline semantics mode: GNU89 vs C99.
+    /// When `gnu89` is true, defines `__GNUC_GNU_INLINE__` and undefines `__GNUC_STDC_INLINE__`.
+    /// When `gnu89` is false (default), `__GNUC_STDC_INLINE__` remains defined.
+    /// GCC sets `__GNUC_GNU_INLINE__` with `-fgnu89-inline` or `-std=gnu89`,
+    /// and `__GNUC_STDC_INLINE__` with `-std=gnu99` and later.
+    pub fn set_gnu89_inline(&mut self, gnu89: bool) {
+        if gnu89 {
+            self.macros.undefine("__GNUC_STDC_INLINE__");
+            self.define_simple_macro("__GNUC_GNU_INLINE__", "1");
+        } else {
+            self.macros.undefine("__GNUC_GNU_INLINE__");
+            self.define_simple_macro("__GNUC_STDC_INLINE__", "1");
+        }
+    }
+
     /// Define or undefine __PIC__/__pic__ based on whether PIC mode is active.
     /// GCC defines these to 1 for -fpic and 2 for -fPIC; we always use 2.
     /// When PIC is disabled (e.g. -fno-PIC), these must not be defined, as

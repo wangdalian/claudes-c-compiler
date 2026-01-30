@@ -76,9 +76,11 @@ pub struct Lowerer {
     /// On i386, these use ecx/edx for the first two integer/pointer args.
     pub(super) fastcall_functions: FxHashSet<String>,
     /// Set of function names that have at least one file-scope declaration
-    /// without the `inline` specifier. Per C99 6.7.4p7, if ANY file-scope
-    /// declaration of a function lacks `inline`, the `inline` definition
-    /// provides an external definition (not an inline-only definition).
+    /// without the `inline` specifier OR with `extern`. Per C99 6.7.4p7,
+    /// an inline definition is only an "inline definition" (no external def)
+    /// if ALL file-scope declarations include `inline` WITHOUT `extern`.
+    /// If any declaration lacks `inline` or has `extern`, the definition
+    /// provides an external definition.
     pub(super) has_non_inline_decl: FxHashSet<String>,
     /// Type-system state (struct layouts, typedefs, enum constants, type caches)
     pub(super) types: TypeContext,
@@ -517,11 +519,14 @@ impl Lowerer {
                             &declarator.name, &decl.type_spec, ptr_count,
                             &params, variadic, decl.is_static(), false,
                         );
-                        // C99 6.7.4p7: Track function declarations that lack `inline`.
-                        // If ANY file-scope declaration of a function does not include
-                        // `inline`, then the `inline` definition in this TU provides
-                        // an external definition (not just an inline definition).
-                        if !decl.is_inline() && !declarator.name.is_empty() {
+                        // C99 6.7.4p7: Track function declarations that would make
+                        // an inline definition provide an external definition.
+                        // An inline definition is "inline only" (no external def) ONLY
+                        // if ALL file-scope declarations include `inline` WITHOUT `extern`.
+                        // So: if any declaration lacks `inline` OR has `extern`, mark it.
+                        if !declarator.name.is_empty()
+                            && (!decl.is_inline() || decl.is_extern())
+                        {
                             self.has_non_inline_decl.insert(declarator.name.clone());
                         }
                     } else if declarator.derived.is_empty() {

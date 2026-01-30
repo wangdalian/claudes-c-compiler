@@ -192,16 +192,23 @@ pub trait ArchCodegen {
         panic!("segment override stores only supported on x86");
     }
 
+    /// Whether this backend supports folding GlobalAddr + Load/Store into a
+    /// single PC-relative memory access (e.g., `symbol(%rip)` on x86-64).
+    /// Returns false by default; x86-64 returns true.
+    fn supports_global_addr_fold(&self) -> bool {
+        false
+    }
+
     /// Emit a RIP-relative load from a global symbol (folded GlobalAddr + Load).
-    /// Used in kernel code model where GlobalAddr uses absolute addressing but
-    /// data accesses need RIP-relative addressing. Default: panics.
+    /// Used to fold GlobalAddr + Load into a single `movl symbol(%rip), %eax`
+    /// (or appropriate variant). Default: panics.
     fn emit_global_load_rip_rel(&mut self, _dest: &Value, _sym: &str, _ty: IrType) {
         panic!("global RIP-relative load only supported on x86");
     }
 
     /// Emit a RIP-relative store to a global symbol (folded GlobalAddr + Store).
-    /// Used in kernel code model where GlobalAddr uses absolute addressing but
-    /// data accesses need RIP-relative addressing. Default: panics.
+    /// Used to fold GlobalAddr + Store into a single `movl %eax, symbol(%rip)`
+    /// (or appropriate variant). Default: panics.
     fn emit_global_store_rip_rel(&mut self, _val: &Operand, _sym: &str, _ty: IrType) {
         panic!("global RIP-relative store only supported on x86");
     }

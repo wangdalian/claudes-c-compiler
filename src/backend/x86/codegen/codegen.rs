@@ -2896,10 +2896,14 @@ impl ArchCodegen for X86Codegen {
         self.store_rax_to(dest);
     }
 
+    fn supports_global_addr_fold(&self) -> bool {
+        true
+    }
+
     /// Emit a RIP-relative load from a global symbol.
-    /// Used in kernel code model to fold GlobalAddr + Load into a single
-    /// `movl symbol(%rip), %eax` (or appropriate variant), matching GCC's
-    /// behavior of using R_X86_64_PC32 for data accesses.
+    /// Folds GlobalAddr + Load into a single `movl symbol(%rip), %eax`
+    /// (or appropriate variant). Works for both kernel and default code models
+    /// on x86-64, since RIP-relative addressing is always valid.
     fn emit_global_load_rip_rel(&mut self, dest: &Value, sym: &str, ty: IrType) {
         let load_instr = Self::mov_load_for_type(ty);
         let dest_reg = Self::load_dest_reg(ty);

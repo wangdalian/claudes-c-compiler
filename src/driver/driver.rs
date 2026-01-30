@@ -150,6 +150,10 @@ pub struct Driver {
     function_sections: bool,
     /// Whether to place each data object in its own section (-fdata-sections).
     data_sections: bool,
+    /// Whether GNU89 inline semantics are in effect (-fgnu89-inline or -std=gnu89).
+    /// When true, the preprocessor defines __GNUC_GNU_INLINE__ instead of __GNUC_STDC_INLINE__.
+    /// This affects how projects like mpack select their inline linkage model.
+    gnu89_inline: bool,
 }
 
 impl Driver {
@@ -195,6 +199,7 @@ impl Driver {
             gnu_extensions: true,
             function_sections: false,
             data_sections: false,
+            gnu89_inline: false,
         }
     }
 
@@ -437,6 +442,11 @@ impl Driver {
                     // GNU dialects: gnu89, gnu99, gnu11, gnu17, gnu23, etc.
                     // Strict ISO: c89, c99, c11, c17, c23, iso9899:*, etc.
                     self.gnu_extensions = std_value.starts_with("gnu");
+                    // gnu89 and c89 use GNU inline semantics by default;
+                    // gnu99+ and c99+ use C99 inline semantics.
+                    // Note: -fgnu89-inline can override this later on the command line.
+                    self.gnu89_inline = matches!(std_value, "gnu89" | "c89" | "gnu90" | "c90"
+                        | "iso9899:1990" | "iso9899:199409");
                 }
 
                 // Machine/target flags
@@ -479,6 +489,8 @@ impl Driver {
                 "-fno-function-sections" => self.function_sections = false,
                 "-fdata-sections" => self.data_sections = true,
                 "-fno-data-sections" => self.data_sections = false,
+                "-fgnu89-inline" => self.gnu89_inline = true,
+                "-fno-gnu89-inline" => self.gnu89_inline = false,
                 arg if arg.starts_with("-f") => {}
 
                 // Linker flags
@@ -608,6 +620,13 @@ impl Driver {
             if let Some(ref march) = self.riscv_march {
                 preprocessor.set_riscv_march(march);
             }
+        }
+        // Set inline semantics mode: -fgnu89-inline or -std=gnu89 uses GNU89
+        // inline semantics (__GNUC_GNU_INLINE__), while the default C99+ mode
+        // uses __GNUC_STDC_INLINE__. Projects like mpack use these macros to
+        // select the correct inline linkage model.
+        if self.gnu89_inline {
+            preprocessor.set_gnu89_inline(true);
         }
         // Set PIC mode: defines __PIC__/__pic__ only when -fPIC is active.
         // This is critical for kernel code where RIP_REL_REF() checks #ifndef __pic__

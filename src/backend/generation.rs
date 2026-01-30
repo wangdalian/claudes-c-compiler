@@ -186,6 +186,84 @@ fn build_global_addr_map(func: &IrFunction) -> FxHashMap<u32, String> {
     map
 }
 
+/// Build a set of GlobalAddr value IDs that are "dead" after the fold optimization.
+/// A GlobalAddr is dead when ALL of its uses are as `ptr` in Load/Store instructions
+/// that will be folded into direct `symbol(%rip)` accesses. In that case, the
+/// `lea symbol(%rip), %rax` instruction for the GlobalAddr is unnecessary.
+fn build_foldable_global_addr_set(
+    func: &IrFunction,
+    global_addr_map: &FxHashMap<u32, String>,
+) -> FxHashSet<u32> {
+    // Collect all GlobalAddr dest value IDs
+    let mut global_addr_ids: FxHashSet<u32> = FxHashSet::default();
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            if let Instruction::GlobalAddr { dest, .. } = inst {
+                global_addr_ids.insert(dest.0);
+            }
+        }
+    }
+    if global_addr_ids.is_empty() {
+        return FxHashSet::default();
+    }
+
+    // Track which GlobalAddr values have non-foldable uses.
+    // A use is "foldable" if it's the `ptr` of a Load/Store AND the ptr is in
+    // global_addr_map AND the type is foldable (not wide/F128).
+    let mut has_non_foldable_use: FxHashSet<u32> = FxHashSet::default();
+
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            match inst {
+                Instruction::Load { ptr, ty, seg_override, .. } => {
+                    // The ptr use is foldable if it's in global_addr_map and type is supported
+                    let is_foldable = global_addr_ids.contains(&ptr.0)
+                        && global_addr_map.contains_key(&ptr.0)
+                        && !is_wide_int_type(*ty)
+                        && *ty != IrType::F128
+                        && *seg_override == AddressSpace::Default;
+                    if !is_foldable && global_addr_ids.contains(&ptr.0) {
+                        has_non_foldable_use.insert(ptr.0);
+                    }
+                }
+                Instruction::Store { val, ptr, ty, seg_override } => {
+                    let is_ptr_foldable = global_addr_ids.contains(&ptr.0)
+                        && global_addr_map.contains_key(&ptr.0)
+                        && !is_wide_int_type(*ty)
+                        && *ty != IrType::F128
+                        && *seg_override == AddressSpace::Default;
+                    if !is_ptr_foldable && global_addr_ids.contains(&ptr.0) {
+                        has_non_foldable_use.insert(ptr.0);
+                    }
+                    // If Store's val references a GlobalAddr, that's a non-foldable use
+                    if let Operand::Value(v) = val {
+                        if global_addr_ids.contains(&v.0) {
+                            has_non_foldable_use.insert(v.0);
+                        }
+                    }
+                }
+                // Any other instruction using a GlobalAddr value means it's not dead
+                _ => {
+                    for v in inst.used_values() {
+                        if global_addr_ids.contains(&v) {
+                            has_non_foldable_use.insert(v);
+                        }
+                    }
+                }
+            }
+        }
+        // Check terminator uses too
+        for v in block.terminator.used_values() {
+            if global_addr_ids.contains(&v) {
+                has_non_foldable_use.insert(v);
+            }
+        }
+    }
+
+    // Return GlobalAddr values that have NO non-foldable uses
+    global_addr_ids.difference(&has_non_foldable_use).copied().collect()
+}
+
 /// Build a set of GlobalAddr value IDs that are used as Load/Store pointers.
 /// In kernel code model, GlobalAddr values used only as integer values
 /// (e.g., `(unsigned long)_text`) need absolute addressing (R_X86_64_32S)
@@ -825,6 +903,15 @@ fn generate_function(cg: &mut dyn ArchCodegen, func: &IrFunction, source_mgr: Op
         FxHashSet::default()
     };
 
+    // Pre-scan: identify GlobalAddr values that can be skipped because ALL of
+    // their uses are Load/Store pointers that will be folded into direct
+    // `symbol(%rip)` accesses by the generate_load/generate_store fold.
+    let dead_global_addrs = if cg.supports_global_addr_fold() {
+        build_foldable_global_addr_set(func, &global_addr_map)
+    } else {
+        FxHashSet::default()
+    };
+
     // Debug info state: track last emitted file/line to suppress redundant .loc directives.
     let emit_debug = cg.state_ref().debug_info && source_mgr.is_some() && !file_table.is_empty();
     let mut last_debug_file: u32 = 0;
@@ -873,7 +960,7 @@ fn generate_function(cg: &mut dyn ArchCodegen, func: &IrFunction, source_mgr: Op
                 }
             }
 
-            generate_instruction(cg, inst, &gep_fold_map, &global_addr_map, &global_addr_ptr_set);
+            generate_instruction(cg, inst, &gep_fold_map, &global_addr_map, &global_addr_ptr_set, &dead_global_addrs);
         }
 
         if let Some(fi) = fuse_idx {
@@ -930,7 +1017,7 @@ fn emit_loc_directive(
 ///
 /// Instructions that clobber the accumulator unpredictably (calls, stores, atomics,
 /// inline asm, va_arg, memcpy, etc.) invalidate the cache after execution.
-fn generate_instruction(cg: &mut dyn ArchCodegen, inst: &Instruction, gep_fold_map: &FxHashMap<u32, GepFoldInfo>, global_addr_map: &FxHashMap<u32, String>, global_addr_ptr_set: &FxHashSet<u32>) {
+fn generate_instruction(cg: &mut dyn ArchCodegen, inst: &Instruction, gep_fold_map: &FxHashMap<u32, GepFoldInfo>, global_addr_map: &FxHashMap<u32, String>, global_addr_ptr_set: &FxHashSet<u32>, dead_global_addrs: &FxHashSet<u32>) {
     match inst {
         Instruction::Alloca { .. } => {
             // Space already allocated in prologue; does not touch registers
@@ -972,12 +1059,18 @@ fn generate_instruction(cg: &mut dyn ArchCodegen, inst: &Instruction, gep_fold_m
             cg.emit_gep(dest, base, offset);
         }
         Instruction::GlobalAddr { dest, name } => {
-            if cg.state_ref().tls_symbols.contains(name.as_str()) {
-                cg.emit_tls_global_addr(dest, name);
-            } else if cg.state_ref().code_model_kernel && !global_addr_ptr_set.contains(&dest.0) {
-                cg.emit_global_addr_absolute(dest, name);
-            } else {
-                cg.emit_global_addr(dest, name);
+            // Skip GlobalAddr when all its uses are folded into direct symbol(%rip)
+            // loads/stores by generate_load/generate_store. The needs_got check
+            // ensures we don't skip when PIC mode requires GOT indirection.
+            let is_dead = dead_global_addrs.contains(&dest.0) && !cg.state_ref().needs_got(name);
+            if !is_dead {
+                if cg.state_ref().tls_symbols.contains(name.as_str()) {
+                    cg.emit_tls_global_addr(dest, name);
+                } else if cg.state_ref().code_model_kernel && !global_addr_ptr_set.contains(&dest.0) {
+                    cg.emit_global_addr_absolute(dest, name);
+                } else {
+                    cg.emit_global_addr(dest, name);
+                }
             }
         }
         Instruction::Select { dest, cond, true_val, false_val, ty } => {
@@ -1161,11 +1254,17 @@ fn generate_load(
         }
         return;
     }
-    // Kernel code model: fold GlobalAddr + Load into RIP-relative load.
-    if cg.state_ref().code_model_kernel && !is_wide_int_type(ty) && ty != IrType::F128 {
+    // Fold GlobalAddr + Load into a direct PC-relative memory access.
+    // On x86-64 this emits `movl symbol(%rip), %eax` instead of separate
+    // `leaq symbol(%rip), %rax` + `movl (%rax), %eax`.
+    // Works for kernel and default code models. Skipped for PIC symbols
+    // that require GOT indirection (the pointer comes from the GOT).
+    if cg.supports_global_addr_fold() && !is_wide_int_type(ty) && ty != IrType::F128 {
         if let Some(sym) = global_addr_map.get(&ptr.0) {
-            cg.emit_global_load_rip_rel(dest, sym, ty);
-            return;
+            if !cg.state_ref().needs_got(sym) {
+                cg.emit_global_load_rip_rel(dest, sym, ty);
+                return;
+            }
         }
     }
     // Fold GEP with constant offset into Load addressing mode.
@@ -1198,18 +1297,17 @@ fn generate_store(
         }
         return;
     }
-    if cg.state_ref().code_model_kernel && !is_wide_int_type(ty) && ty != IrType::F128 {
+    // Fold GlobalAddr + Store into a direct PC-relative memory access.
+    if cg.supports_global_addr_fold() && !is_wide_int_type(ty) && ty != IrType::F128 {
         if let Some(sym) = global_addr_map.get(&ptr.0) {
-            cg.emit_global_store_rip_rel(val, sym, ty);
-            return;
-        }
-        if let Some(gep_info) = gep_fold_map.get(&ptr.0) {
-            if cg.state_ref().is_alloca(gep_info.base.0) || cg.get_phys_reg_for_value(gep_info.base.0).is_some() {
-                cg.emit_store_with_const_offset(val, &gep_info.base, gep_info.offset, ty);
+            if !cg.state_ref().needs_got(sym) {
+                cg.emit_global_store_rip_rel(val, sym, ty);
                 return;
             }
         }
-    } else if let Some(gep_info) = gep_fold_map.get(&ptr.0) {
+    }
+    // Fold GEP with constant offset into Store addressing mode.
+    if let Some(gep_info) = gep_fold_map.get(&ptr.0) {
         if !is_wide_int_type(ty) &&
            (cg.state_ref().is_alloca(gep_info.base.0) || cg.get_phys_reg_for_value(gep_info.base.0).is_some()) {
             cg.emit_store_with_const_offset(val, &gep_info.base, gep_info.offset, ty);
