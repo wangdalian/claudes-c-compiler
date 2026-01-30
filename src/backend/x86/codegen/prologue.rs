@@ -293,7 +293,8 @@ impl X86Codegen {
                 } else {
                     // Dest shares the same stack slot as the param alloca;
                     // skip the redundant store-back (value is already there
-                    // from emit_store_params). Just update the reg cache.
+                    // from emit_store_params, which always stores a full 8
+                    // bytes via movq). Just update the reg cache.
                     self.state.reg_cache.set_acc(dest.0, false);
                 }
                 return;

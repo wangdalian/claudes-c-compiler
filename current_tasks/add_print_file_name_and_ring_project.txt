@@ -1,8 +1,0 @@
-Task: Add -print-file-name driver flag and Ring project support
-Status: in_progress
-Started: 2026-01-30
-
-Changes:
-1. Add -print-file-name=<file> driver flag support (needed by Ring i686 build)
-2. Add Ring project to the project status tracker
-3. Update emit_param_ref_impl comment to reflect upstream fix

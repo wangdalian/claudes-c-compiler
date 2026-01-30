@@ -93,6 +93,33 @@ impl Driver {
                     println!("libraries: /usr/lib/");
                     return Ok(true);
                 }
+                _ if arg.starts_with("-print-file-name=") => {
+                    let name = &arg["-print-file-name=".len()..];
+                    // Search standard library directories for the requested file.
+                    // If found, print the full path; otherwise echo the name back
+                    // (matching GCC behavior).
+                    let triple = target.triple();
+                    let search_dirs = [
+                        format!("/usr/lib/gcc/{}/13/", triple),
+                        format!("/usr/lib/gcc-cross/{}/13/", triple),
+                        format!("/usr/lib/{}/", triple),
+                        format!("/usr/{}/lib/", triple),
+                        "/usr/lib/".to_string(),
+                    ];
+                    let mut found = false;
+                    for dir in &search_dirs {
+                        let path = format!("{}{}", dir, name);
+                        if std::path::Path::new(&path).exists() {
+                            println!("{}", path);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        println!("{}", name);
+                    }
+                    return Ok(true);
+                }
                 _ => {}
             }
         }
