@@ -1,0 +1,8 @@
+Task: Fix compiler warnings and documentation cleanup
+Status: in_progress
+
+Goals:
+1. Fix all 39 compiler warnings (dead code, unused variables, unused assignments)
+2. Fix documentation: remove stale numbers, correct inaccuracies in READMEs
+3. Clean up completed current_tasks files
+4. General Rust style improvements (remove #[allow(dead_code)] where possible)
