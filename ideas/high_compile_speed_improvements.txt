@@ -2,30 +2,39 @@ Compile Speed Improvements
 ===========================
 Priority: HIGH
 
-Profiled on sqlite3.c (2550 functions, 694K tokens, 22MB asm output).
+Profiled on kernel/softirq.c (callgrind, 2.31B instructions).
 
 Remaining bottlenecks:
 
-1. EXTERNAL ASSEMBLER (~26% of total time)
+1. EXTERNAL ASSEMBLER
    The compiler shells out to gcc/as for assembling text assembly into
-   object files. This is the single biggest time consumer.
+   object files. Process spawn overhead matters for parallel kernel builds.
    Fix: Native assembler + ELF writer (see native_elf_writer.txt).
-   Expected improvement: ~30-40%.
+   Expected improvement: eliminates fork/exec per compilation unit.
 
-2. ALLOCATION OVERHEAD (~7.7% of total)
-   malloc/free/realloc from ir::analysis::build_cfg, GVN, mem2reg.
+2. ALLOCATION OVERHEAD (~17.5% of total)
+   malloc/free/realloc/memcpy dominate the profile (5.5% _int_malloc,
+   5% memcpy, 4.5% _int_free, 3% malloc, 1.7% free, etc.).
    Partially fixed: build_cfg uses FlatAdj CSR format, CFG/dominator
-   analysis is shared across GVN/LICM/IVSR via CfgAnalysis.
-   Further: arena/bump allocators, reuse Vec buffers across functions.
+   analysis shared via CfgAnalysis. Pipeline clone eliminated.
+   Further: arena/bump allocators, string interning, reuse Vec buffers.
 
-3. STRING COMPARISON (~3.4% of total)
-   memcmp in peephole dead store elimination (O(n^2) str::contains),
-   preprocessor macro expansion, backend symbol lookups.
-   Parser typedef lookup fixed (FxHashSet).
-   Fix: String interning with u32 symbol IDs.
+3. PREPROCESSOR (~17.6% of total)
+   preprocess_source is the single hottest function. Macro expansion
+   (expand_text) is 5.8%, process_directive is 3.5%.
+   Partially fixed: FxHashSet reuse, include caching, Cow<str>.
+   Further: byte-level processing, reduced String allocations.
 
-4. PEEPHOLE OPTIMIZER (~1.5%)
-   Dead store elimination has O(n^2) behavior scanning assembly lines.
-   Fix: Hash-based store location index for O(n) dead store elimination.
+4. STRING INTERNING (potential ~5% improvement)
+   Every identifier token allocates a heap String. Same function/type
+   names are re-allocated at each compiler stage (lexer -> AST -> IR).
+   Fix: String interning with u32 symbol IDs would eliminate most of
+   the per-identifier allocation overhead.
 
-The native assembler (item 1) is by far the highest-impact change.
+5. LEXER (~4.2% of total)
+   Lexer::tokenize is the 2nd hottest ccc function. Dominated by
+   identifier scanning and keyword lookup (~70-arm match).
+   Fix: Perfect hash for keywords, reduced from_utf8 overhead.
+
+The native assembler (item 1) and string interning (item 4) are the
+highest-impact remaining changes.
