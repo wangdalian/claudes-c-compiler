@@ -1,0 +1,6 @@
+Task: Improve inline asm output pointer dereference detection
+Status: in_progress
+Description: Improve the recent fix for inline asm output through pointer dereference.
+The previous fix (908026bb) only checks reg_assigned, which misses cases where the
+pointer is not register-allocated. This fix uses non_asm_defined check which correctly
+identifies indirect pointer outputs regardless of register allocation status.

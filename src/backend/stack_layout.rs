@@ -1020,6 +1020,34 @@ fn classify_instructions(
 ) {
     let mut collected_values: FxHashSet<u32> = FxHashSet::default();
 
+    // Build set of values that are defined (as dest) by non-InlineAsm
+    // instructions. This identifies "indirect" asm output pointers:
+    //
+    // When an InlineAsm output is "=r"(*ptr), the output value is the
+    // loaded pointer (from a Load that became a Copy after mem2reg).
+    // This value is defined by a Copy/Load/Phi instruction, AND it
+    // appears as an InlineAsm output. The asm result must be stored
+    // THROUGH the pointer, not directly into a stack slot.
+    //
+    // When an InlineAsm output is "=r"(x) and x was promoted by mem2reg,
+    // the output value is a fresh SSA value created by mem2reg. This
+    // value is NOT defined by any other instruction -- it only appears
+    // in the InlineAsm outputs. This value DOES need a direct stack slot.
+    //
+    // The distinction: if an InlineAsm output value is also the dest of
+    // a non-InlineAsm instruction, it's an indirect pointer that should
+    // NOT be promoted to a direct asm output slot.
+    let mut non_asm_defined: FxHashSet<u32> = FxHashSet::default();
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            if !matches!(inst, Instruction::InlineAsm { .. }) {
+                if let Some(dest) = inst.dest() {
+                    non_asm_defined.insert(dest.0);
+                }
+            }
+        }
+    }
+
     for block in &func.blocks {
         for inst in &block.instructions {
             if let Instruction::Alloca { dest, size, ty, align, .. } = inst {
@@ -1033,19 +1061,23 @@ fn classify_instructions(
                 // the output register value. These are "direct" slots (like
                 // allocas) -- the slot contains the value itself, not a pointer.
                 //
-                // Skip alloca values (they already have slots) and register-
-                // assigned values. Register-assigned outputs are pointer
-                // dereference outputs like "=r"(*out): the output value is
-                // the pointer itself, which lives in a callee-saved register.
-                // store_output_from_reg handles these via the register-
-                // allocated pointer path (loading from the callee-saved reg
-                // and storing through it). Marking them as asm_output_values
-                // would incorrectly make is_direct_slot() return true, causing
-                // the result to be stored to a stack slot instead of through
-                // the pointer.
+                // However, values defined by non-InlineAsm instructions (Copy,
+                // Load, Phi, etc.) are pointer dereference outputs (e.g.,
+                // "=r"(*ptr)). After mem2reg, the Load that produced the
+                // pointer becomes a Copy, but the value still represents a
+                // pre-existing pointer. These must NOT be promoted to direct
+                // slots -- their stack slot holds the pointer itself, and
+                // store_output_from_reg must store the asm result THROUGH
+                // the pointer. Promoting them would cause the result to be
+                // written to the slot instead of through the pointer.
+                //
+                // This check is more robust than checking reg_assigned alone,
+                // because it also handles the case where the pointer value
+                // is NOT register-allocated (e.g., due to register pressure
+                // forcing the pointer to a stack slot).
                 for (out_idx, (_, out_val, _)) in outputs.iter().enumerate() {
                     if !state.alloca_values.contains(&out_val.0)
-                        && !reg_assigned.contains(&out_val.0)
+                        && !non_asm_defined.contains(&out_val.0)
                         && collected_values.insert(out_val.0)
                     {
                         let slot_size: i64 = if out_idx < operand_types.len() {
