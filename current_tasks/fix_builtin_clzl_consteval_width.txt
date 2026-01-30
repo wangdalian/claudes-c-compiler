@@ -1,0 +1,21 @@
+Lock: fix_builtin_clzl_consteval_width (in_progress)
+
+Bug: __builtin_clzl constant evaluation uses 32-bit width instead of target-aware width.
+
+In common/const_eval.rs, __builtin_clzl (and __builtin_ctzl, __builtin_popcountl,
+__builtin_ffsl, __builtin_parityl, __builtin_clrsbl) are grouped with their non-suffixed
+(int-width) counterparts and always cast to u32 before computing. On LP64 targets
+(x86-64, ARM64, RISC-V 64), the 'l' suffix means 64-bit unsigned long, so these should
+cast to u64 and compute with 64-bit width.
+
+Example: __builtin_clzl(1) should return 63 on LP64, but the constant evaluator computes
+(1u32).leading_zeros() = 31. This causes miscompilation of ternary expressions like:
+  __builtin_clzl(1) == (sizeof(long)*8 - 1) ? 0 : 1
+which constant-folds to 1 (wrong) instead of 0 (correct).
+
+Fix: Use target_is_32bit() to determine 32 vs 64-bit width for 'l' suffix builtins.
+
+Affects: vis (ccan-config HAVE_BUILTIN_CLZL test fails), likely other projects using
+compile-time evaluation of long-width bit builtins.
+
+Status: in_progress
