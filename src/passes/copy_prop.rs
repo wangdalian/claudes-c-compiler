@@ -373,6 +373,7 @@ fn replace_value_in_place(val: &mut Value, copy_map: &[Option<Operand>]) -> usiz
 mod tests {
     use super::*;
     use crate::common::types::IrType;
+    use crate::ir::ir::{BasicBlock, BlockId, IrBinOp, IrConst};
 
     #[test]
     fn test_simple_copy_propagation() {

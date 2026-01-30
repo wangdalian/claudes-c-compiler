@@ -773,6 +773,7 @@ fn topological_sort_instructions(mut insts: Vec<Instruction>) -> Vec<Instruction
 mod tests {
     use super::*;
     use crate::common::types::{AddressSpace, IrType};
+    use crate::ir::ir::{BasicBlock, BlockId, IrBinOp, IrCmpOp, IrConst};
 
     /// Helper to create a simple loop: preheader -> header -> body -> header, header -> exit
     fn make_loop_func() -> IrFunction {

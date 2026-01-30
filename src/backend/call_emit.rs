@@ -7,6 +7,6 @@
 //! statements continue to work.
 
 pub use super::call_abi::{
-    ParamClass, ParamClassification,
+    ParamClass,
     classify_params, classify_params_full, named_params_stack_bytes,
 };

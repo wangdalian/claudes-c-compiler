@@ -606,6 +606,7 @@ fn should_swap(lhs: &VNOperand, rhs: &VNOperand) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::ir::{BasicBlock, BlockId, CallInfo, IrConst, IrModule, Terminator};
 
     #[test]
     fn test_commutative_cse() {
@@ -1268,7 +1269,9 @@ mod tests {
 
         let mut module = make_module(func);
         let eliminated = module.for_each_function(run_gvn_function);
-        assert_eq!(eliminated, 0); // No CSE: store invalidates the load
+        // The store invalidates the first load's CSE entry, but store-to-load
+        // forwarding can replace the second load with the stored value (42).
+        assert_eq!(eliminated, 1);
     }
 
     #[test]

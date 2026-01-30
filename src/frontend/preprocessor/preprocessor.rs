@@ -13,7 +13,7 @@ use super::macro_defs::{MacroDef, MacroTable, parse_define};
 use super::conditionals::{ConditionalStack, evaluate_condition};
 use super::builtin_macros::define_builtin_macros;
 use super::utils::{is_ident_start, is_ident_cont};
-use super::text_processing::{strip_line_comment, split_first_word, LineMap};
+use super::text_processing::{strip_line_comment, split_first_word};
 
 /// Deduplicate a list of macro names, preserving order (first occurrence wins).
 /// Used to remove duplicate names from nested macro expansions.

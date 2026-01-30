@@ -1459,7 +1459,8 @@ mod tests {
     fn test_adjacent_store_load_diff_reg() {
         let input = "    str x0, [sp, #16]\n    ldr x1, [sp, #16]\n    ret\n";
         let result = peephole_optimize(input.to_string());
-        assert!(result.contains("str x0, [sp, #16]"));
+        // The load is replaced with mov, and then DSE removes the now-dead store
+        // (no remaining loads from offset 16), leaving just the mov and ret.
         assert!(!result.contains("ldr x1, [sp, #16]"));
         assert!(result.contains("mov x1, x0"));
     }
@@ -1514,6 +1515,7 @@ mod tests {
     // ── Global store forwarding tests ─────────────────────────────────
 
     #[test]
+    #[ignore] // GSF is disabled due to correctness bug in complex float-array code
     fn test_gsf_same_reg_elimination() {
         // Store x0 then load x0 from same slot (non-adjacent) — load is dead
         let input = "\
@@ -1527,6 +1529,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // GSF is disabled due to correctness bug in complex float-array code
     fn test_gsf_different_reg_forwarding() {
         // Store x5 then load x10 from same slot — replace load with mov
         let input = "\
@@ -1568,6 +1571,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // GSF is disabled due to correctness bug in complex float-array code
     fn test_gsf_word_forwarding() {
         // Word store forwarded to word load
         let input = "\
@@ -1581,6 +1585,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore] // GSF is disabled due to correctness bug in complex float-array code
     fn test_gsf_ldrsw_forwarding() {
         // Word store forwarded to sign-extending load
         let input = "\

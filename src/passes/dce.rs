@@ -299,6 +299,7 @@ fn has_side_effects(inst: &Instruction) -> bool {
 mod tests {
     use super::*;
     use crate::common::types::{AddressSpace, IrType};
+    use crate::ir::ir::{BasicBlock, BlockId, CallInfo, IrBinOp, IrConst, Terminator, Value};
 
     fn make_simple_func() -> IrFunction {
         // Function with: %0 = alloca i32, %1 = add 3, 4 (dead), store 42 to %0, load from %0

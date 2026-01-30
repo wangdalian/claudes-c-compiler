@@ -659,6 +659,7 @@ fn apply_diamond(func: &mut IrFunction, diamond: &DiamondInfo) -> bool {
 mod tests {
     use super::*;
     use crate::common::types::AddressSpace;
+    use crate::ir::ir::{IrBinOp, IrConst};
 
     #[test]
     fn test_simple_diamond_conversion() {

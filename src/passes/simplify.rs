@@ -1428,6 +1428,7 @@ fn simplify_math_call(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::ir::CallInfo;
 
     // === Test helpers ===
 

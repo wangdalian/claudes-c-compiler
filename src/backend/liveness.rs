@@ -1089,6 +1089,7 @@ fn compute_loop_depth(successors: &[Vec<usize>], num_blocks: usize) -> Vec<u32> 
 mod tests {
     use super::*;
     use crate::common::types::IrType;
+    use crate::ir::ir::{BasicBlock, BlockId, IrBinOp};
 
     /// Verify that InlineAsm with register operands is treated as a call point.
     /// This is critical for register allocation: values spanning inline asm with

@@ -741,6 +741,7 @@ fn ir_type_size(ty: IrType) -> usize {
 mod tests {
     use super::*;
     use crate::common::types::AddressSpace;
+    use crate::ir::ir::{BasicBlock, CallInfo, IrBinOp, IrCmpOp, IrParam};
 
     /// Helper to build a simple function with one local variable.
     /// int f() { int x = 42; return x; }

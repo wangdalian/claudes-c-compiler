@@ -659,6 +659,7 @@ fn is_loop_invariant(val_id: u32, loop_body: &FxHashSet<usize>, func: &IrFunctio
 mod tests {
     use super::*;
     use crate::common::types::{AddressSpace, IrType};
+    use crate::ir::ir::{BasicBlock, BlockId, IrCmpOp, Terminator};
 
     /// Test basic IV detection on a simple counting loop.
     #[test]

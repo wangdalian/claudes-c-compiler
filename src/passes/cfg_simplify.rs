@@ -1108,6 +1108,7 @@ fn consts_equal_for_phi(a: &IrConst, b: &IrConst) -> bool {
 mod tests {
     use super::*;
     use crate::common::types::IrType;
+    use crate::ir::ir::IrCmpOp;
 
     /// Create a basic block for testing. Reduces boilerplate since
     /// `source_spans` is always empty in tests.

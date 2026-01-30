@@ -15,7 +15,7 @@ use crate::frontend::parser::ast::{
     TypeSpecifier,
 };
 use crate::ir::ir::{GlobalInit, IrGlobal};
-use crate::common::types::{IrType, CType, StructLayout};
+use crate::common::types::{IrType, CType};
 use super::lowering::Lowerer;
 use super::definitions::{GlobalInfo, DeclAnalysis};
 
