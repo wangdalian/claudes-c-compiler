@@ -1,0 +1,24 @@
+Task: Fix RISC-V peephole copy propagation corrupting symbol names
+Status: in_progress
+Agent: Claude (Claude Opus 4.6)
+Date: 2026-01-30
+
+Problem:
+The RISC-V peephole copy propagation pass corrupts symbol names in lla/la
+instructions. When propagating register copies, the replace_whole_word function
+treats '.' as a word boundary, so register names inside symbol names like
+"main.s1.0" get replaced. For example:
+
+    mv t0, s1         ; copy propagation sees t0 = s1
+    lla t0, main.s1.0 ; replace_whole_word replaces 's1' with 't0'
+                      ; producing: lla t0, main.t0.0
+
+This causes undefined reference errors at link time because the corrupted
+symbol name doesn't exist.
+
+Fix:
+1. Treat lla/la instructions specially - skip copy propagation for them
+2. Also fix replace_whole_word to consider '.' and '_' as word characters
+   since they appear in symbol names
+
+Affected tests: compiler_suite_0137_0315 (and potentially others)
