@@ -13,7 +13,7 @@ use super::macro_defs::{MacroDef, MacroTable, parse_define};
 use super::conditionals::{ConditionalStack, evaluate_condition};
 use super::builtin_macros::define_builtin_macros;
 use super::utils::{is_ident_start, is_ident_cont};
-use super::text_processing::{strip_line_comment, split_first_word};
+use super::text_processing::{strip_line_comment, split_first_word, LineMap};
 
 /// Maximum number of newlines to accumulate while joining lines for unbalanced
 /// parentheses in macro arguments. Prevents runaway accumulation when a source
@@ -160,7 +160,7 @@ impl Preprocessor {
             // Map output line number to original source line number using the
             // line_map from comment stripping (accounts for removed newlines in
             // block comments).
-            let source_line_num = line_map.get(line_num).copied().unwrap_or(line_num);
+            let source_line_num = line_map.get(line_num);
 
             // Update __LINE__, accounting for any #line directive override
             let effective_line = if let Some((target_line, source_line_at_directive)) = self.line_override {

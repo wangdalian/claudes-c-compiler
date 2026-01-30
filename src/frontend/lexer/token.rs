@@ -363,7 +363,26 @@ impl TokenKind {
     /// When `gnu_extensions` is false (strict C standard mode, e.g. -std=c99),
     /// bare GNU keywords like `typeof` and `asm` are treated as identifiers.
     /// The double-underscore forms (`__typeof__`, `__asm__`) are always keywords.
+    ///
+    /// Performance: Uses a two-stage filter to quickly reject non-keywords.
+    /// Stage 1: reject by length (keywords are 2-17 or 28 chars).
+    /// Stage 2: reject by first character (only 16 possible first chars).
+    /// Most identifiers in typical C code are rejected by these filters
+    /// without entering the match statement.
     pub fn from_keyword(s: &str, gnu_extensions: bool) -> Option<TokenKind> {
+        // Fast reject by length: C/GCC keywords have lengths 2-17 or 28.
+        let len = s.len();
+        if len < 2 || (len > 17 && len != 28) {
+            return None;
+        }
+        // Fast reject by first character: keywords only start with these 16 chars.
+        let first = s.as_bytes()[0];
+        if !matches!(first,
+            b'_' | b'a' | b'b' | b'c' | b'd' | b'e' | b'f' | b'g' |
+            b'i' | b'l' | b'r' | b's' | b't' | b'u' | b'v' | b'w'
+        ) {
+            return None;
+        }
         match s {
             "auto" => Some(TokenKind::Auto),
             "break" => Some(TokenKind::Break),

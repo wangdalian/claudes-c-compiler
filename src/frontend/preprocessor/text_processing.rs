@@ -7,6 +7,59 @@
 use super::utils::{skip_literal_bytes, copy_literal_bytes_raw};
 use super::preprocessor::Preprocessor;
 
+/// Mapping from output line numbers to original source line numbers.
+///
+/// After stripping block comments, output line numbers may differ from
+/// source line numbers (multi-line block comments consume source lines
+/// without producing output lines). This enum tracks the mapping:
+///
+/// - `Identity`: output line == source line (no multi-line block comments).
+///   This is the common case and avoids allocating a Vec<usize>.
+/// - `Mapped(Vec<usize>)`: line_map[output_line] = source_line.
+pub(super) enum LineMap {
+    /// Output line numbers equal source line numbers (common case).
+    Identity,
+    /// Explicit mapping from output line number to source line number.
+    Mapped(Vec<usize>),
+}
+
+impl LineMap {
+    /// Look up the source line for a given output line number.
+    #[inline]
+    pub(super) fn get(&self, output_line: usize) -> usize {
+        match self {
+            LineMap::Identity => output_line,
+            LineMap::Mapped(v) => v.get(output_line).copied().unwrap_or(output_line),
+        }
+    }
+}
+
+/// Quick check for presence of comment markers (`/*` or `//`) in source bytes.
+/// Scans for `/` bytes first, then checks the following byte. Since `/` is
+/// relatively rare in C source (typically only in comments and division),
+/// this quickly skips large stretches of non-slash bytes.
+fn contains_comment_marker(bytes: &[u8]) -> bool {
+    let len = bytes.len();
+    if len < 2 {
+        return false;
+    }
+    // Search for '/' bytes, then check what follows
+    let mut i = 0;
+    while i < len - 1 {
+        // Skip non-slash bytes quickly
+        if bytes[i] != b'/' {
+            i += 1;
+            continue;
+        }
+        let next = bytes[i + 1];
+        if next == b'*' || next == b'/' {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 impl Preprocessor {
     /// Check if a line has unbalanced parentheses, indicating a multi-line
     /// macro invocation that needs to be joined with subsequent lines.
@@ -33,21 +86,35 @@ impl Preprocessor {
     }
 
     /// Strip C-style block comments (/* ... */) and C++ line comments (// ...).
-    /// Returns the stripped source and a mapping from output line numbers to
-    /// original source line numbers, for correct __LINE__ tracking.
+    /// Returns the stripped source and a `LineMap` for correct __LINE__ tracking.
+    ///
+    /// The `LineMap` is either `Identity` (when no multi-line block comments
+    /// shifted line numbering — the common case, avoiding a Vec allocation)
+    /// or `Mapped(Vec<usize>)` with an explicit mapping from output line
+    /// numbers to original source line numbers.
     ///
     /// Block comments are replaced with a single space (per C11 5.1.1.2 phase 3),
     /// which avoids breaking preprocessor directives that have block comments
     /// between `#` and the directive keyword (e.g., `#/*...\n...*/if 1`).
     /// Uses raw byte operations to preserve UTF-8 sequences in string literals.
-    pub(super) fn strip_block_comments(source: &str) -> (String, Vec<usize>) {
-        let mut result: Vec<u8> = Vec::with_capacity(source.len());
+    pub(super) fn strip_block_comments(source: &str) -> (std::borrow::Cow<'_, str>, LineMap) {
         let bytes = source.as_bytes();
         let len = bytes.len();
+
+        // Fast path: if no block comment or line comment markers exist, return source as-is.
+        // This avoids both the byte-by-byte scan and the Vec<u8> allocation.
+        if !contains_comment_marker(bytes) {
+            return (std::borrow::Cow::Borrowed(source), LineMap::Identity);
+        }
+
+        let mut result: Vec<u8> = Vec::with_capacity(source.len());
         let mut i = 0;
         // Track source line number (0-based) as we scan through input
         let mut src_line: usize = 0;
+        // Whether any block comment spans multiple lines (shifts line numbering)
+        let mut has_multiline_block_comment = false;
         // For each output line, record which source line it corresponds to
+        // Only populated if has_multiline_block_comment becomes true
         let mut line_map: Vec<usize> = Vec::new();
         // Track the source line at the start of the current output line
         let mut current_output_line_src = 0usize;
@@ -62,8 +129,9 @@ impl Preprocessor {
                     for &b in &bytes[old_i..i] {
                         if b == b'\n' {
                             src_line += 1;
-                            // Record mapping for each output line
-                            line_map.push(current_output_line_src);
+                            if has_multiline_block_comment {
+                                line_map.push(current_output_line_src);
+                            }
                             current_output_line_src = src_line;
                         }
                     }
@@ -72,6 +140,7 @@ impl Preprocessor {
                     // Block comment - replace entire comment with a single space
                     i += 2;
                     result.push(b' ');
+                    let comment_start_line = src_line;
                     while i < len {
                         if i + 1 < len && bytes[i] == b'*' && bytes[i + 1] == b'/' {
                             i += 2;
@@ -81,6 +150,18 @@ impl Preprocessor {
                             src_line += 1;
                         }
                         i += 1;
+                    }
+                    // If block comment spanned multiple lines, we need the full line map
+                    if src_line > comment_start_line && !has_multiline_block_comment {
+                        has_multiline_block_comment = true;
+                        // Retroactively build the line map for all output lines so far
+                        // All previous lines had identity mapping (output line == source line)
+                        let output_lines_so_far = result.iter().filter(|&&b| b == b'\n').count();
+                        line_map.clear();
+                        line_map.reserve(output_lines_so_far + 16);
+                        for line_idx in 0..output_lines_so_far {
+                            line_map.push(line_idx);
+                        }
                     }
                     // Don't emit newlines - the comment is fully replaced by one space
                 }
@@ -93,7 +174,9 @@ impl Preprocessor {
                 }
                 b'\n' => {
                     result.push(b'\n');
-                    line_map.push(current_output_line_src);
+                    if has_multiline_block_comment {
+                        line_map.push(current_output_line_src);
+                    }
                     src_line += 1;
                     current_output_line_src = src_line;
                     i += 1;
@@ -105,19 +188,34 @@ impl Preprocessor {
             }
         }
         // Record the last line
-        line_map.push(current_output_line_src);
+        if has_multiline_block_comment {
+            line_map.push(current_output_line_src);
+        }
 
         // Input was valid UTF-8, and we only removed/replaced ASCII characters
         // (comments with spaces/newlines), so result is still valid UTF-8.
         let text = String::from_utf8(result)
             .expect("comment stripping produced non-UTF8 (input was valid UTF-8)");
-        (text, line_map)
+        if has_multiline_block_comment {
+            (std::borrow::Cow::Owned(text), LineMap::Mapped(line_map))
+        } else {
+            (std::borrow::Cow::Owned(text), LineMap::Identity)
+        }
     }
 
     /// Join lines that end with backslash (line continuation).
     /// Also handles backslash followed by trailing whitespace before newline,
     /// matching GCC/Clang behavior (GCC warns: "backslash and newline separated by space").
-    pub(super) fn join_continued_lines(&self, source: &str) -> String {
+    ///
+    /// Returns `Cow::Borrowed` when the source has no continuation backslashes
+    /// (the common case), avoiding a String allocation entirely.
+    pub(super) fn join_continued_lines<'a>(&self, source: &'a str) -> std::borrow::Cow<'a, str> {
+        // Fast path: scan for backslash-newline sequences. If none exist,
+        // return the original string without any allocation.
+        if !source.contains("\\\n") && !source.contains("\\\r") {
+            return std::borrow::Cow::Borrowed(source);
+        }
+
         let mut result = String::with_capacity(source.len());
         let mut continuation = false;
 
@@ -142,7 +240,7 @@ impl Preprocessor {
             }
         }
 
-        result
+        std::borrow::Cow::Owned(result)
     }
 
     /// Check if a line ends with a continuation backslash (optionally followed by whitespace).
