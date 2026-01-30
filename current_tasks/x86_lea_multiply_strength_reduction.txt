@@ -1,0 +1,18 @@
+Task: x86 LEA-based multiply strength reduction
+
+Replace imull/imulq with lea instructions for small constant multipliers
+in the x86 codegen. LEA can compute base + index*scale + displacement in
+a single cycle (vs 3 cycles for imul). Patterns:
+
+  imull $3, %r, %r  → leal (%r, %r, 2), %r   (or leaq for 64-bit)
+  imull $5, %r, %r  → leal (%r, %r, 4), %r
+  imull $9, %r, %r  → leal (%r, %r, 8), %r
+
+Also handle related constants that decompose into lea chains:
+  x*7 = x*8 - x (lea + sub), x*6 = x*3*2 (lea + shl), etc.
+
+This is a backend-level optimization in emit_alu_reg_direct() and
+the accumulator-based emit_binop() for multiply instructions.
+
+Key files:
+- src/backend/x86/codegen/codegen.rs
