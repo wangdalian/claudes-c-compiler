@@ -12,8 +12,8 @@
 //!    and binary-op push/pop rewriting.
 //!
 //! 2. **Global passes** (once): global store forwarding (across fallthrough
-//!    labels), dead store elimination, and compare-and-branch fusion (run last
-//!    so dead stores from round-tripped values are cleaned up first).
+//!    labels), register copy propagation, dead register move elimination,
+//!    dead store elimination, and compare-and-branch fusion.
 //!
 //! 3. **Local cleanup** (up to 4 rounds): re-run local passes to clean up
 //!    opportunities exposed by global passes.

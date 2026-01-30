@@ -87,6 +87,10 @@ pub fn peephole_optimize(asm: String) -> String {
     // It folds these moves into subsequent memory operands to eliminate
     // intermediate register copies.
     let global_changed = global_changed | propagate_register_copies(&mut store, &mut infos);
+    // Dead register move elimination: after copy propagation converts uses to the
+    // original source register, many reg-to-reg moves become dead because the
+    // destination is overwritten before being read.
+    let global_changed = global_changed | eliminate_dead_reg_moves(&store, &mut infos);
     let global_changed = global_changed | eliminate_dead_stores(&store, &mut infos);
     let global_changed = global_changed | fuse_compare_and_branch(&mut store, &mut infos);
 
@@ -98,6 +102,7 @@ pub fn peephole_optimize(asm: String) -> String {
             changed2 = false;
             changed2 |= combined_local_pass(&mut store, &mut infos);
             changed2 |= fuse_movq_ext_truncation(&mut store, &mut infos);
+            changed2 |= eliminate_dead_reg_moves(&store, &mut infos);
             changed2 |= eliminate_dead_stores(&store, &mut infos);
             pass_count2 += 1;
         }
@@ -120,6 +125,7 @@ pub fn peephole_optimize(asm: String) -> String {
             changed3 = false;
             changed3 |= combined_local_pass(&mut store, &mut infos);
             changed3 |= fuse_movq_ext_truncation(&mut store, &mut infos);
+            changed3 |= eliminate_dead_reg_moves(&store, &mut infos);
             changed3 |= eliminate_dead_stores(&store, &mut infos);
             pass_count3 += 1;
         }
@@ -1203,6 +1209,8 @@ fn has_implicit_reg_usage(trimmed: &str) -> bool {
     (nb[0] == b'd' && nb[1] == b'i' && nb[2] == b'v') || // div, divl, divq
     (nb[0] == b'i' && nb[1] == b'd' && nb[2] == b'i') || // idiv
     (nb[0] == b'm' && nb[1] == b'u' && nb[2] == b'l') || // mul, mulq
+    trimmed.starts_with("cltq") || // sign-extend eax -> rax (implicit read+write rax)
+    trimmed.starts_with("cbw") ||  // sign-extend al -> ax (implicit read+write rax)
     trimmed.starts_with("cqto") || trimmed.starts_with("cdq") ||
     trimmed.starts_with("cqo") || trimmed.starts_with("cwd") ||
     trimmed.starts_with("rep ") || trimmed.starts_with("repne ") ||
@@ -1494,6 +1502,218 @@ fn propagate_register_copies(store: &mut LineStore, infos: &mut [LineInfo]) -> b
 
         i += 1;
     }
+    changed
+}
+
+// ── Dead register move elimination ──────────────────────────────────────────
+//
+// After copy propagation, many reg-to-reg moves become dead because the
+// destination register is overwritten before being read.  This pass scans
+// forward from each `movq %src, %dst` within the same basic block to check
+// if %dst is written again before any read.  If so, the move is dead.
+//
+// Example:
+//   movzbq (%rax), %rax     ; load
+//   movq %rax, %r14          ; <-- dead: %r14 overwritten at loop top
+//   movzbq %al, %rax         ; (next instruction)
+//
+// The forward analysis correctly distinguishes write-only instructions
+// (mov, lea, pop, setCC) from read-modify-write instructions (add, sub, etc.).
+
+/// Maximum forward scan window for dead register move detection.
+/// Larger windows catch more cases but are O(n*WINDOW).
+const DEAD_MOVE_WINDOW: usize = 24;
+
+/// Check if an x86 instruction is a read-modify-write for its destination register.
+/// For most two-operand instructions like `addq %src, %dst`, the destination is read
+/// before being written.  For move instructions like `movq %src, %dst` or `leaq ...(%rip), %dst`,
+/// the destination is only written.
+///
+/// Returns true if the instruction reads the destination register (read-modify-write).
+fn is_read_modify_write(trimmed: &str) -> bool {
+    let b = trimmed.as_bytes();
+    if b.len() < 3 {
+        return true; // conservative
+    }
+
+    // Move instructions are write-only for the destination:
+    // movq, movl, movw, movb, movabs, movzbl, movzbq, movzwl, movzwq,
+    // movslq, movsbl, movsbq, movswl, movswq
+    if b[0] == b'm' && b[1] == b'o' && b[2] == b'v' {
+        return false;
+    }
+
+    // LEA is write-only for the destination
+    if b[0] == b'l' && b[1] == b'e' && b[2] == b'a' {
+        return false;
+    }
+
+    // Conditional moves (cmovXX) are read-modify-write because the old value
+    // is kept when the condition is false. However, we can't easily distinguish
+    // this, and for safety, let's check:
+    if b[0] == b'c' && b[1] == b'm' && b[2] == b'o' {
+        return true; // cmov reads the original destination
+    }
+
+    // XOR/SUB with same source and destination (e.g., xorl %eax, %eax) is technically
+    // write-only, but for the general case where we check a specific dest_reg,
+    // the register appears as both source and dest operands. We conservatively
+    // treat it as read-modify-write. The only case we need to catch is when the
+    // dest_reg appears ONLY as the destination operand.
+    //
+    // For most arithmetic/logic instructions (add, sub, and, or, xor, adc, sbb,
+    // inc, dec, neg, not, shl, shr, sar, rol, ror, etc.), the destination is
+    // read before being written -> read-modify-write.
+
+    // For instructions with a single operand that is both read and written
+    // (incq, decq, negq, notq), the operand is always read.
+    // For two-operand instructions (addq %src, %dst), %dst is always read.
+    // The only write-only instructions we missed are xchg variants, which we
+    // handle through the implicit_reg_usage check anyway.
+
+    // Check if it's a setCC instruction (write-only for byte reg)
+    if b[0] == b's' && b[1] == b'e' && b[2] == b't' {
+        return false;
+    }
+
+    // Default: assume read-modify-write (conservative)
+    true
+}
+
+fn eliminate_dead_reg_moves(store: &LineStore, infos: &mut [LineInfo]) -> bool {
+    let mut changed = false;
+    let len = store.len();
+    let mut i = 0;
+
+    while i < len {
+        if infos[i].is_nop() || infos[i].is_barrier() {
+            i += 1;
+            continue;
+        }
+
+        // Check if this is a reg-to-reg movq or a LoadRbp (which writes to a register).
+        // We want to know: is the destination register overwritten before being read?
+        let dst_reg = match infos[i].kind {
+            LineKind::Other { dest_reg } => {
+                let trimmed = infos[i].trimmed(store.get(i));
+                // Only consider movq %src, %dst (reg-to-reg moves).
+                // Don't eliminate loads from memory (they may have side effects in theory,
+                // but more importantly they produce values).
+                if parse_reg_to_reg_movq(&infos[i], trimmed).is_some() {
+                    dest_reg
+                } else {
+                    i += 1;
+                    continue;
+                }
+            }
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+
+        if dst_reg == REG_NONE || dst_reg > REG_GP_MAX {
+            i += 1;
+            continue;
+        }
+        // Don't eliminate moves to %rsp or %rbp.
+        if dst_reg == 4 || dst_reg == 5 {
+            i += 1;
+            continue;
+        }
+
+        let dst_mask = 1u16 << dst_reg;
+        let mut dead = false;
+
+        // Scan forward within the same basic block.
+        let mut j = i + 1;
+        let scan_end = (i + DEAD_MOVE_WINDOW).min(len);
+        while j < scan_end {
+            if infos[j].is_nop() {
+                j += 1;
+                continue;
+            }
+
+            // Hit a barrier (label, jump, call, ret) -> can't prove dead.
+            // The register might be live-out of this block.
+            if infos[j].is_barrier() {
+                // Special case: CondJmp is a barrier but doesn't define registers.
+                // The register might be used in the branch target.
+                break;
+            }
+
+            // Check for instructions with implicit register usage FIRST.
+            // Instructions like cqto, cdq, div, mul, xchg, etc. may implicitly
+            // read registers that don't appear in reg_refs or aren't captured by
+            // get_dest_reg. We must bail out conservatively before checking
+            // reads/writes.
+            {
+                let trimmed_j = infos[j].trimmed(store.get(j));
+                if has_implicit_reg_usage(trimmed_j) {
+                    break;
+                }
+            }
+
+            // Determine if this instruction reads or writes the destination register.
+            let refs_dst = infos[j].reg_refs & dst_mask != 0;
+            let writes_dst = get_dest_reg(&infos[j]) == dst_reg;
+
+            if writes_dst {
+                // The instruction writes to our target register.
+                // Check if it also reads it (read-modify-write).
+                let also_reads = match infos[j].kind {
+                    // LoadRbp only writes the register (destination), it doesn't
+                    // read it. The reg_refs bit is set because the register name
+                    // appears in the text, but it's the output operand.
+                    LineKind::LoadRbp { .. } => false,
+                    // Pop only writes the register.
+                    LineKind::Pop { .. } => false,
+                    // SetCC writes to a byte register. If the reg_refs bit is set
+                    // just for that, it's write-only.
+                    LineKind::SetCC { .. } => false,
+                    // For Other instructions, if reg_refs includes our register AND
+                    // the register is also dest_reg, check if the register appears
+                    // in the source position too. A movq %other, %dst is write-only,
+                    // but addq %src, %dst reads %dst.
+                    LineKind::Other { .. } => {
+                        if !refs_dst {
+                            false
+                        } else {
+                            // Check if it's a pure move to our register (write-only)
+                            // vs a read-modify-write.
+                            let t = infos[j].trimmed(store.get(j));
+                            is_read_modify_write(t)
+                        }
+                    }
+                    _ => refs_dst,
+                };
+
+                if also_reads {
+                    // The instruction reads the register before writing it -> not dead.
+                    break;
+                } else {
+                    // Pure overwrite -> the original move is dead.
+                    dead = true;
+                    break;
+                }
+            }
+
+            if refs_dst {
+                // The register is read but not written by this instruction -> not dead.
+                break;
+            }
+
+            j += 1;
+        }
+
+        if dead {
+            mark_nop(&mut infos[i]);
+            changed = true;
+        }
+
+        i += 1;
+    }
+
     changed
 }
 
