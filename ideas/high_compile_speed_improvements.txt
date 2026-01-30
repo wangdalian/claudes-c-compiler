@@ -22,8 +22,12 @@ Remaining bottlenecks:
 3. PREPROCESSOR (~17.6% of total)
    preprocess_source is the single hottest function. Macro expansion
    (expand_text) is 5.8%, process_directive is 3.5%.
-   Partially fixed: FxHashSet reuse, include caching, Cow<str>.
-   Further: byte-level processing, reduced String allocations.
+   Partially fixed: FxHashSet reuse, include caching, Cow<str>,
+   set_file() fast path for __FILE__ (avoids MacroDef alloc per #include),
+   reusable directive_expanding set for handle_if/elif/line/error,
+   batch slice copies in expand_text/substitute_params inner loops.
+   Further: string interning for macro names in expanding set,
+   reusable Vec<String> for parse_macro_args, MacroDef clone avoidance.
 
 4. STRING INTERNING (potential ~5% improvement)
    Every identifier token allocates a heap String. Same function/type
