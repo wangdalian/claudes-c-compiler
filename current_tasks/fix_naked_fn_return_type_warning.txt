@@ -1,0 +1,6 @@
+Task: Suppress -Wreturn-type warning for __attribute__((naked)) functions
+Status: in_progress
+Description: Naked functions have their bodies entirely in inline assembly. The -Wreturn-type warning
+"control reaches end of non-void function" is spurious for naked functions because control flow is
+managed by the asm. GCC does not warn about this. Fix: add !func.attrs.is_naked() check to the
+-Wreturn-type condition in sema.rs. This fixes MicroPython x86 build which uses naked nlr_push().
