@@ -1,0 +1,20 @@
+Task: Fix i686 IntNarrow cast not truncating sub-32-bit results
+Status: in_progress
+
+Problem:
+The i686 backend's IntNarrow cast (e.g., I32->I8, I32->I16) was a no-op,
+leaving stale upper bits in %eax from wider computations. This caused
+incorrect truthiness checks: `const char diff = a - b; if (diff) {...}`
+would enter the if-body even when diff==0, because the 32-bit subtraction
+result (e.g., 0xFFFFFF00) was tested directly without truncation to char (0x00).
+
+Example: cmocka's guard block corruption detection compared 0xEF guard bytes
+using `char diff = guard[j] - 0xEF; if (diff) { ... }`. The subtraction
+(-17 - 239 = -256 = 0xFFFFFF00) was never truncated to char (0x00), causing
+false corruption reports and test failures.
+
+Fix: Emit movsbl/movzbl/movswl/movzwl instructions in the IntNarrow case
+to properly sign-extend or zero-extend the narrow result into full %eax.
+
+Projects that benefit: cmocka (C unit testing framework) - now passes all
+4 architectures.

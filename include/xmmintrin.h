@@ -48,6 +48,9 @@ _mm_set_ss(float __w)
     return (__m128){ { __w, 0.0f, 0.0f, 0.0f } };
 }
 
+/* _mm_set_ps1 is a standard alias for _mm_set1_ps */
+#define _mm_set_ps1(w) _mm_set1_ps(w)
+
 /* === Load === */
 
 static __inline__ __m128 __attribute__((__always_inline__))
@@ -199,6 +202,281 @@ _mm_div_ss(__m128 __a, __m128 __b)
     __a.__val[0] /= __b.__val[0];
     return __a;
 }
+
+/* === Bitwise (float domain) === */
+/* These operate on the bitwise representation of float values,
+   using memcpy to type-pun between float and unsigned int. */
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_and_ps(__m128 __a, __m128 __b)
+{
+    unsigned int __ai[4], __bi[4];
+    __builtin_memcpy(__ai, &__a, 16);
+    __builtin_memcpy(__bi, &__b, 16);
+    __ai[0] &= __bi[0]; __ai[1] &= __bi[1];
+    __ai[2] &= __bi[2]; __ai[3] &= __bi[3];
+    __m128 __r;
+    __builtin_memcpy(&__r, __ai, 16);
+    return __r;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_andnot_ps(__m128 __a, __m128 __b)
+{
+    unsigned int __ai[4], __bi[4];
+    __builtin_memcpy(__ai, &__a, 16);
+    __builtin_memcpy(__bi, &__b, 16);
+    __ai[0] = ~__ai[0] & __bi[0]; __ai[1] = ~__ai[1] & __bi[1];
+    __ai[2] = ~__ai[2] & __bi[2]; __ai[3] = ~__ai[3] & __bi[3];
+    __m128 __r;
+    __builtin_memcpy(&__r, __ai, 16);
+    return __r;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_or_ps(__m128 __a, __m128 __b)
+{
+    unsigned int __ai[4], __bi[4];
+    __builtin_memcpy(__ai, &__a, 16);
+    __builtin_memcpy(__bi, &__b, 16);
+    __ai[0] |= __bi[0]; __ai[1] |= __bi[1];
+    __ai[2] |= __bi[2]; __ai[3] |= __bi[3];
+    __m128 __r;
+    __builtin_memcpy(&__r, __ai, 16);
+    return __r;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_xor_ps(__m128 __a, __m128 __b)
+{
+    unsigned int __ai[4], __bi[4];
+    __builtin_memcpy(__ai, &__a, 16);
+    __builtin_memcpy(__bi, &__b, 16);
+    __ai[0] ^= __bi[0]; __ai[1] ^= __bi[1];
+    __ai[2] ^= __bi[2]; __ai[3] ^= __bi[3];
+    __m128 __r;
+    __builtin_memcpy(&__r, __ai, 16);
+    return __r;
+}
+
+/* === Square root, Reciprocal, Reciprocal square root === */
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_sqrt_ps(__m128 __a)
+{
+    return (__m128){ { __builtin_sqrtf(__a.__val[0]), __builtin_sqrtf(__a.__val[1]),
+                       __builtin_sqrtf(__a.__val[2]), __builtin_sqrtf(__a.__val[3]) } };
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_sqrt_ss(__m128 __a)
+{
+    __a.__val[0] = __builtin_sqrtf(__a.__val[0]);
+    return __a;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_rcp_ps(__m128 __a)
+{
+    return (__m128){ { 1.0f / __a.__val[0], 1.0f / __a.__val[1],
+                       1.0f / __a.__val[2], 1.0f / __a.__val[3] } };
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_rcp_ss(__m128 __a)
+{
+    __a.__val[0] = 1.0f / __a.__val[0];
+    return __a;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_rsqrt_ps(__m128 __a)
+{
+    return (__m128){ { 1.0f / __builtin_sqrtf(__a.__val[0]), 1.0f / __builtin_sqrtf(__a.__val[1]),
+                       1.0f / __builtin_sqrtf(__a.__val[2]), 1.0f / __builtin_sqrtf(__a.__val[3]) } };
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_rsqrt_ss(__m128 __a)
+{
+    __a.__val[0] = 1.0f / __builtin_sqrtf(__a.__val[0]);
+    return __a;
+}
+
+/* === Comparison (packed) - return all-ones or all-zeros per lane === */
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cmpeq_ps(__m128 __a, __m128 __b)
+{
+    unsigned int __r[4];
+    __r[0] = __a.__val[0] == __b.__val[0] ? 0xFFFFFFFFu : 0;
+    __r[1] = __a.__val[1] == __b.__val[1] ? 0xFFFFFFFFu : 0;
+    __r[2] = __a.__val[2] == __b.__val[2] ? 0xFFFFFFFFu : 0;
+    __r[3] = __a.__val[3] == __b.__val[3] ? 0xFFFFFFFFu : 0;
+    __m128 __rv;
+    __builtin_memcpy(&__rv, __r, 16);
+    return __rv;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cmplt_ps(__m128 __a, __m128 __b)
+{
+    unsigned int __r[4];
+    __r[0] = __a.__val[0] < __b.__val[0] ? 0xFFFFFFFFu : 0;
+    __r[1] = __a.__val[1] < __b.__val[1] ? 0xFFFFFFFFu : 0;
+    __r[2] = __a.__val[2] < __b.__val[2] ? 0xFFFFFFFFu : 0;
+    __r[3] = __a.__val[3] < __b.__val[3] ? 0xFFFFFFFFu : 0;
+    __m128 __rv;
+    __builtin_memcpy(&__rv, __r, 16);
+    return __rv;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cmple_ps(__m128 __a, __m128 __b)
+{
+    unsigned int __r[4];
+    __r[0] = __a.__val[0] <= __b.__val[0] ? 0xFFFFFFFFu : 0;
+    __r[1] = __a.__val[1] <= __b.__val[1] ? 0xFFFFFFFFu : 0;
+    __r[2] = __a.__val[2] <= __b.__val[2] ? 0xFFFFFFFFu : 0;
+    __r[3] = __a.__val[3] <= __b.__val[3] ? 0xFFFFFFFFu : 0;
+    __m128 __rv;
+    __builtin_memcpy(&__rv, __r, 16);
+    return __rv;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cmpgt_ps(__m128 __a, __m128 __b)
+{
+    return _mm_cmplt_ps(__b, __a);
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cmpge_ps(__m128 __a, __m128 __b)
+{
+    return _mm_cmple_ps(__b, __a);
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cmpneq_ps(__m128 __a, __m128 __b)
+{
+    unsigned int __r[4];
+    __r[0] = __a.__val[0] != __b.__val[0] ? 0xFFFFFFFFu : 0;
+    __r[1] = __a.__val[1] != __b.__val[1] ? 0xFFFFFFFFu : 0;
+    __r[2] = __a.__val[2] != __b.__val[2] ? 0xFFFFFFFFu : 0;
+    __r[3] = __a.__val[3] != __b.__val[3] ? 0xFFFFFFFFu : 0;
+    __m128 __rv;
+    __builtin_memcpy(&__rv, __r, 16);
+    return __rv;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cmpord_ps(__m128 __a, __m128 __b)
+{
+    unsigned int __r[4];
+    __r[0] = (__a.__val[0] == __a.__val[0] && __b.__val[0] == __b.__val[0]) ? 0xFFFFFFFFu : 0;
+    __r[1] = (__a.__val[1] == __a.__val[1] && __b.__val[1] == __b.__val[1]) ? 0xFFFFFFFFu : 0;
+    __r[2] = (__a.__val[2] == __a.__val[2] && __b.__val[2] == __b.__val[2]) ? 0xFFFFFFFFu : 0;
+    __r[3] = (__a.__val[3] == __a.__val[3] && __b.__val[3] == __b.__val[3]) ? 0xFFFFFFFFu : 0;
+    __m128 __rv;
+    __builtin_memcpy(&__rv, __r, 16);
+    return __rv;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cmpunord_ps(__m128 __a, __m128 __b)
+{
+    unsigned int __r[4];
+    __r[0] = (__a.__val[0] != __a.__val[0] || __b.__val[0] != __b.__val[0]) ? 0xFFFFFFFFu : 0;
+    __r[1] = (__a.__val[1] != __a.__val[1] || __b.__val[1] != __b.__val[1]) ? 0xFFFFFFFFu : 0;
+    __r[2] = (__a.__val[2] != __a.__val[2] || __b.__val[2] != __b.__val[2]) ? 0xFFFFFFFFu : 0;
+    __r[3] = (__a.__val[3] != __a.__val[3] || __b.__val[3] != __b.__val[3]) ? 0xFFFFFFFFu : 0;
+    __m128 __rv;
+    __builtin_memcpy(&__rv, __r, 16);
+    return __rv;
+}
+
+/* Scalar comparison intrinsics (operate on element 0 only, rest pass through __a) */
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cmpeq_ss(__m128 __a, __m128 __b)
+{
+    unsigned int __u = (__a.__val[0] == __b.__val[0]) ? 0xFFFFFFFFu : 0;
+    __builtin_memcpy(&__a.__val[0], &__u, 4);
+    return __a;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cmplt_ss(__m128 __a, __m128 __b)
+{
+    unsigned int __u = (__a.__val[0] < __b.__val[0]) ? 0xFFFFFFFFu : 0;
+    __builtin_memcpy(&__a.__val[0], &__u, 4);
+    return __a;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cmple_ss(__m128 __a, __m128 __b)
+{
+    unsigned int __u = (__a.__val[0] <= __b.__val[0]) ? 0xFFFFFFFFu : 0;
+    __builtin_memcpy(&__a.__val[0], &__u, 4);
+    return __a;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cmpgt_ss(__m128 __a, __m128 __b)
+{
+    unsigned int __u = (__a.__val[0] > __b.__val[0]) ? 0xFFFFFFFFu : 0;
+    __builtin_memcpy(&__a.__val[0], &__u, 4);
+    return __a;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cmpge_ss(__m128 __a, __m128 __b)
+{
+    unsigned int __u = (__a.__val[0] >= __b.__val[0]) ? 0xFFFFFFFFu : 0;
+    __builtin_memcpy(&__a.__val[0], &__u, 4);
+    return __a;
+}
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cmpneq_ss(__m128 __a, __m128 __b)
+{
+    unsigned int __u = (__a.__val[0] != __b.__val[0]) ? 0xFFFFFFFFu : 0;
+    __builtin_memcpy(&__a.__val[0], &__u, 4);
+    return __a;
+}
+
+/* === Integer conversion === */
+
+/* TODO: _mm_cvtss_si32 should use current MXCSR rounding mode (round-to-nearest
+   by default), but we use C cast truncation for simplicity. This matches
+   _mm_cvttss_si32 behavior. */
+static __inline__ int __attribute__((__always_inline__))
+_mm_cvtss_si32(__m128 __a)
+{
+    return (int)__a.__val[0];
+}
+
+/* Alias: _mm_cvt_ss2si is standard alias for _mm_cvtss_si32 */
+#define _mm_cvt_ss2si(a) _mm_cvtss_si32(a)
+
+static __inline__ int __attribute__((__always_inline__))
+_mm_cvttss_si32(__m128 __a)
+{
+    return (int)__a.__val[0];
+}
+
+/* Alias: _mm_cvtt_ss2si */
+#define _mm_cvtt_ss2si(a) _mm_cvttss_si32(a)
+
+static __inline__ __m128 __attribute__((__always_inline__))
+_mm_cvtsi32_ss(__m128 __a, int __b)
+{
+    __a.__val[0] = (float)__b;
+    return __a;
+}
+
+/* Alias: _mm_cvt_si2ss */
+#define _mm_cvt_si2ss(a, b) _mm_cvtsi32_ss(a, b)
 
 /* === Shuffle === */
 

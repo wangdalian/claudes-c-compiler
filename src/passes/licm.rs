@@ -325,10 +325,11 @@ struct LoopMemoryInfo {
     /// so loads from globals cannot be hoisted past calls.
     has_calls: bool,
     /// Whether the loop body has any stores through GlobalAddr-derived
-    /// pointers, which could potentially write to other global variables.
-    /// Stores through non-GlobalAddr pointers (e.g., function parameter
-    /// pointers, alloca-derived pointers) do not modify global storage
-    /// since they point to stack or heap memory, not the data/bss sections.
+    /// pointers (including through Copy and GEP chains), which could
+    /// potentially write to other global variables. Stores through
+    /// non-GlobalAddr pointers (e.g., function parameter pointers,
+    /// alloca-derived pointers) do not modify global storage since they
+    /// point to stack or heap memory, not the data/bss sections.
     has_global_derived_stores: bool,
 }
 
@@ -554,21 +555,29 @@ fn hoist_loop_invariants(
             }
         }
     }
-    // Transitively include GEP values derived from GlobalAddr bases.
-    // A GEP like `%ptr = gep %global_base, %offset` produces a pointer
-    // into global memory; stores through %ptr modify global storage.
-    // Without this, stores like `arr[i] = val` through a GEP pointer
-    // are not recognized as global-derived stores, causing LICM to
-    // incorrectly hoist loads of other globals from the same loop.
-    let mut changed_gep = true;
-    while changed_gep {
-        changed_gep = false;
+    // Transitively include values derived from GlobalAddr: GEP results whose
+    // base is a GlobalAddr-derived value, and Copy destinations whose source
+    // is a GlobalAddr-derived value. Without this transitive closure, stores
+    // through derived pointers (e.g., `p->j = ...` where `p = &global_struct`)
+    // are not recognized as global-derived stores, causing LICM to incorrectly
+    // hoist loads of globals from loops containing such stores.
+    let mut changed_closure = true;
+    while changed_closure {
+        changed_closure = false;
         for block in func.blocks.iter() {
             for inst in &block.instructions {
-                if let Instruction::GetElementPtr { dest, base, .. } = inst {
-                    if global_addr_values.contains(&base.0) && global_addr_values.insert(dest.0) {
-                        changed_gep = true;
+                match inst {
+                    Instruction::GetElementPtr { dest, base, .. } => {
+                        if global_addr_values.contains(&base.0) && global_addr_values.insert(dest.0) {
+                            changed_closure = true;
+                        }
                     }
+                    Instruction::Copy { dest, src: Operand::Value(src_val) } => {
+                        if global_addr_values.contains(&src_val.0) && global_addr_values.insert(dest.0) {
+                            changed_closure = true;
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
