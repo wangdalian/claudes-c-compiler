@@ -349,7 +349,7 @@ impl Parser {
                 // Capture whether the base type (before pointer declarators) was const.
                 // For `const int *p`, parsing_const is true here; the `*` is handled below.
                 let param_is_const = self.attrs.parsing_const();
-                let (name, pointer_depth, array_dims, is_func_ptr, ptr_to_array_dims, fptr_param_decls) =
+                let (name, pointer_depth, array_dims, is_func_ptr, ptr_to_array_dims, fptr_param_decls, inner_ptr_depth) =
                     self.parse_param_declarator_full();
                 self.skip_gcc_extensions();
 
@@ -386,7 +386,7 @@ impl Parser {
                 }
 
                 self.attrs.set_const(saved_const);
-                params.push(ParamDecl { type_spec, name, span, fptr_params: fptr_param_decls, is_const: param_is_const, vla_size_exprs });
+                params.push(ParamDecl { type_spec, name, span, fptr_params: fptr_param_decls, is_const: param_is_const, vla_size_exprs, fptr_inner_ptr_depth: inner_ptr_depth });
             } else {
                 break;
             }
@@ -414,6 +414,7 @@ impl Parser {
                 fptr_params: None,
                 is_const: false,
                 vla_size_exprs: Vec::new(),
+                fptr_inner_ptr_depth: 0,
             });
             if !self.consume_if(&TokenKind::Comma) {
                 break;
@@ -424,8 +425,8 @@ impl Parser {
     }
 
     /// Parse a parameter declarator with full type information.
-    /// Returns (name, pointer_depth, array_dims, is_func_ptr, ptr_to_array_dims, fptr_params).
-    pub(super) fn parse_param_declarator_full(&mut self) -> (Option<String>, u32, Vec<Option<Box<Expr>>>, bool, Vec<Option<Box<Expr>>>, Option<Vec<ParamDecl>>) {
+    /// Returns (name, pointer_depth, array_dims, is_func_ptr, ptr_to_array_dims, fptr_params, fptr_inner_ptr_depth).
+    pub(super) fn parse_param_declarator_full(&mut self) -> (Option<String>, u32, Vec<Option<Box<Expr>>>, bool, Vec<Option<Box<Expr>>>, Option<Vec<ParamDecl>>, u32) {
         let mut pointer_depth: u32 = 0;
         while self.consume_if(&TokenKind::Star) {
             pointer_depth += 1;
@@ -438,9 +439,10 @@ impl Parser {
         let mut is_func_ptr = false;
         let mut ptr_to_array_dims: Vec<Option<Box<Expr>>> = Vec::new();
         let mut fptr_params: Option<Vec<ParamDecl>> = None;
+        let mut fptr_inner_ptr_depth: u32 = 0;
 
         let name = if matches!(self.peek(), TokenKind::LParen) {
-            self.parse_paren_param_declarator(&mut pointer_depth, &mut array_dims, &mut is_func_ptr, &mut ptr_to_array_dims, &mut fptr_params)
+            self.parse_paren_param_declarator(&mut pointer_depth, &mut array_dims, &mut is_func_ptr, &mut ptr_to_array_dims, &mut fptr_params, &mut fptr_inner_ptr_depth)
         } else if let TokenKind::Identifier(ref n) = self.peek() {
             let n = n.clone();
             self.advance();
@@ -488,7 +490,7 @@ impl Parser {
             }
         }
 
-        (name, pointer_depth, array_dims, is_func_ptr, ptr_to_array_dims, fptr_params)
+        (name, pointer_depth, array_dims, is_func_ptr, ptr_to_array_dims, fptr_params, fptr_inner_ptr_depth)
     }
 
     /// Parse a parenthesized parameter declarator: (*name)(params), (name), etc.
@@ -499,6 +501,7 @@ impl Parser {
         is_func_ptr: &mut bool,
         ptr_to_array_dims: &mut Vec<Option<Box<Expr>>>,
         fptr_params: &mut Option<Vec<ParamDecl>>,
+        fptr_inner_ptr_depth: &mut u32,
     ) -> Option<String> {
         let save = self.pos;
         self.advance(); // consume '('
@@ -555,6 +558,7 @@ impl Parser {
             } else if matches!(self.peek(), TokenKind::LParen) {
                 // Function pointer: (*fp)(params) or (*fp[])(params)
                 *is_func_ptr = true;
+                *fptr_inner_ptr_depth = inner_ptr_depth;
                 let (fp_params, _variadic) = self.parse_param_list();
                 *fptr_params = Some(fp_params);
             } else if matches!(self.peek(), TokenKind::LBracket) {

@@ -347,10 +347,33 @@ impl Parser {
                     let (pname, pderived) = self.parse_declarator();
                     if let Some(ref name) = pname {
                         let (full_type, fptr_params) = self.apply_kr_derivations(&type_spec, &pderived);
+                        // Compute fptr_inner_ptr_depth for K&R function pointer params.
+                        // Count Pointer entries AFTER FunctionPointer in derived list;
+                        // these represent extra indirection (pointer-to-function-pointer).
+                        let inner_depth = if fptr_params.is_some() {
+                            let mut found_fptr = false;
+                            let mut ptrs_after = 0u32;
+                            for d in &pderived {
+                                match d {
+                                    DerivedDeclarator::FunctionPointer(_, _) | DerivedDeclarator::Function(_, _) => {
+                                        found_fptr = true;
+                                    }
+                                    DerivedDeclarator::Pointer if found_fptr => {
+                                        ptrs_after += 1;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            // inner_ptr_depth = 1 (the (*) syntax star) + ptrs_after
+                            1 + ptrs_after
+                        } else {
+                            0
+                        };
                         for param in kr_params.iter_mut() {
                             if param.name.as_deref() == Some(name.as_str()) {
                                 param.type_spec = full_type.clone();
                                 param.fptr_params = fptr_params.clone();
+                                param.fptr_inner_ptr_depth = inner_depth;
                                 break;
                             }
                         }

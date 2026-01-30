@@ -22,3 +22,4 @@ squashfuse - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: FIXED - was f
 SWI-Prolog - ARM: fail, x86: fail, riscv: fail, i686: fail. Notes: x86 compiles but crashes at boot (runtime codegen bug), needs GMP=OFF. Fixed preprocessor chained macros, TLS PIC model, and static init address-of bugs.
 exim - ARM: untested, x86: untested, riscv: untested, i686: pass. Notes: requires db.h stub + libdb stub for i386. Fixed symlink include resolution bug. Build scripts need modification for missing libdb-dev/libpcre2-dev packages.
 MicroPython - ARM: pass, x86: pass, riscv: pass, i686: n/a. Notes: required C99 inline linkage (weak), -ffunction-sections, __attribute__((naked))/optimize("omit-frame-pointer"), volatile pointer qualifier fix, FAM pointer init fix
+lemon - ARM: pass, x86: pass, riscv: pass, i686: pass. Notes: FIXED - func ptr deref with pointer return type was incorrectly classified as pointer-to-function-pointer

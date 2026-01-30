@@ -50,13 +50,15 @@ impl Lowerer {
         // __CCC_M128I_FROM_BUILTIN macro dereferences NULL.
         if let Some(func_info) = self.sema_functions.get(name) {
             if func_info.is_defined {
-                // Don't let is_defined bypass intrinsics registered in our builtin
-                // table as SSE/SIMD intrinsics -- those wrapper bodies exist only as
-                // fallback for compilers that don't intercept them.
-                let is_intrinsic_builtin = builtins::resolve_builtin(name)
-                    .map(|info| matches!(info.kind, BuiltinKind::Intrinsic(_)))
-                    .unwrap_or(false);
-                if !is_intrinsic_builtin {
+                // Don't let is_defined bypass SSE/SIMD intrinsics -- those wrapper
+                // bodies (from emmintrin.h etc.) exist only as fallback for compilers
+                // that don't intercept them.  We identify them by name prefix rather
+                // than by BuiltinKind::Intrinsic, because non-SSE intrinsics like
+                // __builtin_alloca should still be overridable by user definitions.
+                let is_sse_intrinsic = name.starts_with("__builtin_ia32_")
+                    || name.starts_with("_mm_")
+                    || name.starts_with("_mm256_");
+                if !is_sse_intrinsic {
                     return None;
                 }
             }

@@ -338,23 +338,15 @@ impl Lowerer {
         let is_bool = self.is_type_bool(&orig_param.type_spec);
         let array_dim_strides = if ty == IrType::Ptr { self.compute_ptr_array_strides(&orig_param.type_spec) } else { vec![] };
 
-        // Detect pointer-to-function-pointer parameters: these have fptr_params
-        // AND 2+ pointer levels in the type_spec (e.g., int (**fpp)(int, int)
-        // has type_spec = Pointer(Pointer(Int)), yielding CType depth >= 2).
-        // This is needed because our CType representation can conflate
-        // pointer-to-function-pointers with direct function pointers.
-        let is_ptr_to_func_ptr = if orig_param.fptr_params.is_some() {
-            let ct = self.type_spec_to_ctype(&orig_param.type_spec);
-            let mut depth = 0usize;
-            let mut t = &ct;
-            while let CType::Pointer(inner, _) = t {
-                depth += 1;
-                t = inner.as_ref();
-            }
-            depth >= 2
-        } else {
-            false
-        };
+        // Detect pointer-to-function-pointer parameters using the parser's
+        // fptr_inner_ptr_depth field. This records how many `*` were inside the
+        // parenthesized declarator: (*fp) has depth 1, (**fpp) has depth 2.
+        // A depth >= 2 means pointer-to-function-pointer. This correctly
+        // distinguishes `int (**fpp)(int)` (depth 2, ptr-to-func-ptr) from
+        // `void *(*fp)(size_t)` (depth 1, func ptr returning void*), which
+        // have identical CType representations.
+        let is_ptr_to_func_ptr = orig_param.fptr_params.is_some()
+            && orig_param.fptr_inner_ptr_depth >= 2;
 
         let name = orig_param.name.clone().unwrap_or_default();
         self.insert_local_scoped(name, LocalInfo {

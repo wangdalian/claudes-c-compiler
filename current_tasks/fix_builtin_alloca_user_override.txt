@@ -1,8 +1,0 @@
-Fix: user-defined __builtin_alloca should override the compiler builtin
-
-The try_lower_builtin_call function in expr_builtins.rs has a guard that checks
-if the user has defined a function with the builtin name. However, this guard
-has an exception for Intrinsic builtins (intended for SSE wrappers) that is too
-broad - it also catches __builtin_alloca, preventing user-defined overrides.
-
-Fix: narrow the SSE intrinsic exception to only match SSE/SIMD-related names.

@@ -156,6 +156,11 @@ pub struct ParamDecl {
     /// E.g., for `void foo(int a, int b[a++])`, the expression `a++` is stored here
     /// so its side effects can be evaluated at function entry during IR lowering.
     pub vla_size_exprs: Vec<Expr>,
+    /// The number of `*` inside the parenthesized declarator for function pointer params.
+    /// `(*fp)` has depth 1, `(**fpp)` has depth 2. A depth >= 2 means pointer-to-function-
+    /// pointer. This distinguishes `int (**fpp)(int)` from `void *(*fp)(size_t)` which
+    /// otherwise have identical CType representations.
+    pub fptr_inner_ptr_depth: u32,
 }
 
 /// Bit masks for boolean flags in `Declaration::flags`.
