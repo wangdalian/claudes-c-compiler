@@ -1,0 +1,17 @@
+Task: Fix struct initialization with scalar value for first member
+Status: in_progress
+Started: 2026-01-30
+
+Problem:
+When a struct member is initialized with a scalar in a designated initializer,
+C allows this and interprets it as initializing the first member of the inner
+struct. For example:
+
+  typedef struct { int a; int b; } inner_t;
+  typedef struct { int x; inner_t y; } outer_t;
+  outer_t o = { .x = 1, .y = 42 };  // y.a should be 42, y.b should be 0
+
+Our compiler currently drops the scalar value (y.a ends up as 0).
+GCC and Clang both handle this correctly.
+
+This affects: yyjson project (test_json_patch fails on all 4 architectures)
