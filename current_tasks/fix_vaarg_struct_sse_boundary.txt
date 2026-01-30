@@ -17,4 +17,8 @@ before fetching from registers.
 
 Affects: x86-64 only (the SysV AMD64 ABI register save area mechanism)
 
-Status: in_progress
+Status: completed
+Note: Already fixed by prior work. lower_va_arg_struct already routes ALL x86-64
+structs through VaArgStruct, and emit_va_arg_struct_ex_impl correctly checks
+fp_threshold = 176 - (fp_needed * 16) to atomically verify all SSE slots are
+available before using the register path.
