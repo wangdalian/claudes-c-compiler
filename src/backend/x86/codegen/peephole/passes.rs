@@ -2500,16 +2500,27 @@ fn eliminate_loop_trampolines(store: &mut LineStore, infos: &mut [LineInfo]) -> 
 
             let copy_idx = copy_idx.unwrap();
 
-            // Verify: on the fall-through path (after the branch), dst_fam is NOT
-            // read before being overwritten. If it is, the fall-through code expects
-            // the PRE-modification value of dst, but after coalescing, dst holds the
-            // POST-modification value.
+            // Verify: on the fall-through path (after the branch), the coalescing
+            // is safe. Two conditions must hold:
+            //
+            // 1. dst_fam is NOT read before being overwritten. After coalescing,
+            //    dst holds the POST-modification value, but the fall-through code
+            //    might expect the PRE-modification value.
+            //
+            // 2. src_fam is NOT read before being overwritten. After coalescing,
+            //    src_fam is never written (the initial copy is NOPped and the
+            //    modifications target dst_fam instead), so any fall-through read
+            //    of src_fam would see a stale/uninitialized value.
             //
             // Conservative approach: scan forward from the branch until we hit a
-            // ret or unconditional jmp. If dst_fam is read (by reg_refs) by any
-            // instruction before being overwritten, bail out.
+            // ret or unconditional jmp. If either register is read before being
+            // overwritten, bail out.
+            let check_regs = [dst_fam, src_fam];
             let mut fall_through_safe = true;
             let mut m = branch_idx + 1;
+            // Track whether each register has been killed (overwritten) on the
+            // fall-through path so far.
+            let mut killed = [false; 2];
             while m < len {
                 if infos[m].is_nop() || infos[m].kind == LineKind::Empty
                     || infos[m].kind == LineKind::Label {
@@ -2522,29 +2533,39 @@ fn eliminate_loop_trampolines(store: &mut LineStore, infos: &mut [LineInfo]) -> 
                     break;
                 }
                 // Conditional jumps: fall-through continues past them, but they
-                // might also jump to code that uses dst. Conservatively bail out
-                // if we encounter a conditional jump (the analysis would need to
-                // check both paths which is too complex).
+                // might also jump to code that uses the registers. Conservatively
+                // bail out since the analysis would need to check both paths.
                 if infos[m].kind == LineKind::CondJmp {
-                    // Check if dst_fam is used before this conditional jump
-                    // We've already been checking, so just stop - the code after
-                    // the conditional is too complex to analyze.
+                    fall_through_safe = false;
                     break;
                 }
-                // Check if dst_fam is written (then old value is dead)
-                let writes_dst = match infos[m].kind {
-                    LineKind::Other { dest_reg } => dest_reg == dst_fam,
-                    LineKind::LoadRbp { reg, .. } => reg == dst_fam,
-                    LineKind::SetCC { reg } => reg == dst_fam,
-                    LineKind::Pop { reg } => reg == dst_fam,
-                    _ => false,
-                };
-                if writes_dst {
-                    break; // dst is overwritten, so old value is dead
+                for i in 0..2 {
+                    if killed[i] {
+                        continue;
+                    }
+                    let reg = check_regs[i];
+                    // Check if reg is read (including by stores that reference it)
+                    if infos[m].reg_refs & (1u16 << reg) != 0 {
+                        fall_through_safe = false;
+                        break;
+                    }
+                    // Check if reg is written (then old value is dead)
+                    let writes_reg = match infos[m].kind {
+                        LineKind::Other { dest_reg } => dest_reg == reg,
+                        LineKind::LoadRbp { reg: r, .. } => r == reg,
+                        LineKind::SetCC { reg: r } => r == reg,
+                        LineKind::Pop { reg: r } => r == reg,
+                        _ => false,
+                    };
+                    if writes_reg {
+                        killed[i] = true;
+                    }
                 }
-                // Check if dst_fam is read (including by stores that reference it)
-                if infos[m].reg_refs & (1u16 << dst_fam) != 0 {
-                    fall_through_safe = false;
+                if !fall_through_safe {
+                    break;
+                }
+                // If both registers are killed, no further checking needed
+                if killed[0] && killed[1] {
                     break;
                 }
                 m += 1;

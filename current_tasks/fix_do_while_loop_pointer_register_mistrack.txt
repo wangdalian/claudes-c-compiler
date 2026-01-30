@@ -9,9 +9,15 @@ Example:
   do { in++; } while (tbl[(int)*in]);
   return in - start;  // uses wrong register for 'in'
 
-Root cause: The register allocator or codegen loses track of which register
-holds the pointer variable after the loop back-edge. The loop correctly
-increments r10, but the post-loop code reads from r11 (uninitialized).
+Root cause: The peephole optimizer's eliminate_loop_trampolines pass performed
+register coalescing (NOPping movq %r10, %r11 and rewriting addq to target r10
+directly) without checking that r11 (src_fam) was still live on the fall-through
+path after the loop. The fall-through code read r11 expecting the incremented
+pointer but got a stale/uninitialized value.
 
-Affects: lacc (all tests fail), likely many other projects with similar patterns
-Status: in_progress
+Fix: Extended the fall-through safety analysis to check both dst_fam AND src_fam
+for liveness. Also fixed the CondJmp case to properly bail out (was breaking with
+fall_through_safe=true, contradicting the conservative intent).
+
+Affects: lacc (all 269 x86 tests failed, now 155 pass), likely other projects
+Status: complete
