@@ -1,5 +1,5 @@
-//! RISC-V sub-word atomic operations and software implementations of
-//! CLZ/CTZ/BSWAP/POPCOUNT builtins.
+//! RISC-V sub-word atomic operations, atomic load/store/RMW/CAS, fence,
+//! and software implementations of CLZ/CTZ/BSWAP/POPCOUNT builtins.
 //!
 //! RISC-V only provides word (32-bit) and doubleword (64-bit) atomic instructions
 //! (AMO and LR/SC). For sub-word types (I8/U8/I16/U16), this module implements
@@ -8,7 +8,7 @@
 //! zeros, count trailing zeros, byte swap, and population count for targets that
 //! lack the Zbb extension.
 
-use crate::ir::ir::{AtomicOrdering, AtomicRmwOp};
+use crate::ir::ir::{AtomicOrdering, AtomicRmwOp, Operand, Value};
 use crate::common::types::IrType;
 use crate::backend::state::CodegenState;
 use super::codegen::RiscvCodegen;
@@ -425,5 +425,157 @@ impl RiscvCodegen {
         self.state.emit_fmt(format_args!("    j {}", loop_label));
         self.state.emit_fmt(format_args!("{}:", done_label));
         self.state.emit("    mv t0, t1");
+    }
+
+    // ---- Trait-level atomic operations (delegated from ArchCodegen) ----
+
+    pub(super) fn emit_atomic_rmw_impl(&mut self, dest: &Value, op: AtomicRmwOp, ptr: &Operand, val: &Operand, ty: IrType, ordering: AtomicOrdering) {
+        // Load ptr into t1, val into t2
+        self.operand_to_t0(ptr);
+        self.state.emit("    mv t1, t0"); // t1 = ptr
+        self.operand_to_t0(val);
+        self.state.emit("    mv t2, t0"); // t2 = val
+
+        let aq_rl = Self::amo_ordering(ordering);
+
+        if Self::is_subword_type(ty) {
+            self.emit_subword_atomic_rmw(op, ty, aq_rl);
+        } else {
+            let suffix = Self::amo_width_suffix(ty);
+            match op {
+                AtomicRmwOp::Add => {
+                    self.state.emit_fmt(format_args!("    amoadd.{}{} t0, t2, (t1)", suffix, aq_rl));
+                }
+                AtomicRmwOp::Sub => {
+                    self.state.emit("    neg t2, t2");
+                    self.state.emit_fmt(format_args!("    amoadd.{}{} t0, t2, (t1)", suffix, aq_rl));
+                }
+                AtomicRmwOp::And => {
+                    self.state.emit_fmt(format_args!("    amoand.{}{} t0, t2, (t1)", suffix, aq_rl));
+                }
+                AtomicRmwOp::Or => {
+                    self.state.emit_fmt(format_args!("    amoor.{}{} t0, t2, (t1)", suffix, aq_rl));
+                }
+                AtomicRmwOp::Xor => {
+                    self.state.emit_fmt(format_args!("    amoxor.{}{} t0, t2, (t1)", suffix, aq_rl));
+                }
+                AtomicRmwOp::Xchg => {
+                    self.state.emit_fmt(format_args!("    amoswap.{}{} t0, t2, (t1)", suffix, aq_rl));
+                }
+                AtomicRmwOp::Nand => {
+                    let loop_label = self.state.fresh_label("atomic_nand");
+                    self.state.emit_fmt(format_args!("{}:", loop_label));
+                    self.state.emit_fmt(format_args!("    lr.{}{} t0, (t1)", suffix, aq_rl));
+                    self.state.emit("    and t3, t0, t2");
+                    self.state.emit("    not t3, t3");
+                    self.state.emit_fmt(format_args!("    sc.{}{} t4, t3, (t1)", suffix, aq_rl));
+                    self.state.emit_fmt(format_args!("    bnez t4, {}", loop_label));
+                }
+                AtomicRmwOp::TestAndSet => {
+                    self.state.emit("    li t2, 1");
+                    self.state.emit_fmt(format_args!("    amoswap.{}{} t0, t2, (t1)", suffix, aq_rl));
+                }
+            }
+        }
+        Self::sign_extend_riscv(&mut self.state, ty);
+        self.store_t0_to(dest);
+    }
+
+    pub(super) fn emit_atomic_cmpxchg_impl(&mut self, dest: &Value, ptr: &Operand, expected: &Operand, desired: &Operand, ty: IrType, ordering: AtomicOrdering, _failure_ordering: AtomicOrdering, returns_bool: bool) {
+        self.operand_to_t0(ptr);
+        self.state.emit("    mv t1, t0");
+        self.operand_to_t0(desired);
+        self.state.emit("    mv t3, t0");
+        self.operand_to_t0(expected);
+        self.state.emit("    mv t2, t0");
+
+        let aq_rl = Self::amo_ordering(ordering);
+
+        if Self::is_subword_type(ty) {
+            self.emit_subword_atomic_cmpxchg(ty, aq_rl, returns_bool);
+        } else {
+            let suffix = Self::amo_width_suffix(ty);
+
+            let loop_label = self.state.fresh_label("cas_loop");
+            let fail_label = self.state.fresh_label("cas_fail");
+            let done_label = self.state.fresh_label("cas_done");
+
+            self.state.emit_fmt(format_args!("{}:", loop_label));
+            self.state.emit_fmt(format_args!("    lr.{}{} t0, (t1)", suffix, aq_rl));
+            self.state.emit_fmt(format_args!("    bne t0, t2, {}", fail_label));
+            self.state.emit_fmt(format_args!("    sc.{}{} t4, t3, (t1)", suffix, aq_rl));
+            self.state.emit_fmt(format_args!("    bnez t4, {}", loop_label));
+            if returns_bool {
+                self.state.emit("    li t0, 1");
+            }
+            self.state.emit_fmt(format_args!("    j {}", done_label));
+            self.state.emit_fmt(format_args!("{}:", fail_label));
+            if returns_bool {
+                self.state.emit("    li t0, 0");
+            }
+            self.state.emit_fmt(format_args!("{}:", done_label));
+        }
+        self.store_t0_to(dest);
+    }
+
+    pub(super) fn emit_atomic_load_impl(&mut self, dest: &Value, ptr: &Operand, ty: IrType, ordering: AtomicOrdering) {
+        self.operand_to_t0(ptr);
+        if Self::is_subword_type(ty) {
+            if matches!(ordering, AtomicOrdering::SeqCst) {
+                self.state.emit("    fence rw, rw");
+            }
+            match ty {
+                IrType::I8 => self.state.emit("    lb t0, 0(t0)"),
+                IrType::U8 => self.state.emit("    lbu t0, 0(t0)"),
+                IrType::I16 => self.state.emit("    lh t0, 0(t0)"),
+                IrType::U16 => self.state.emit("    lhu t0, 0(t0)"),
+                _ => unreachable!("non-subword type in subword atomic load: {:?}", ty),
+            }
+            if matches!(ordering, AtomicOrdering::Acquire | AtomicOrdering::AcqRel | AtomicOrdering::SeqCst) {
+                self.state.emit("    fence r, rw");
+            }
+        } else {
+            let suffix = Self::amo_width_suffix(ty);
+            let lr_suffix = match ordering {
+                AtomicOrdering::Relaxed | AtomicOrdering::Release => "",
+                AtomicOrdering::Acquire => ".aq",
+                AtomicOrdering::AcqRel | AtomicOrdering::SeqCst => ".aqrl",
+            };
+            self.state.emit_fmt(format_args!("    lr.{}{} t0, (t0)", suffix, lr_suffix));
+            Self::sign_extend_riscv(&mut self.state, ty);
+        }
+        self.store_t0_to(dest);
+    }
+
+    pub(super) fn emit_atomic_store_impl(&mut self, ptr: &Operand, val: &Operand, ty: IrType, ordering: AtomicOrdering) {
+        self.operand_to_t0(val);
+        self.state.emit("    mv t1, t0"); // t1 = val
+        self.operand_to_t0(ptr);
+        if Self::is_subword_type(ty) {
+            if matches!(ordering, AtomicOrdering::Release | AtomicOrdering::AcqRel | AtomicOrdering::SeqCst) {
+                self.state.emit("    fence rw, w");
+            }
+            match ty {
+                IrType::I8 | IrType::U8 => self.state.emit("    sb t1, 0(t0)"),
+                IrType::I16 | IrType::U16 => self.state.emit("    sh t1, 0(t0)"),
+                _ => unreachable!("non-subword type in subword atomic store: {:?}", ty),
+            }
+            if matches!(ordering, AtomicOrdering::SeqCst) {
+                self.state.emit("    fence rw, rw");
+            }
+        } else {
+            let aq_rl = Self::amo_ordering(ordering);
+            let suffix = Self::amo_width_suffix(ty);
+            self.state.emit_fmt(format_args!("    amoswap.{}{} zero, t1, (t0)", suffix, aq_rl));
+        }
+    }
+
+    pub(super) fn emit_fence_impl(&mut self, ordering: AtomicOrdering) {
+        match ordering {
+            AtomicOrdering::Relaxed => {}
+            AtomicOrdering::Acquire => self.state.emit("    fence r, rw"),
+            AtomicOrdering::Release => self.state.emit("    fence rw, w"),
+            AtomicOrdering::AcqRel | AtomicOrdering::SeqCst => self.state.emit("    fence rw, rw"),
+        }
     }
 }
