@@ -1,4 +1,9 @@
 pub(crate) mod analysis;
+pub(crate) mod constants;
+pub(crate) mod instruction;
+pub(crate) mod intrinsics;
 pub(crate) mod ir;
 pub(crate) mod lowering;
 pub(crate) mod mem2reg;
+pub(crate) mod module;
+pub(crate) mod ops;
