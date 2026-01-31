@@ -1,45 +1,51 @@
 QEMU Build Support Status
 =========================
 
-Summary: QEMU 10.2.50 can be compiled (1700+ C files) using ccc-x86, but has
-runtime issues. The compound literal array bug that caused CPU double-registration
-has been fixed. Remaining issue is QOM (QEMU Object Model) type system failures.
+Summary: QEMU 10.2.50 can be compiled (1700+ C files) and linked using ccc-x86.
+--version and -cpu help work correctly. System emulation (kernel boot) still has
+a runtime issue in JSON/QMP event serialization.
 
 Build Status:
 - Configure: PASS
 - Compilation: PASS (with one file workaround - qapi-introspect.c routes to gcc)
 - Linking: PASS (after response file support was added)
-- Runtime: PARTIAL - "--version" works, but type system errors on CPU listing
+- Runtime: PARTIAL - "--version" and "-cpu help" work, but kernel boot crashes
+  with JSON parse error in QMP event building
 
 Build Steps:
-  1. Use wrapper script that routes qapi-introspect.c to gcc
-  2. Configure: CC=/tmp/ccc_wrapper.sh CXX=g++ ./configure --target-list=x86_64-softmmu
-  3. Build: ninja -C build qemu-system-x86_64
+  1. Copy QEMU source to writable location (cp -a /deps/qemu/. /tmp/qemu_src/)
+  2. Copy subprojects from nix-template (keycodemapdb, berkeley-softfloat-3, etc.)
+  3. Use wrapper script that routes qapi-introspect.c to gcc
+  4. Configure out-of-tree: CC=wrapper CXX=g++ /tmp/qemu_src/configure
+     --target-list=x86_64-softmmu --disable-docs --disable-gtk --disable-sdl
+     --disable-opengl --disable-virglrenderer --disable-spice --disable-vte
+     --disable-curses
+  5. Build: ninja -j$(nproc) qemu-system-x86_64
 
 Known Issues Fixed:
   1. __has_attribute macro aliasing (cleanup attribute) - FIXED
   2. Bitfield ICE in global_init_compound_struct - FIXED
   3. Response file (@file) support - FIXED
   4. Compound literal array init (CPU double-registration) - FIXED
+  5. Bool pointer array init (migration crash) - FIXED
+     Array of bool* was incorrectly normalizing pointer values to 0/1
+     instead of storing actual addresses. Fixed in lower_1d_array_init
+     by guarding is_bool_elem_array against is_array_of_pointers.
 
 Remaining Issues:
   1. qapi-introspect.c parse failure via ninja (works fine manually, possibly
      a state/concurrency issue in the preprocessor) - WORKAROUND: gcc wrapper
-  2. QOM type system runtime failure:
-     "VMSTATE_IF_CLASS: Object 0x... is not an instance of type vmstate-if"
-     This is likely a codegen bug affecting:
-     - QOM type info struct initialization (TypeInfo structs use function pointers
-       and class_size/instance_size fields)
-     - The class checker macros (DECLARE_CLASS_CHECKERS) which use
-       object_class_dynamic_cast_assert
-     - Possibly related to struct member offsets or function pointer storage
-
-     Investigation needed: Compare QOM TypeInfo struct layout and TypeImpl
-     struct layout between gcc and ccc builds. Focus on:
-     - object.c: type_new(), type_initialize(), object_class_dynamic_cast_assert()
-     - The INTERFACE_CLASS_CHECK / DECLARE_CLASS_CHECKERS macro expansion
-     - Whether all the TypeInfo compound literals used in type_register_static()
-       are correctly initialized (these use compound struct literals extensively)
+  2. JSON parse error during kernel boot:
+     "Unexpected error in json_message_process_token()" / "JSON parse error, stray '{'"
+     Crashes in qobject_from_jsonv() -> qdict_from_jsonf_nofail() when building
+     QMP event dict during vm_start(). The backtrace:
+     - qapi_event_send_resume() calls qmp_event_build_dict()
+     - qmp_event_build_dict() calls qdict_from_jsonf_nofail()
+     - qdict_from_jsonf_nofail() -> qobject_from_vjsonf_nofail() -> qobject_from_jsonv()
+     - JSON parsing fails with "stray '{'"
+     This might be a variadic function argument passing issue or a string
+     formatting bug affecting how JSON template strings are passed through
+     the va_list/printf-style argument chain.
 
 Priority: Medium - QEMU can be built from gcc for testing while kernel compilation
 is the primary focus.

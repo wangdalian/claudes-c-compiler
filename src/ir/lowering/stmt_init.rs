@@ -965,7 +965,8 @@ impl Lowerer {
         }
 
         let is_complex_elem_array = self.is_type_complex(&decl.type_spec);
-        let is_bool_elem_array = self.is_type_bool(&decl.type_spec);
+        let is_bool_elem_array = self.is_type_bool(&decl.type_spec)
+            && !da.is_array_of_pointers && !da.is_array_of_func_ptrs;
 
         let elem_store_ty = if da.is_array_of_pointers || da.is_array_of_func_ptrs { IrType::Ptr } else { da.elem_ir_ty };
 
