@@ -126,18 +126,26 @@ impl Lowerer {
 
             let explicit_align = self.compute_explicit_alignment(decl, type_spec);
 
+            // Incorporate the type's natural alignment (e.g., a struct with
+            // __attribute__((aligned(16))) fields inherits 16-byte alignment).
+            // Without this, `struct S x;` where S requires 16-byte alignment
+            // would get align=0 (default platform alignment) instead of 16,
+            // causing misaligned stack slots on i686.
+            let type_align = self.alignof_type(type_spec);
+            let alloca_align = if type_align > explicit_align { type_align } else { explicit_align };
+
             let alloca = if let Some(vla_size_val) = vla_size {
-                self.emit_vla_alloca(vla_size_val, explicit_align)
+                self.emit_vla_alloca(vla_size_val, alloca_align)
             } else {
                 self.emit_entry_alloca(
                     if da.is_array || da.is_struct || is_complex { IrType::Ptr } else { da.var_ty },
                     da.actual_alloc_size,
-                    explicit_align,
+                    alloca_align,
                     decl.is_volatile(),
                 )
             };
 
-            self.register_local_var(decl, declarator, type_spec, &da, alloca, explicit_align, vla_size);
+            self.register_local_var(decl, declarator, type_spec, &da, alloca, alloca_align, vla_size);
             self.track_fptr_sig(declarator, type_spec);
 
             if let Some(ref init) = declarator.init {

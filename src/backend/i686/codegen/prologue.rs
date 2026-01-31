@@ -80,12 +80,25 @@ impl I686Codegen {
 
         let callee_saved_bytes = self.used_callee_saved.len() as i64 * 4;
 
+        // The bias ensures that slots requiring >= 16-byte alignment land on
+        // 16-byte boundaries at runtime. The correct value depends on the
+        // stack overhead between the 16-byte-aligned call-site ESP and the
+        // reference point for slot addressing:
+        //
+        //   With frame pointer:   return addr (4) + saved ebp (4) = 8
+        //     Address of slot -X = EBP - X = (16n - 8) - X, aligned when X ≡ 8 mod 16
+        //
+        //   Without frame pointer: return addr (4) only
+        //     Address of slot = 16n - 4 - space, aligned when space ≡ 12 mod 16
+        let omit_fp = self.omit_frame_pointer;
+        let alignment_bias: i64 = if omit_fp { 12 } else { 8 };
+
         calculate_stack_space_common(&mut self.state, func, callee_saved_bytes, |space, alloc_size, align| {
             let effective_align = if align > 0 { align.max(4) } else { 4 };
             let alloc = (alloc_size + 3) & !3;
             let required = space + alloc;
             let new_space = if effective_align >= 16 {
-                let bias = 8i64;
+                let bias = alignment_bias;
                 let a = effective_align;
                 let rem = ((required % a) + a) % a;
                 let needed = if rem <= bias { bias - rem } else { a - rem + bias };
