@@ -2,6 +2,11 @@
 #ifndef _XMMINTRIN_H_INCLUDED
 #define _XMMINTRIN_H_INCLUDED
 
+/* SSE intrinsics are only available on x86/x86-64 targets */
+#if !defined(__x86_64__) && !defined(__i386__) && !defined(__i686__)
+#error "SSE intrinsics (xmmintrin.h) require an x86 target"
+#endif
+
 #include <mmintrin.h>
 
 typedef struct __attribute__((__aligned__(16))) {

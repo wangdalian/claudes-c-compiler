@@ -2,6 +2,11 @@
 #ifndef _PMMINTRIN_H_INCLUDED
 #define _PMMINTRIN_H_INCLUDED
 
+/* SSE3 intrinsics are only available on x86/x86-64 targets */
+#if !defined(__x86_64__) && !defined(__i386__) && !defined(__i686__)
+#error "SSE3 intrinsics (pmmintrin.h) require an x86 target"
+#endif
+
 #include <emmintrin.h>
 
 /* _mm_hadd_ps: horizontal add packed single-precision (HADDPS)

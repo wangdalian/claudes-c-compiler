@@ -1124,4 +1124,577 @@ vreinterpretq_u8_p128(poly128_t __a)
     return __ret;
 }
 
+/* ================================================================
+ * Additional u32/u64 intrinsics for mbedtls, redis, libsodium
+ * ================================================================ */
+
+/* === Create / Duplicate === */
+
+/* vcreate_u32: create uint32x2_t from a raw uint64 value */
+static __inline__ uint32x2_t __attribute__((__always_inline__))
+vcreate_u32(unsigned long long __a)
+{
+    uint32x2_t __ret;
+    __builtin_memcpy(&__ret, &__a, 8);
+    return __ret;
+}
+
+/* vcreate_u64: create uint64x1_t from a raw uint64 value */
+static __inline__ uint64x1_t __attribute__((__always_inline__))
+vcreate_u64(unsigned long long __a)
+{
+    uint64x1_t __ret;
+    __ret.__val[0] = __a;
+    return __ret;
+}
+
+/* vdup_n_u32: duplicate scalar u32 into both lanes of uint32x2_t */
+static __inline__ uint32x2_t __attribute__((__always_inline__))
+vdup_n_u32(unsigned int __a)
+{
+    uint32x2_t __ret;
+    __ret.__val[0] = __a;
+    __ret.__val[1] = __a;
+    return __ret;
+}
+
+/* vdupq_n_u64: duplicate scalar u64 into both lanes of uint64x2_t */
+static __inline__ uint64x2_t __attribute__((__always_inline__))
+vdupq_n_u64(unsigned long long __a)
+{
+    uint64x2_t __ret;
+    __ret.__val[0] = __a;
+    __ret.__val[1] = __a;
+    return __ret;
+}
+
+/* vdupq_n_s32: duplicate scalar s32 into all 4 lanes of int32x4_t */
+static __inline__ int32x4_t __attribute__((__always_inline__))
+vdupq_n_s32(int __a)
+{
+    int32x4_t __ret;
+    __ret.__val[0] = __a;
+    __ret.__val[1] = __a;
+    __ret.__val[2] = __a;
+    __ret.__val[3] = __a;
+    return __ret;
+}
+
+/* === Combine (two D-registers -> one Q-register) === */
+
+/* vcombine_u32: combine two uint32x2_t into uint32x4_t */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+vcombine_u32(uint32x2_t __lo, uint32x2_t __hi)
+{
+    uint32x4_t __ret;
+    __ret.__val[0] = __lo.__val[0];
+    __ret.__val[1] = __lo.__val[1];
+    __ret.__val[2] = __hi.__val[0];
+    __ret.__val[3] = __hi.__val[1];
+    return __ret;
+}
+
+/* === Get low/high halves === */
+
+/* vget_low_u32: get low 64-bit half of uint32x4_t */
+static __inline__ uint32x2_t __attribute__((__always_inline__))
+vget_low_u32(uint32x4_t __a)
+{
+    uint32x2_t __ret;
+    __ret.__val[0] = __a.__val[0];
+    __ret.__val[1] = __a.__val[1];
+    return __ret;
+}
+
+/* vget_high_u32: get high 64-bit half of uint32x4_t */
+static __inline__ uint32x2_t __attribute__((__always_inline__))
+vget_high_u32(uint32x4_t __a)
+{
+    uint32x2_t __ret;
+    __ret.__val[0] = __a.__val[2];
+    __ret.__val[1] = __a.__val[3];
+    return __ret;
+}
+
+/* === Lane access === */
+
+/* vgetq_lane_u64: extract a single lane from uint64x2_t */
+#define vgetq_lane_u64(__a, __lane) ((__a).__val[(__lane)])
+
+/* === Arithmetic: u32 === */
+
+/* vaddq_u32: add uint32x4_t element-wise */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+vaddq_u32(uint32x4_t __a, uint32x4_t __b)
+{
+    uint32x4_t __ret;
+    __ret.__val[0] = __a.__val[0] + __b.__val[0];
+    __ret.__val[1] = __a.__val[1] + __b.__val[1];
+    __ret.__val[2] = __a.__val[2] + __b.__val[2];
+    __ret.__val[3] = __a.__val[3] + __b.__val[3];
+    return __ret;
+}
+
+/* vmulq_u32: multiply uint32x4_t element-wise */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+vmulq_u32(uint32x4_t __a, uint32x4_t __b)
+{
+    uint32x4_t __ret;
+    __ret.__val[0] = __a.__val[0] * __b.__val[0];
+    __ret.__val[1] = __a.__val[1] * __b.__val[1];
+    __ret.__val[2] = __a.__val[2] * __b.__val[2];
+    __ret.__val[3] = __a.__val[3] * __b.__val[3];
+    return __ret;
+}
+
+/* === Arithmetic: u64 === */
+
+/* vaddq_u64: add uint64x2_t element-wise */
+static __inline__ uint64x2_t __attribute__((__always_inline__))
+vaddq_u64(uint64x2_t __a, uint64x2_t __b)
+{
+    uint64x2_t __ret;
+    __ret.__val[0] = __a.__val[0] + __b.__val[0];
+    __ret.__val[1] = __a.__val[1] + __b.__val[1];
+    return __ret;
+}
+
+/* === Bitwise: u32 === */
+
+/* vandq_u32: bitwise AND uint32x4_t */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+vandq_u32(uint32x4_t __a, uint32x4_t __b)
+{
+    uint32x4_t __ret;
+    __ret.__val[0] = __a.__val[0] & __b.__val[0];
+    __ret.__val[1] = __a.__val[1] & __b.__val[1];
+    __ret.__val[2] = __a.__val[2] & __b.__val[2];
+    __ret.__val[3] = __a.__val[3] & __b.__val[3];
+    return __ret;
+}
+
+/* vorrq_u32: bitwise OR uint32x4_t */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+vorrq_u32(uint32x4_t __a, uint32x4_t __b)
+{
+    uint32x4_t __ret;
+    __ret.__val[0] = __a.__val[0] | __b.__val[0];
+    __ret.__val[1] = __a.__val[1] | __b.__val[1];
+    __ret.__val[2] = __a.__val[2] | __b.__val[2];
+    __ret.__val[3] = __a.__val[3] | __b.__val[3];
+    return __ret;
+}
+
+/* veorq_u32: bitwise XOR uint32x4_t */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+veorq_u32(uint32x4_t __a, uint32x4_t __b)
+{
+    uint32x4_t __ret;
+    __ret.__val[0] = __a.__val[0] ^ __b.__val[0];
+    __ret.__val[1] = __a.__val[1] ^ __b.__val[1];
+    __ret.__val[2] = __a.__val[2] ^ __b.__val[2];
+    __ret.__val[3] = __a.__val[3] ^ __b.__val[3];
+    return __ret;
+}
+
+/* === Shift: u32 === */
+
+/* vshlq_n_u32: shift left uint32x4_t by immediate */
+#define vshlq_n_u32(__a, __n) __extension__ ({ \
+    uint32x4_t __r; \
+    __r.__val[0] = (__a).__val[0] << (__n); \
+    __r.__val[1] = (__a).__val[1] << (__n); \
+    __r.__val[2] = (__a).__val[2] << (__n); \
+    __r.__val[3] = (__a).__val[3] << (__n); \
+    __r; \
+})
+
+/* vshrq_n_u32: shift right uint32x4_t by immediate */
+#define vshrq_n_u32(__a, __n) __extension__ ({ \
+    uint32x4_t __r; \
+    __r.__val[0] = (__a).__val[0] >> (__n); \
+    __r.__val[1] = (__a).__val[1] >> (__n); \
+    __r.__val[2] = (__a).__val[2] >> (__n); \
+    __r.__val[3] = (__a).__val[3] >> (__n); \
+    __r; \
+})
+
+/* vsriq_n_u32: shift right and insert - for each lane,
+ * shift __b right by __n, and insert into __a preserving the top __n bits of __a
+ * result[i] = (a[i] & ~((1u<<(32-n))-1)) | (b[i] >> n) */
+#define vsriq_n_u32(__a, __b, __n) __extension__ ({ \
+    uint32x4_t __r; \
+    unsigned int __mask = ~((1u << (32 - (__n))) - 1u); \
+    __r.__val[0] = ((__a).__val[0] & __mask) | ((__b).__val[0] >> (__n)); \
+    __r.__val[1] = ((__a).__val[1] & __mask) | ((__b).__val[1] >> (__n)); \
+    __r.__val[2] = ((__a).__val[2] & __mask) | ((__b).__val[2] >> (__n)); \
+    __r.__val[3] = ((__a).__val[3] & __mask) | ((__b).__val[3] >> (__n)); \
+    __r; \
+})
+
+/* vsliq_n_u32: shift left and insert - for each lane,
+ * shift __b left by __n, and insert into __a preserving the low __n bits of __a */
+#define vsliq_n_u32(__a, __b, __n) __extension__ ({ \
+    uint32x4_t __r; \
+    unsigned int __mask = (1u << (__n)) - 1u; \
+    __r.__val[0] = ((__a).__val[0] & __mask) | ((__b).__val[0] << (__n)); \
+    __r.__val[1] = ((__a).__val[1] & __mask) | ((__b).__val[1] << (__n)); \
+    __r.__val[2] = ((__a).__val[2] & __mask) | ((__b).__val[2] << (__n)); \
+    __r.__val[3] = ((__a).__val[3] & __mask) | ((__b).__val[3] << (__n)); \
+    __r; \
+})
+
+/* === Compare: u8 === */
+
+/* vmaxq_u8: element-wise maximum of uint8x16_t */
+static __inline__ uint8x16_t __attribute__((__always_inline__))
+vmaxq_u8(uint8x16_t __a, uint8x16_t __b)
+{
+    uint8x16_t __ret;
+    for (int __i = 0; __i < 16; __i++)
+        __ret.__val[__i] = __a.__val[__i] > __b.__val[__i] ? __a.__val[__i] : __b.__val[__i];
+    return __ret;
+}
+
+/* === Population count === */
+
+/* vcntq_u8: population count per byte */
+static __inline__ uint8x16_t __attribute__((__always_inline__))
+vcntq_u8(uint8x16_t __a)
+{
+    uint8x16_t __ret;
+    for (int __i = 0; __i < 16; __i++) {
+        unsigned char __v = __a.__val[__i];
+        unsigned char __c = 0;
+        while (__v) { __c += __v & 1; __v >>= 1; }
+        __ret.__val[__i] = __c;
+    }
+    return __ret;
+}
+
+/* === Pairwise add long === */
+
+/* vpaddlq_u8: pairwise add adjacent u8 pairs, result as u16 */
+static __inline__ uint16x8_t __attribute__((__always_inline__))
+vpaddlq_u8(uint8x16_t __a)
+{
+    uint16x8_t __ret;
+    for (int __i = 0; __i < 8; __i++)
+        __ret.__val[__i] = (unsigned short)__a.__val[__i * 2] + (unsigned short)__a.__val[__i * 2 + 1];
+    return __ret;
+}
+
+/* vpaddlq_u16: pairwise add adjacent u16 pairs, result as u32 */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+vpaddlq_u16(uint16x8_t __a)
+{
+    uint32x4_t __ret;
+    for (int __i = 0; __i < 4; __i++)
+        __ret.__val[__i] = (unsigned int)__a.__val[__i * 2] + (unsigned int)__a.__val[__i * 2 + 1];
+    return __ret;
+}
+
+/* vpaddlq_u32: pairwise add adjacent u32 pairs, result as u64 */
+static __inline__ uint64x2_t __attribute__((__always_inline__))
+vpaddlq_u32(uint32x4_t __a)
+{
+    uint64x2_t __ret;
+    __ret.__val[0] = (unsigned long long)__a.__val[0] + (unsigned long long)__a.__val[1];
+    __ret.__val[1] = (unsigned long long)__a.__val[2] + (unsigned long long)__a.__val[3];
+    return __ret;
+}
+
+/* vpadalq_u8: pairwise add and accumulate long u8 -> u16 */
+static __inline__ uint16x8_t __attribute__((__always_inline__))
+vpadalq_u8(uint16x8_t __acc, uint8x16_t __a)
+{
+    uint16x8_t __ret;
+    for (int __i = 0; __i < 8; __i++)
+        __ret.__val[__i] = __acc.__val[__i] + (unsigned short)__a.__val[__i * 2] + (unsigned short)__a.__val[__i * 2 + 1];
+    return __ret;
+}
+
+/* === Extract / Rotate === */
+
+/* vextq_u64: extract from pair of uint64x2_t */
+#define vextq_u64(__a, __b, __n) __extension__ ({ \
+    uint64x2_t __r; \
+    if ((__n) == 0) { \
+        __r = (__a); \
+    } else { \
+        __r.__val[0] = (__a).__val[1]; \
+        __r.__val[1] = (__b).__val[0]; \
+    } \
+    __r; \
+})
+
+/* vextq_u32: extract from pair of uint32x4_t */
+#define vextq_u32(__a, __b, __n) __extension__ ({ \
+    uint32x4_t __r; \
+    unsigned int __tmp[8]; \
+    __tmp[0] = (__a).__val[0]; __tmp[1] = (__a).__val[1]; \
+    __tmp[2] = (__a).__val[2]; __tmp[3] = (__a).__val[3]; \
+    __tmp[4] = (__b).__val[0]; __tmp[5] = (__b).__val[1]; \
+    __tmp[6] = (__b).__val[2]; __tmp[7] = (__b).__val[3]; \
+    __r.__val[0] = __tmp[(__n)]; __r.__val[1] = __tmp[(__n) + 1]; \
+    __r.__val[2] = __tmp[(__n) + 2]; __r.__val[3] = __tmp[(__n) + 3]; \
+    __r; \
+})
+
+/* === Narrowing === */
+
+/* vmovn_u64: narrow uint64x2_t to uint32x2_t (take low 32 bits of each lane) */
+static __inline__ uint32x2_t __attribute__((__always_inline__))
+vmovn_u64(uint64x2_t __a)
+{
+    uint32x2_t __ret;
+    __ret.__val[0] = (unsigned int)__a.__val[0];
+    __ret.__val[1] = (unsigned int)__a.__val[1];
+    return __ret;
+}
+
+/* vmovn_u32: narrow uint32x4_t to uint16x4_t (take low 16 bits of each lane) */
+static __inline__ uint16x4_t __attribute__((__always_inline__))
+vmovn_u32(uint32x4_t __a)
+{
+    uint16x4_t __ret;
+    __ret.__val[0] = (unsigned short)__a.__val[0];
+    __ret.__val[1] = (unsigned short)__a.__val[1];
+    __ret.__val[2] = (unsigned short)__a.__val[2];
+    __ret.__val[3] = (unsigned short)__a.__val[3];
+    return __ret;
+}
+
+/* vshrn_n_u64: shift right and narrow uint64x2_t to uint32x2_t */
+#define vshrn_n_u64(__a, __n) __extension__ ({ \
+    uint32x2_t __r; \
+    __r.__val[0] = (unsigned int)((__a).__val[0] >> (__n)); \
+    __r.__val[1] = (unsigned int)((__a).__val[1] >> (__n)); \
+    __r; \
+})
+
+/* vshrn_n_u32: shift right and narrow uint32x4_t to uint16x4_t */
+#define vshrn_n_u32(__a, __n) __extension__ ({ \
+    uint16x4_t __r; \
+    __r.__val[0] = (unsigned short)((__a).__val[0] >> (__n)); \
+    __r.__val[1] = (unsigned short)((__a).__val[1] >> (__n)); \
+    __r.__val[2] = (unsigned short)((__a).__val[2] >> (__n)); \
+    __r.__val[3] = (unsigned short)((__a).__val[3] >> (__n)); \
+    __r; \
+})
+
+/* === Widening multiply-accumulate === */
+
+/* vmlal_u32: widening multiply-accumulate u32 -> u64
+ * result[i] = acc[i] + (u64)a[i] * (u64)b[i] */
+static __inline__ uint64x2_t __attribute__((__always_inline__))
+vmlal_u32(uint64x2_t __acc, uint32x2_t __a, uint32x2_t __b)
+{
+    uint64x2_t __ret;
+    __ret.__val[0] = __acc.__val[0] + (unsigned long long)__a.__val[0] * (unsigned long long)__b.__val[0];
+    __ret.__val[1] = __acc.__val[1] + (unsigned long long)__a.__val[1] * (unsigned long long)__b.__val[1];
+    return __ret;
+}
+
+/* vmlal_high_u32: widening multiply-accumulate of high halves */
+static __inline__ uint64x2_t __attribute__((__always_inline__))
+vmlal_high_u32(uint64x2_t __acc, uint32x4_t __a, uint32x4_t __b)
+{
+    uint64x2_t __ret;
+    __ret.__val[0] = __acc.__val[0] + (unsigned long long)__a.__val[2] * (unsigned long long)__b.__val[2];
+    __ret.__val[1] = __acc.__val[1] + (unsigned long long)__a.__val[3] * (unsigned long long)__b.__val[3];
+    return __ret;
+}
+
+/* vmlal_low_u32: widening multiply-accumulate of low halves */
+static __inline__ uint64x2_t __attribute__((__always_inline__))
+vmlal_low_u32(uint64x2_t __acc, uint32x4_t __a, uint32x4_t __b)
+{
+    uint64x2_t __ret;
+    __ret.__val[0] = __acc.__val[0] + (unsigned long long)__a.__val[0] * (unsigned long long)__b.__val[0];
+    __ret.__val[1] = __acc.__val[1] + (unsigned long long)__a.__val[1] * (unsigned long long)__b.__val[1];
+    return __ret;
+}
+
+/* === Unzip / De-interleave === */
+
+/* vuzpq_u32: unzip (de-interleave) two uint32x4_t vectors
+ * result.val[0] = {a[0], a[2], b[0], b[2]}  (even elements)
+ * result.val[1] = {a[1], a[3], b[1], b[3]}  (odd elements) */
+static __inline__ uint32x4x2_t __attribute__((__always_inline__))
+vuzpq_u32(uint32x4_t __a, uint32x4_t __b)
+{
+    uint32x4x2_t __ret;
+    __ret.val[0].__val[0] = __a.__val[0];
+    __ret.val[0].__val[1] = __a.__val[2];
+    __ret.val[0].__val[2] = __b.__val[0];
+    __ret.val[0].__val[3] = __b.__val[2];
+    __ret.val[1].__val[0] = __a.__val[1];
+    __ret.val[1].__val[1] = __a.__val[3];
+    __ret.val[1].__val[2] = __b.__val[1];
+    __ret.val[1].__val[3] = __b.__val[3];
+    return __ret;
+}
+
+/* === Reinterpret casts: u32 <-> u64 === */
+
+/* vreinterpretq_u32_u64: reinterpret uint64x2_t as uint32x4_t */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+vreinterpretq_u32_u64(uint64x2_t __a)
+{
+    uint32x4_t __ret;
+    __builtin_memcpy(&__ret, &__a, 16);
+    return __ret;
+}
+
+/* vreinterpretq_u64_u32: reinterpret uint32x4_t as uint64x2_t */
+static __inline__ uint64x2_t __attribute__((__always_inline__))
+vreinterpretq_u64_u32(uint32x4_t __a)
+{
+    uint64x2_t __ret;
+    __builtin_memcpy(&__ret, &__a, 16);
+    return __ret;
+}
+
+/* vreinterpretq_s32_u32: reinterpret uint32x4_t as int32x4_t */
+static __inline__ int32x4_t __attribute__((__always_inline__))
+vreinterpretq_s32_u32(uint32x4_t __a)
+{
+    int32x4_t __ret;
+    __builtin_memcpy(&__ret, &__a, 16);
+    return __ret;
+}
+
+/* vreinterpretq_u32_s32: reinterpret int32x4_t as uint32x4_t */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+vreinterpretq_u32_s32(int32x4_t __a)
+{
+    uint32x4_t __ret;
+    __builtin_memcpy(&__ret, &__a, 16);
+    return __ret;
+}
+
+/* vreinterpretq_u16_u32: reinterpret uint32x4_t as uint16x8_t */
+static __inline__ uint16x8_t __attribute__((__always_inline__))
+vreinterpretq_u16_u32(uint32x4_t __a)
+{
+    uint16x8_t __ret;
+    __builtin_memcpy(&__ret, &__a, 16);
+    return __ret;
+}
+
+/* vreinterpretq_u32_u16: reinterpret uint16x8_t as uint32x4_t */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+vreinterpretq_u32_u16(uint16x8_t __a)
+{
+    uint32x4_t __ret;
+    __builtin_memcpy(&__ret, &__a, 16);
+    return __ret;
+}
+
+/* === SHA-256 crypto intrinsics (software implementation) === */
+/* Used by mbedtls SHA-256 hardware acceleration. */
+
+/* vsha256su0q_u32: SHA-256 schedule update 0 */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+vsha256su0q_u32(uint32x4_t __w0_3, uint32x4_t __w4_7)
+{
+    uint32x4_t __ret;
+    for (int __i = 0; __i < 4; __i++) {
+        unsigned int __w = (__i < 3) ? __w0_3.__val[__i + 1] : __w4_7.__val[0];
+        /* sigma0: ROTR(7) ^ ROTR(18) ^ SHR(3) */
+        unsigned int __s0 = ((__w >> 7) | (__w << 25)) ^ ((__w >> 18) | (__w << 14)) ^ (__w >> 3);
+        __ret.__val[__i] = __w0_3.__val[__i] + __s0;
+    }
+    return __ret;
+}
+
+/* vsha256su1q_u32: SHA-256 schedule update 1 */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+vsha256su1q_u32(uint32x4_t __tw0_3, uint32x4_t __w8_11, uint32x4_t __w12_15)
+{
+    uint32x4_t __ret;
+    unsigned int __wm2[4];
+    __wm2[0] = __w12_15.__val[2];
+    __wm2[1] = __w12_15.__val[3];
+    __wm2[2] = __tw0_3.__val[0];
+    __wm2[3] = __tw0_3.__val[1];
+    for (int __i = 0; __i < 4; __i++) {
+        unsigned int __w = __wm2[__i];
+        /* sigma1: ROTR(17) ^ ROTR(19) ^ SHR(10) */
+        unsigned int __s1 = ((__w >> 17) | (__w << 15)) ^ ((__w >> 19) | (__w << 13)) ^ (__w >> 10);
+        unsigned int __w9;
+        if (__i < 2) __w9 = __w8_11.__val[__i + 2];
+        else __w9 = __w12_15.__val[__i - 2];
+        __ret.__val[__i] = __tw0_3.__val[__i] + __s1 + __w9;
+    }
+    return __ret;
+}
+
+/* vsha256hq_u32: SHA-256 hash update (part 1) */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+vsha256hq_u32(uint32x4_t __hash_abcd, uint32x4_t __hash_efgh, uint32x4_t __wk)
+{
+    unsigned int __a = __hash_abcd.__val[0], __b = __hash_abcd.__val[1];
+    unsigned int __c = __hash_abcd.__val[2], __d = __hash_abcd.__val[3];
+    unsigned int __e = __hash_efgh.__val[0], __f = __hash_efgh.__val[1];
+    unsigned int __g = __hash_efgh.__val[2], __h = __hash_efgh.__val[3];
+    for (int __i = 0; __i < 4; __i++) {
+        unsigned int __S1 = ((__e >> 6) | (__e << 26)) ^ ((__e >> 11) | (__e << 21)) ^ ((__e >> 25) | (__e << 7));
+        unsigned int __ch = (__e & __f) ^ (~__e & __g);
+        unsigned int __temp1 = __h + __S1 + __ch + __wk.__val[__i];
+        unsigned int __S0 = ((__a >> 2) | (__a << 30)) ^ ((__a >> 13) | (__a << 19)) ^ ((__a >> 22) | (__a << 10));
+        unsigned int __maj = (__a & __b) ^ (__a & __c) ^ (__b & __c);
+        unsigned int __temp2 = __S0 + __maj;
+        __h = __g; __g = __f; __f = __e; __e = __d + __temp1;
+        __d = __c; __c = __b; __b = __a; __a = __temp1 + __temp2;
+    }
+    uint32x4_t __ret;
+    __ret.__val[0] = __a; __ret.__val[1] = __b;
+    __ret.__val[2] = __c; __ret.__val[3] = __d;
+    return __ret;
+}
+
+/* vsha256h2q_u32: SHA-256 hash update (part 2) */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+vsha256h2q_u32(uint32x4_t __hash_efgh, uint32x4_t __hash_abcd, uint32x4_t __wk)
+{
+    unsigned int __a = __hash_abcd.__val[0], __b = __hash_abcd.__val[1];
+    unsigned int __c = __hash_abcd.__val[2], __d = __hash_abcd.__val[3];
+    unsigned int __e = __hash_efgh.__val[0], __f = __hash_efgh.__val[1];
+    unsigned int __g = __hash_efgh.__val[2], __h = __hash_efgh.__val[3];
+    for (int __i = 0; __i < 4; __i++) {
+        unsigned int __S1 = ((__e >> 6) | (__e << 26)) ^ ((__e >> 11) | (__e << 21)) ^ ((__e >> 25) | (__e << 7));
+        unsigned int __ch = (__e & __f) ^ (~__e & __g);
+        unsigned int __temp1 = __h + __S1 + __ch + __wk.__val[__i];
+        unsigned int __S0 = ((__a >> 2) | (__a << 30)) ^ ((__a >> 13) | (__a << 19)) ^ ((__a >> 22) | (__a << 10));
+        unsigned int __maj = (__a & __b) ^ (__a & __c) ^ (__b & __c);
+        unsigned int __temp2 = __S0 + __maj;
+        __h = __g; __g = __f; __f = __e; __e = __d + __temp1;
+        __d = __c; __c = __b; __b = __a; __a = __temp1 + __temp2;
+    }
+    uint32x4_t __ret;
+    __ret.__val[0] = __e; __ret.__val[1] = __f;
+    __ret.__val[2] = __g; __ret.__val[3] = __h;
+    return __ret;
+}
+
+/* === Load/Store u32 (64-bit / D-register) === */
+
+/* vld1_u32: load 2 x u32 (64-bit) */
+static __inline__ uint32x2_t __attribute__((__always_inline__))
+vld1_u32(unsigned int const *__p)
+{
+    uint32x2_t __ret;
+    __builtin_memcpy(&__ret, __p, 8);
+    return __ret;
+}
+
+/* vst1_u32: store 2 x u32 (64-bit) */
+static __inline__ void __attribute__((__always_inline__))
+vst1_u32(unsigned int *__p, uint32x2_t __a)
+{
+    __builtin_memcpy(__p, &__a, 8);
+}
+
 #endif /* _ARM_NEON_H_INCLUDED */
