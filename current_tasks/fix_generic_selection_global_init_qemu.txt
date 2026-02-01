@@ -1,0 +1,12 @@
+Fix _Generic selection in global/static array initializer expressions.
+
+The _Generic expression was not being resolved in:
+1. eval_const_expr() - constant evaluation path
+2. eval_global_addr_expr() - global address resolution path  
+3. collect_compound_init_element() - compound array element collection
+4. array_needs_compound_init() - compound init detection
+
+This caused QEMU's all_outop[] array (which uses _Generic in OUTOP macro
+for designated initializers) to be zero-initialized, resulting in a SIGILL
+crash at runtime when tcg_target_op_def returned C_NotImplemented (-1)
+for basic opcodes like INDEX_op_st32.
