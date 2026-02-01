@@ -1,5 +1,0 @@
-Fix RISC-V intrinsics.rs using wrong base register (sp instead of s0) and missing large-offset handling for zeroing x86-only intrinsic destinations.
-
-The bug: In intrinsics.rs lines 281-282, `sd zero, OFFSET(sp)` is used with s0-relative slot offsets, and doesn't handle offsets > 2047. This causes assembler errors when building libsodium (poly1305_sse2.c has large stack frames).
-
-Fix: Use emit_store_to_s0("zero", slot.0, "sd") which handles both the correct base register and large offsets.

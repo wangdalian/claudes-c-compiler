@@ -278,8 +278,8 @@ impl RiscvCodegen {
                 // x86-only: zero dest if present
                 if let Some(dptr) = dest_ptr {
                     if let Some(slot) = self.state.get_slot(dptr.0) {
-                        self.state.emit_fmt(format_args!("    sd zero, {}(sp)", slot.0));
-                        self.state.emit_fmt(format_args!("    sd zero, {}(sp)", slot.0 + 8));
+                        self.emit_store_to_s0("zero", slot.0, "sd");
+                        self.emit_store_to_s0("zero", slot.0 + 8, "sd");
                     }
                 }
             }
