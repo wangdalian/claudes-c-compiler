@@ -4,5 +4,9 @@
 
 #include <wmmintrin.h>
 #include <smmintrin.h>
+#include <avxintrin.h>
+#include <avx2intrin.h>
+#include <fmaintrin.h>
+#include <avx512fintrin.h>
 
 #endif /* _IMMINTRIN_H_INCLUDED */

@@ -2,7 +2,7 @@
 #ifndef _TMMINTRIN_H_INCLUDED
 #define _TMMINTRIN_H_INCLUDED
 
-#include <emmintrin.h>
+#include <pmmintrin.h>
 
 /* _mm_abs_epi16: absolute value of signed 16-bit integers (PABSW) */
 static __inline__ __m128i __attribute__((__always_inline__))
