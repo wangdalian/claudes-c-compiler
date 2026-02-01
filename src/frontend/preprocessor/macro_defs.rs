@@ -848,7 +848,15 @@ impl MacroTable {
                             }
                         }
                     } else {
+                        // Wrap non-parameter literal tokens in paste-protection markers
+                        // so that the next ##'s extract_trailing_ident won't greedily
+                        // absorb them and accidentally form a parameter name.
+                        // e.g. _name##_##div##_div with _name=foo,_div=2:
+                        //   without protection: _ and div merge into _div matching param
+                        //   with protection: each literal is isolated by markers
+                        result.push(PASTE_PROTECT_START as char);
                         result.push_str(right_ident);
+                        result.push(PASTE_PROTECT_END as char);
                     }
                 } else if i < len {
                     result.push(bytes[i] as char);
