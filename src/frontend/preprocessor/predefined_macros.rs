@@ -229,7 +229,7 @@ impl Preprocessor {
     /// looking for an `include/` directory that contains `emmintrin.h`.
     /// Falls back to the compile-time `CARGO_MANIFEST_DIR/include` path.
     /// Returns `Some(path)` when a valid bundled include directory is found.
-    pub(super) fn bundled_include_dir() -> Option<PathBuf> {
+    pub fn bundled_include_dir() -> Option<PathBuf> {
         // Try to find the include dir relative to the running binary.
         if let Ok(exe) = std::env::current_exe() {
             if let Ok(canonical) = exe.canonicalize() {
@@ -395,10 +395,7 @@ impl Preprocessor {
                 self.define_simple_macro("__ARM_ARCH_PROFILE", "65"); // 'A'
                 // Floating-point and SIMD
                 self.define_simple_macro("__ARM_FP", "14"); // 0b1110: half+single+double precision
-                // NOTE: We do NOT define __ARM_NEON because we don't support NEON intrinsics
-                // (no arm_neon.h, no vector types like uint32x4_t, etc.)
-                // This causes code like xxhash/libpng to fall back to scalar implementations.
-                // TODO: Define __ARM_NEON once NEON intrinsic support is implemented.
+                self.define_simple_macro("__ARM_NEON", "1");
                 self.define_simple_macro("__ARM_FP16_ARGS", "1");
                 self.define_simple_macro("__ARM_FP16_FORMAT_IEEE", "1");
                 // ABI

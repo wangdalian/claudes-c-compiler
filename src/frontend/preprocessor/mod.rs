@@ -5,7 +5,7 @@ pub(crate) mod builtin_macros;
 pub(crate) mod utils;
 mod includes;
 mod expr_eval;
-mod predefined_macros;
+pub(crate) mod predefined_macros;
 mod pragmas;
 mod text_processing;
 

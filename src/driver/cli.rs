@@ -108,6 +108,16 @@ impl Driver {
                 }
                 _ if arg.starts_with("-print-file-name=") => {
                     let name = &arg["-print-file-name=".len()..];
+                    // Special case: "include" should return our bundled include
+                    // directory so that build systems (e.g., Linux kernel) pick up
+                    // our intrinsic headers (arm_neon.h, emmintrin.h, etc.) instead
+                    // of the host GCC's headers which use incompatible builtins.
+                    if name == "include" {
+                        if let Some(bundled) = crate::frontend::preprocessor::Preprocessor::bundled_include_dir() {
+                            println!("{}", bundled.display());
+                            return Ok(true);
+                        }
+                    }
                     // Search standard library directories for the requested file.
                     // If found, print the full path; otherwise echo the name back
                     // (matching GCC behavior).
