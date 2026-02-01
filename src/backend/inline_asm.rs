@@ -541,6 +541,19 @@ fn classify_all_operands(
             }
         }
 
+        // For pure immediate constraints ("i", "n", etc.) that were classified directly
+        // as Immediate by classify_constraint, populate imm_value from the constant
+        // operand. Without this, the imm_value stays None and gets replaced with 0
+        // in resolve_symbols_and_immediates, causing incorrect assembly output
+        // (e.g., `bic x9, x10, 0` instead of `bic x9, x10, 36028797018963968`).
+        if matches!(op.kind, AsmOperandKind::Immediate) && op.imm_value.is_none() {
+            if let Operand::Const(c) = val {
+                if let Some(v) = c.to_i64() {
+                    op.imm_value = Some(v);
+                }
+            }
+        }
+
         // For pure immediate-only constraints ("i", "n", etc.) that are still GpReg/QReg
         // because the operand is a Value (not a Const), promote to Immediate with a
         // placeholder value of 0. This happens in standalone bodies of static inline
