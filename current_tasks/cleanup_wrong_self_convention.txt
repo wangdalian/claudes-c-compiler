@@ -1,0 +1,7 @@
+Task: Remove crate-level #![allow(clippy::wrong_self_convention)] suppression
+
+Fix all 9 instances where to_* methods on Copy types take &self instead of self.
+Files affected: src/common/types.rs, src/ir/constants.rs
+
+The fix is to change &self to self in method signatures and update method bodies
+accordingly (remove dereferences where needed).
