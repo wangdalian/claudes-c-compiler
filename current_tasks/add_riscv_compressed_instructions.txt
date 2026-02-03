@@ -1,0 +1,16 @@
+Adding RV64C (compressed instruction) support to the RISC-V native assembler.
+
+The GCC assembler automatically compresses eligible 32-bit instructions to 16-bit
+C extension equivalents. Our native assembler currently only emits 32-bit instructions,
+causing byte-level mismatches when comparing output.
+
+This task adds a compression pass that converts eligible 32-bit instructions to their
+16-bit compressed forms after encoding, matching GCC behavior for code size.
+
+Compressed instructions to support:
+- Stack-pointer-relative loads/stores (c.lwsp, c.ldsp, c.swsp, c.sdsp, c.flwsp, c.fldsp, c.fswsp, c.fsdsp)
+- Register loads/stores (c.lw, c.ld, c.sw, c.sd, c.flw, c.fld, c.fsw, c.fsd)
+- Arithmetic (c.addi, c.addiw, c.addi16sp, c.addi4spn, c.li, c.lui, c.add, c.mv, c.sub, c.subw, c.addw,
+  c.and, c.or, c.xor, c.andi, c.slli, c.srli, c.srai)
+- Control flow (c.j, c.jal, c.jr, c.jalr, c.beqz, c.bnez)
+- Misc (c.nop, c.ebreak)
