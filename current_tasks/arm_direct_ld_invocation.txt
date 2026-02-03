@@ -1,9 +1,0 @@
-Implement direct ld invocation for AArch64 when MY_LD is set.
-
-This mirrors the x86-64 implementation (link_direct_ld) but for the ARM backend:
-- find_gcc_lib_dir_aarch64(): probe GCC cross-compiler dirs for crtbegin.o
-- find_crt_dir_aarch64(): probe system CRT dirs for crt1.o/crti.o/crtn.o
-- link_direct_ld_aarch64(): replicate GCC's collect2 behavior for aarch64
-- Wire up EM_AARCH64 (183) dispatch in link_with_args()
-
-Status: in_progress

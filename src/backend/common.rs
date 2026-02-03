@@ -176,8 +176,8 @@ pub fn link(config: &LinkerConfig, object_files: &[&str], output_path: &str) -> 
 /// linker command instead of `config.command`. When MY_LD is set, we invoke
 /// the linker directly (ld-style) rather than through GCC, which means we
 /// must provide CRT objects, library paths, and convert -Wl, flags ourselves.
-/// Currently the direct-ld path is implemented for x86-64, i686, and
-/// RISC-V 64-bit; other targets fall back to using MY_LD as a GCC-style driver.
+/// Currently the direct-ld path is implemented for x86-64, i686, AArch64,
+/// and RISC-V 64-bit.
 pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path: &str, user_args: &[String]) -> Result<(), String> {
     // Validate that all input .o files match the target architecture before invoking
     // the external linker. This catches stale objects from a previous build (e.g.,
@@ -198,10 +198,9 @@ pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path:
     // Check MY_LD env var to allow overriding the linker command.
     let custom_ld = std::env::var("MY_LD").ok();
 
-    // When MY_LD is set and we're targeting x86-64, i686, or RISC-V, invoke
-    // ld directly instead of going through GCC. This requires us to do
-    // everything GCC normally does: find CRT objects, add library search
-    // paths, convert -Wl, flags, etc.
+    // When MY_LD is set, invoke ld directly instead of going through GCC.
+    // This requires us to do everything GCC normally does: find CRT objects,
+    // add library search paths, convert -Wl, flags, etc.
     if let Some(ref ld_path) = custom_ld {
         if config.expected_elf_machine == 62 {
             // EM_X86_64: use direct ld invocation
@@ -224,7 +223,13 @@ pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path:
                 is_shared, is_nostdlib, is_relocatable, is_static,
             );
         }
-        // TODO: Implement direct ld for ARM backend
+        if config.expected_elf_machine == 183 {
+            // EM_AARCH64: use direct ld invocation
+            return link_direct_ld_aarch64(
+                ld_path, config, object_files, output_path, user_args,
+                is_shared, is_nostdlib, is_relocatable, is_static,
+            );
+        }
     }
 
     // Default path: invoke GCC as the linker driver (or MY_LD for non-x86-64 targets)
@@ -994,6 +999,254 @@ fn link_direct_ld_i686(
             cmd.arg("--end-group");
         } else {
             // Dynamic linking: -lgcc with --as-needed -lgcc_s fallback
+            cmd.arg("-lgcc");
+            cmd.arg("--push-state");
+            cmd.arg("--as-needed");
+            cmd.arg("-lgcc_s");
+            cmd.arg("--pop-state");
+            cmd.arg("-lc");
+            cmd.arg("-lm");
+            cmd.arg("-lgcc");
+            cmd.arg("--push-state");
+            cmd.arg("--as-needed");
+            cmd.arg("-lgcc_s");
+            cmd.arg("--pop-state");
+        }
+    }
+
+    // CRT finalization objects (skip for -nostdlib and -r)
+    if !is_nostdlib && !is_relocatable {
+        if let Some(ref gcc) = gcc_lib_dir {
+            if is_shared {
+                cmd.arg(format!("{}/crtendS.o", gcc));
+            } else {
+                cmd.arg(format!("{}/crtend.o", gcc));
+            }
+        }
+        if let Some(ref crt) = crt_dir {
+            cmd.arg(format!("{}/crtn.o", crt));
+        }
+    }
+
+    let result = cmd.output()
+        .map_err(|e| format!("Failed to run linker ({}): {}", ld_command, e))?;
+
+    // Forward linker stdout to our stdout.
+    if !result.stdout.is_empty() {
+        use std::io::Write;
+        let _ = std::io::stdout().write_all(&result.stdout);
+    }
+
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        return Err(format!("Linking failed ({}): {}", ld_command, stderr));
+    }
+
+    Ok(())
+}
+
+/// Discover GCC's library directory for AArch64 by probing well-known paths.
+/// Returns the path containing crtbegin.o (e.g., "/usr/lib/gcc-cross/aarch64-linux-gnu/13").
+fn find_gcc_lib_dir_aarch64() -> Option<String> {
+    let gcc_versions = ["14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4.9"];
+    let base_paths = [
+        // Cross-compiler paths (Debian/Ubuntu gcc-aarch64-linux-gnu package)
+        "/usr/lib/gcc-cross/aarch64-linux-gnu",
+        // Native aarch64 system paths
+        "/usr/lib/gcc/aarch64-linux-gnu",
+        "/usr/lib/gcc/aarch64-redhat-linux",
+        "/usr/lib/gcc/aarch64-unknown-linux-gnu",
+        "/usr/lib64/gcc/aarch64-linux-gnu",
+        "/usr/lib64/gcc/aarch64-redhat-linux",
+    ];
+
+    for base in &base_paths {
+        for ver in &gcc_versions {
+            let dir = format!("{}/{}", base, ver);
+            let crtbegin = format!("{}/crtbegin.o", dir);
+            if std::path::Path::new(&crtbegin).exists() {
+                return Some(dir);
+            }
+        }
+    }
+    None
+}
+
+/// Discover the AArch64 system CRT directory containing crt1.o, crti.o, crtn.o.
+/// Returns the path (e.g., "/usr/aarch64-linux-gnu/lib").
+fn find_crt_dir_aarch64() -> Option<String> {
+    let candidates = [
+        // Cross-compilation sysroot (Debian/Ubuntu)
+        "/usr/aarch64-linux-gnu/lib",
+        // Native aarch64 system paths
+        "/usr/lib/aarch64-linux-gnu",
+        "/usr/lib64",
+        "/lib/aarch64-linux-gnu",
+        "/lib64",
+    ];
+    for dir in &candidates {
+        let crt1 = format!("{}/crt1.o", dir);
+        if std::path::Path::new(&crt1).exists() {
+            return Some(dir.to_string());
+        }
+    }
+    None
+}
+
+/// Link using ld directly (not through GCC) for AArch64.
+///
+/// This replicates what aarch64-linux-gnu-gcc does when it invokes collect2/ld:
+/// - Sets emulation mode to aarch64linux
+/// - Sets dynamic linker to /lib/ld-linux-aarch64.so.1
+/// - Adds --fix-cortex-a53-843419 erratum workaround
+/// - Adds CRT startup objects (crt1.o, crti.o, crtbegin.o)
+/// - Adds library search paths for GCC cross-compiler and system libraries
+/// - Adds default libraries (-lgcc, -lgcc_s, -lc)
+/// - Adds CRT finalization objects (crtend.o, crtn.o)
+/// - Converts -Wl, prefixed flags to direct ld flags
+#[allow(clippy::too_many_arguments)]
+fn link_direct_ld_aarch64(
+    ld_command: &str,
+    _config: &LinkerConfig,
+    object_files: &[&str],
+    output_path: &str,
+    user_args: &[String],
+    is_shared: bool,
+    is_nostdlib: bool,
+    is_relocatable: bool,
+    is_static: bool,
+) -> Result<(), String> {
+    let gcc_lib_dir = find_gcc_lib_dir_aarch64();
+    let crt_dir = find_crt_dir_aarch64();
+
+    // Early check: if we need CRT objects but can't find them, give a clear error
+    if !is_nostdlib && !is_relocatable {
+        if crt_dir.is_none() {
+            return Err("MY_LD: could not find AArch64 system CRT objects (crt1.o, crti.o, crtn.o). \
+                Is the libc-dev-arm64-cross package installed?".to_string());
+        }
+        if gcc_lib_dir.is_none() {
+            return Err("MY_LD: could not find AArch64 GCC CRT objects (crtbegin.o, crtend.o). \
+                Is the gcc-aarch64-linux-gnu package installed?".to_string());
+        }
+    }
+
+    let mut cmd = Command::new(ld_command);
+
+    // Basic ld flags that GCC always passes for aarch64
+    cmd.arg("--build-id");
+    if !is_relocatable && !is_static {
+        cmd.arg("--eh-frame-hdr");
+    }
+    // AArch64 emulation mode and endianness
+    cmd.arg("-m").arg("aarch64linux");
+    cmd.arg("--hash-style=gnu");
+    cmd.arg("--as-needed");
+    // GCC passes -EL (little-endian) and -X (discard local symbols starting with 'L')
+    cmd.arg("-EL");
+    cmd.arg("-X");
+    // Cortex-A53 erratum 843419 workaround (GCC always passes this for aarch64)
+    cmd.arg("--fix-cortex-a53-843419");
+
+    // Static linking flag
+    if is_static {
+        cmd.arg("-static");
+    }
+
+    // Dynamic linker (skip for -shared, -r, and -static)
+    if !is_shared && !is_relocatable && !is_static {
+        cmd.arg("-dynamic-linker").arg("/lib/ld-linux-aarch64.so.1");
+    }
+
+    // Security hardening
+    if !is_relocatable {
+        cmd.arg("-z").arg("relro");
+        cmd.arg("-z").arg("noexecstack");
+    }
+
+    // Output file
+    cmd.arg("-o").arg(output_path);
+
+    // -shared and -r flags (passed directly to ld)
+    if is_shared {
+        cmd.arg("-shared");
+    }
+    if is_relocatable {
+        cmd.arg("-r");
+    }
+
+    // CRT startup objects (skip for -nostdlib and -r)
+    if !is_nostdlib && !is_relocatable {
+        if let Some(ref crt) = crt_dir {
+            if !is_shared {
+                cmd.arg(format!("{}/crt1.o", crt));
+            }
+            cmd.arg(format!("{}/crti.o", crt));
+        }
+        if let Some(ref gcc) = gcc_lib_dir {
+            if is_shared {
+                cmd.arg(format!("{}/crtbeginS.o", gcc));
+            } else if is_static {
+                cmd.arg(format!("{}/crtbeginT.o", gcc));
+            } else {
+                cmd.arg(format!("{}/crtbegin.o", gcc));
+            }
+        }
+    }
+
+    // Library search paths
+    if let Some(ref gcc) = gcc_lib_dir {
+        cmd.arg(format!("-L{}", gcc));
+    }
+    if let Some(ref crt) = crt_dir {
+        cmd.arg(format!("-L{}", crt));
+    }
+    // Standard system library directories for aarch64
+    for dir in &[
+        "/lib/aarch64-linux-gnu",
+        "/lib/../lib",
+        "/usr/lib/aarch64-linux-gnu",
+        "/usr/lib/../lib",
+        "/usr/aarch64-linux-gnu/lib",
+    ] {
+        if std::path::Path::new(dir).exists() {
+            cmd.arg(format!("-L{}", dir));
+        }
+    }
+
+    // User object files
+    for obj in object_files {
+        cmd.arg(obj);
+    }
+
+    // User-provided linker args, with -Wl, prefix stripping and GCC flag conversion.
+    for arg in user_args {
+        if let Some(wl_arg) = arg.strip_prefix("-Wl,") {
+            for part in wl_arg.split(',') {
+                if !part.is_empty() {
+                    cmd.arg(part);
+                }
+            }
+        } else if arg == "-nostdlib" || arg == "-no-pie" || arg == "-shared"
+               || arg == "-static" || arg == "-r" {
+            continue;
+        } else if arg == "-rdynamic" {
+            cmd.arg("--export-dynamic");
+        } else {
+            cmd.arg(arg);
+        }
+    }
+
+    // Default libraries (skip for -nostdlib, -shared, and -r)
+    if !is_nostdlib && !is_shared && !is_relocatable {
+        if is_static {
+            cmd.arg("--start-group");
+            cmd.arg("-lgcc");
+            cmd.arg("-lgcc_eh");
+            cmd.arg("-lc");
+            cmd.arg("-lm");
+            cmd.arg("--end-group");
+        } else {
             cmd.arg("-lgcc");
             cmd.arg("--push-state");
             cmd.arg("--as-needed");
