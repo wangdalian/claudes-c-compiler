@@ -1,3 +1,0 @@
-Add MY_LD and MY_ASM environment variables that allow overriding the external
-assembler and linker with custom tools. Add placeholder scripts in backend/
-for each of the 4 backends (x86, i686, arm, riscv) that raise an error when called.

@@ -953,6 +953,29 @@ passed.
 The `CCC_KEEP_ASM` environment variable preserves the intermediate `.s`
 file next to the output for debugging.
 
+### Custom Assembler / Linker Override
+
+The `MY_ASM` and `MY_LD` environment variables allow overriding the
+assembler and linker commands respectively. When set, their values are
+used as the command to invoke instead of the target's default GCC
+toolchain command. This is intended for substituting the project's own
+assembler and linker implementations as they are developed.
+
+Each backend directory contains placeholder stub scripts:
+
+- `x86/asm_stub.sh` / `x86/ld_stub.sh`
+- `i686/asm_stub.sh` / `i686/ld_stub.sh`
+- `arm/asm_stub.sh` / `arm/ld_stub.sh`
+- `riscv/asm_stub.sh` / `riscv/ld_stub.sh`
+
+These stubs print an error message and exit with status 1. To test the
+integration:
+
+```bash
+MY_ASM=src/backend/x86/asm_stub.sh ccc-x86 -c file.c -o file.o
+MY_LD=src/backend/x86/ld_stub.sh ccc-x86 file.o -o file
+```
+
 ### Linker Flags
 
 All targets pass `-no-pie` by default to match the non-PIC code generation

@@ -176,6 +176,23 @@ _mm_adds_epu16(__m128i __a, __m128i __b)
 /* === Signed Saturating Arithmetic === */
 
 static __inline__ __m128i __attribute__((__always_inline__))
+_mm_adds_epi8(__m128i __a, __m128i __b)
+{
+    /* Signed saturating add of 16 x 8-bit elements. */
+    signed char *__pa = (signed char *)&__a;
+    signed char *__pb = (signed char *)&__b;
+    __m128i __r;
+    signed char *__pr = (signed char *)&__r;
+    for (int __i = 0; __i < 16; __i++) {
+        int __s = (int)__pa[__i] + (int)__pb[__i];
+        if (__s > 127) __s = 127;
+        if (__s < -128) __s = -128;
+        __pr[__i] = (signed char)__s;
+    }
+    return __r;
+}
+
+static __inline__ __m128i __attribute__((__always_inline__))
 _mm_adds_epi16(__m128i __a, __m128i __b)
 {
     /* Signed saturating add of 8 x 16-bit elements. */
@@ -188,6 +205,23 @@ _mm_adds_epi16(__m128i __a, __m128i __b)
         if (__s > 32767) __s = 32767;
         if (__s < -32768) __s = -32768;
         __pr[__i] = (short)__s;
+    }
+    return __r;
+}
+
+static __inline__ __m128i __attribute__((__always_inline__))
+_mm_subs_epi16(__m128i __a, __m128i __b)
+{
+    /* Signed saturating subtract of 8 x 16-bit elements. */
+    short *__pa = (short *)&__a;
+    short *__pb = (short *)&__b;
+    __m128i __r;
+    short *__pr = (short *)&__r;
+    for (int __i = 0; __i < 8; __i++) {
+        int __d = (int)__pa[__i] - (int)__pb[__i];
+        if (__d > 32767) __d = 32767;
+        if (__d < -32768) __d = -32768;
+        __pr[__i] = (short)__d;
     }
     return __r;
 }

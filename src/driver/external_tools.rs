@@ -86,9 +86,15 @@ impl Driver {
 
     /// Assemble a .s or .S file to an object file using the target assembler.
     /// For .S files, gcc handles preprocessing (macros, #include, etc.).
+    ///
+    /// If the `MY_ASM` environment variable is set, its value is used as the
+    /// assembler command instead of the target's default assembler.
     pub(super) fn assemble_source_file(&self, input_file: &str, output_path: &str) -> Result<(), String> {
         let config = self.target.assembler_config();
-        let mut cmd = std::process::Command::new(config.command);
+        // Check MY_ASM env var to allow overriding the assembler command.
+        let custom_asm = std::env::var("MY_ASM").ok();
+        let asm_command = custom_asm.as_deref().unwrap_or(config.command);
+        let mut cmd = std::process::Command::new(asm_command);
         cmd.args(config.extra_args);
 
         // Pass through RISC-V ABI/arch overrides (must come after config defaults

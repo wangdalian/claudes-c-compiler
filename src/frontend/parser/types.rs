@@ -613,6 +613,11 @@ impl Parser {
                 self.advance();
                 continue;
             }
+            // C11 6.7.2.1: _Static_assert is allowed as a struct-declaration
+            if matches!(self.peek(), TokenKind::StaticAssert) {
+                self.parse_static_assert();
+                continue;
+            }
             if let Some(type_spec) = self.parse_type_specifier() {
                 if matches!(self.peek(), TokenKind::Semicolon) {
                     // Anonymous field (e.g., anonymous struct/union)
@@ -807,20 +812,26 @@ impl Parser {
     /// enum_constants map. This allows later constant expressions (e.g., in
     /// __attribute__((aligned(1 << ENUM_CONST)))) to resolve these identifiers.
     pub(super) fn register_enum_constants(&mut self, variants: &[super::ast::EnumVariant]) {
-        let mut next_value: i64 = 0;
+        let mut next_value: Option<i64> = Some(0);
         for variant in variants {
-            let val = if let Some(ref expr) = variant.value {
+            let evaluated = if let Some(ref expr) = variant.value {
                 // Evaluate the explicit value expression.
                 // Use eval_const_int_expr_with_enums so references to previously
                 // defined enum constants are resolved.
                 let tag_aligns = if self.struct_tag_alignments.is_empty() { None } else { Some(&self.struct_tag_alignments) };
-                let evaluated = Self::eval_const_int_expr_with_enums(expr, Some(&self.enum_constants), tag_aligns);
-                evaluated.unwrap_or(next_value)
+                Self::eval_const_int_expr_with_enums(expr, Some(&self.enum_constants), tag_aligns)
             } else {
                 next_value
             };
-            self.enum_constants.insert(variant.name.clone(), val);
-            next_value = val + 1;
+            if let Some(val) = evaluated {
+                self.enum_constants.insert(variant.name.clone(), val);
+                next_value = Some(val + 1);
+            } else {
+                // Value not evaluable at parse time (e.g., sizeof(struct)).
+                // Don't store in the map so that references to this constant
+                // will return None, causing _Static_assert to silently accept.
+                next_value = None;
+            }
         }
     }
 

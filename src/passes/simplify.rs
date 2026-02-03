@@ -1051,18 +1051,23 @@ fn is_all_ones(op: &Operand, ty: IrType) -> bool {
     }
     match op {
         Operand::Const(c) => {
-            match c.to_i64() {
-                Some(val) => {
-                    // After truncation to the type's width, all-ones is -1.
-                    ty.truncate_i64(val) == ty.truncate_i64(-1)
+            // For 128-bit types, check the full 128-bit value directly.
+            // We must NOT use to_i64() for I128 constants because it truncates
+            // the upper 64 bits, causing false positives (e.g., I128(0xFFFFFFFFFFFFFFFF)
+            // would truncate to i64 -1, which would incorrectly match "all ones" for U128).
+            if ty.is_128bit() {
+                if let IrConst::I128(v) = c {
+                    *v == -1i128
+                } else {
+                    false
                 }
-                None => {
-                    // I128: check if all bits are set
-                    if let IrConst::I128(v) = c {
-                        *v == -1i128
-                    } else {
-                        false
+            } else {
+                match c.to_i64() {
+                    Some(val) => {
+                        // After truncation to the type's width, all-ones is -1.
+                        ty.truncate_i64(val) == ty.truncate_i64(-1)
                     }
+                    None => false,
                 }
             }
         }
@@ -1072,7 +1077,11 @@ fn is_all_ones(op: &Operand, ty: IrType) -> bool {
 
 /// Create the all-ones constant for a given integer type.
 fn all_ones_const(ty: IrType) -> IrConst {
-    IrConst::from_i64(-1, ty)
+    if ty.is_128bit() {
+        IrConst::I128(-1i128)
+    } else {
+        IrConst::from_i64(-1, ty)
+    }
 }
 
 /// Check if an operand is zero (including both +0.0 and -0.0 for floats).
@@ -1105,14 +1114,18 @@ fn is_neg_one(op: &Operand, ty: IrType) -> bool {
     }
     match op {
         Operand::Const(c) => {
-            match c.to_i64() {
-                Some(val) => ty.truncate_i64(val) == ty.truncate_i64(-1),
-                None => {
-                    if let IrConst::I128(v) = c {
-                        *v == -1i128
-                    } else {
-                        false
-                    }
+            // For 128-bit types, check the full 128-bit value directly to avoid
+            // truncation through to_i64() (same issue as is_all_ones).
+            if ty.is_128bit() {
+                if let IrConst::I128(v) = c {
+                    *v == -1i128
+                } else {
+                    false
+                }
+            } else {
+                match c.to_i64() {
+                    Some(val) => ty.truncate_i64(val) == ty.truncate_i64(-1),
+                    None => false,
                 }
             }
         }

@@ -45,6 +45,10 @@ pub struct LinkerConfig {
 ///
 /// The `extra_dynamic_args` are appended after the config's static extra_args,
 /// allowing runtime overrides (e.g., -mabi=lp64 from CLI flags).
+///
+/// If the `MY_ASM` environment variable is set, its value is used as the
+/// assembler command instead of `config.command`. This allows substituting
+/// a custom assembler (e.g., the project's own assembler stubs in backend/).
 pub fn assemble_with_extra(config: &AssemblerConfig, asm_text: &str, output_path: &str, extra_dynamic_args: &[String]) -> Result<(), String> {
     use crate::common::temp_files::TempFile;
 
@@ -70,20 +74,24 @@ pub fn assemble_with_extra(config: &AssemblerConfig, asm_text: &str, output_path
     std::fs::write(asm_file.path(), asm_text)
         .map_err(|e| format!("Failed to write assembly: {}", e))?;
 
-    let mut cmd = Command::new(config.command);
+    // Check MY_ASM env var to allow overriding the assembler command.
+    let custom_asm = std::env::var("MY_ASM").ok();
+    let asm_command = custom_asm.as_deref().unwrap_or(config.command);
+
+    let mut cmd = Command::new(asm_command);
     cmd.args(config.extra_args);
     cmd.args(extra_dynamic_args);
     cmd.args(["-c", "-o", output_path, asm_file.to_str()]);
 
     let result = cmd.output()
-        .map_err(|e| format!("Failed to run assembler ({}): {}", config.command, e))?;
+        .map_err(|e| format!("Failed to run assembler ({}): {}", asm_command, e))?;
 
     // asm_file is dropped here (or on any early return above), cleaning up
     // the temp .s file automatically — unless keep_asm is set.
 
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(format!("Assembly failed ({}): {}", config.command, stderr));
+        return Err(format!("Assembly failed ({}): {}", asm_command, stderr));
     }
 
     Ok(())
@@ -163,6 +171,10 @@ pub fn link(config: &LinkerConfig, object_files: &[&str], output_path: &str) -> 
 }
 
 /// Link object files into an executable (or shared library), with additional user-provided linker args.
+///
+/// If the `MY_LD` environment variable is set, its value is used as the
+/// linker command instead of `config.command`. This allows substituting
+/// a custom linker (e.g., the project's own linker stubs in backend/).
 pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path: &str, user_args: &[String]) -> Result<(), String> {
     // Validate that all input .o files match the target architecture before invoking
     // the external linker. This catches stale objects from a previous build (e.g.,
@@ -179,7 +191,11 @@ pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path:
     let is_nostdlib = user_args.iter().any(|a| a == "-nostdlib");
     let is_relocatable = user_args.iter().any(|a| a == "-r");
 
-    let mut cmd = Command::new(config.command);
+    // Check MY_LD env var to allow overriding the linker command.
+    let custom_ld = std::env::var("MY_LD").ok();
+    let ld_command = custom_ld.as_deref().unwrap_or(config.command);
+
+    let mut cmd = Command::new(ld_command);
     // Skip flags that conflict with -shared or -r:
     // -no-pie/-pie conflict with -shared and -r, and -static causes the linker to
     // use static CRT objects (e.g. crtbeginT.o) whose absolute relocations
@@ -220,7 +236,7 @@ pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path:
     }
 
     let result = cmd.output()
-        .map_err(|e| format!("Failed to run linker ({}): {}", config.command, e))?;
+        .map_err(|e| format!("Failed to run linker ({}): {}", ld_command, e))?;
 
     // Forward linker stdout to our stdout. Normally empty, but needed for build
     // systems like Meson that detect the linker by running `-Wl,--version` and
@@ -232,7 +248,7 @@ pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path:
 
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(format!("Linking failed ({}): {}", config.command, stderr));
+        return Err(format!("Linking failed ({}): {}", ld_command, stderr));
     }
 
     Ok(())
