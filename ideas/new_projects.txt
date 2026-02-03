@@ -13,3 +13,4 @@ postgres: PASS (x86 backend: all 237 regression tests pass)
 Emacs_Lisp_core: PASS x86 only (i686 has pre-existing codegen crash in signal_or_quit; no arm/riscv check scripts)
 QuickJS: PASS (x86; fixed is_all_ones i128 truncation bug in simplify pass)
 CPython: PASS (x86) - fixed AVX2 intrinsics, nested struct global init with PointerMemberAccess
+clay: PASS (all 4 backends: x86, i686, arm, riscv) - fixed by adding missing ARM NEON intrinsics (vorrq_u64, vshlq_n_u64, vld1_u64, vdup_n_u64, vminvq_u32)

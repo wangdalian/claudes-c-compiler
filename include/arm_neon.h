@@ -464,6 +464,16 @@ vshrq_n_s8(int8x16_t __a, int __n)
     return __ret;
 }
 
+/* vshlq_n_u64: shift left uint64x2_t by immediate */
+static __inline__ uint64x2_t __attribute__((__always_inline__))
+vshlq_n_u64(uint64x2_t __a, int __n)
+{
+    uint64x2_t __ret;
+    __ret.__val[0] = __a.__val[0] << __n;
+    __ret.__val[1] = __a.__val[1] << __n;
+    return __ret;
+}
+
 static __inline__ uint64x2_t __attribute__((__always_inline__))
 vshrq_n_u64(uint64x2_t __a, int __n)
 {
@@ -985,6 +995,18 @@ vminvq_s8(int8x16_t __a)
     return __min;
 }
 
+/* vminvq_u32: horizontal minimum across uint32x4_t */
+static __inline__ unsigned int __attribute__((__always_inline__))
+vminvq_u32(uint32x4_t __a)
+{
+    unsigned int __min = __a.__val[0];
+    for (int __i = 1; __i < 4; __i++) {
+        if (__a.__val[__i] < __min)
+            __min = __a.__val[__i];
+    }
+    return __min;
+}
+
 /* ================================================================== */
 /*                       AES INTRINSICS                                */
 /* ================================================================== */
@@ -1148,6 +1170,15 @@ vcreate_u64(unsigned long long __a)
     return __ret;
 }
 
+/* vdup_n_u64: duplicate scalar u64 into single lane of uint64x1_t */
+static __inline__ uint64x1_t __attribute__((__always_inline__))
+vdup_n_u64(unsigned long long __a)
+{
+    uint64x1_t __ret;
+    __ret.__val[0] = __a;
+    return __ret;
+}
+
 /* vdup_n_u32: duplicate scalar u32 into both lanes of uint32x2_t */
 static __inline__ uint32x2_t __attribute__((__always_inline__))
 vdup_n_u32(unsigned int __a)
@@ -1270,6 +1301,16 @@ vandq_u32(uint32x4_t __a, uint32x4_t __b)
     __ret.__val[1] = __a.__val[1] & __b.__val[1];
     __ret.__val[2] = __a.__val[2] & __b.__val[2];
     __ret.__val[3] = __a.__val[3] & __b.__val[3];
+    return __ret;
+}
+
+/* vorrq_u64: bitwise OR uint64x2_t */
+static __inline__ uint64x2_t __attribute__((__always_inline__))
+vorrq_u64(uint64x2_t __a, uint64x2_t __b)
+{
+    uint64x2_t __ret;
+    __ret.__val[0] = __a.__val[0] | __b.__val[0];
+    __ret.__val[1] = __a.__val[1] | __b.__val[1];
     return __ret;
 }
 
@@ -1676,6 +1717,17 @@ vsha256h2q_u32(uint32x4_t __hash_efgh, uint32x4_t __hash_abcd, uint32x4_t __wk)
     uint32x4_t __ret;
     __ret.__val[0] = __e; __ret.__val[1] = __f;
     __ret.__val[2] = __g; __ret.__val[3] = __h;
+    return __ret;
+}
+
+/* === Load/Store u64 (64-bit / D-register) === */
+
+/* vld1_u64: load 1 x u64 (64-bit) */
+static __inline__ uint64x1_t __attribute__((__always_inline__))
+vld1_u64(const unsigned long long *__p)
+{
+    uint64x1_t __ret;
+    __builtin_memcpy(&__ret, __p, 8);
     return __ret;
 }
 
