@@ -1,0 +1,9 @@
+Fix x86 assembler: preserve PLT32 relocations for global/weak symbols
+
+The built-in x86 assembler was incorrectly resolving R_X86_64_PLT32
+relocations for global/weak symbols when they were in the same section.
+GCC's assembler keeps these as relocations so the linker can handle
+symbol interposition and PLT redirection.
+
+Fix: Only resolve same-section PC-relative relocations for local symbols
+(internal .L* labels and STB_LOCAL symbols), not for global/weak ones.
