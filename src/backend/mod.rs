@@ -269,12 +269,8 @@ impl Target {
                     Target::Riscv64 => {
                         return riscv::assembler::assemble(asm_text, output_path);
                     }
-                    // TODO: add builtin assembler for other targets
-                    _ => {
-                        return Err(format!(
-                            "MY_ASM=builtin: no built-in assembler for {} yet",
-                            self.triple()
-                        ));
+                    Target::I686 => {
+                        return i686::assembler::assemble(asm_text, output_path);
                     }
                 }
             }

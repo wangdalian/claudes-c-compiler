@@ -33,6 +33,11 @@ ARCH_CONFIG = {
         "objdump": "objdump",
         "readelf": "readelf",
     },
+    "i686": {
+        "compiler": "ccc-i686",
+        "objdump": "objdump",
+        "readelf": "readelf",
+    },
 }
 
 DEFAULT_TEST_SNIPPETS = [
@@ -171,7 +176,7 @@ def compare_files(arch_config, compiler_path, c_file, before_env, after_env, ver
 
 def main():
     parser = argparse.ArgumentParser(description="Compare assembler output")
-    parser.add_argument("--arch", required=True, choices=["arm", "riscv", "x86"],
+    parser.add_argument("--arch", required=True, choices=["arm", "riscv", "x86", "i686"],
                         help="Target architecture")
     parser.add_argument("--before", default="gcc",
                         help="'before' assembler: 'gcc' (default) or env var settings")
