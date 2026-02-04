@@ -1,0 +1,17 @@
+Fix ARM codegen: promoted GP param registers clobbered before ParamRef reads them
+
+When a GP parameter's alloca is promoted by mem2reg and the param's ParamRef dest
+is assigned to a callee-saved register, emit_store_gp_params skips the parameter
+(no spill to stack). Later, emit_param_ref reads directly from the ABI register
+(e.g., x0). But between prologue and ParamRef, other body code (including other
+ParamRef emissions) uses x0 as the accumulator, clobbering the original value.
+
+Example: eval_poly(double x, const double *coefs, int n)
+- d0 = x, x0 = coefs, x1 = n
+- Phase 2 spills d0 via fmov x9, d0 (safe, uses x9)
+- Body code emits ParamRef for x: fmov x0, d0 + store_x0_to -> clobbers x0
+- ParamRef for coefs later tries to read x0 -> gets garbage
+
+Fix: In emit_store_gp_params, when resolve_param_slot returns None, save the ABI
+register directly to the callee-saved register in the prologue, before any body
+code can clobber it. Same for FP params in emit_store_fp_params.
