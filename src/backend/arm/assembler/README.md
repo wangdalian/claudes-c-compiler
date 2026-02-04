@@ -187,16 +187,16 @@ The dispatch table in `encode_instruction()` maps ~120 mnemonics:
 
 | Category | Mnemonics |
 |----------|-----------|
-| **Data Processing** | `mov`, `movz`, `movk`, `movn`, `add`, `adds`, `sub`, `subs`, `and`, `orr`, `eor`, `ands`, `orn`, `bics`, `mul`, `madd`, `msub`, `udiv`, `sdiv`, `umulh`, `smulh`, `neg`, `negs`, `mvn`, `adc`, `adcs`, `sbc`, `sbcs` |
+| **Data Processing** | `mov`, `movz`, `movk`, `movn`, `add`, `adds`, `sub`, `subs`, `and`, `orr`, `eor`, `ands`, `orn`, `bics`, `mul`, `madd`, `msub`, `smull`, `umull`, `smaddl`, `umaddl`, `mneg`, `udiv`, `sdiv`, `umulh`, `smulh`, `neg`, `negs`, `mvn`, `adc`, `adcs`, `sbc`, `sbcs` |
 | **Shifts** | `lsl`, `lsr`, `asr`, `ror` |
 | **Extensions** | `sxtw`, `sxth`, `sxtb`, `uxtw`, `uxth`, `uxtb` |
 | **Compare** | `cmp`, `cmn`, `tst`, `ccmp` |
 | **Conditional select** | `csel`, `csinc`, `csinv`, `csneg`, `cset`, `csetm` |
-| **Branches** | `b`, `bl`, `br`, `blr`, `ret`, `cbz`, `cbnz`, `tbz`, `tbnz`, `b.eq`, `b.ne`, `b.lt`, ... (all 16 condition codes) |
-| **Loads/Stores** | `ldr`, `str`, `ldrb`, `strb`, `ldrh`, `strh`, `ldrsw`, `ldrsb`, `ldrsh`, `ldp`, `stp`, `ldxr`, `stxr`, `ldxrb`, `stxrb`, `ldxrh`, `stxrh`, `ldaxr`, `stlxr`, `ldaxrb`, `stlxrb`, `ldaxrh`, `stlxrh`, `ldar`, `stlr`, `ldarb`, `stlrb`, `ldarh`, `stlrh` |
+| **Branches** | `b`, `bl`, `br`, `blr`, `ret`, `cbz`, `cbnz`, `tbz`, `tbnz`, `b.eq`/`beq`, `b.ne`/`bne`, `b.lt`/`blt`, ... (all 16 condition codes, with and without dot) |
+| **Loads/Stores** | `ldr`, `str`, `ldrb`, `strb`, `ldrh`, `strh`, `ldrsw`, `ldrsb`, `ldrsh`, `ldp`, `stp`, `ldnp`, `stnp`, `ldxr`, `stxr`, `ldxrb`, `stxrb`, `ldxrh`, `stxrh`, `ldaxr`, `stlxr`, `ldaxrb`, `stlxrb`, `ldaxrh`, `stlxrh`, `ldar`, `stlr`, `ldarb`, `stlrb`, `ldarh`, `stlrh` |
 | **Address** | `adrp`, `adr` |
 | **Floating point** | `fmov`, `fadd`, `fsub`, `fmul`, `fdiv`, `fneg`, `fabs`, `fsqrt`, `fcmp`, `fcvtzs`, `fcvtzu`, `fcvtas`, `fcvtau`, `fcvtns`, `fcvtnu`, `fcvtms`, `fcvtmu`, `fcvtps`, `fcvtpu`, `ucvtf`, `scvtf`, `fcvt` |
-| **NEON/SIMD** | `cnt`, `uaddlv`, `cmeq`, `cmtst`, `uqsub`, `sqsub`, `ushr`, `sshr`, `shl`, `sli`, `ext`, `addv`, `umov`, `dup`, `ins`, `not`, `movi`, `bic`, `bsl`, `rev64`, `tbl`, `ld1`, `st1`, `uzp1`, `uzp2`, `zip1`, `zip2`, `eor3`, `pmull`, `pmull2`, `aese`, `aesd`, `aesmc`, `aesimc` |
+| **NEON/SIMD** | `cnt`, `uaddlv`, `cmeq`, `cmtst`, `uqsub`, `sqsub`, `ushr`, `sshr`, `shl`, `sli`, `ext`, `addv`, `umov`, `dup`, `ins`, `not`, `movi`, `bic`, `bsl`, `pmul`, `mla`, `mls`, `rev64`, `tbl`, `tbx`, `ld1`, `ld1r`, `st1`, `uzp1`, `uzp2`, `zip1`, `zip2`, `eor3`, `pmull`, `pmull2`, `aese`, `aesd`, `aesmc`, `aesimc` |
 | **System** | `nop`, `yield`, `clrex`, `dc`, `dmb`, `dsb`, `isb`, `mrs`, `msr`, `svc`, `brk` |
 | **Bit manipulation** | `clz`, `cls`, `rbit`, `rev`, `rev16`, `rev32` |
 | **CRC32** | `crc32b`, `crc32h`, `crc32w`, `crc32x`, `crc32cb`, `crc32ch`, `crc32cw`, `crc32cx` |

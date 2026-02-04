@@ -174,6 +174,23 @@ pub fn encode_instruction(mnemonic: &str, operands: &[Operand], raw_operands: &s
         return encode_cond_branch(cond, operands);
     }
 
+    // Handle condition-code branches without the dot: beq, bne, bge, blt, etc.
+    // These are common aliases used in GNU assembler syntax.
+    {
+        let cond_aliases: &[(&str, &str)] = &[
+            ("beq", "eq"), ("bne", "ne"), ("bcs", "cs"), ("bhs", "hs"),
+            ("bcc", "cc"), ("blo", "lo"), ("bmi", "mi"), ("bpl", "pl"),
+            ("bvs", "vs"), ("bvc", "vc"), ("bhi", "hi"), ("bls", "ls"),
+            ("bge", "ge"), ("blt", "lt"), ("bgt", "gt"), ("ble", "le"),
+            ("bal", "al"),
+        ];
+        for &(alias, cond) in cond_aliases {
+            if mn == alias {
+                return encode_cond_branch(cond, operands);
+            }
+        }
+    }
+
     match mn.as_str() {
         // Data processing - register
         "mov" => encode_mov(operands),
@@ -194,6 +211,11 @@ pub fn encode_instruction(mnemonic: &str, operands: &[Operand], raw_operands: &s
         "mul" => encode_mul(operands),
         "madd" => encode_madd(operands),
         "msub" => encode_msub(operands),
+        "smull" => encode_smull(operands),
+        "umull" => encode_umull(operands),
+        "smaddl" => encode_smaddl(operands),
+        "umaddl" => encode_umaddl(operands),
+        "mneg" => encode_mneg(operands),
         "udiv" => encode_div(operands, true),
         "sdiv" => encode_div(operands, false),
         "umulh" => encode_umulh(operands),
@@ -257,6 +279,8 @@ pub fn encode_instruction(mnemonic: &str, operands: &[Operand], raw_operands: &s
         "ldrsh" => encode_ldrs(operands, 0b01),
         "ldp" => encode_ldp_stp(operands, true),
         "stp" => encode_ldp_stp(operands, false),
+        "ldnp" => encode_ldnp_stnp(operands, true),
+        "stnp" => encode_ldnp_stnp(operands, false),
         "ldxr" => encode_ldxr_stxr(operands, true, None),
         "stxr" => encode_ldxr_stxr(operands, false, None),
         "ldxrb" => encode_ldxr_stxr(operands, true, Some(0b00)),
@@ -324,6 +348,9 @@ pub fn encode_instruction(mnemonic: &str, operands: &[Operand], raw_operands: &s
         "movi" => encode_neon_movi(operands),
         "bic" => encode_bic(operands),
         "bsl" => encode_neon_bsl(operands),
+        "pmul" => encode_neon_pmul(operands),
+        "mla" => encode_neon_mla(operands),
+        "mls" => encode_neon_mls(operands),
         "rev64" => encode_neon_rev64(operands),
         "tbl" => encode_neon_tbl(operands),
         "tbx" => encode_neon_tbx(operands),
@@ -1005,6 +1032,64 @@ fn encode_div(operands: &[Operand], unsigned: bool) -> Result<EncodeResult, Stri
     Ok(EncodeResult::Word(word))
 }
 
+/// Encode SMULL Xd, Wn, Wm -> SMADDL Xd, Wn, Wm, XZR
+fn encode_smull(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, _) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let (rm, _) = get_reg(operands, 2)?;
+    // SMADDL: 1 00 11011 001 Rm 0 11111 Rn Rd (Ra=XZR makes it SMULL)
+    let word = (1u32 << 31) | (0b0011011001 << 21) | (rm << 16)
+        | (0b011111 << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode UMULL Xd, Wn, Wm -> UMADDL Xd, Wn, Wm, XZR
+fn encode_umull(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, _) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let (rm, _) = get_reg(operands, 2)?;
+    // UMADDL: 1 00 11011 101 Rm 0 11111 Rn Rd (Ra=XZR makes it UMULL)
+    let word = (1u32 << 31) | (0b0011011101 << 21) | (rm << 16)
+        | (0b011111 << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode SMADDL Xd, Wn, Wm, Xa (signed multiply-add long)
+fn encode_smaddl(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, _) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let (rm, _) = get_reg(operands, 2)?;
+    let (ra, _) = get_reg(operands, 3)?;
+    // SMADDL: 1 00 11011 001 Rm 0 Ra Rn Rd
+    let word = (1u32 << 31) | (0b0011011001 << 21) | (rm << 16)
+        | (ra << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode UMADDL Xd, Wn, Wm, Xa (unsigned multiply-add long)
+fn encode_umaddl(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, _) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let (rm, _) = get_reg(operands, 2)?;
+    let (ra, _) = get_reg(operands, 3)?;
+    // UMADDL: 1 00 11011 101 Rm 0 Ra Rn Rd
+    let word = (1u32 << 31) | (0b0011011101 << 21) | (rm << 16)
+        | (ra << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode MNEG Xd, Xn, Xm -> MSUB Xd, Xn, Xm, XZR
+fn encode_mneg(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, is_64) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let (rm, _) = get_reg(operands, 2)?;
+    let sf = sf_bit(is_64);
+    // MSUB with Ra=XZR: sf 00 11011 000 Rm 1 11111 Rn Rd
+    let word = (sf << 31) | (0b0011011000 << 21) | (rm << 16)
+        | (1 << 15) | (0b11111 << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
 fn encode_umulh(operands: &[Operand]) -> Result<EncodeResult, String> {
     let (rd, _) = get_reg(operands, 0)?;
     let (rn, _) = get_reg(operands, 1)?;
@@ -1044,6 +1129,10 @@ fn encode_negs(operands: &[Operand]) -> Result<EncodeResult, String> {
 }
 
 fn encode_mvn(operands: &[Operand]) -> Result<EncodeResult, String> {
+    // NEON vector form: MVN Vd.T, Vn.T (alias of NOT)
+    if let Some(Operand::RegArrangement { .. }) = operands.first() {
+        return encode_neon_not(operands);
+    }
     // MVN Rd, Rm -> ORN Rd, XZR, Rm
     let (rd, is_64) = get_reg(operands, 0)?;
     let (rm, _) = get_reg(operands, 1)?;
@@ -1815,6 +1904,34 @@ fn encode_ldp_stp(operands: &[Operand], is_load: bool) -> Result<EncodeResult, S
     Err(format!("unsupported ldp/stp operands: {:?}", operands))
 }
 
+/// Encode LDNP/STNP (load/store pair non-temporal)
+/// Encoding: opc 101 V 000 L imm7 Rt2 Rn Rt
+/// TODO: Only handles integer registers (V=0). FP/SIMD register support needed for V=1.
+fn encode_ldnp_stnp(operands: &[Operand], is_load: bool) -> Result<EncodeResult, String> {
+    if operands.len() < 3 {
+        return Err("ldnp/stnp requires 3 operands".to_string());
+    }
+
+    let (rt1, is_64) = get_reg(operands, 0)?;
+    let (rt2, _) = get_reg(operands, 1)?;
+
+    let opc: u32 = if is_64 { 0b10 } else { 0b00 };
+    let l: u32 = if is_load { 1 } else { 0 };
+    let shift = if is_64 { 3 } else { 2 }; // scale factor: 8 for 64-bit, 4 for 32-bit
+
+    match operands.get(2) {
+        Some(Operand::Mem { base, offset }) => {
+            let rn = parse_reg_num(base).ok_or("invalid base reg")?;
+            let imm7 = ((*offset >> shift) as i32) & 0x7F;
+            // LDNP/STNP: opc 101 V=0 000 L imm7 Rt2 Rn Rt
+            let word = (opc << 30) | (0b101 << 27) | (l << 22)
+                | ((imm7 as u32 & 0x7F) << 15) | (rt2 << 10) | (rn << 5) | rt1;
+            Ok(EncodeResult::Word(word))
+        }
+        _ => Err(format!("unsupported ldnp/stnp operands: {:?}", operands)),
+    }
+}
+
 // ── Exclusive loads/stores ───────────────────────────────────────────────
 
 /// Encode LDXR/STXR and byte/halfword variants.
@@ -2536,6 +2653,17 @@ fn encode_cls(operands: &[Operand]) -> Result<EncodeResult, String> {
 }
 
 fn encode_rbit(operands: &[Operand]) -> Result<EncodeResult, String> {
+    // NEON vector form: RBIT Vd.T, Vn.T (reverse bits in each byte)
+    if let Some(Operand::RegArrangement { .. }) = operands.first() {
+        let (rd, arr_d) = get_neon_reg(operands, 0)?;
+        let (rn, _) = get_neon_reg(operands, 1)?;
+        let q: u32 = if arr_d == "16b" { 1 } else { 0 };
+        // RBIT (vector): 0 Q 1 01110 01 10000 00101 10 Rn Rd
+        let word = (q << 30) | (1 << 29) | (0b01110 << 24) | (0b01 << 22)
+            | (0b10000 << 17) | (0b00101 << 12) | (0b10 << 10) | (rn << 5) | rd;
+        return Ok(EncodeResult::Word(word));
+    }
+    // Scalar form: RBIT Rd, Rn
     let (rd, is_64) = get_reg(operands, 0)?;
     let (rn, _) = get_reg(operands, 1)?;
     let sf = sf_bit(is_64);
@@ -2751,6 +2879,42 @@ fn encode_neon_mul(operands: &[Operand]) -> Result<EncodeResult, String> {
     // MUL (vector): 0 Q 0 01110 size 1 Rm 10011 1 Rn Rd
     let word = (q << 30) | (0b001110 << 24) | (size << 22) | (1 << 21)
         | (rm << 16) | (0b100111 << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode NEON PMUL Vd.T, Vn.T, Vm.T (polynomial multiply, bytes only)
+fn encode_neon_pmul(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, arr_d) = get_neon_reg(operands, 0)?;
+    let (rn, _) = get_neon_reg(operands, 1)?;
+    let (rm, _) = get_neon_reg(operands, 2)?;
+    let q: u32 = if arr_d == "16b" { 1 } else { 0 };
+    // PMUL: 0 Q 1 01110 00 1 Rm 10011 1 Rn Rd (size=00 for bytes, U=1)
+    let word = (q << 30) | (1 << 29) | (0b01110 << 24) | (0b00 << 22) | (1 << 21)
+        | (rm << 16) | (0b100111 << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode NEON MLA Vd.T, Vn.T, Vm.T (multiply-accumulate)
+fn encode_neon_mla(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, arr_d) = get_neon_reg(operands, 0)?;
+    let (rn, _) = get_neon_reg(operands, 1)?;
+    let (rm, _) = get_neon_reg(operands, 2)?;
+    let (q, size) = neon_arr_to_q_size(&arr_d)?;
+    // MLA: 0 Q 0 01110 size 1 Rm 10010 1 Rn Rd
+    let word = (q << 30) | (0b001110 << 24) | (size << 22) | (1 << 21)
+        | (rm << 16) | (0b100101 << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode NEON MLS Vd.T, Vn.T, Vm.T (multiply-subtract)
+fn encode_neon_mls(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, arr_d) = get_neon_reg(operands, 0)?;
+    let (rn, _) = get_neon_reg(operands, 1)?;
+    let (rm, _) = get_neon_reg(operands, 2)?;
+    let (q, size) = neon_arr_to_q_size(&arr_d)?;
+    // MLS: 0 Q 1 01110 size 1 Rm 10010 1 Rn Rd (U=1)
+    let word = (q << 30) | (1 << 29) | (0b01110 << 24) | (size << 22) | (1 << 21)
+        | (rm << 16) | (0b100101 << 10) | (rn << 5) | rd;
     Ok(EncodeResult::Word(word))
 }
 
