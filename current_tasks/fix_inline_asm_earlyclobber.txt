@@ -1,0 +1,13 @@
+Fix inline asm register allocation for early-clobber and "+" read-write constraints.
+
+Problem: When inline asm has many operands with "+&r" (read-write, early-clobber) constraints,
+the synthetic inputs created for "+" outputs consumed scratch registers instead of being tied
+to their outputs. This exhausted all available GP registers, causing the allocator to fall back
+to already-used registers (e.g., rcx), resulting in register collisions and segfaults.
+
+Also implements proper early-clobber (&) semantics: input-only operands are excluded from
+registers used by early-clobber output operands.
+
+Reproducer: xz/liblzma LZMA decoder with x86-64 inline asm (LZMA_RANGE_DECODER_CONFIG=0x080).
+
+Started: 2026-02-04
