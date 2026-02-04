@@ -343,6 +343,10 @@ fn get_symbol(operands: &[Operand], idx: usize) -> Result<(String, i64), String>
         Some(Operand::Symbol(s)) => Ok((s.clone(), 0)),
         Some(Operand::Label(s)) => Ok((s.clone(), 0)),
         Some(Operand::SymbolOffset(s, off)) => Ok((s.clone(), *off)),
+        // Register names like "f1", "a0", "ra", "zero", "s1" etc. can also be
+        // symbol names (e.g. `call f1` where f1 is a function). When an encoder
+        // expects a symbol operand, treat a Reg as a symbol name.
+        Some(Operand::Reg(s)) => Ok((s.clone(), 0)),
         other => Err(format!("expected symbol at operand {}, got {:?}", idx, other)),
     }
 }
@@ -706,7 +710,7 @@ fn encode_jal(operands: &[Operand]) -> Result<EncodeResult, String> {
             Operand::Imm(imm) => {
                 Ok(EncodeResult::Word(encode_j(OP_JAL, 1, *imm as i32)))
             }
-            Operand::Symbol(s) | Operand::Label(s) => {
+            Operand::Symbol(s) | Operand::Label(s) | Operand::Reg(s) => {
                 Ok(EncodeResult::WordWithReloc {
                     word: encode_j(OP_JAL, 1, 0),
                     reloc: Relocation {
@@ -724,7 +728,7 @@ fn encode_jal(operands: &[Operand]) -> Result<EncodeResult, String> {
             Operand::Imm(imm) => {
                 Ok(EncodeResult::Word(encode_j(OP_JAL, rd, *imm as i32)))
             }
-            Operand::Symbol(s) | Operand::Label(s) => {
+            Operand::Symbol(s) | Operand::Label(s) | Operand::Reg(s) => {
                 Ok(EncodeResult::WordWithReloc {
                     word: encode_j(OP_JAL, rd, 0),
                     reloc: Relocation {
@@ -780,7 +784,7 @@ fn encode_branch_instr(operands: &[Operand], funct3: u32) -> Result<EncodeResult
         Some(Operand::Imm(imm)) => {
             Ok(EncodeResult::Word(encode_b(OP_BRANCH, funct3, rs1, rs2, *imm as i32)))
         }
-        Some(Operand::Symbol(s)) | Some(Operand::Label(s)) => {
+        Some(Operand::Symbol(s)) | Some(Operand::Label(s)) | Some(Operand::Reg(s)) => {
             Ok(EncodeResult::WordWithReloc {
                 word: encode_b(OP_BRANCH, funct3, rs1, rs2, 0),
                 reloc: Relocation {
@@ -1689,6 +1693,9 @@ fn get_branch_target(operands: &[Operand], idx: usize) -> Result<String, String>
     match operands.get(idx) {
         Some(Operand::Symbol(s)) | Some(Operand::Label(s)) => Ok(s.clone()),
         Some(Operand::Imm(v)) => Ok(format!("{}", v)),
+        // A register name can also be a symbol/label name (e.g. `beqz a0, t1`
+        // where t1 is a label). Treat Reg as symbol in branch target context.
+        Some(Operand::Reg(s)) => Ok(s.clone()),
         _ => Err(format!("expected branch target at operand {}", idx)),
     }
 }
@@ -1696,7 +1703,7 @@ fn get_branch_target(operands: &[Operand], idx: usize) -> Result<String, String>
 fn encode_j_pseudo(operands: &[Operand]) -> Result<EncodeResult, String> {
     // j offset -> jal x0, offset
     match &operands[0] {
-        Operand::Symbol(s) | Operand::Label(s) => {
+        Operand::Symbol(s) | Operand::Label(s) | Operand::Reg(s) => {
             Ok(EncodeResult::WordWithReloc {
                 word: encode_j(OP_JAL, 0, 0),
                 reloc: Relocation {
