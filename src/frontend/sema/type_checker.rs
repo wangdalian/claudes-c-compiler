@@ -268,15 +268,21 @@ impl<'a> ExprTypeChecker<'a> {
 
             // Conditional: C11 6.5.15 composite type rules
             Expr::Conditional(_, then_expr, else_expr, _) => {
+                use crate::common::const_arith::is_null_pointer_constant;
                 CType::conditional_composite_type(
                     self.infer_expr_ctype(then_expr),
                     self.infer_expr_ctype(else_expr),
+                    is_null_pointer_constant(then_expr),
+                    is_null_pointer_constant(else_expr),
                 )
             }
             Expr::GnuConditional(cond, else_expr, _) => {
+                use crate::common::const_arith::is_null_pointer_constant;
                 CType::conditional_composite_type(
                     self.infer_expr_ctype(cond),
                     self.infer_expr_ctype(else_expr),
+                    is_null_pointer_constant(cond),
+                    is_null_pointer_constant(else_expr),
                 )
             }
 

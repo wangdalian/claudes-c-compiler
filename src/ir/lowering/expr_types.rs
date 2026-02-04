@@ -1187,14 +1187,24 @@ impl Lowerer {
                 self.get_expr_ctype(lhs)
             }
             Expr::Conditional(_, then_expr, else_expr, _) => {
+                use crate::common::const_arith::is_null_pointer_constant;
                 let then_ct = self.get_expr_ctype(then_expr);
                 let else_ct = self.get_expr_ctype(else_expr);
-                CType::conditional_composite_type(then_ct, else_ct)
+                CType::conditional_composite_type(
+                    then_ct, else_ct,
+                    is_null_pointer_constant(then_expr),
+                    is_null_pointer_constant(else_expr),
+                )
             }
             Expr::GnuConditional(cond, else_expr, _) => {
+                use crate::common::const_arith::is_null_pointer_constant;
                 let cond_ct = self.get_expr_ctype(cond);
                 let else_ct = self.get_expr_ctype(else_expr);
-                CType::conditional_composite_type(cond_ct, else_ct)
+                CType::conditional_composite_type(
+                    cond_ct, else_ct,
+                    is_null_pointer_constant(cond),
+                    is_null_pointer_constant(else_expr),
+                )
             }
             Expr::Comma(_, last, _) => self.get_expr_ctype(last),
             Expr::StringLiteral(_, _) => {

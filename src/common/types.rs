@@ -1577,25 +1577,53 @@ impl CType {
     /// Rules:
     /// - Both arithmetic: usual arithmetic conversions
     /// - Both void: void
-    /// - Both pointers: prefer typed pointer over void* (GCC compat for sizeof/typeof)
+    /// - Both pointers with one being void*:
+    ///   - If the void* branch is a null pointer constant, result is the other pointer type
+    ///   - Otherwise, result is void* (C11 6.5.15p6)
     /// - Both struct/union: return the then-branch type (must be compatible)
     /// - Otherwise: return the then-branch type as fallback
-    pub fn conditional_composite_type(then_ct: Option<CType>, else_ct: Option<CType>) -> Option<CType> {
+    ///
+    /// The `then_is_npc`/`else_is_npc` flags indicate whether each branch is a
+    /// null pointer constant (per C11 6.3.2.3p3). This matters for the kernel's
+    /// `__is_constexpr` macro which relies on `sizeof` of a conditional where
+    /// one branch is `(void*)runtime_zero` (NOT an NPC → type is void*, sizeof 1)
+    /// vs `(void*)constant_zero` (IS an NPC → type is int*, sizeof 4).
+    pub fn conditional_composite_type(
+        then_ct: Option<CType>,
+        else_ct: Option<CType>,
+        then_is_npc: bool,
+        else_is_npc: bool,
+    ) -> Option<CType> {
         match (then_ct, else_ct) {
             (Some(t), Some(e)) => {
                 // Both void
                 if matches!(&t, CType::Void) && matches!(&e, CType::Void) {
                     return Some(CType::Void);
                 }
-                // Both pointers: prefer typed pointer over void*
+                // Both pointers: C11 6.5.15p6 rules
                 if let (CType::Pointer(ref inner_t, _), CType::Pointer(ref inner_e, _)) = (&t, &e) {
-                    if matches!(inner_t.as_ref(), CType::Void) && !matches!(inner_e.as_ref(), CType::Void) {
-                        return Some(e);
+                    let t_is_void = matches!(inner_t.as_ref(), CType::Void);
+                    let e_is_void = matches!(inner_e.as_ref(), CType::Void);
+                    if t_is_void && !e_is_void {
+                        // then=void*, else=T*: if then is NPC, result is T*; else void*
+                        return if then_is_npc { Some(e) } else { Some(t) };
                     }
-                    if matches!(inner_e.as_ref(), CType::Void) && !matches!(inner_t.as_ref(), CType::Void) {
-                        return Some(t);
+                    if e_is_void && !t_is_void {
+                        // then=T*, else=void*: if else is NPC, result is T*; else void*
+                        return if else_is_npc { Some(t) } else { Some(e) };
                     }
                     return Some(t);
+                }
+                // One pointer, one integer 0 (null pointer constant)
+                if let CType::Pointer(..) = &t {
+                    if e.is_arithmetic() && else_is_npc {
+                        return Some(t);
+                    }
+                }
+                if let CType::Pointer(..) = &e {
+                    if t.is_arithmetic() && then_is_npc {
+                        return Some(e);
+                    }
                 }
                 // Both arithmetic types: apply usual arithmetic conversions
                 if t.is_arithmetic() && e.is_arithmetic() {

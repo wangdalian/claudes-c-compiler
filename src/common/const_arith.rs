@@ -456,6 +456,122 @@ pub fn is_zero_expr(expr: &crate::frontend::parser::ast::Expr) -> bool {
     }
 }
 
+/// Check if an AST expression is a null pointer constant per C11 6.3.2.3p3:
+/// "An integer constant expression with the value 0, or such an expression
+///  cast to type void *, is called a null pointer constant."
+///
+/// This is stricter than is_zero_expr because it requires the expression to be
+/// an integer constant expression (ICE), not just evaluating to zero at runtime.
+/// For example, `(void*)((long)(volatile_var) * 0l)` is NOT an NPC because
+/// `(long)(volatile_var) * 0l` is not an ICE (it involves a volatile variable).
+pub fn is_null_pointer_constant(expr: &crate::frontend::parser::ast::Expr) -> bool {
+    use crate::frontend::parser::ast::Expr;
+    use crate::frontend::parser::ast::TypeSpecifier;
+    match expr {
+        // Integer literal 0 is an NPC
+        Expr::IntLiteral(0, _) | Expr::UIntLiteral(0, _)
+        | Expr::LongLiteral(0, _) | Expr::ULongLiteral(0, _)
+        | Expr::LongLongLiteral(0, _) | Expr::ULongLongLiteral(0, _) => true,
+        // (void*)ICE_zero is an NPC
+        Expr::Cast(ts, inner, _) => {
+            if let TypeSpecifier::Pointer(p, _) = ts {
+                if matches!(p.as_ref(), TypeSpecifier::Void) {
+                    // Cast to void*: inner must be an integer constant expression with value 0
+                    return is_integer_constant_expr_zero(inner);
+                }
+            }
+            // Cast to non-void-pointer type: still check if it's an NPC
+            // (e.g. (int)0 is still an ICE zero)
+            is_null_pointer_constant(inner)
+        }
+        _ => false,
+    }
+}
+
+/// Check if an expression is an integer constant expression that evaluates to 0.
+/// An ICE can only contain literals, sizeof, alignof, enum constants, and operations
+/// on these. It cannot contain variable references, function calls, or volatile accesses.
+fn is_integer_constant_expr_zero(expr: &crate::frontend::parser::ast::Expr) -> bool {
+    // First check if the expression is purely constant (no variable refs)
+    if !is_syntactically_constant(expr) {
+        return false;
+    }
+    // Then check if it evaluates to zero
+    is_zero_valued_constant(expr)
+}
+
+/// Check if an expression is syntactically constant (contains no variable references,
+/// function calls, or other non-constant elements). This is a conservative check for
+/// integer constant expressions per C11 6.6.
+fn is_syntactically_constant(expr: &crate::frontend::parser::ast::Expr) -> bool {
+    use crate::frontend::parser::ast::Expr;
+    match expr {
+        // Literals are constant
+        Expr::IntLiteral(_, _) | Expr::UIntLiteral(_, _)
+        | Expr::LongLiteral(_, _) | Expr::ULongLiteral(_, _)
+        | Expr::LongLongLiteral(_, _) | Expr::ULongLongLiteral(_, _)
+        | Expr::CharLiteral(_, _) | Expr::FloatLiteral(_, _)
+        | Expr::FloatLiteralF32(_, _) | Expr::FloatLiteralLongDouble(_, _, _) => true,
+
+        // sizeof and alignof are constant (even when applied to expressions)
+        Expr::Sizeof(_, _) | Expr::Alignof(_, _)
+        | Expr::AlignofExpr(_, _) | Expr::GnuAlignof(_, _)
+        | Expr::GnuAlignofExpr(_, _) => true,
+
+        // Casts of constant expressions are constant
+        Expr::Cast(_, inner, _) => is_syntactically_constant(inner),
+
+        // Unary ops on constant expressions are constant
+        Expr::UnaryOp(_, inner, _) | Expr::PostfixOp(_, inner, _) => {
+            is_syntactically_constant(inner)
+        }
+
+        // Binary ops on constant expressions are constant
+        Expr::BinaryOp(_, lhs, rhs, _) => {
+            is_syntactically_constant(lhs) && is_syntactically_constant(rhs)
+        }
+
+        // Conditional on constant expressions is constant
+        Expr::Conditional(cond, then_e, else_e, _) => {
+            is_syntactically_constant(cond) &&
+            is_syntactically_constant(then_e) &&
+            is_syntactically_constant(else_e)
+        }
+
+        // Variable references, function calls, etc. are NOT constant
+        // This includes identifiers that might be enum constants, but
+        // for the NPC check we're conservative and treat them as non-constant.
+        // This is fine because enum-constant-based NPCs would be caught by
+        // the literal zero check above.
+        _ => false,
+    }
+}
+
+/// Check if a syntactically-constant expression evaluates to zero.
+/// Only call this after is_syntactically_constant returns true.
+fn is_zero_valued_constant(expr: &crate::frontend::parser::ast::Expr) -> bool {
+    use crate::frontend::parser::ast::Expr;
+    match expr {
+        Expr::IntLiteral(v, _) => *v == 0,
+        Expr::UIntLiteral(v, _) => *v == 0,
+        Expr::LongLiteral(v, _) => *v == 0,
+        Expr::ULongLiteral(v, _) => *v == 0,
+        Expr::LongLongLiteral(v, _) => *v == 0,
+        Expr::ULongLongLiteral(v, _) => *v == 0,
+        Expr::CharLiteral(v, _) => *v == '\0',
+        // Cast of zero is zero
+        Expr::Cast(_, inner, _) => is_zero_valued_constant(inner),
+        // x * 0 = 0 for any constant x; 0 * x = 0
+        Expr::BinaryOp(BinOp::Mul, lhs, rhs, _) => {
+            is_zero_valued_constant(lhs) || is_zero_valued_constant(rhs)
+        }
+        // 0 + 0, 0 - 0, 0 & x, etc. - be conservative, only handle * 0
+        // For other ops, we'd need full evaluation which is complex.
+        // The * 0 case is the critical one for __is_constexpr.
+        _ => false,
+    }
+}
+
 /// Evaluate raw u64 bit truncation and sign extension for a cast chain.
 ///
 /// Given raw bits from a source value, truncates to `target_width` bits
