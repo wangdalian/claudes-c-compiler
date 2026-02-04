@@ -8,14 +8,14 @@
 use std::collections::{HashMap, HashSet};
 use super::parser::{AsmStatement, AsmDirective, SectionDirective, SymbolKind, SizeExpr, DataValue, Operand};
 use super::encoder::{encode_instruction, EncodeResult, RelocType};
-use crate::backend::elf::{self, StringTable,
-    SHT_NULL, SHT_PROGBITS, SHT_SYMTAB, SHT_STRTAB, SHT_RELA, SHT_NOBITS, SHT_NOTE,
-    SHF_WRITE, SHF_ALLOC, SHF_EXECINSTR, SHF_MERGE, SHF_STRINGS, SHF_INFO_LINK,
+use crate::backend::elf::{self,
+    SHT_PROGBITS, SHT_NOBITS, SHT_NOTE,
+    SHF_WRITE, SHF_ALLOC, SHF_EXECINSTR, SHF_MERGE, SHF_STRINGS,
     SHF_TLS, SHF_GROUP,
     STB_LOCAL, STB_GLOBAL, STB_WEAK,
-    STT_NOTYPE, STT_OBJECT, STT_FUNC, STT_SECTION, STT_TLS,
+    STT_NOTYPE, STT_OBJECT, STT_FUNC, STT_TLS,
     STV_DEFAULT, STV_HIDDEN, STV_PROTECTED, STV_INTERNAL,
-    ELFCLASS64, ELFDATA2LSB, EV_CURRENT, ELFOSABI_NONE, ET_REL, EM_AARCH64,
+    ELFCLASS64, EM_AARCH64,
 };
 
 /// An ELF section being built.
@@ -676,291 +676,61 @@ impl ElfWriter {
     }
 
     /// Write the final ELF object file.
+    ///
+    /// Delegates to `elf::write_relocatable_object` for the serialization pipeline,
+    /// after resolving local data relocations and building the symbol table.
     pub fn write_elf(&mut self, output_path: &str) -> Result<(), String> {
         // Resolve local label references in data relocations before building symbol table
         self.resolve_local_data_relocs();
         // Build the symbol table from labels and directives
         self.build_symbol_table();
 
-        let mut elf = Vec::new();
-
-        // ── Collect section metadata ──
-        // Section layout: NULL, then content sections, then rela sections, then .symtab, .strtab, .shstrtab
-
-        let mut shstrtab = StringTable::new();
-        let mut strtab = StringTable::new();
-
-        // Add the null string
-        shstrtab.add("");
-        strtab.add("");
-
-        // Content sections
-        let content_sections: Vec<String> = self.section_order.clone();
-
-        // Build symbol table entries
-        let mut sym_entries: Vec<SymEntry> = Vec::new();
-        // First entry is always NULL
-        sym_entries.push(SymEntry {
-            st_name: 0,
-            st_info: 0,
-            st_other: 0,
-            st_shndx: 0,
-            st_value: 0,
-            st_size: 0,
-        });
-
-        // Section symbols (one per content section)
-        for (i, sec_name) in content_sections.iter().enumerate() {
-            strtab.add(sec_name);
-            sym_entries.push(SymEntry {
-                st_name: strtab.offset_of(sec_name),
-                st_info: (STB_LOCAL << 4) | STT_SECTION,
-                st_other: 0,
-                st_shndx: (i + 1) as u16, // section index (1-based, 0 is NULL)
-                st_value: 0,
-                st_size: 0,
-            });
-        }
-
-        // Local symbols (from labels, excluding .L* which are local labels)
-        let mut local_syms: Vec<&ElfSymbol> = Vec::new();
-        let mut global_syms: Vec<&ElfSymbol> = Vec::new();
-
-        for sym in &self.symbols {
-            if sym.binding == STB_LOCAL {
-                local_syms.push(sym);
-            } else {
-                global_syms.push(sym);
-            }
-        }
-
-        let first_global_idx = sym_entries.len() + local_syms.len();
-
-        for sym in &local_syms {
-            let name_offset = strtab.add(&sym.name);
-            let shndx = section_index(&sym.section_name, &content_sections);
-            sym_entries.push(SymEntry {
-                st_name: name_offset,
-                st_info: (sym.binding << 4) | sym.sym_type,
-                st_other: sym.visibility,
-                st_shndx: shndx,
-                st_value: sym.value,
-                st_size: sym.size,
-            });
-        }
-
-        for sym in &global_syms {
-            let name_offset = strtab.add(&sym.name);
-            let shndx = section_index(&sym.section_name, &content_sections);
-            sym_entries.push(SymEntry {
-                st_name: name_offset,
-                st_info: (sym.binding << 4) | sym.sym_type,
-                st_other: sym.visibility,
-                st_shndx: shndx,
-                st_value: sym.value,
-                st_size: sym.size,
-            });
-        }
-
-        // Add shstrtab names
-        shstrtab.add("");
-        for sec_name in &content_sections {
-            shstrtab.add(sec_name);
-        }
-        shstrtab.add(".symtab");
-        shstrtab.add(".strtab");
-        shstrtab.add(".shstrtab");
-
-        // Build rela section names and add them
-        let mut rela_sections: Vec<String> = Vec::new();
-        for sec_name in &content_sections {
+        // Convert internal sections to shared ObjSection format
+        let mut shared_sections: HashMap<String, elf::ObjSection> = HashMap::new();
+        for sec_name in &self.section_order {
             if let Some(section) = self.sections.get(sec_name) {
-                if !section.relocs.is_empty() {
-                    let rela_name = format!(".rela{}", sec_name);
-                    shstrtab.add(&rela_name);
-                    rela_sections.push(rela_name);
-                }
+                let relocs = section.relocs.iter().map(|r| elf::ObjReloc {
+                    offset: r.offset,
+                    reloc_type: r.reloc_type,
+                    symbol_name: r.symbol_name.clone(),
+                    addend: r.addend,
+                }).collect();
+                shared_sections.insert(sec_name.clone(), elf::ObjSection {
+                    name: section.name.clone(),
+                    sh_type: section.sh_type,
+                    sh_flags: section.sh_flags,
+                    data: section.data.clone(),
+                    sh_addralign: section.sh_addralign,
+                    relocs,
+                });
             }
         }
 
-        // ── Calculate layout ──
-        let ehdr_size = 64usize; // ELF64 header
-        let mut offset = ehdr_size;
+        // Convert internal symbols to shared ObjSymbol format
+        let shared_symbols: Vec<elf::ObjSymbol> = self.symbols.iter().map(|sym| elf::ObjSymbol {
+            name: sym.name.clone(),
+            value: sym.value,
+            size: sym.size,
+            binding: sym.binding,
+            sym_type: sym.sym_type,
+            visibility: sym.visibility,
+            section_name: sym.section_name.clone(),
+        }).collect();
 
-        // Content section offsets
-        let mut section_offsets: Vec<usize> = Vec::new();
-        for sec_name in &content_sections {
-            let section = self.sections.get(sec_name).unwrap();
-            let align = section.sh_addralign.max(1) as usize;
-            offset = (offset + align - 1) & !(align - 1);
-            section_offsets.push(offset);
-            if section.sh_type != SHT_NOBITS {
-                offset += section.data.len();
-            }
-        }
+        let config = elf::ElfConfig {
+            e_machine: EM_AARCH64,
+            e_flags: 0,
+            elf_class: ELFCLASS64,
+        };
 
-        // Rela section offsets
-        let mut rela_offsets: Vec<usize> = Vec::new();
-        for sec_name in &content_sections {
-            if let Some(section) = self.sections.get(sec_name) {
-                if !section.relocs.is_empty() {
-                    offset = (offset + 7) & !7; // 8-byte align
-                    rela_offsets.push(offset);
-                    offset += section.relocs.len() * 24; // sizeof(Elf64_Rela) = 24
-                }
-            }
-        }
+        let elf_bytes = elf::write_relocatable_object(
+            &config,
+            &self.section_order,
+            &shared_sections,
+            &shared_symbols,
+        )?;
 
-        // Symtab offset
-        offset = (offset + 7) & !7;
-        let symtab_offset = offset;
-        let symtab_size = sym_entries.len() * 24; // sizeof(Elf64_Sym) = 24
-        offset += symtab_size;
-
-        // Strtab offset
-        let strtab_offset = offset;
-        let strtab_data = strtab.as_bytes().to_vec();
-        offset += strtab_data.len();
-
-        // Shstrtab offset
-        let shstrtab_offset = offset;
-        let shstrtab_data = shstrtab.as_bytes().to_vec();
-        offset += shstrtab_data.len();
-
-        // Section headers offset (align to 8)
-        offset = (offset + 7) & !7;
-        let shdr_offset = offset;
-
-        // Section header count:
-        // 1 (NULL) + content_sections.len() + rela_sections.len() + 3 (.symtab, .strtab, .shstrtab)
-        let num_sections = 1 + content_sections.len() + rela_sections.len() + 3;
-        let shstrtab_idx = num_sections - 1;
-
-        // ── Write ELF header ──
-        elf.extend_from_slice(&[0x7f, b'E', b'L', b'F']); // e_ident magic
-        elf.push(ELFCLASS64);
-        elf.push(ELFDATA2LSB);
-        elf.push(EV_CURRENT);
-        elf.push(ELFOSABI_NONE);
-        elf.extend_from_slice(&[0u8; 8]); // padding
-        elf.extend_from_slice(&ET_REL.to_le_bytes()); // e_type
-        elf.extend_from_slice(&EM_AARCH64.to_le_bytes()); // e_machine
-        elf.extend_from_slice(&1u32.to_le_bytes()); // e_version
-        elf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
-        elf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
-        elf.extend_from_slice(&(shdr_offset as u64).to_le_bytes()); // e_shoff
-        elf.extend_from_slice(&0u32.to_le_bytes()); // e_flags
-        elf.extend_from_slice(&(ehdr_size as u16).to_le_bytes()); // e_ehsize
-        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phentsize
-        elf.extend_from_slice(&0u16.to_le_bytes()); // e_phnum
-        elf.extend_from_slice(&64u16.to_le_bytes()); // e_shentsize
-        elf.extend_from_slice(&(num_sections as u16).to_le_bytes()); // e_shnum
-        elf.extend_from_slice(&(shstrtab_idx as u16).to_le_bytes()); // e_shstrndx
-
-        assert_eq!(elf.len(), ehdr_size);
-
-        // ── Write content section data ──
-        for (i, sec_name) in content_sections.iter().enumerate() {
-            let section = self.sections.get(sec_name).unwrap();
-            // Pad to alignment
-            while elf.len() < section_offsets[i] {
-                elf.push(0);
-            }
-            if section.sh_type != SHT_NOBITS {
-                elf.extend_from_slice(&section.data);
-            }
-        }
-
-        // ── Write rela section data ──
-        let symtab_shndx = 1 + content_sections.len() + rela_sections.len(); // index of .symtab in section header table
-        let mut rela_idx = 0;
-        for sec_name in &content_sections {
-            if let Some(section) = self.sections.get(sec_name) {
-                if !section.relocs.is_empty() {
-                    while elf.len() < rela_offsets[rela_idx] {
-                        elf.push(0);
-                    }
-                    for reloc in &section.relocs {
-                        let sym_idx = self.find_symbol_index(&reloc.symbol_name, &sym_entries, &strtab, &content_sections);
-                        elf::write_rela64(&mut elf, reloc.offset, sym_idx, reloc.reloc_type, reloc.addend);
-                    }
-                    rela_idx += 1;
-                }
-            }
-        }
-
-        // ── Write symtab ──
-        while elf.len() < symtab_offset {
-            elf.push(0);
-        }
-        for sym in &sym_entries {
-            elf::write_sym64(&mut elf, sym.st_name, sym.st_info, sym.st_other,
-                           sym.st_shndx, sym.st_value, sym.st_size);
-        }
-
-        // ── Write strtab ──
-        assert_eq!(elf.len(), strtab_offset);
-        elf.extend_from_slice(&strtab_data);
-
-        // ── Write shstrtab ──
-        assert_eq!(elf.len(), shstrtab_offset);
-        elf.extend_from_slice(&shstrtab_data);
-
-        // ── Write section headers ──
-        while elf.len() < shdr_offset {
-            elf.push(0);
-        }
-
-        // SHT_NULL entry
-        write_shdr(&mut elf, 0, SHT_NULL, 0, 0, 0, 0, 0, 0, 0, 0);
-
-        // Content sections
-        for (i, sec_name) in content_sections.iter().enumerate() {
-            let section = self.sections.get(sec_name).unwrap();
-            let sh_name = shstrtab.offset_of(sec_name);
-            let sh_offset = if section.sh_type == SHT_NOBITS { 0 } else { section_offsets[i] as u64 };
-            let sh_size = section.data.len() as u64;
-            write_shdr(&mut elf, sh_name, section.sh_type, section.sh_flags,
-                       0, sh_offset, sh_size, 0, 0, section.sh_addralign, section.sh_entsize);
-        }
-
-        // Rela sections
-        rela_idx = 0;
-        for (i, sec_name) in content_sections.iter().enumerate() {
-            if let Some(section) = self.sections.get(sec_name) {
-                if !section.relocs.is_empty() {
-                    let rela_name = format!(".rela{}", sec_name);
-                    let sh_name = shstrtab.offset_of(&rela_name);
-                    let sh_offset = rela_offsets[rela_idx] as u64;
-                    let sh_size = (section.relocs.len() * 24) as u64;
-                    let sh_link = symtab_shndx as u32;
-                    let sh_info = (i + 1) as u32; // Index of the section these relocs apply to
-                    write_shdr(&mut elf, sh_name, SHT_RELA, SHF_INFO_LINK,
-                               0, sh_offset, sh_size, sh_link, sh_info, 8, 24);
-                    rela_idx += 1;
-                }
-            }
-        }
-
-        // .symtab
-        let symtab_name = shstrtab.offset_of(".symtab");
-        let strtab_shndx = symtab_shndx + 1;
-        write_shdr(&mut elf, symtab_name, SHT_SYMTAB, 0,
-                   0, symtab_offset as u64, symtab_size as u64,
-                   strtab_shndx as u32, first_global_idx as u32, 8, 24);
-
-        // .strtab
-        let strtab_name = shstrtab.offset_of(".strtab");
-        write_shdr(&mut elf, strtab_name, SHT_STRTAB, 0,
-                   0, strtab_offset as u64, strtab_data.len() as u64, 0, 0, 1, 0);
-
-        // .shstrtab
-        let shstrtab_name = shstrtab.offset_of(".shstrtab");
-        write_shdr(&mut elf, shstrtab_name, SHT_STRTAB, 0,
-                   0, shstrtab_offset as u64, shstrtab_data.len() as u64, 0, 0, 1, 0);
-
-        // Write to file
-        std::fs::write(output_path, &elf)
+        std::fs::write(output_path, &elf_bytes)
             .map_err(|e| format!("failed to write ELF file: {}", e))?;
 
         Ok(())
@@ -1094,36 +864,7 @@ impl ElfWriter {
         }
     }
 
-    fn find_symbol_index(&self, name: &str, sym_entries: &[SymEntry], strtab: &StringTable, content_sections: &[String]) -> u32 {
-        // First check if it's a section symbol
-        for (i, sec_name) in content_sections.iter().enumerate() {
-            if sec_name == name {
-                return (i + 1) as u32; // +1 for NULL entry
-            }
-        }
-
-        // Then check named symbols
-        let name_offset = strtab.offset_of(name);
-        for (i, entry) in sym_entries.iter().enumerate() {
-            if entry.st_name == name_offset && entry.st_info & 0xF != STT_SECTION {
-                return i as u32;
-            }
-        }
-
-        // Not found - return 0 (undefined)
-        0
-    }
 }
 
-use elf::{write_shdr64 as write_shdr, section_index, default_section_flags};
-
-/// A symbol table entry for writing.
-struct SymEntry {
-    st_name: u32,
-    st_info: u8,
-    st_other: u8,
-    st_shndx: u16,
-    st_value: u64,
-    st_size: u64,
-}
+use elf::default_section_flags;
 

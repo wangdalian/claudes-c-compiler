@@ -392,7 +392,9 @@ into short-jump range:
 
 ### Step 6: ELF Emission (elf_writer.rs)
 
-`ElfByteWriter::write_object()` serializes the final ELF file:
+The shared `write_relocatable_object()` in `backend/elf.rs` serializes the
+final ELF file. The x86 `emit_elf()` converts internal data to shared
+`ObjSection`/`ObjSymbol`/`ObjReloc` types and delegates to this function.
 
 **Layout:**
 ```
@@ -403,10 +405,14 @@ into short-jump range:
 | Section 2 data (aligned)                          |
 | ...                                               |
 +---------------------------------------------------+
+| .rela.text (if .text has unresolved relocations)  |
+| .rela.data (if .data has unresolved relocations)  |
+| ...                                               |
++---------------------------------------------------+
 | .symtab (8-byte aligned)                          |
 |   - Null symbol                                   |
 |   - Section symbols (STT_SECTION, one per section)|
-|   - Local defined symbols (non-dot-prefixed)      |
+|   - Local defined symbols                         |
 |   - Global and weak symbols                       |
 |   - Alias symbols (.set)                          |
 |   - Undefined external symbols                    |
@@ -415,35 +421,31 @@ into short-jump range:
 +---------------------------------------------------+
 | .shstrtab (section name strings, NUL-terminated)  |
 +---------------------------------------------------+
-| .rela.text (if .text has unresolved relocations)  |
-| .rela.data (if .data has unresolved relocations)  |
-| ...                                               |
-+---------------------------------------------------+
 | Section Header Table (8-byte aligned)             |
 |   [0] NULL                                        |
 |   [1..N] data sections                            |
-|   [N+1] .symtab                                   |
-|   [N+2] .strtab                                   |
-|   [N+3] .shstrtab                                 |
-|   [N+4..] .rela.* sections                        |
+|   [N+1..] .rela.* sections                        |
+|   [M] .symtab                                     |
+|   [M+1] .strtab                                   |
+|   [M+2] .shstrtab                                 |
 +---------------------------------------------------+
 ```
 
 **Symbol table ordering** (required by ELF spec):
 1. Null symbol (index 0)
 2. Section symbols (`STT_SECTION`, one per data section, `STB_LOCAL`)
-3. Local non-internal symbols (name does not start with `.`)
+3. Local non-internal symbols
 4. ---- `sh_info` boundary (first global index) ----
 5. Global and weak symbols
 6. Alias symbols from `.set` directives
 7. Undefined external symbols (auto-created from unresolved relocations)
 
-**Relocation symbol resolution** (`resolve_reloc_symbol`):
-- Named symbols: looked up directly in the symbol table.
-- Internal labels (`.L*`): referenced via the parent section's section symbol.
-  The addend is adjusted to include the label's offset within the section.
+**Relocation symbol resolution** (in `emit_elf`):
+- Named symbols: converted to `ObjReloc` with the symbol name.
+- Internal labels (`.L*`): converted to section name references with the
+  label's offset added to the addend (section-symbol-relative addressing).
 
-**String table construction** (`StringTable`):
+**String table construction** (`StringTable` in `backend/elf.rs`):
 A simple append-only NUL-terminated string pool with deduplication via a
 HashMap.  Used for both `.strtab` (symbol names) and `.shstrtab` (section
 names).
