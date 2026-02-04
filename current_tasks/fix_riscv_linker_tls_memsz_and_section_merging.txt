@@ -1,0 +1,10 @@
+Fix RISC-V linker TLS MemSiz calculation and add .tdata.*/tbss.* section merging.
+
+The RISC-V linker doesn't account for alignment padding when computing PT_TLS MemSiz.
+It sums raw section sizes instead of computing vaddr span (vaddr_end - tls_vaddr).
+This causes TLS segment to be too small when multiple .tbss sections have alignment gaps.
+
+Also add .tdata.* -> .tdata and .tbss.* -> .tbss section name merging (missing from
+output_section_name, which the x86/ARM linkers already handle via different mechanism).
+
+This bug causes redis-server to SIGSEGV on RISC-V with MY_ASM=builtin MY_LD=builtin.
