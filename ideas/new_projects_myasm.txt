@@ -65,3 +65,4 @@ Tracking project build/test results with MY_ASM=builtin MY_LD=builtin
 | picohttpparser | PASS | PASS | PASS | PASS | Fixed ARM: stack-passed params in callee prologue clobbered x0 (emit_store_stack_params used x0 as scratch) |
 | http-parser | PASS | PASS | PASS | PASS | All architectures pass out of the box |
 | tiny-regex-c | PASS | PASS | PASS | PASS | All architectures pass out of the box |
+| binn    | PASS | PASS | PASS | PASS | Fixed ARM: mixed float/int param clobbering (pre-store promoted GP params) |

@@ -1,6 +1,6 @@
 //! ArmCodegen: prologue/epilogue and stack frame operations.
 
-use crate::ir::reexports::{IrFunction, Value};
+use crate::ir::reexports::{IrFunction, Instruction, Value};
 use crate::common::types::IrType;
 use crate::backend::generation::{calculate_stack_space_common, find_param_alloca};
 use crate::backend::call_abi::{ParamClass, classify_params};
@@ -156,6 +156,68 @@ impl ArmCodegen {
             })
         }).collect();
 
+        // Pre-store optimization: when a GP param's alloca is dead (promoted by
+        // mem2reg) but the ParamRef dest is register-allocated to a callee-saved
+        // register, store the ABI arg register directly to that callee-saved
+        // register in the prologue.  This is critical because:
+        // 1. Dead alloca means no stack slot exists for this param
+        // 2. The ABI register (x0-x7) will be clobbered by subsequent codegen
+        //    (ARM uses x0 as the universal scratch/result register)
+        // 3. We must save the value NOW, before any other code runs
+        // 4. emit_param_ref will see param_pre_stored and skip code generation
+        let sret_shift = if self.state.uses_sret { 1usize } else { 0 };
+        let mut paramref_dests: Vec<Option<Value>> = vec![None; func.params.len()];
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                if let Instruction::ParamRef { dest, param_idx, .. } = inst {
+                    if *param_idx < paramref_dests.len() {
+                        paramref_dests[*param_idx] = Some(*dest);
+                    }
+                }
+            }
+        }
+        for (i, _) in func.params.iter().enumerate() {
+            let class = param_classes[i];
+            if !class.uses_gp_reg() { continue; }
+            // Skip params that have an alloca slot (they'll be handled by emit_store_gp_params)
+            let has_slot = self.state.param_alloca_slots.get(i)
+                .and_then(|opt| opt.as_ref())
+                .is_some();
+            if has_slot { continue; }
+
+            if let Some(paramref_dest) = paramref_dests[i] {
+                if let Some(&phys_reg) = self.reg_assignments.get(&paramref_dest.0) {
+                    // Only pre-store to callee-saved registers (x20-x28).
+                    // Caller-saved registers (x13, x14) cannot be used because
+                    // they may overlap with scratch registers.
+                    let is_callee_saved = phys_reg.0 >= 20 && phys_reg.0 <= 28;
+                    if is_callee_saved {
+                        let dest_reg = callee_saved_name(phys_reg);
+                        match class {
+                            ParamClass::IntReg { reg_idx } => {
+                                let actual_idx = if sret_shift > 0 && reg_idx == 0 && i == 0 {
+                                    // sret: the pointer comes in x8
+                                    self.state.emit_fmt(format_args!(
+                                        "    mov {}, x8", dest_reg));
+                                    self.state.param_pre_stored.insert(i);
+                                    continue;
+                                } else if reg_idx >= sret_shift {
+                                    reg_idx - sret_shift
+                                } else {
+                                    reg_idx
+                                };
+                                let src_reg = ARM_ARG_REGS[actual_idx];
+                                self.state.emit_fmt(format_args!(
+                                    "    mov {}, {}", dest_reg, src_reg));
+                                self.state.param_pre_stored.insert(i);
+                            }
+                            _ => {} // Other GP-reg param classes not handled here
+                        }
+                    }
+                }
+            }
+        }
+
         self.emit_store_gp_params(func, &param_classes);
         self.emit_store_fp_params(func, &param_classes);
         self.emit_store_stack_params(func, &param_classes);
@@ -165,6 +227,13 @@ impl ArmCodegen {
 
     pub(super) fn emit_param_ref_impl(&mut self, dest: &Value, param_idx: usize, ty: IrType) {
         if param_idx >= self.state.param_classes.len() {
+            return;
+        }
+
+        // If this param was pre-stored directly to its register-allocated
+        // destination during emit_store_params, the value is already in place.
+        // No code needs to be emitted — the register already holds the value.
+        if self.state.param_pre_stored.contains(&param_idx) {
             return;
         }
 
