@@ -309,6 +309,20 @@ impl InstructionEncoder {
                     _ => Err("jecxz requires label operand".to_string()),
                 }
             }
+            // loop - short jump only (dec ECX, jump if non-zero)
+            "loop" => {
+                if ops.len() != 1 {
+                    return Err("loop requires 1 operand".to_string());
+                }
+                match &ops[0] {
+                    Operand::Label(_) => {
+                        // E2 cb - Dec ECX; jump short if ECX != 0
+                        self.bytes.extend_from_slice(&[0xE2, 0x00]);
+                        Ok(())
+                    }
+                    _ => Err("loop requires label operand".to_string()),
+                }
+            }
 
             // Call/return
             "call" => self.encode_call(ops),

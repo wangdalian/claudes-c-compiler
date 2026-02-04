@@ -568,7 +568,7 @@ impl ElfWriter {
 
         // Detect jump instructions for relaxation
         if let Some(ref label) = self.get_jump_target_label(instr) {
-            let is_short_only = matches!(instr.mnemonic.as_str(), "jecxz" | "jcxz");
+            let is_short_only = matches!(instr.mnemonic.as_str(), "jecxz" | "jcxz" | "loop");
             let is_conditional = instr.mnemonic != "jmp";
             if is_short_only && instr_len == 2 {
                 // Short-only jumps (jecxz/jcxz) have no long form.
@@ -610,7 +610,7 @@ impl ElfWriter {
 
     fn get_jump_target_label(&self, instr: &Instruction) -> Option<String> {
         let mnem = &instr.mnemonic;
-        let is_jump = mnem == "jmp" || (mnem.starts_with('j') && mnem.len() >= 2);
+        let is_jump = mnem == "jmp" || mnem == "loop" || (mnem.starts_with('j') && mnem.len() >= 2);
         if !is_jump { return None; }
         if instr.operands.len() != 1 { return None; }
         if let Operand::Label(label) = &instr.operands[0] {

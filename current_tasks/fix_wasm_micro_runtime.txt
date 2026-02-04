@@ -1,1 +1,0 @@
-Fixing wasm-micro-runtime project build with ccc compiler. Working on x86 first.

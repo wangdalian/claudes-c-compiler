@@ -235,14 +235,13 @@ pub fn parse_asm(text: &str) -> Result<Vec<AsmStatement>, String> {
             continue;
         }
 
-        // Skip C preprocessor line markers: # <number> "filename" [flags...]
-        // These are emitted when .S files are preprocessed before assembly.
-        if line.starts_with("# ") {
-            let rest = line[2..].trim_start();
-            if rest.bytes().next().map_or(false, |b| b.is_ascii_digit()) {
-                statements.push(AsmStatement::Empty);
-                continue;
-            }
+        // In GAS for AArch64, '#' at the start of a line is a comment character.
+        // This handles both C preprocessor line markers (# <number> "filename")
+        // and stray preprocessor directives (#ifndef, #else, #endif, etc.)
+        // that appear in .s files not run through the C preprocessor.
+        if line.starts_with('#') {
+            statements.push(AsmStatement::Empty);
+            continue;
         }
 
         // Handle ';' as statement separator (GAS syntax).

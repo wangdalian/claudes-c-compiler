@@ -227,3 +227,4 @@ Tracking project build/test results with MY_ASM=builtin MY_LD=builtin
 | STREAM  | PASS | TODO | TODO | TODO | Passes x86 |
 | JerryScript | PASS | TODO | TODO | TODO | Fixed x86: peephole frame_compact NOP'd struct param stores (range-based overlap check) |
 | openssh | PASS | PASS | N/A | N/A | Fixed x86/i686 asm: added 16-bit (w-suffix) cmov instructions (cmovnew etc.) with 0x66 operand-size prefix |
+| wasm-micro-runtime | PASS | FAIL (codegen bug) | PASS | PASS | Fixed ARM: # comment handling in .s files; Added i686 loop instruction; i686 has runtime codegen bug (wasm loader fails) |
