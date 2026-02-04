@@ -5,17 +5,18 @@
 
 #![allow(dead_code)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use super::parser::{AsmStatement, AsmDirective, SectionDirective, SymbolKind, SizeExpr, DataValue, Operand};
 use super::encoder::{encode_instruction, EncodeResult, RelocType};
 use crate::backend::elf::{self,
     SHT_PROGBITS, SHT_NOBITS, SHT_NOTE,
     SHF_WRITE, SHF_ALLOC, SHF_EXECINSTR, SHF_MERGE, SHF_STRINGS,
     SHF_TLS, SHF_GROUP,
-    STB_LOCAL, STB_GLOBAL, STB_WEAK,
+    STB_GLOBAL,
     STT_NOTYPE, STT_OBJECT, STT_FUNC, STT_TLS,
     STV_DEFAULT, STV_HIDDEN, STV_PROTECTED, STV_INTERNAL,
     ELFCLASS64, EM_AARCH64,
+    SymbolTableInput,
 };
 
 /// An ELF section being built.
@@ -677,37 +678,33 @@ impl ElfWriter {
 
     /// Write the final ELF object file.
     ///
-    /// Delegates to `elf::write_relocatable_object` for the serialization pipeline,
-    /// after resolving local data relocations and building the symbol table.
+    /// Uses shared `build_elf_symbol_table` for symbol table construction
+    /// and `write_relocatable_object` for ELF serialization.
     pub fn write_elf(&mut self, output_path: &str) -> Result<(), String> {
         // Resolve local label references in data relocations before building symbol table
         self.resolve_local_data_relocs();
-        // Build the symbol table from labels and directives
-        self.build_symbol_table();
 
         // Convert internal sections to shared ObjSection format
-        let mut shared_sections: HashMap<String, elf::ObjSection> = HashMap::new();
-        for sec_name in &self.section_order {
-            if let Some(section) = self.sections.get(sec_name) {
-                let relocs = section.relocs.iter().map(|r| elf::ObjReloc {
+        let shared_sections = elf::convert_sections_to_shared(
+            &self.section_order,
+            &self.sections,
+            |section| elf::ObjSection {
+                name: section.name.clone(),
+                sh_type: section.sh_type,
+                sh_flags: section.sh_flags,
+                data: section.data.clone(),
+                sh_addralign: section.sh_addralign,
+                relocs: section.relocs.iter().map(|r| elf::ObjReloc {
                     offset: r.offset,
                     reloc_type: r.reloc_type,
                     symbol_name: r.symbol_name.clone(),
                     addend: r.addend,
-                }).collect();
-                shared_sections.insert(sec_name.clone(), elf::ObjSection {
-                    name: section.name.clone(),
-                    sh_type: section.sh_type,
-                    sh_flags: section.sh_flags,
-                    data: section.data.clone(),
-                    sh_addralign: section.sh_addralign,
-                    relocs,
-                });
-            }
-        }
+                }).collect(),
+            },
+        );
 
-        // Convert internal symbols to shared ObjSymbol format
-        let shared_symbols: Vec<elf::ObjSymbol> = self.symbols.iter().map(|sym| elf::ObjSymbol {
+        // Add COMMON symbols directly
+        let mut extra_symbols: Vec<elf::ObjSymbol> = self.symbols.iter().map(|sym| elf::ObjSymbol {
             name: sym.name.clone(),
             value: sym.value,
             size: sym.size,
@@ -717,151 +714,38 @@ impl ElfWriter {
             section_name: sym.section_name.clone(),
         }).collect();
 
+        let symtab_input = SymbolTableInput {
+            labels: &self.labels,
+            global_symbols: &self.global_symbols,
+            weak_symbols: &self.weak_symbols,
+            symbol_types: &self.symbol_types,
+            symbol_sizes: &self.symbol_sizes,
+            symbol_visibility: &self.symbol_visibility,
+            aliases: &self.aliases,
+            sections: &shared_sections,
+            include_referenced_locals: false,
+        };
+
         let config = elf::ElfConfig {
             e_machine: EM_AARCH64,
             e_flags: 0,
             elf_class: ELFCLASS64,
         };
 
+        let mut symbols = elf::build_elf_symbol_table(&symtab_input);
+        symbols.append(&mut extra_symbols);
+
         let elf_bytes = elf::write_relocatable_object(
             &config,
             &self.section_order,
             &shared_sections,
-            &shared_symbols,
+            &symbols,
         )?;
 
         std::fs::write(output_path, &elf_bytes)
             .map_err(|e| format!("failed to write ELF file: {}", e))?;
 
         Ok(())
-    }
-
-    /// Build the symbol table from collected labels and directives.
-    fn build_symbol_table(&mut self) {
-        // Collect all defined labels as symbols
-        let labels = self.labels.clone();
-        for (name, (section, offset)) in &labels {
-            // Skip local labels (.L*)
-            if name.starts_with(".L") || name.starts_with(".l") {
-                continue;
-            }
-
-            let binding = if self.weak_symbols.contains_key(name) {
-                STB_WEAK
-            } else if self.global_symbols.contains_key(name) {
-                STB_GLOBAL
-            } else {
-                STB_LOCAL
-            };
-
-            let sym_type = self.symbol_types.get(name).copied().unwrap_or(STT_NOTYPE);
-            let size = self.symbol_sizes.get(name).copied().unwrap_or(0);
-            let visibility = self.symbol_visibility.get(name).copied().unwrap_or(STV_DEFAULT);
-
-            self.symbols.push(ElfSymbol {
-                name: name.clone(),
-                value: *offset,
-                size,
-                binding,
-                sym_type,
-                visibility,
-                section_name: section.clone(),
-            });
-        }
-
-        // Add alias symbols from .set/.equ directives
-        let aliases = self.aliases.clone();
-        let defined_names: HashMap<String, usize> = self.symbols.iter()
-            .enumerate()
-            .map(|(i, s)| (s.name.clone(), i))
-            .collect();
-        for (alias, target) in &aliases {
-            // Resolve through alias chains (e.g., .set a, b; .set b, c)
-            let mut resolved = target.as_str();
-            let mut seen = HashSet::new();
-            seen.insert(target.as_str());
-            while let Some(next) = aliases.get(resolved) {
-                if !seen.insert(next.as_str()) {
-                    break; // Avoid infinite loops in circular aliases
-                }
-                resolved = next.as_str();
-            }
-            // Determine alias-specific overrides for binding, type, visibility
-            let alias_binding = if self.weak_symbols.contains_key(alias) {
-                Some(STB_WEAK)
-            } else if self.global_symbols.contains_key(alias) {
-                Some(STB_GLOBAL)
-            } else {
-                None
-            };
-            let alias_type = self.symbol_types.get(alias).copied();
-            let alias_vis = self.symbol_visibility.get(alias).copied();
-
-            // Find the target symbol and copy its properties, with alias overrides
-            if let Some(&idx) = defined_names.get(resolved) {
-                let target_sym = &self.symbols[idx];
-                self.symbols.push(ElfSymbol {
-                    name: alias.clone(),
-                    value: target_sym.value,
-                    size: target_sym.size,
-                    binding: alias_binding.unwrap_or(target_sym.binding),
-                    sym_type: alias_type.unwrap_or(target_sym.sym_type),
-                    visibility: alias_vis.unwrap_or(target_sym.visibility),
-                    section_name: target_sym.section_name.clone(),
-                });
-            } else if let Some((section, offset)) = self.labels.get(resolved) {
-                // Target is a local label (.L*) that wasn't promoted to a symbol
-                self.symbols.push(ElfSymbol {
-                    name: alias.clone(),
-                    value: *offset,
-                    size: 0,
-                    binding: alias_binding.unwrap_or(STB_LOCAL),
-                    sym_type: alias_type.unwrap_or(STT_NOTYPE),
-                    visibility: alias_vis.unwrap_or(STV_DEFAULT),
-                    section_name: section.clone(),
-                });
-            }
-        }
-
-        // Add undefined symbols (referenced but not defined)
-        let mut referenced: HashMap<String, bool> = HashMap::new();
-        for sec in self.sections.values() {
-            for reloc in &sec.relocs {
-                if !reloc.symbol_name.starts_with(".L") && !reloc.symbol_name.starts_with(".l") {
-                    referenced.insert(reloc.symbol_name.clone(), true);
-                }
-            }
-        }
-
-        let defined: HashMap<String, bool> = self.symbols.iter()
-            .map(|s| (s.name.clone(), true))
-            .collect();
-
-        for name in referenced.keys() {
-            // Skip section names - they already have section symbols in the symtab
-            if self.sections.contains_key(name) {
-                continue;
-            }
-            if !defined.contains_key(name) {
-                let binding = if self.weak_symbols.contains_key(name) {
-                    STB_WEAK
-                } else {
-                    STB_GLOBAL
-                };
-                let sym_type = self.symbol_types.get(name).copied().unwrap_or(STT_NOTYPE);
-                let visibility = self.symbol_visibility.get(name).copied().unwrap_or(STV_DEFAULT);
-
-                self.symbols.push(ElfSymbol {
-                    name: name.clone(),
-                    value: 0,
-                    size: 0,
-                    binding,
-                    sym_type,
-                    visibility,
-                    section_name: "*UND*".to_string(),
-                });
-            }
-        }
     }
 
 }

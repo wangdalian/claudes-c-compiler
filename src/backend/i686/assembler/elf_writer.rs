@@ -7,21 +7,18 @@ use std::collections::HashMap;
 use crate::backend::x86::assembler::parser::*;
 use super::encoder::*;
 use crate::backend::elf::{
-    SHT_PROGBITS, SHT_NOBITS,
-    SHT_INIT_ARRAY, SHT_FINI_ARRAY, SHT_NOTE,
+    SHT_PROGBITS,
     STB_LOCAL, STB_GLOBAL, STB_WEAK,
     STT_NOTYPE, STT_OBJECT, STT_FUNC, STT_TLS,
     STV_DEFAULT, STV_INTERNAL, STV_HIDDEN, STV_PROTECTED,
+    resolve_numeric_labels, parse_section_flags,
 };
 
-// i686 uses u32 section flags (ELF32)
-const SHF_WRITE: u32 = 0x1;
+// i686 uses u32 section flags (ELF32) for local section structs.
+// Only the flags used directly in codegen are defined here;
+// parse_section_flags in backend::elf handles the full set.
 const SHF_ALLOC: u32 = 0x2;
 const SHF_EXECINSTR: u32 = 0x4;
-const SHF_MERGE: u32 = 0x10;
-const SHF_STRINGS: u32 = 0x20;
-const SHF_TLS: u32 = 0x400;
-const SHF_GROUP: u32 = 0x200;
 
 /// Tracks a jump instruction for relaxation.
 #[derive(Clone, Debug)]
@@ -65,260 +62,8 @@ struct SymbolInfo {
     common_align: u32,
 }
 
-/// Check if a label name is a numeric label (e.g. "1", "2", "42").
-fn is_numeric_label(name: &str) -> bool {
-    !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
-}
-
-/// Check if a string is a numeric forward/backward reference like "1f" or "2b".
-/// Returns Some((number_str, is_forward)) if it is, None otherwise.
-fn parse_numeric_ref(name: &str) -> Option<(&str, bool)> {
-    if name.len() < 2 {
-        return None;
-    }
-    let last = name.as_bytes()[name.len() - 1];
-    let num_part = &name[..name.len() - 1];
-    if !num_part.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    match last {
-        b'f' => Some((num_part, true)),
-        b'b' => Some((num_part, false)),
-        _ => None,
-    }
-}
-
-/// Resolve numeric local labels (1:, 2:, etc.) and their references (1f, 1b)
-/// into unique internal label names.
-///
-/// GNU assembler numeric labels can be defined multiple times. Each forward
-/// reference `Nf` refers to the next definition of `N`, and each backward
-/// reference `Nb` refers to the most recent definition of `N`.
-///
-/// This function renames each definition to a unique `.Lnum_N_K` name and
-/// updates all references accordingly.
-fn resolve_numeric_labels(items: &[AsmItem]) -> Vec<AsmItem> {
-    // First pass: find all numeric label definitions and assign unique names.
-    let mut defs: HashMap<String, Vec<(usize, String)>> = HashMap::new();
-    let mut unique_counter: HashMap<String, usize> = HashMap::new();
-
-    for (i, item) in items.iter().enumerate() {
-        if let AsmItem::Label(name) = item {
-            if is_numeric_label(name) {
-                let count = unique_counter.entry(name.clone()).or_insert(0);
-                let unique_name = format!(".Lnum_{}_{}", name, *count);
-                *count += 1;
-                defs.entry(name.clone()).or_default().push((i, unique_name));
-            }
-        }
-    }
-
-    // If no numeric labels found, return original items unchanged
-    if defs.is_empty() {
-        return items.to_vec();
-    }
-
-    // Clone items and resolve references
-    let mut result = Vec::with_capacity(items.len());
-    for (i, item) in items.iter().enumerate() {
-        match item {
-            AsmItem::Label(name) if is_numeric_label(name) => {
-                // Replace with unique name
-                if let Some(def_list) = defs.get(name) {
-                    if let Some((_, unique_name)) = def_list.iter().find(|(idx, _)| *idx == i) {
-                        result.push(AsmItem::Label(unique_name.clone()));
-                        continue;
-                    }
-                }
-                result.push(item.clone());
-            }
-            AsmItem::Instruction(instr) => {
-                // Resolve operand references
-                let new_ops: Vec<Operand> = instr.operands.iter().map(|op| {
-                    resolve_numeric_operand(op, i, &defs)
-                }).collect();
-                result.push(AsmItem::Instruction(Instruction {
-                    prefix: instr.prefix.clone(),
-                    mnemonic: instr.mnemonic.clone(),
-                    operands: new_ops,
-                }));
-            }
-            AsmItem::Byte(vals) => {
-                let new_vals = resolve_numeric_data_values(vals, i, &defs);
-                result.push(AsmItem::Byte(new_vals));
-            }
-            AsmItem::Long(vals) => {
-                let new_vals = resolve_numeric_data_values(vals, i, &defs);
-                result.push(AsmItem::Long(new_vals));
-            }
-            AsmItem::Quad(vals) => {
-                let new_vals = resolve_numeric_data_values(vals, i, &defs);
-                result.push(AsmItem::Quad(new_vals));
-            }
-            AsmItem::SkipExpr(expr, fill) => {
-                let new_expr = resolve_numeric_refs_in_expr(expr, i, &defs);
-                result.push(AsmItem::SkipExpr(new_expr, *fill));
-            }
-            _ => result.push(item.clone()),
-        }
-    }
-
-    result
-}
-
-/// Resolve numeric label references in a single operand.
-fn resolve_numeric_operand(
-    op: &Operand,
-    current_idx: usize,
-    defs: &HashMap<String, Vec<(usize, String)>>,
-) -> Operand {
-    match op {
-        Operand::Label(name) => {
-            if let Some(resolved) = resolve_numeric_name(name, current_idx, defs) {
-                Operand::Label(resolved)
-            } else {
-                op.clone()
-            }
-        }
-        Operand::Memory(mem) => {
-            let new_disp = resolve_numeric_displacement(&mem.displacement, current_idx, defs);
-            if let Some(new_disp) = new_disp {
-                Operand::Memory(MemoryOperand {
-                    segment: mem.segment.clone(),
-                    displacement: new_disp,
-                    base: mem.base.clone(),
-                    index: mem.index.clone(),
-                    scale: mem.scale,
-                })
-            } else {
-                op.clone()
-            }
-        }
-        _ => op.clone(),
-    }
-}
-
-/// Resolve numeric label references in data values (.byte, .long, .quad directives).
-fn resolve_numeric_data_values(
-    vals: &[DataValue],
-    current_idx: usize,
-    defs: &HashMap<String, Vec<(usize, String)>>,
-) -> Vec<DataValue> {
-    vals.iter().map(|val| {
-        match val {
-            DataValue::Symbol(name) => {
-                if let Some(resolved) = resolve_numeric_name(name, current_idx, defs) {
-                    DataValue::Symbol(resolved)
-                } else {
-                    val.clone()
-                }
-            }
-            DataValue::SymbolDiff(lhs, rhs) => {
-                let new_lhs = resolve_numeric_name(lhs, current_idx, defs).unwrap_or_else(|| lhs.clone());
-                let new_rhs = resolve_numeric_name(rhs, current_idx, defs).unwrap_or_else(|| rhs.clone());
-                DataValue::SymbolDiff(new_lhs, new_rhs)
-            }
-            DataValue::SymbolOffset(name, offset) => {
-                if let Some(resolved) = resolve_numeric_name(name, current_idx, defs) {
-                    DataValue::SymbolOffset(resolved, *offset)
-                } else {
-                    val.clone()
-                }
-            }
-            _ => val.clone(),
-        }
-    }).collect()
-}
-
-/// Resolve a numeric label reference name (e.g., "1f" -> ".Lnum_1_0").
-fn resolve_numeric_name(
-    name: &str,
-    current_idx: usize,
-    defs: &HashMap<String, Vec<(usize, String)>>,
-) -> Option<String> {
-    let (num, is_forward) = parse_numeric_ref(name)?;
-    let def_list = defs.get(num)?;
-
-    if is_forward {
-        // Find the first definition after current_idx
-        def_list.iter()
-            .find(|(idx, _)| *idx > current_idx)
-            .map(|(_, name)| name.clone())
-    } else {
-        // Find the last definition at or before current_idx
-        def_list.iter()
-            .rev()
-            .find(|(idx, _)| *idx < current_idx)
-            .map(|(_, name)| name.clone())
-    }
-}
-
-/// Resolve numeric label references in a displacement.
-fn resolve_numeric_displacement(
-    disp: &Displacement,
-    current_idx: usize,
-    defs: &HashMap<String, Vec<(usize, String)>>,
-) -> Option<Displacement> {
-    match disp {
-        Displacement::Symbol(name) => {
-            resolve_numeric_name(name, current_idx, defs)
-                .map(Displacement::Symbol)
-        }
-        Displacement::SymbolAddend(name, addend) => {
-            resolve_numeric_name(name, current_idx, defs)
-                .map(|n| Displacement::SymbolAddend(n, *addend))
-        }
-        Displacement::SymbolMod(name, modifier) => {
-            resolve_numeric_name(name, current_idx, defs)
-                .map(|n| Displacement::SymbolMod(n, modifier.clone()))
-        }
-        Displacement::SymbolPlusOffset(name, offset) => {
-            resolve_numeric_name(name, current_idx, defs)
-                .map(|n| Displacement::SymbolPlusOffset(n, *offset))
-        }
-        _ => None,
-    }
-}
-
-/// Resolve numeric label references in a SkipExpr expression string.
-/// Scans for digit sequences followed by 'f' or 'b' and replaces them
-/// with the resolved unique label name.
-fn resolve_numeric_refs_in_expr(
-    expr: &str,
-    current_idx: usize,
-    defs: &HashMap<String, Vec<(usize, String)>>,
-) -> String {
-    let mut result = String::with_capacity(expr.len());
-    let bytes = expr.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        // Look for sequences of digits possibly followed by 'f' or 'b'
-        if bytes[i].is_ascii_digit() {
-            let start = i;
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-            // Check if followed by 'f' or 'b' (and not more alphanumeric chars)
-            if i < bytes.len() && (bytes[i] == b'f' || bytes[i] == b'b') {
-                let next = i + 1;
-                if next >= bytes.len() || !bytes[next].is_ascii_alphanumeric() {
-                    let ref_name = &expr[start..=i];
-                    if let Some(resolved) = resolve_numeric_name(ref_name, current_idx, defs) {
-                        result.push_str(&resolved);
-                        i += 1;
-                        continue;
-                    }
-                }
-            }
-            // Not a numeric ref, just copy the digits
-            result.push_str(&expr[start..i]);
-        } else {
-            result.push(bytes[i] as char);
-            i += 1;
-        }
-    }
-    result
-}
+// Numeric label resolution and section flags parsing functions are shared
+// via crate::backend::elf (resolve_numeric_labels, parse_section_flags, etc.)
 
 /// Builds a 32-bit ELF relocatable object file from parsed assembly items.
 pub struct ElfWriter {
@@ -404,8 +149,8 @@ impl ElfWriter {
     }
 
     fn switch_section(&mut self, dir: &SectionDirective) {
-        let (section_type, flags) = parse_section_flags(&dir.name, dir.flags.as_deref(), dir.section_type.as_deref());
-        let idx = self.get_or_create_section(&dir.name, section_type, flags);
+        let (section_type, flags64) = parse_section_flags(&dir.name, dir.flags.as_deref(), dir.section_type.as_deref());
+        let idx = self.get_or_create_section(&dir.name, section_type, flags64 as u32);
         self.current_section = Some(idx);
     }
 
@@ -1250,60 +995,4 @@ impl ElfWriter {
 }
 
 
-/// Parse section name, flags, and type into ELF section type and flags (32-bit).
-fn parse_section_flags(name: &str, flags_str: Option<&str>, type_str: Option<&str>) -> (u32, u32) {
-    let (default_type, default_flags) = match name {
-        ".text" => (SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR),
-        ".data" => (SHT_PROGBITS, SHF_ALLOC | SHF_WRITE),
-        ".bss" => (SHT_NOBITS, SHF_ALLOC | SHF_WRITE),
-        ".rodata" => (SHT_PROGBITS, SHF_ALLOC),
-        ".tdata" => (SHT_PROGBITS, SHF_ALLOC | SHF_WRITE | SHF_TLS),
-        ".tbss" => (SHT_NOBITS, SHF_ALLOC | SHF_WRITE | SHF_TLS),
-        ".init_array" => (SHT_INIT_ARRAY, SHF_ALLOC | SHF_WRITE),
-        ".fini_array" => (SHT_FINI_ARRAY, SHF_ALLOC | SHF_WRITE),
-        n if n.starts_with(".text.") => (SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR),
-        n if n.starts_with(".data.") => (SHT_PROGBITS, SHF_ALLOC | SHF_WRITE),
-        n if n.starts_with(".bss.") => (SHT_NOBITS, SHF_ALLOC | SHF_WRITE),
-        n if n.starts_with(".rodata.") => (SHT_PROGBITS, SHF_ALLOC),
-        n if n.starts_with(".note.") => (SHT_NOTE, 0),
-        _ => (SHT_PROGBITS, 0),
-    };
-
-    if flags_str.is_none() && type_str.is_none() {
-        return (default_type, default_flags);
-    }
-
-    let mut flags = 0u32;
-    if let Some(f) = flags_str {
-        for c in f.chars() {
-            match c {
-                'a' => flags |= SHF_ALLOC,
-                'w' => flags |= SHF_WRITE,
-                'x' => flags |= SHF_EXECINSTR,
-                'M' => flags |= SHF_MERGE,
-                'S' => flags |= SHF_STRINGS,
-                'T' => flags |= SHF_TLS,
-                'G' => flags |= SHF_GROUP,
-                'o' => {}
-                _ => {}
-            }
-        }
-    } else {
-        flags = default_flags;
-    }
-
-    let section_type = if let Some(t) = type_str {
-        match t {
-            "@progbits" => SHT_PROGBITS,
-            "@nobits" => SHT_NOBITS,
-            "@note" => SHT_NOTE,
-            "@init_array" => SHT_INIT_ARRAY,
-            "@fini_array" => SHT_FINI_ARRAY,
-            _ => default_type,
-        }
-    } else {
-        default_type
-    };
-
-    (section_type, flags)
-}
+// parse_section_flags is now in crate::backend::elf and imported above.

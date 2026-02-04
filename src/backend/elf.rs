@@ -10,7 +10,7 @@
 //! - `parse_archive_members` for reading `.a` static archives
 //! - `parse_linker_script` for handling linker script GROUP directives
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ── ELF identification ───────────────────────────────────────────────────────
 
@@ -1019,3 +1019,527 @@ fn find_symbol_index_shared(
     }
     0 // undefined
 }
+
+// ── Shared numeric label resolution ──────────────────────────────────────
+//
+// GNU assembler numeric labels (e.g., `1:`, `42:`) can be defined multiple
+// times. Forward references (`1f`) resolve to the NEXT definition, backward
+// references (`1b`) resolve to the MOST RECENT definition.
+//
+// This module provides the resolution logic shared by x86 and i686 ELF
+// writers. Both architectures use the same x86 parser AST types
+// (AsmItem, Operand, Displacement, DataValue, etc.), so these functions
+// operate on those types directly.
+//
+// ARM and RISC-V use different parser types and don't have this pattern
+// (ARM has no numeric labels; RISC-V has its own pre-pass).
+
+use crate::backend::x86::assembler::parser::{
+    AsmItem, Instruction, Operand, MemoryOperand, Displacement, DataValue,
+};
+
+/// Check if a string is a numeric local label (just digits, e.g., "1", "42").
+pub fn is_numeric_label(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Check if a string is a numeric forward/backward reference like "1f" or "2b".
+/// Returns Some((number_str, is_forward)) if it is, None otherwise.
+pub fn parse_numeric_ref(name: &str) -> Option<(&str, bool)> {
+    if name.len() < 2 {
+        return None;
+    }
+    let last = name.as_bytes()[name.len() - 1];
+    let num_part = &name[..name.len() - 1];
+    if !num_part.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    match last {
+        b'f' => Some((num_part, true)),
+        b'b' => Some((num_part, false)),
+        _ => None,
+    }
+}
+
+/// Resolve numeric local labels (1:, 2:, etc.) and their references (1f, 1b)
+/// into unique internal label names.
+///
+/// GNU assembler numeric labels can be defined multiple times. Each forward
+/// reference `Nf` refers to the next definition of `N`, and each backward
+/// reference `Nb` refers to the most recent definition of `N`.
+///
+/// This function renames each definition to a unique `.Lnum_N_K` name and
+/// updates all references accordingly. Used by both x86 and i686 ELF writers.
+pub fn resolve_numeric_labels(items: &[AsmItem]) -> Vec<AsmItem> {
+    // First pass: find all numeric label definitions and assign unique names.
+    let mut defs: HashMap<String, Vec<(usize, String)>> = HashMap::new();
+    let mut unique_counter: HashMap<String, usize> = HashMap::new();
+
+    for (i, item) in items.iter().enumerate() {
+        if let AsmItem::Label(name) = item {
+            if is_numeric_label(name) {
+                let count = unique_counter.entry(name.clone()).or_insert(0);
+                let unique_name = format!(".Lnum_{}_{}", name, *count);
+                *count += 1;
+                defs.entry(name.clone()).or_default().push((i, unique_name));
+            }
+        }
+    }
+
+    if defs.is_empty() {
+        return items.to_vec();
+    }
+
+    let mut result = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        match item {
+            AsmItem::Label(name) if is_numeric_label(name) => {
+                if let Some(def_list) = defs.get(name) {
+                    if let Some((_, unique_name)) = def_list.iter().find(|(idx, _)| *idx == i) {
+                        result.push(AsmItem::Label(unique_name.clone()));
+                        continue;
+                    }
+                }
+                result.push(item.clone());
+            }
+            AsmItem::Instruction(instr) => {
+                let new_ops: Vec<Operand> = instr.operands.iter().map(|op| {
+                    resolve_numeric_operand(op, i, &defs)
+                }).collect();
+                result.push(AsmItem::Instruction(Instruction {
+                    prefix: instr.prefix.clone(),
+                    mnemonic: instr.mnemonic.clone(),
+                    operands: new_ops,
+                }));
+            }
+            AsmItem::Long(vals) => {
+                result.push(AsmItem::Long(resolve_numeric_data_values(vals, i, &defs)));
+            }
+            AsmItem::Quad(vals) => {
+                result.push(AsmItem::Quad(resolve_numeric_data_values(vals, i, &defs)));
+            }
+            AsmItem::Byte(vals) => {
+                result.push(AsmItem::Byte(resolve_numeric_data_values(vals, i, &defs)));
+            }
+            AsmItem::SkipExpr(expr, fill) => {
+                let new_expr = resolve_numeric_refs_in_expr(expr, i, &defs);
+                result.push(AsmItem::SkipExpr(new_expr, *fill));
+            }
+            AsmItem::Org(sym, offset) => {
+                if let Some(resolved) = resolve_numeric_name(sym, i, &defs) {
+                    result.push(AsmItem::Org(resolved, *offset));
+                } else {
+                    result.push(item.clone());
+                }
+            }
+            _ => result.push(item.clone()),
+        }
+    }
+
+    result
+}
+
+/// Resolve numeric label references in a single operand.
+fn resolve_numeric_operand(
+    op: &Operand,
+    current_idx: usize,
+    defs: &HashMap<String, Vec<(usize, String)>>,
+) -> Operand {
+    match op {
+        Operand::Label(name) => {
+            if let Some(resolved) = resolve_numeric_name(name, current_idx, defs) {
+                Operand::Label(resolved)
+            } else {
+                op.clone()
+            }
+        }
+        Operand::Memory(mem) => {
+            if let Some(new_disp) = resolve_numeric_displacement(&mem.displacement, current_idx, defs) {
+                Operand::Memory(MemoryOperand {
+                    segment: mem.segment.clone(),
+                    displacement: new_disp,
+                    base: mem.base.clone(),
+                    index: mem.index.clone(),
+                    scale: mem.scale,
+                })
+            } else {
+                op.clone()
+            }
+        }
+        _ => op.clone(),
+    }
+}
+
+/// Resolve numeric label references in data values (.long, .quad, .byte directives).
+fn resolve_numeric_data_values(
+    vals: &[DataValue],
+    current_idx: usize,
+    defs: &HashMap<String, Vec<(usize, String)>>,
+) -> Vec<DataValue> {
+    vals.iter().map(|val| {
+        match val {
+            DataValue::Symbol(name) => {
+                if let Some(resolved) = resolve_numeric_name(name, current_idx, defs) {
+                    DataValue::Symbol(resolved)
+                } else {
+                    val.clone()
+                }
+            }
+            DataValue::SymbolDiff(lhs, rhs) => {
+                let new_lhs = resolve_numeric_name(lhs, current_idx, defs).unwrap_or_else(|| lhs.clone());
+                let new_rhs = resolve_numeric_name(rhs, current_idx, defs).unwrap_or_else(|| rhs.clone());
+                DataValue::SymbolDiff(new_lhs, new_rhs)
+            }
+            DataValue::SymbolOffset(name, offset) => {
+                if let Some(resolved) = resolve_numeric_name(name, current_idx, defs) {
+                    DataValue::SymbolOffset(resolved, *offset)
+                } else {
+                    val.clone()
+                }
+            }
+            _ => val.clone(),
+        }
+    }).collect()
+}
+
+/// Resolve a numeric label reference name (e.g., "1f" -> ".Lnum_1_0").
+pub fn resolve_numeric_name(
+    name: &str,
+    current_idx: usize,
+    defs: &HashMap<String, Vec<(usize, String)>>,
+) -> Option<String> {
+    let (num, is_forward) = parse_numeric_ref(name)?;
+    let def_list = defs.get(num)?;
+
+    if is_forward {
+        def_list.iter()
+            .find(|(idx, _)| *idx > current_idx)
+            .map(|(_, name)| name.clone())
+    } else {
+        def_list.iter()
+            .rev()
+            .find(|(idx, _)| *idx < current_idx)
+            .map(|(_, name)| name.clone())
+    }
+}
+
+/// Resolve numeric label references in a displacement.
+fn resolve_numeric_displacement(
+    disp: &Displacement,
+    current_idx: usize,
+    defs: &HashMap<String, Vec<(usize, String)>>,
+) -> Option<Displacement> {
+    match disp {
+        Displacement::Symbol(name) => {
+            resolve_numeric_name(name, current_idx, defs)
+                .map(Displacement::Symbol)
+        }
+        Displacement::SymbolAddend(name, addend) => {
+            resolve_numeric_name(name, current_idx, defs)
+                .map(|n| Displacement::SymbolAddend(n, *addend))
+        }
+        Displacement::SymbolMod(name, modifier) => {
+            resolve_numeric_name(name, current_idx, defs)
+                .map(|n| Displacement::SymbolMod(n, modifier.clone()))
+        }
+        Displacement::SymbolPlusOffset(name, offset) => {
+            resolve_numeric_name(name, current_idx, defs)
+                .map(|n| Displacement::SymbolPlusOffset(n, *offset))
+        }
+        _ => None,
+    }
+}
+
+/// Resolve numeric label references (e.g., "6651f", "661b") within an expression string.
+/// Scans for patterns like digits followed by 'f' or 'b' and replaces them with unique names.
+pub fn resolve_numeric_refs_in_expr(
+    expr: &str,
+    current_idx: usize,
+    defs: &HashMap<String, Vec<(usize, String)>>,
+) -> String {
+    let mut result = String::with_capacity(expr.len());
+    let bytes = expr.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i < bytes.len() && (bytes[i] == b'f' || bytes[i] == b'b') {
+                let next = i + 1;
+                if next >= bytes.len() || !bytes[next].is_ascii_alphanumeric() {
+                    let ref_name = &expr[start..=i];
+                    if let Some(resolved) = resolve_numeric_name(ref_name, current_idx, defs) {
+                        result.push_str(&resolved);
+                        i += 1;
+                        continue;
+                    }
+                }
+            }
+            result.push_str(&expr[start..i]);
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    result
+}
+
+// ── Shared section flags parsing ──────────────────────────────────────────
+//
+// Both x86 and i686 ELF writers need to parse section directives into
+// (sh_type, sh_flags) tuples. The logic is identical except for the flags
+// type (u64 vs u32). This function works with u64 flags; i686 can cast.
+
+/// Parse section name, flags string, and type into ELF section type and flags.
+///
+/// Returns `(sh_type, sh_flags)` based on well-known section names (`.text`,
+/// `.data`, `.bss`, etc.) and optional explicit flags/type strings from the
+/// `.section` directive.
+pub fn parse_section_flags(name: &str, flags_str: Option<&str>, type_str: Option<&str>) -> (u32, u64) {
+    let (default_type, default_flags) = match name {
+        ".text" => (SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR),
+        ".data" => (SHT_PROGBITS, SHF_ALLOC | SHF_WRITE),
+        ".bss" => (SHT_NOBITS, SHF_ALLOC | SHF_WRITE),
+        ".rodata" => (SHT_PROGBITS, SHF_ALLOC),
+        ".tdata" => (SHT_PROGBITS, SHF_ALLOC | SHF_WRITE | SHF_TLS),
+        ".tbss" => (SHT_NOBITS, SHF_ALLOC | SHF_WRITE | SHF_TLS),
+        ".init" => (SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR),
+        ".fini" => (SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR),
+        ".init_array" => (SHT_INIT_ARRAY, SHF_ALLOC | SHF_WRITE),
+        ".fini_array" => (SHT_FINI_ARRAY, SHF_ALLOC | SHF_WRITE),
+        n if n.starts_with(".text.") => (SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR),
+        n if n.starts_with(".data.") => (SHT_PROGBITS, SHF_ALLOC | SHF_WRITE),
+        n if n.starts_with(".bss.") => (SHT_NOBITS, SHF_ALLOC | SHF_WRITE),
+        n if n.starts_with(".rodata.") => (SHT_PROGBITS, SHF_ALLOC),
+        n if n.starts_with(".note.") => (SHT_NOTE, 0),
+        _ => (SHT_PROGBITS, 0),
+    };
+
+    if flags_str.is_none() && type_str.is_none() {
+        return (default_type, default_flags);
+    }
+
+    let mut flags = 0u64;
+    if let Some(f) = flags_str {
+        for c in f.chars() {
+            match c {
+                'a' => flags |= SHF_ALLOC,
+                'w' => flags |= SHF_WRITE,
+                'x' => flags |= SHF_EXECINSTR,
+                'M' => flags |= SHF_MERGE,
+                'S' => flags |= SHF_STRINGS,
+                'T' => flags |= SHF_TLS,
+                'G' => flags |= SHF_GROUP,
+                'o' => {} // SHF_LINK_ORDER - handle later
+                _ => {}
+            }
+        }
+    } else {
+        flags = default_flags;
+    }
+
+    let section_type = if let Some(t) = type_str {
+        match t {
+            "@progbits" => SHT_PROGBITS,
+            "@nobits" => SHT_NOBITS,
+            "@note" => SHT_NOTE,
+            "@init_array" => SHT_INIT_ARRAY,
+            "@fini_array" => SHT_FINI_ARRAY,
+            _ => default_type,
+        }
+    } else {
+        default_type
+    };
+
+    (section_type, flags)
+}
+
+// ── Shared symbol table builder for ARM/RISC-V ELF writers ──────────────
+//
+// Both ARM and RISC-V ELF writers have nearly identical `build_symbol_table`
+// and `write_elf` logic. This shared infrastructure eliminates ~250 lines
+// of duplicated code between the two backends.
+//
+// The ARM and RISC-V ELF writers both use identical internal data structures
+// (Section, ElfReloc, ElfSymbol) and the same symbol table building
+// algorithm. The only difference is RISC-V needs to include referenced
+// local labels (for pcrel_hi synthetic labels) in the symbol table.
+
+/// Parameters for the shared `build_elf_symbol_table` function.
+/// Collects the state needed to build the symbol table without requiring
+/// a specific ElfWriter struct type.
+pub struct SymbolTableInput<'a> {
+    pub labels: &'a HashMap<String, (String, u64)>,
+    pub global_symbols: &'a HashMap<String, bool>,
+    pub weak_symbols: &'a HashMap<String, bool>,
+    pub symbol_types: &'a HashMap<String, u8>,
+    pub symbol_sizes: &'a HashMap<String, u64>,
+    pub symbol_visibility: &'a HashMap<String, u8>,
+    pub aliases: &'a HashMap<String, String>,
+    pub sections: &'a HashMap<String, ObjSection>,
+    /// If true, include .L* local labels that are referenced by relocations
+    /// in the symbol table (needed by RISC-V for pcrel_hi/pcrel_lo pairs).
+    pub include_referenced_locals: bool,
+}
+
+/// Build a symbol table from labels, aliases, and relocation references.
+///
+/// Returns a list of `ObjSymbol` entries ready for `write_relocatable_object`.
+/// Handles:
+/// - Defined labels (global, weak, local)
+/// - .set/.equ aliases with chain resolution
+/// - Undefined symbols (referenced in relocations but not defined)
+/// - Optionally, referenced local labels (.L*) for RISC-V pcrel support
+pub fn build_elf_symbol_table(input: &SymbolTableInput) -> Vec<ObjSymbol> {
+    let mut symbols: Vec<ObjSymbol> = Vec::new();
+
+    // Collect referenced local labels if needed (RISC-V pcrel_hi)
+    let mut referenced_local_labels: HashSet<String> = HashSet::new();
+    if input.include_referenced_locals {
+        for sec in input.sections.values() {
+            for reloc in &sec.relocs {
+                if reloc.symbol_name.starts_with(".L") || reloc.symbol_name.starts_with(".l") {
+                    referenced_local_labels.insert(reloc.symbol_name.clone());
+                }
+            }
+        }
+    }
+
+    // Add defined labels as symbols
+    for (name, (section, offset)) in input.labels {
+        let is_local_label = name.starts_with(".L") || name.starts_with(".l");
+        if is_local_label && !referenced_local_labels.contains(name) {
+            continue;
+        }
+
+        let binding = if input.weak_symbols.contains_key(name) {
+            STB_WEAK
+        } else if input.global_symbols.contains_key(name) {
+            STB_GLOBAL
+        } else {
+            STB_LOCAL
+        };
+
+        symbols.push(ObjSymbol {
+            name: name.clone(),
+            value: *offset,
+            size: input.symbol_sizes.get(name).copied().unwrap_or(0),
+            binding,
+            sym_type: input.symbol_types.get(name).copied().unwrap_or(STT_NOTYPE),
+            visibility: input.symbol_visibility.get(name).copied().unwrap_or(STV_DEFAULT),
+            section_name: section.clone(),
+        });
+    }
+
+    // Add alias symbols from .set/.equ directives
+    let defined_names: HashMap<String, usize> = symbols.iter()
+        .enumerate()
+        .map(|(i, s)| (s.name.clone(), i))
+        .collect();
+
+    for (alias, target) in input.aliases {
+        // Resolve through alias chains
+        let mut resolved = target.as_str();
+        let mut seen = HashSet::new();
+        seen.insert(target.as_str());
+        while let Some(next) = input.aliases.get(resolved) {
+            if !seen.insert(next.as_str()) {
+                break;
+            }
+            resolved = next.as_str();
+        }
+
+        let alias_binding = if input.weak_symbols.contains_key(alias) {
+            Some(STB_WEAK)
+        } else if input.global_symbols.contains_key(alias) {
+            Some(STB_GLOBAL)
+        } else {
+            None
+        };
+        let alias_type = input.symbol_types.get(alias).copied();
+        let alias_vis = input.symbol_visibility.get(alias).copied();
+
+        if let Some(&idx) = defined_names.get(resolved) {
+            let target_sym = &symbols[idx];
+            symbols.push(ObjSymbol {
+                name: alias.clone(),
+                value: target_sym.value,
+                size: target_sym.size,
+                binding: alias_binding.unwrap_or(target_sym.binding),
+                sym_type: alias_type.unwrap_or(target_sym.sym_type),
+                visibility: alias_vis.unwrap_or(target_sym.visibility),
+                section_name: target_sym.section_name.clone(),
+            });
+        } else if let Some((section, offset)) = input.labels.get(resolved) {
+            symbols.push(ObjSymbol {
+                name: alias.clone(),
+                value: *offset,
+                size: 0,
+                binding: alias_binding.unwrap_or(STB_LOCAL),
+                sym_type: alias_type.unwrap_or(STT_NOTYPE),
+                visibility: alias_vis.unwrap_or(STV_DEFAULT),
+                section_name: section.clone(),
+            });
+        }
+    }
+
+    // Add undefined symbols (referenced in relocations but not defined)
+    let mut referenced: HashSet<String> = HashSet::new();
+    for sec in input.sections.values() {
+        for reloc in &sec.relocs {
+            if reloc.symbol_name.is_empty() {
+                continue;
+            }
+            if !reloc.symbol_name.starts_with(".L") && !reloc.symbol_name.starts_with(".l") {
+                referenced.insert(reloc.symbol_name.clone());
+            }
+        }
+    }
+
+    let defined: HashSet<String> = symbols.iter().map(|s| s.name.clone()).collect();
+
+    for name in &referenced {
+        if input.sections.contains_key(name) {
+            continue; // Skip section names
+        }
+        if !defined.contains(name) {
+            let binding = if input.weak_symbols.contains_key(name) {
+                STB_WEAK
+            } else {
+                STB_GLOBAL
+            };
+            symbols.push(ObjSymbol {
+                name: name.clone(),
+                value: 0,
+                size: 0,
+                binding,
+                sym_type: input.symbol_types.get(name).copied().unwrap_or(STT_NOTYPE),
+                visibility: input.symbol_visibility.get(name).copied().unwrap_or(STV_DEFAULT),
+                section_name: "*UND*".to_string(),
+            });
+        }
+    }
+
+    symbols
+}
+
+/// Convert internal sections (name->Section mapping) into shared ObjSection format.
+///
+/// Used by ARM and RISC-V ELF writers, which use identical internal Section types.
+/// The `section_converter` closure converts each arch-specific section into an ObjSection.
+pub fn convert_sections_to_shared<S>(
+    section_order: &[String],
+    sections: &HashMap<String, S>,
+    converter: impl Fn(&S) -> ObjSection,
+) -> HashMap<String, ObjSection> {
+    let mut shared = HashMap::new();
+    for name in section_order {
+        if let Some(section) = sections.get(name) {
+            shared.insert(name.clone(), converter(section));
+        }
+    }
+    shared
+}
+
