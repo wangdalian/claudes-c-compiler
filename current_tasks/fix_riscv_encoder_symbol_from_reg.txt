@@ -1,0 +1,10 @@
+Fix RISC-V builtin assembler: accept Reg as symbol in encoder
+
+The assembler parser classifies operands like "f1", "a0", "ra", etc. as Reg
+even when they appear in symbol-expecting positions (e.g., `call f1` where f1
+is a function name). Rather than changing the parser (which would need per-
+instruction context), fix the encoder functions that expect symbols to also
+accept Reg operands as symbol names.
+
+This fixes get_symbol(), get_branch_target(), encode_j_pseudo(),
+encode_jal(), and encode_branch_instr() in encoder.rs.
