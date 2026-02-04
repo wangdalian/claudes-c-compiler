@@ -143,15 +143,19 @@ pub fn link_builtin(
         load_file(path, &mut objects, &mut globals, &mut needed_sonames, &lib_path_strings)?;
     }
 
-    // Parse user args: extract -L paths, -l libs, and bare .o/.a file paths
+    // Parse user args: extract -L paths, -l libs, bare .o/.a file paths,
+    // and linker flags like --export-dynamic
     let mut extra_lib_paths: Vec<String> = Vec::new();
     let mut libs_to_load: Vec<String> = Vec::new();
     let mut extra_object_files: Vec<String> = Vec::new();
+    let mut export_dynamic = false;
     let mut i = 0;
     let args: Vec<&str> = user_args.iter().map(|s| s.as_str()).collect();
     while i < args.len() {
         let arg = args[i];
-        if let Some(path) = arg.strip_prefix("-L") {
+        if arg == "-rdynamic" {
+            export_dynamic = true;
+        } else if let Some(path) = arg.strip_prefix("-L") {
             let p = if path.is_empty() && i + 1 < args.len() { i += 1; args[i] } else { path };
             extra_lib_paths.push(p.to_string());
         } else if let Some(lib) = arg.strip_prefix("-l") {
@@ -159,7 +163,9 @@ pub fn link_builtin(
             libs_to_load.push(l.to_string());
         } else if let Some(wl_arg) = arg.strip_prefix("-Wl,") {
             for part in wl_arg.split(',') {
-                if let Some(lpath) = part.strip_prefix("-L") {
+                if part == "--export-dynamic" || part == "-E" {
+                    export_dynamic = true;
+                } else if let Some(lpath) = part.strip_prefix("-L") {
                     extra_lib_paths.push(lpath.to_string());
                 } else if let Some(lib) = part.strip_prefix("-l") {
                     libs_to_load.push(lib.to_string());
@@ -225,7 +231,7 @@ pub fn link_builtin(
     {
         let linker_defined = [
             "_GLOBAL_OFFSET_TABLE_", "__bss_start", "_edata", "_end", "__end",
-            "__ehdr_start", "__executable_start", "_etext", "etext",
+            "__ehdr_start", "__executable_start", "_start", "_etext", "etext",
             "__dso_handle", "_DYNAMIC", "__data_start", "data_start",
             "__init_array_start", "__init_array_end",
             "__fini_array_start", "__fini_array_end",
@@ -264,6 +270,7 @@ pub fn link_builtin(
     emit_executable(
         &objects, &mut globals, &mut output_sections, &section_map,
         &plt_names, &got_entries, &needed_sonames, output_path,
+        export_dynamic,
     )
 }
 
@@ -568,7 +575,6 @@ fn merge_sections(
             if sec.flags & SHF_ALLOC == 0 { continue; }
             if matches!(sec.sh_type, SHT_NULL | SHT_STRTAB | SHT_SYMTAB | SHT_RELA | SHT_REL | SHT_GROUP) { continue; }
             if sec.flags & SHF_EXCLUDE != 0 { continue; }
-            if sec.sh_type == SHT_PROGBITS && sec.size == 0 { continue; }
 
             let output_name = map_section_name(&sec.name);
             let alignment = sec.addralign.max(1);
@@ -796,6 +802,7 @@ fn emit_executable(
     section_map: &HashMap<(usize, usize), (usize, u64)>,
     plt_names: &[String], got_entries: &[(String, bool)],
     needed_sonames: &[String], output_path: &str,
+    export_dynamic: bool,
 ) -> Result<(), String> {
     let mut dynstr = DynStrTab::new();
     for lib in needed_sonames { dynstr.add(lib); }
@@ -821,7 +828,7 @@ fn emit_executable(
     let gnu_hash_symoffset = 1 + dyn_sym_names.len(); // +1 for null entry
 
     // Collect copy relocation symbols - these go AFTER non-hashed symbols
-    // and are the only symbols included in the .gnu.hash table
+    // and are included in the .gnu.hash table
     let copy_reloc_syms: Vec<(String, u64)> = globals.iter()
         .filter(|(_, g)| g.copy_reloc)
         .map(|(n, g)| (n.clone(), g.size))
@@ -829,6 +836,26 @@ fn emit_executable(
     for (name, _) in &copy_reloc_syms {
         if !dyn_sym_names.contains(name) {
             dyn_sym_names.push(name.clone());
+        }
+    }
+
+    // When --export-dynamic is used, add all defined global symbols to the
+    // dynamic symbol table so shared libraries loaded at runtime (via dlopen)
+    // can find symbols from this executable.
+    if export_dynamic {
+        let mut exported: Vec<String> = globals.iter()
+            .filter(|(_, g)| {
+                // Export defined, non-dynamic (local to this executable) global symbols
+                g.section_idx != SHN_UNDEF && !g.is_dynamic && !g.copy_reloc
+                    && (g.info >> 4) != 0 // not STB_LOCAL
+            })
+            .map(|(n, _)| n.clone())
+            .collect();
+        exported.sort(); // deterministic output
+        for name in exported {
+            if !dyn_sym_names.contains(&name) {
+                dyn_sym_names.push(name);
+            }
         }
     }
 
@@ -844,7 +871,7 @@ fn emit_executable(
     let rela_dyn_count = rela_dyn_glob_count + copy_reloc_syms.len();
     let rela_dyn_size = rela_dyn_count as u64 * 24;
 
-    // Build .gnu.hash table for copy-reloc symbols
+    // Build .gnu.hash table for hashed symbols (copy-reloc + exported)
     // GNU hash function
     fn gnu_hash(name: &[u8]) -> u32 {
         let mut h: u32 = 5381;
@@ -854,7 +881,8 @@ fn emit_executable(
         h
     }
 
-    let num_hashed = copy_reloc_syms.len();
+    // Number of hashed symbols = total symbols after the non-hashed imports
+    let num_hashed = dyn_sym_names.len() - (gnu_hash_symoffset - 1);
     let gnu_hash_nbuckets = if num_hashed == 0 { 1 } else { num_hashed.next_power_of_two().max(1) } as u32;
     let gnu_hash_bloom_size: u32 = 1;
     let gnu_hash_bloom_shift: u32 = 6;
@@ -1234,7 +1262,18 @@ fn emit_executable(
                 w16(&mut out, ds+6, 1); // shndx=1 (non-UNDEF: defined in this executable)
                 w64(&mut out, ds+8, gsym.value); // st_value = BSS copy address
                 w64(&mut out, ds+16, gsym.size); // st_size = actual symbol size
+            } else if !gsym.is_dynamic && gsym.section_idx != SHN_UNDEF && gsym.value != 0 {
+                // Exported defined symbol (from --export-dynamic): write actual
+                // address so shared libraries loaded via dlopen can find it.
+                let stt = gsym.info & 0xf;
+                let stb = gsym.info >> 4;
+                let st_info = (stb << 4) | stt;
+                if ds+5 < out.len() { out[ds+4] = st_info; out[ds+5] = 0; }
+                w16(&mut out, ds+6, 1); // shndx=1 (defined)
+                w64(&mut out, ds+8, gsym.value);
+                w64(&mut out, ds+16, gsym.size);
             } else {
+                // Undefined import (PLT or GLOB_DAT)
                 if ds+5 < out.len() { out[ds+4] = (STB_GLOBAL << 4) | STT_FUNC; out[ds+5] = 0; }
                 w16(&mut out, ds+6, 0); w64(&mut out, ds+8, 0); w64(&mut out, ds+16, 0);
             }
@@ -1346,6 +1385,11 @@ fn emit_executable(
                 } else {
                     w64(&mut out, go, sym_val);
                 }
+            } else if gsym.copy_reloc && gsym.value != 0 {
+                // Copy-relocated symbols: the GOT entry should point to the
+                // BSS copy location. The dynamic linker fills the BSS slot at
+                // runtime, but GOT-relative code needs the address now.
+                w64(&mut out, go, gsym.value);
             }
         }
         go += 8;

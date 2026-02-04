@@ -439,6 +439,7 @@ impl InstructionEncoder {
             // No-ops and misc
             "nop" => { self.bytes.push(0x90); Ok(()) }
             "hlt" => { self.bytes.push(0xF4); Ok(()) }
+            "leave" | "leaveq" => { self.bytes.push(0xC9); Ok(()) }
             "ud2" => { self.bytes.extend_from_slice(&[0x0F, 0x0B]); Ok(()) }
             "endbr64" => { self.bytes.extend_from_slice(&[0xF3, 0x0F, 0x1E, 0xFA]); Ok(()) }
             "pause" => { self.bytes.extend_from_slice(&[0xF3, 0x90]); Ok(()) }
@@ -853,6 +854,8 @@ impl InstructionEncoder {
             "vpshufd" => self.encode_avx_shuffle(ops, 0x70, true),
             "vpshufb" => self.encode_avx_3op_38(ops, 0x00, true),
             "vpalignr" => self.encode_avx_3op_3a_imm8(ops, 0x0F, true),
+            "vblendps" => self.encode_avx_3op_3a_imm8(ops, 0x0C, true),
+            "vblendpd" => self.encode_avx_3op_3a_imm8(ops, 0x0D, true),
             "vpmovmskb" => self.encode_avx_extract_gp(ops, 0xD7, true),
             "vmovd" => self.encode_avx_movd(ops),
             "vmovq" => self.encode_avx_movq(ops),
@@ -2445,6 +2448,12 @@ impl InstructionEncoder {
                         self.bytes.push(self.modrm(3, 2, num));
                         Ok(())
                     }
+                    Operand::Memory(mem) => {
+                        // call *disp(%base) - FF /2 with memory operand
+                        self.emit_rex_rm(0, "", mem);
+                        self.bytes.push(0xFF);
+                        self.encode_modrm_mem(2, mem)
+                    }
                     _ => Err("unsupported indirect call target".to_string()),
                 }
             }
@@ -2691,6 +2700,22 @@ impl InstructionEncoder {
                 self.bytes.extend_from_slice(&[0x0F, 0x7E]);
                 self.bytes.push(self.modrm(3, src_num, dst_num));
                 Ok(())
+            }
+            (Operand::Memory(mem), Operand::Register(dst)) if is_xmm(&dst.name) => {
+                // mem -> XMM: 66 0F 6E /r
+                let dst_num = reg_num(&dst.name).ok_or("bad register")?;
+                self.bytes.push(0x66);
+                self.emit_rex_rm(0, &dst.name, mem);
+                self.bytes.extend_from_slice(&[0x0F, 0x6E]);
+                self.encode_modrm_mem(dst_num, mem)
+            }
+            (Operand::Register(src), Operand::Memory(mem)) if is_xmm(&src.name) => {
+                // XMM -> mem: 66 0F 7E /r
+                let src_num = reg_num(&src.name).ok_or("bad register")?;
+                self.bytes.push(0x66);
+                self.emit_rex_rm(0, &src.name, mem);
+                self.bytes.extend_from_slice(&[0x0F, 0x7E]);
+                self.encode_modrm_mem(src_num, mem)
             }
             _ => Err("unsupported movd operands".to_string()),
         }

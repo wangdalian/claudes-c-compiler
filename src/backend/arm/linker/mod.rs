@@ -413,7 +413,6 @@ fn merge_sections(
             if sec.flags & SHF_ALLOC == 0 { continue; }
             if matches!(sec.sh_type, SHT_NULL | SHT_STRTAB | SHT_SYMTAB | SHT_RELA | SHT_REL | SHT_GROUP) { continue; }
             if sec.flags & SHF_EXCLUDE != 0 { continue; }
-            if sec.sh_type == SHT_PROGBITS && sec.size == 0 { continue; }
 
             let output_name = map_section_name(&sec.name);
             let alignment = sec.addralign.max(1);
