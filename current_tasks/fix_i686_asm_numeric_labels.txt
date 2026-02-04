@@ -1,0 +1,9 @@
+Add numeric label resolution to i686 assembler for cohesion with x86
+
+The x86 assembler has comprehensive numeric label support (1:, 2:, 1f, 1b, etc.)
+via resolve_numeric_labels() pre-pass and runtime numeric_label_positions tracking.
+The i686 assembler shares the same parser but completely lacks this functionality,
+meaning any inline assembly using numeric labels will fail or produce wrong code.
+
+This is the most important assembler cohesion issue that is not already locked.
+Will mirror the x86 implementation pattern for the i686 backend.
