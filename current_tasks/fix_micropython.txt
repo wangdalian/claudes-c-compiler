@@ -1,0 +1,2 @@
+Fix MicroPython project for x86 target.
+Testing if it compiles and passes tests with ccc-x86 (standalone assembler+linker).
