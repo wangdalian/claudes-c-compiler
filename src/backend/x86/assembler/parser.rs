@@ -1020,20 +1020,6 @@ fn try_parse_symbol_plus_offset(s: &str) -> Option<Displacement> {
     None
 }
 
-/// Parse a comma-separated list of integer values.
-fn parse_comma_separated_integers(s: &str) -> Result<Vec<i64>, String> {
-    let mut vals = Vec::new();
-    for part in s.split(',') {
-        let trimmed = part.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let val = parse_integer_expr(trimmed)
-            .map_err(|_| format!("bad integer: {}", trimmed))?;
-        vals.push(val);
-    }
-    Ok(vals)
-}
 
 /// Split `.skip expr, fill` arguments, respecting parentheses.
 /// Returns the expression string and the fill byte (default 0).

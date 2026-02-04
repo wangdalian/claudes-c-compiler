@@ -519,7 +519,7 @@ impl ElfWriter {
                         *offset as u32
                     } else if let Some(&(label_sec, label_off)) = self.label_positions.get(sym.as_str()) {
                         if label_sec == sec_idx {
-                            (label_off as i64 + *offset as i64) as u32
+                            (label_off as i64 + *offset) as u32
                         } else {
                             return Err(format!(".org symbol {} not in current section", sym));
                         }
@@ -530,7 +530,7 @@ impl ElfWriter {
                     if target > current {
                         let padding = (target - current) as usize;
                         let fill = if self.sections[sec_idx].flags & SHF_EXECINSTR != 0 { 0x90u8 } else { 0u8 };
-                        self.sections[sec_idx].data.extend(std::iter::repeat(fill).take(padding));
+                        self.sections[sec_idx].data.extend(std::iter::repeat_n(fill, padding));
                     }
                 }
             }
@@ -539,7 +539,7 @@ impl ElfWriter {
                 // Try simple integer parse; error otherwise
                 if let Ok(val) = expr.trim().parse::<u32>() {
                     let section = self.current_section_mut()?;
-                    section.data.extend(std::iter::repeat(*fill).take(val as usize));
+                    section.data.extend(std::iter::repeat_n(*fill, val as usize));
                 } else {
                     return Err(format!("unsupported .skip expression in i686: {}", expr));
                 }
@@ -1034,10 +1034,10 @@ impl ElfWriter {
             // Backward: find the nearest label BEFORE (or at) reloc_offset in the same section
             let mut best: Option<(usize, u32)> = None;
             for &(s_idx, off) in positions {
-                if s_idx == sec_idx && off <= reloc_offset {
-                    if best.is_none() || off > best.unwrap().1 {
-                        best = Some((s_idx, off));
-                    }
+                if s_idx == sec_idx && off <= reloc_offset
+                    && (best.is_none() || off > best.unwrap().1)
+                {
+                    best = Some((s_idx, off));
                 }
             }
             best
@@ -1045,10 +1045,10 @@ impl ElfWriter {
             // Forward: find the nearest label AFTER reloc_offset in the same section
             let mut best: Option<(usize, u32)> = None;
             for &(s_idx, off) in positions {
-                if s_idx == sec_idx && off > reloc_offset {
-                    if best.is_none() || off < best.unwrap().1 {
-                        best = Some((s_idx, off));
-                    }
+                if s_idx == sec_idx && off > reloc_offset
+                    && (best.is_none() || off < best.unwrap().1)
+                {
+                    best = Some((s_idx, off));
                 }
             }
             best

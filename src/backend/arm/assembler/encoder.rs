@@ -2822,7 +2822,8 @@ fn encode_bic(operands: &[Operand]) -> Result<EncodeResult, String> {
         };
         if let Some((n, immr, imms)) = encode_bitmask_imm(inverted, is_64) {
             // AND Rd, Rn, #~imm: sf 00 100100 N immr imms Rn Rd
-            let word = (sf << 31) | (0b00 << 29) | (0b100100 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd;
+            // AND Rd, Rn, #~imm encoding: sf=bit31, opc=00 (bits29:30), 100100 (bits23:28), N, immr, imms, Rn, Rd
+            let word = (sf << 31) | (0b100100 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd;
             return Ok(EncodeResult::Word(word));
         }
         return Err(format!("cannot encode bitmask immediate for bic: 0x{:x} (inverted: 0x{:x})", imm, inverted));
@@ -2845,8 +2846,8 @@ fn encode_bic(operands: &[Operand]) -> Result<EncodeResult, String> {
             (0, 0)
         };
 
-        // BIC is AND with N=1 (bit 21): sf 00 01010 shift 1 Rm imm6 Rn Rd
-        let word = (sf << 31) | (0b00 << 29) | (0b01010 << 24) | (shift_type << 22) | (1 << 21)
+        // BIC is AND with N=1 (bit 21): sf opc=00(bits29:30) 01010 shift 1 Rm imm6 Rn Rd
+        let word = (sf << 31) | (0b01010 << 24) | (shift_type << 22) | (1 << 21)
             | (rm << 16) | ((shift_amount & 0x3F) << 10) | (rn << 5) | rd;
         return Ok(EncodeResult::Word(word));
     }

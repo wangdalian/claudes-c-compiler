@@ -1592,7 +1592,6 @@ pub fn link_builtin(
 
     // Note section
     let note_sec_idx = section_name_to_idx.get(".note").copied();
-    let note_offset = file_offset;
     let _note_vaddr = vaddr;
     let note_size = note_sec_idx.map(|i| output_sections[i].data.len() as u32).unwrap_or(0);
     if note_size > 0 {
@@ -2416,10 +2415,8 @@ pub fn link_builtin(
                 let off = patch_offset as usize;
                 if off + 4 <= out_sec.data.len() {
                     // For GOT32X relaxation, rewrite mov (0x8b) → lea (0x8d)
-                    if relax_got32x && off >= 2 {
-                        if out_sec.data[off - 2] == 0x8b {
-                            out_sec.data[off - 2] = 0x8d;
-                        }
+                    if relax_got32x && off >= 2 && out_sec.data[off - 2] == 0x8b {
+                        out_sec.data[off - 2] = 0x8d;
                     }
                     out_sec.data[off..off + 4].copy_from_slice(&value.to_le_bytes());
                 }

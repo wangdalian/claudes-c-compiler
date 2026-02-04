@@ -652,7 +652,7 @@ impl ElfWriter {
                     if target > current {
                         let padding = (target - current) as usize;
                         let fill = if self.sections[sec_idx].flags & SHF_EXECINSTR != 0 { 0x90u8 } else { 0u8 };
-                        self.sections[sec_idx].data.extend(std::iter::repeat(fill).take(padding));
+                        self.sections[sec_idx].data.extend(std::iter::repeat_n(fill, padding));
                     }
                 }
             }
