@@ -52,16 +52,99 @@ pub enum Operand {
     RegList(Vec<Operand>),
 }
 
+/// Section directive with optional flags and type.
+#[derive(Debug, Clone)]
+pub struct SectionDirective {
+    pub name: String,
+    pub flags: Option<String>,
+    pub section_type: Option<String>,
+}
+
+/// Symbol kind from `.type` directive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolKind {
+    Function,
+    Object,
+    TlsObject,
+    NoType,
+}
+
+/// Size expression: either a constant or `.-name` (current position minus symbol).
+#[derive(Debug, Clone)]
+pub enum SizeExpr {
+    Constant(u64),
+    CurrentMinusSymbol(String),
+}
+
+/// A data value that can be a constant, a symbol, or a symbol expression.
+#[derive(Debug, Clone)]
+pub enum DataValue {
+    Integer(i64),
+    Symbol(String),
+    /// symbol + offset (e.g., `.quad func+128`)
+    SymbolOffset(String, i64),
+    /// symbol - symbol (e.g., `.long .LBB3 - .Ljt_0`)
+    SymbolDiff(String, String),
+    /// symbol - symbol + addend
+    SymbolDiffAddend(String, String, i64),
+}
+
+/// A typed assembly directive, fully parsed at parse time.
+#[derive(Debug, Clone)]
+pub enum AsmDirective {
+    /// Switch to a named section: `.section .text,"ax",@progbits`
+    Section(SectionDirective),
+    /// Global symbol: `.globl name`
+    Global(String),
+    /// Weak symbol: `.weak name`
+    Weak(String),
+    /// Hidden visibility: `.hidden name`
+    Hidden(String),
+    /// Protected visibility: `.protected name`
+    Protected(String),
+    /// Internal visibility: `.internal name`
+    Internal(String),
+    /// Symbol type: `.type name, %function`
+    SymbolType(String, SymbolKind),
+    /// Symbol size: `.size name, expr`
+    Size(String, SizeExpr),
+    /// Alignment: `.align N` or `.p2align N` (stored as byte count, already converted from 2^N)
+    Align(u64),
+    /// Byte-alignment: `.balign N` (stored as byte count directly)
+    Balign(u64),
+    /// Emit bytes: `.byte val, val, ...`
+    Byte(Vec<u8>),
+    /// Emit 16-bit values: `.short val, ...`
+    Short(Vec<i16>),
+    /// Emit 32-bit values: `.long val, ...` (can be symbol references)
+    Long(Vec<DataValue>),
+    /// Emit 64-bit values: `.quad val, ...` (can be symbol references)
+    Quad(Vec<DataValue>),
+    /// Emit zero bytes: `.zero N[, fill]`
+    Zero(usize, u8),
+    /// NUL-terminated string: `.asciz "str"`
+    Asciz(Vec<u8>),
+    /// String without NUL: `.ascii "str"`
+    Ascii(Vec<u8>),
+    /// Common symbol: `.comm name, size, align`
+    Comm(String, u64, u64),
+    /// Local symbol: `.local name`
+    Local(String),
+    /// Symbol alias: `.set name, value`
+    Set(String, String),
+    /// CFI directive (ignored for code generation)
+    Cfi,
+    /// Other ignored directives (.file, .loc, .ident, etc.)
+    Ignored,
+}
+
 /// A parsed assembly statement.
 #[derive(Debug, Clone)]
 pub enum AsmStatement {
     /// A label definition: "name:"
     Label(String),
-    /// A directive: .section, .globl, .align, .byte, etc.
-    Directive {
-        name: String,
-        args: String,
-    },
+    /// A typed directive, fully parsed
+    Directive(AsmDirective),
     /// An AArch64 instruction with mnemonic and operands
     Instruction {
         mnemonic: String,
@@ -222,10 +305,122 @@ fn parse_directive(line: &str) -> Result<AsmStatement, String> {
         (line, "")
     };
 
-    Ok(AsmStatement::Directive {
-        name: name.to_string(),
-        args: args.to_string(),
-    })
+    let dir = match name {
+        ".section" => parse_section_directive(args)?,
+        ".text" => AsmDirective::Section(SectionDirective {
+            name: ".text".to_string(),
+            flags: None,
+            section_type: None,
+        }),
+        ".data" => AsmDirective::Section(SectionDirective {
+            name: ".data".to_string(),
+            flags: None,
+            section_type: None,
+        }),
+        ".bss" => AsmDirective::Section(SectionDirective {
+            name: ".bss".to_string(),
+            flags: None,
+            section_type: None,
+        }),
+        ".rodata" => AsmDirective::Section(SectionDirective {
+            name: ".rodata".to_string(),
+            flags: None,
+            section_type: None,
+        }),
+        ".globl" | ".global" => AsmDirective::Global(args.trim().to_string()),
+        ".weak" => AsmDirective::Weak(args.trim().to_string()),
+        ".hidden" => AsmDirective::Hidden(args.trim().to_string()),
+        ".protected" => AsmDirective::Protected(args.trim().to_string()),
+        ".internal" => AsmDirective::Internal(args.trim().to_string()),
+        ".type" => parse_type_directive(args)?,
+        ".size" => parse_size_directive(args)?,
+        ".align" | ".p2align" => {
+            let align_val: u64 = args.trim().split(',').next()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0);
+            // AArch64 .align N means 2^N bytes (same as .p2align)
+            AsmDirective::Align(1u64 << align_val)
+        }
+        ".balign" => {
+            let align_val: u64 = args.trim().parse().unwrap_or(1);
+            AsmDirective::Balign(align_val)
+        }
+        ".byte" => {
+            let mut vals = Vec::new();
+            for part in args.split(',') {
+                let val = parse_data_value(part.trim())? as u8;
+                vals.push(val);
+            }
+            AsmDirective::Byte(vals)
+        }
+        ".short" | ".hword" | ".2byte" | ".half" => {
+            let mut vals = Vec::new();
+            for part in args.split(',') {
+                let val = parse_data_value(part.trim())? as i16;
+                vals.push(val);
+            }
+            AsmDirective::Short(vals)
+        }
+        ".long" | ".4byte" | ".word" => {
+            let vals = parse_data_values(args)?;
+            AsmDirective::Long(vals)
+        }
+        ".quad" | ".8byte" | ".xword" | ".dword" => {
+            let vals = parse_data_values(args)?;
+            AsmDirective::Quad(vals)
+        }
+        ".zero" | ".space" => {
+            let parts: Vec<&str> = args.trim().split(',').collect();
+            let size: usize = parts[0].trim().parse()
+                .map_err(|_| format!("invalid .zero size: {}", args))?;
+            let fill: u8 = if parts.len() > 1 {
+                parse_data_value(parts[1].trim())? as u8
+            } else {
+                0
+            };
+            AsmDirective::Zero(size, fill)
+        }
+        ".asciz" | ".string" => {
+            let s = parse_string_literal(args)?;
+            let mut bytes = s;
+            bytes.push(0); // null terminator
+            AsmDirective::Asciz(bytes)
+        }
+        ".ascii" => {
+            let s = parse_string_literal(args)?;
+            AsmDirective::Ascii(s)
+        }
+        ".comm" => parse_comm_directive(args)?,
+        ".local" => AsmDirective::Local(args.trim().to_string()),
+        ".set" | ".equ" => {
+            let parts: Vec<&str> = args.splitn(2, ',').collect();
+            if parts.len() == 2 {
+                AsmDirective::Set(
+                    parts[0].trim().to_string(),
+                    parts[1].trim().to_string(),
+                )
+            } else {
+                AsmDirective::Ignored
+            }
+        }
+        // CFI directives
+        ".cfi_startproc" | ".cfi_endproc" | ".cfi_def_cfa_offset"
+        | ".cfi_offset" | ".cfi_def_cfa_register" | ".cfi_restore"
+        | ".cfi_remember_state" | ".cfi_restore_state"
+        | ".cfi_adjust_cfa_offset" | ".cfi_def_cfa"
+        | ".cfi_sections" | ".cfi_personality" | ".cfi_lsda"
+        | ".cfi_rel_offset" | ".cfi_register" | ".cfi_return_column"
+        | ".cfi_undefined" | ".cfi_same_value" | ".cfi_escape" => AsmDirective::Cfi,
+        // Other directives we can safely ignore
+        ".file" | ".loc" | ".ident" | ".addrsig" | ".addrsig_sym"
+        | ".build_attributes" | ".eabi_attribute" => AsmDirective::Ignored,
+        _ => {
+            // Unknown directive - ignore
+            AsmDirective::Ignored
+        }
+    };
+
+    Ok(AsmStatement::Directive(dir))
 }
 
 fn parse_instruction(line: &str) -> Result<AsmStatement, String> {
@@ -692,4 +887,295 @@ fn is_register(s: &str) -> bool {
         }
         false
     }
+}
+
+// ── Directive parsing helpers ──────────────────────────────────────────
+
+/// Parse a `.section name,"flags",@type` directive.
+fn parse_section_directive(args: &str) -> Result<AsmDirective, String> {
+    let parts = split_section_args(args);
+    let name = parts.first()
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| ".text".to_string());
+    let flags = parts.get(1).map(|s| s.trim().trim_matches('"').to_string());
+    let section_type = parts.get(2).map(|s| s.trim().to_string());
+    Ok(AsmDirective::Section(SectionDirective { name, flags, section_type }))
+}
+
+/// Split section directive args, respecting quoted strings.
+fn split_section_args(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    for c in s.chars() {
+        if c == '"' {
+            in_quotes = !in_quotes;
+            current.push(c);
+        } else if c == ',' && !in_quotes {
+            parts.push(current.clone());
+            current.clear();
+        } else {
+            current.push(c);
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+/// Parse `.type name, %function` or `@object` etc.
+fn parse_type_directive(args: &str) -> Result<AsmDirective, String> {
+    let parts: Vec<&str> = args.splitn(2, ',').collect();
+    if parts.len() != 2 {
+        return Ok(AsmDirective::Ignored);
+    }
+    let sym = parts[0].trim().to_string();
+    let kind_str = parts[1].trim();
+    let kind = match kind_str {
+        "%function" | "@function" => SymbolKind::Function,
+        "%object" | "@object" => SymbolKind::Object,
+        "@tls_object" => SymbolKind::TlsObject,
+        _ => SymbolKind::NoType,
+    };
+    Ok(AsmDirective::SymbolType(sym, kind))
+}
+
+/// Parse `.size name, expr`.
+fn parse_size_directive(args: &str) -> Result<AsmDirective, String> {
+    let parts: Vec<&str> = args.splitn(2, ',').collect();
+    if parts.len() != 2 {
+        return Ok(AsmDirective::Ignored);
+    }
+    let sym = parts[0].trim().to_string();
+    let expr_str = parts[1].trim();
+    if expr_str.starts_with(".-") {
+        let label = expr_str[2..].trim().to_string();
+        Ok(AsmDirective::Size(sym, SizeExpr::CurrentMinusSymbol(label)))
+    } else if let Ok(size) = expr_str.parse::<u64>() {
+        Ok(AsmDirective::Size(sym, SizeExpr::Constant(size)))
+    } else {
+        Ok(AsmDirective::Ignored)
+    }
+}
+
+/// Parse `.comm name, size[, align]`.
+fn parse_comm_directive(args: &str) -> Result<AsmDirective, String> {
+    let parts: Vec<&str> = args.split(',').collect();
+    if parts.len() < 2 {
+        return Ok(AsmDirective::Ignored);
+    }
+    let sym = parts[0].trim().to_string();
+    let size: u64 = parts[1].trim().parse().unwrap_or(0);
+    let align: u64 = if parts.len() > 2 {
+        parts[2].trim().parse().unwrap_or(1)
+    } else {
+        1
+    };
+    Ok(AsmDirective::Comm(sym, size, align))
+}
+
+/// Parse comma-separated data values that may be integers, symbols, or symbol expressions.
+fn parse_data_values(s: &str) -> Result<Vec<DataValue>, String> {
+    let mut vals = Vec::new();
+    for part in s.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Check for symbol difference: A - B or A - B + C
+        if let Some(dv) = try_parse_symbol_diff(trimmed) {
+            vals.push(dv);
+            continue;
+        }
+        // Try integer
+        if let Ok(val) = parse_data_value(trimmed) {
+            vals.push(DataValue::Integer(val));
+            continue;
+        }
+        // Check for symbol+offset or symbol-offset
+        if let Some(dv) = try_parse_symbol_offset(trimmed) {
+            vals.push(dv);
+            continue;
+        }
+        // Symbol reference
+        vals.push(DataValue::Symbol(trimmed.to_string()));
+    }
+    Ok(vals)
+}
+
+/// Try to parse a symbol difference expression like "A - B" or "A - B + C".
+fn try_parse_symbol_diff(expr: &str) -> Option<DataValue> {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return None;
+    }
+    let first_char = expr.chars().next()?;
+    if !first_char.is_ascii_alphabetic() && first_char != '_' && first_char != '.' {
+        return None;
+    }
+    let minus_pos = find_symbol_diff_minus(expr)?;
+    let sym_a = expr[..minus_pos].trim().to_string();
+    let rest = expr[minus_pos + 1..].trim();
+    // rest might be "B" or "B + offset"
+    let (sym_b, extra_addend) = if let Some(plus_pos) = rest.find('+') {
+        let b = rest[..plus_pos].trim().to_string();
+        let add_str = rest[plus_pos + 1..].trim();
+        let add_val: i64 = add_str.parse().unwrap_or(0);
+        (b, add_val)
+    } else {
+        (rest.to_string(), 0i64)
+    };
+    if sym_b.is_empty() {
+        return None;
+    }
+    let b_first = sym_b.chars().next().unwrap();
+    if !b_first.is_ascii_alphabetic() && b_first != '_' && b_first != '.' {
+        return None;
+    }
+    if extra_addend != 0 {
+        Some(DataValue::SymbolDiffAddend(sym_a, sym_b, extra_addend))
+    } else {
+        Some(DataValue::SymbolDiff(sym_a, sym_b))
+    }
+}
+
+/// Try to parse symbol+offset or symbol-offset.
+fn try_parse_symbol_offset(s: &str) -> Option<DataValue> {
+    for (i, c) in s.char_indices().skip(1) {
+        if c == '+' || c == '-' {
+            let sym = s[..i].trim();
+            let offset_str = &s[i..]; // includes the sign
+            if let Ok(offset) = parse_int_literal(offset_str) {
+                if !sym.is_empty() && !sym.contains(' ') {
+                    return Some(DataValue::SymbolOffset(sym.to_string(), offset));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Find the position of the '-' operator in a symbol difference expression.
+fn find_symbol_diff_minus(expr: &str) -> Option<usize> {
+    let bytes = expr.as_bytes();
+    let len = bytes.len();
+    let mut i = 1;
+    while i < len {
+        if bytes[i] == b'-' {
+            let left_char = bytes[i - 1];
+            let left_ok = left_char.is_ascii_alphanumeric() || left_char == b'_' || left_char == b'.' || left_char == b' ';
+            let right_start = expr[i + 1..].trim_start();
+            if !right_start.is_empty() {
+                let right_char = right_start.as_bytes()[0];
+                let right_ok = right_char.is_ascii_alphabetic() || right_char == b'_' || right_char == b'.';
+                if left_ok && right_ok {
+                    return Some(i);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Parse a data value (integer literal, possibly negative).
+fn parse_data_value(s: &str) -> Result<i64, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Ok(0);
+    }
+    let (negative, s) = if s.starts_with('-') {
+        (true, &s[1..])
+    } else {
+        (false, s)
+    };
+    let val = if s.starts_with("0x") || s.starts_with("0X") {
+        u64::from_str_radix(&s[2..], 16)
+            .map_err(|e| format!("invalid hex: {}: {}", s, e))?
+    } else {
+        s.parse::<u64>()
+            .map_err(|e| format!("invalid integer: {}: {}", s, e))?
+    };
+    if negative {
+        Ok(-(val as i64))
+    } else {
+        Ok(val as i64)
+    }
+}
+
+/// Parse a string literal (strip quotes, handle escapes).
+/// Returns raw bytes to support non-UTF-8 content from escape sequences.
+fn parse_string_literal(s: &str) -> Result<Vec<u8>, String> {
+    let s = s.trim();
+    if !s.starts_with('"') || !s.ends_with('"') {
+        return Err(format!("expected string literal: {}", s));
+    }
+    let inner = &s[1..s.len() - 1];
+    let mut result = Vec::new();
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => result.push(b'\n'),
+                Some('t') => result.push(b'\t'),
+                Some('r') => result.push(b'\r'),
+                Some('\\') => result.push(b'\\'),
+                Some('"') => result.push(b'"'),
+                Some('a') => result.push(0x07),
+                Some('b') => result.push(0x08),
+                Some('f') => result.push(0x0c),
+                Some('v') => result.push(0x0b),
+                Some(c) if c >= '0' && c <= '7' => {
+                    let mut octal = String::new();
+                    octal.push(c);
+                    while octal.len() < 3 {
+                        if let Some(&next) = chars.peek() {
+                            if next >= '0' && next <= '7' {
+                                octal.push(chars.next().unwrap());
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Ok(val) = u8::from_str_radix(&octal, 8) {
+                        result.push(val);
+                    }
+                }
+                Some('x') => {
+                    let mut hex = String::new();
+                    while hex.len() < 2 {
+                        if let Some(&next) = chars.peek() {
+                            if next.is_ascii_hexdigit() {
+                                hex.push(chars.next().unwrap());
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Ok(val) = u8::from_str_radix(&hex, 16) {
+                        result.push(val);
+                    }
+                }
+                Some(c) => {
+                    result.push(b'\\');
+                    // Push character as UTF-8 bytes
+                    let mut buf = [0u8; 4];
+                    let encoded = c.encode_utf8(&mut buf);
+                    result.extend_from_slice(encoded.as_bytes());
+                }
+                None => result.push(b'\\'),
+            }
+        } else {
+            // Push character as UTF-8 bytes
+            let mut buf = [0u8; 4];
+            let encoded = c.encode_utf8(&mut buf);
+            result.extend_from_slice(encoded.as_bytes());
+        }
+    }
+    Ok(result)
 }

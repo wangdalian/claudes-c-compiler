@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use super::parser::{AsmStatement, Operand};
+use super::parser::{AsmStatement, AsmDirective, SectionDirective, SymbolKind, SizeExpr, DataValue, Operand};
 use super::encoder::{encode_instruction, EncodeResult, RelocType};
 
 const EM_AARCH64: u16 = 183;
@@ -205,67 +205,6 @@ impl ElfWriter {
         }
     }
 
-    /// Try to handle a symbol difference expression like "A - B" or "A - B + C".
-    /// Records a pending symbol diff for deferred resolution after all labels are known.
-    /// Returns None if the expression is not a symbol difference.
-    fn try_emit_symbol_diff(&mut self, expr: &str, size: usize) -> Option<Result<(), String>> {
-        let expr = expr.trim();
-        if expr.is_empty() {
-            return None;
-        }
-
-        // Look for "A - B" pattern
-        let first_char = expr.chars().next()?;
-        if !first_char.is_ascii_alphabetic() && first_char != '_' && first_char != '.' {
-            return None;
-        }
-
-        let minus_pos = find_symbol_diff_minus(expr)?;
-
-        let sym_a = expr[..minus_pos].trim();
-        let rest = expr[minus_pos + 1..].trim();
-
-        // rest might be "B" or "B + offset"
-        let (sym_b, extra_addend) = if let Some(plus_pos) = rest.find('+') {
-            let b = rest[..plus_pos].trim();
-            let add_str = rest[plus_pos + 1..].trim();
-            let add_val: i64 = add_str.parse().unwrap_or(0);
-            (b, add_val)
-        } else {
-            (rest, 0i64)
-        };
-
-        // Verify sym_b looks like a symbol
-        if sym_b.is_empty() {
-            return None;
-        }
-        let b_first = sym_b.chars().next().unwrap();
-        if !b_first.is_ascii_alphabetic() && b_first != '_' && b_first != '.' {
-            return None;
-        }
-
-        // Record the pending diff for deferred resolution
-        let section = self.current_section.clone();
-        let offset = self.current_offset();
-        self.pending_sym_diffs.push(PendingSymDiff {
-            section,
-            offset,
-            sym_a: sym_a.to_string(),
-            sym_b: sym_b.to_string(),
-            extra_addend,
-            size,
-        });
-
-        // Emit placeholder bytes
-        if size == 4 {
-            self.emit_bytes(&0u32.to_le_bytes());
-        } else {
-            self.emit_bytes(&0u64.to_le_bytes());
-        }
-
-        Some(Ok(()))
-    }
-
     /// Resolve pending symbol differences after all labels are known.
     fn resolve_sym_diffs(&mut self) -> Result<(), String> {
         let pending = std::mem::take(&mut self.pending_sym_diffs);
@@ -361,8 +300,8 @@ impl ElfWriter {
                 Ok(())
             }
 
-            AsmStatement::Directive { name, args } => {
-                self.process_directive(name, args)
+            AsmStatement::Directive(dir) => {
+                self.process_directive(dir)
             }
 
             AsmStatement::Instruction { mnemonic, operands, raw_operands } => {
@@ -371,284 +310,245 @@ impl ElfWriter {
         }
     }
 
-    fn process_directive(&mut self, name: &str, args: &str) -> Result<(), String> {
-        match name {
-            ".section" => {
-                let (sec_name, flags, sec_type) = parse_section_directive(args);
-                let sh_type = match sec_type.as_str() {
-                    "@nobits" => SHT_NOBITS,
-                    "@note" => SHT_NOTE,
-                    _ => SHT_PROGBITS,
+    fn process_directive(&mut self, dir: &AsmDirective) -> Result<(), String> {
+        match dir {
+            AsmDirective::Section(sec) => {
+                self.process_section_directive(sec);
+                Ok(())
+            }
+
+            AsmDirective::Global(sym) => {
+                self.global_symbols.insert(sym.clone(), true);
+                Ok(())
+            }
+
+            AsmDirective::Weak(sym) => {
+                self.weak_symbols.insert(sym.clone(), true);
+                Ok(())
+            }
+
+            AsmDirective::Hidden(sym) => {
+                self.symbol_visibility.insert(sym.clone(), STV_HIDDEN);
+                Ok(())
+            }
+
+            AsmDirective::Protected(sym) => {
+                self.symbol_visibility.insert(sym.clone(), STV_PROTECTED);
+                Ok(())
+            }
+
+            AsmDirective::Internal(sym) => {
+                self.symbol_visibility.insert(sym.clone(), STV_INTERNAL);
+                Ok(())
+            }
+
+            AsmDirective::SymbolType(sym, kind) => {
+                let st = match kind {
+                    SymbolKind::Function => STT_FUNC,
+                    SymbolKind::Object => STT_OBJECT,
+                    SymbolKind::TlsObject => STT_TLS,
+                    SymbolKind::NoType => STT_NOTYPE,
                 };
-                let mut sh_flags = 0u64;
-                if flags.contains('a') { sh_flags |= SHF_ALLOC; }
-                if flags.contains('w') { sh_flags |= SHF_WRITE; }
-                if flags.contains('x') { sh_flags |= SHF_EXECINSTR; }
-                if flags.contains('M') { sh_flags |= SHF_MERGE; }
-                if flags.contains('S') { sh_flags |= SHF_STRINGS; }
-                if flags.contains('T') { sh_flags |= SHF_TLS; }
-                if flags.contains('G') { sh_flags |= SHF_GROUP; }
-
-                // Set default flags based on section name
-                if sh_flags == 0 {
-                    sh_flags = default_section_flags(&sec_name);
-                }
-
-                let align = if sec_name == ".text" { 4 } else { 1 };
-                self.ensure_section(&sec_name, sh_type, sh_flags, align);
-                self.current_section = sec_name;
+                self.symbol_types.insert(sym.clone(), st);
                 Ok(())
             }
 
-            ".text" => {
-                self.ensure_section(".text", SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, 4);
-                self.current_section = ".text".to_string();
-                Ok(())
-            }
-
-            ".data" => {
-                self.ensure_section(".data", SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 1);
-                self.current_section = ".data".to_string();
-                Ok(())
-            }
-
-            ".bss" => {
-                self.ensure_section(".bss", SHT_NOBITS, SHF_ALLOC | SHF_WRITE, 1);
-                self.current_section = ".bss".to_string();
-                Ok(())
-            }
-
-            ".rodata" => {
-                self.ensure_section(".rodata", SHT_PROGBITS, SHF_ALLOC, 1);
-                self.current_section = ".rodata".to_string();
-                Ok(())
-            }
-
-            ".globl" | ".global" => {
-                let sym = args.trim();
-                self.global_symbols.insert(sym.to_string(), true);
-                Ok(())
-            }
-
-            ".weak" => {
-                let sym = args.trim();
-                self.weak_symbols.insert(sym.to_string(), true);
-                Ok(())
-            }
-
-            ".hidden" => {
-                let sym = args.trim();
-                self.symbol_visibility.insert(sym.to_string(), STV_HIDDEN);
-                Ok(())
-            }
-
-            ".protected" => {
-                let sym = args.trim();
-                self.symbol_visibility.insert(sym.to_string(), STV_PROTECTED);
-                Ok(())
-            }
-
-            ".internal" => {
-                let sym = args.trim();
-                self.symbol_visibility.insert(sym.to_string(), STV_INTERNAL);
-                Ok(())
-            }
-
-            ".type" => {
-                // .type name, %function or .type name, @object
-                let parts: Vec<&str> = args.splitn(2, ',').collect();
-                if parts.len() == 2 {
-                    let sym = parts[0].trim();
-                    let ty = parts[1].trim();
-                    let st = match ty {
-                        "%function" | "@function" => STT_FUNC,
-                        "%object" | "@object" => STT_OBJECT,
-                        "@tls_object" => STT_TLS,
-                        _ => STT_NOTYPE,
-                    };
-                    self.symbol_types.insert(sym.to_string(), st);
-                }
-                Ok(())
-            }
-
-            ".size" => {
-                // .size name, size_expr
-                let parts: Vec<&str> = args.splitn(2, ',').collect();
-                if parts.len() == 2 {
-                    let sym = parts[0].trim();
-                    let size_expr = parts[1].trim();
-                    // Handle .-name (current offset - label)
-                    if size_expr.starts_with(".-") {
-                        let label = &size_expr[2..];
+            AsmDirective::Size(sym, expr) => {
+                match expr {
+                    SizeExpr::CurrentMinusSymbol(label) => {
                         if let Some((section, label_offset)) = self.labels.get(label) {
                             if *section == self.current_section {
                                 let current = self.current_offset();
                                 let size = current - label_offset;
-                                self.symbol_sizes.insert(sym.to_string(), size);
+                                self.symbol_sizes.insert(sym.clone(), size);
                             }
                         }
-                    } else if let Ok(size) = size_expr.parse::<u64>() {
-                        self.symbol_sizes.insert(sym.to_string(), size);
+                    }
+                    SizeExpr::Constant(size) => {
+                        self.symbol_sizes.insert(sym.clone(), *size);
                     }
                 }
                 Ok(())
             }
 
-            ".align" | ".p2align" => {
-                let align_val: u64 = args.trim().split(',').next()
-                    .and_then(|s| s.trim().parse().ok())
-                    .unwrap_or(0);
-                // AArch64 .align N means 2^N bytes (same as .p2align)
-                let bytes = 1u64 << align_val;
-                self.align_to(bytes);
+            AsmDirective::Align(bytes) => {
+                self.align_to(*bytes);
                 Ok(())
             }
 
-            ".balign" => {
-                let align_val: u64 = args.trim().parse().unwrap_or(1);
-                self.align_to(align_val);
+            AsmDirective::Balign(bytes) => {
+                self.align_to(*bytes);
                 Ok(())
             }
 
-            ".byte" => {
-                for part in args.split(',') {
-                    let val = parse_data_value(part.trim())? as u8;
-                    self.emit_bytes(&[val]);
+            AsmDirective::Byte(vals) => {
+                self.emit_bytes(vals);
+                Ok(())
+            }
+
+            AsmDirective::Short(vals) => {
+                for val in vals {
+                    self.emit_bytes(&(*val as u16).to_le_bytes());
                 }
                 Ok(())
             }
 
-            ".short" | ".hword" | ".2byte" | ".half" => {
-                for part in args.split(',') {
-                    let val = parse_data_value(part.trim())? as u16;
-                    self.emit_bytes(&val.to_le_bytes());
-                }
+            AsmDirective::Long(vals) => {
+                self.emit_data_values(vals, 4)
+            }
+
+            AsmDirective::Quad(vals) => {
+                self.emit_data_values(vals, 8)
+            }
+
+            AsmDirective::Zero(size, fill) => {
+                self.emit_bytes(&vec![*fill; *size]);
                 Ok(())
             }
 
-            ".long" | ".4byte" | ".word" => {
-                for part in args.split(',') {
-                    let trimmed = part.trim();
-                    // Handle symbol difference expressions: A - B
-                    if let Some(result) = self.try_emit_symbol_diff(trimmed, 4) {
-                        result?;
-                        continue;
-                    }
-                    // Handle simple symbol references
-                    if is_symbol_ref(trimmed) {
-                        let (sym, addend) = parse_symbol_addend(trimmed);
-                        self.add_reloc(RelocType::Abs32.elf_type(), sym, addend);
-                        self.emit_bytes(&0u32.to_le_bytes());
-                        continue;
-                    }
-                    let val = parse_data_value(trimmed)? as u32;
-                    self.emit_bytes(&val.to_le_bytes());
-                }
+            AsmDirective::Asciz(bytes) => {
+                // Already includes null terminator from parser
+                self.emit_bytes(bytes);
                 Ok(())
             }
 
-            ".quad" | ".8byte" | ".xword" | ".dword" => {
-                for part in args.split(',') {
-                    let trimmed = part.trim();
-                    // Handle symbol difference expressions: A - B
-                    if let Some(result) = self.try_emit_symbol_diff(trimmed, 8) {
-                        result?;
-                        continue;
-                    }
-                    if is_symbol_ref(trimmed) {
-                        let (sym, addend) = parse_symbol_addend(trimmed);
-                        self.add_reloc(RelocType::Abs64.elf_type(), sym, addend);
-                        self.emit_bytes(&0u64.to_le_bytes());
-                        continue;
-                    }
-                    let val = parse_data_value(trimmed)? as u64;
-                    self.emit_bytes(&val.to_le_bytes());
-                }
+            AsmDirective::Ascii(bytes) => {
+                self.emit_bytes(bytes);
                 Ok(())
             }
 
-            ".zero" | ".space" => {
-                let parts: Vec<&str> = args.trim().split(',').collect();
-                let size: usize = parts[0].trim().parse()
-                    .map_err(|_| format!("invalid .zero size: {}", args))?;
-                let fill: u8 = if parts.len() > 1 {
-                    parse_data_value(parts[1].trim())? as u8
-                } else {
-                    0
-                };
-                self.emit_bytes(&vec![fill; size]);
+            AsmDirective::Comm(sym, size, align) => {
+                self.symbols.push(ElfSymbol {
+                    name: sym.clone(),
+                    value: *align, // For COMMON, value = alignment
+                    size: *size,
+                    binding: STB_GLOBAL,
+                    sym_type: STT_OBJECT,
+                    visibility: STV_DEFAULT,
+                    section_name: "*COM*".to_string(),
+                });
                 Ok(())
             }
 
-            ".asciz" | ".string" => {
-                let s = parse_string_literal(args)?;
-                self.emit_bytes(s.as_bytes());
-                self.emit_bytes(&[0]); // null terminator
+            AsmDirective::Local(_) => {
+                // Symbols are local by default
                 Ok(())
             }
 
-            ".ascii" => {
-                let s = parse_string_literal(args)?;
-                self.emit_bytes(s.as_bytes());
-                Ok(())
-            }
-
-            ".comm" => {
-                // .comm symbol, size[, align]
-                let parts: Vec<&str> = args.split(',').collect();
-                if parts.len() >= 2 {
-                    let sym = parts[0].trim();
-                    let size: u64 = parts[1].trim().parse().unwrap_or(0);
-                    let align: u64 = if parts.len() > 2 {
-                        parts[2].trim().parse().unwrap_or(1)
-                    } else {
-                        1
-                    };
-
-                    // Create a common symbol
-                    self.symbols.push(ElfSymbol {
-                        name: sym.to_string(),
-                        value: align, // For COMMON, value = alignment
-                        size,
-                        binding: STB_GLOBAL,
-                        sym_type: STT_OBJECT,
-                        visibility: STV_DEFAULT,
-                        section_name: "*COM*".to_string(),
-                    });
-                }
-                Ok(())
-            }
-
-            ".local" => {
-                // .local symbol - marks symbol as local (default)
-                // Nothing to do since symbols are local by default
-                Ok(())
-            }
-
-            ".set" | ".equ" => {
-                // .set name, value - define a symbol with a value
+            AsmDirective::Set(_name, _value) => {
                 // TODO: implement properly
                 Ok(())
             }
 
-            // CFI directives - skip them (we don't generate DWARF unwind info yet)
-            ".cfi_startproc" | ".cfi_endproc" | ".cfi_def_cfa_offset"
-            | ".cfi_offset" | ".cfi_def_cfa_register" | ".cfi_restore"
-            | ".cfi_remember_state" | ".cfi_restore_state"
-            | ".cfi_adjust_cfa_offset" | ".cfi_def_cfa"
-            | ".cfi_sections" | ".cfi_personality" | ".cfi_lsda"
-            | ".cfi_rel_offset" | ".cfi_register" | ".cfi_return_column"
-            | ".cfi_undefined" | ".cfi_same_value" | ".cfi_escape" => Ok(()),
+            AsmDirective::Cfi | AsmDirective::Ignored => Ok(()),
+        }
+    }
 
-            // Other directives we can safely ignore for now
-            ".file" | ".loc" | ".ident" | ".addrsig" | ".addrsig_sym"
-            | ".build_attributes" | ".eabi_attribute" => Ok(()),
+    /// Process a section directive with already-parsed fields.
+    fn process_section_directive(&mut self, sec: &SectionDirective) {
+        let sec_name = &sec.name;
 
+        // Determine section type from parsed type string
+        let sh_type = match sec.section_type.as_deref() {
+            Some("@nobits") => SHT_NOBITS,
+            Some("@note") => SHT_NOTE,
             _ => {
-                // Unknown directive - ignore with a warning
-                // TODO: handle more directives
-                Ok(())
+                // Default type based on section name
+                if sec_name == ".bss" || sec_name.starts_with(".bss.") || sec_name.starts_with(".tbss") {
+                    SHT_NOBITS
+                } else {
+                    SHT_PROGBITS
+                }
             }
+        };
+
+        // Determine section flags from parsed flags string
+        let mut sh_flags = 0u64;
+        if let Some(flags) = &sec.flags {
+            if flags.contains('a') { sh_flags |= SHF_ALLOC; }
+            if flags.contains('w') { sh_flags |= SHF_WRITE; }
+            if flags.contains('x') { sh_flags |= SHF_EXECINSTR; }
+            if flags.contains('M') { sh_flags |= SHF_MERGE; }
+            if flags.contains('S') { sh_flags |= SHF_STRINGS; }
+            if flags.contains('T') { sh_flags |= SHF_TLS; }
+            if flags.contains('G') { sh_flags |= SHF_GROUP; }
+        }
+
+        // Set default flags based on section name if none specified
+        if sh_flags == 0 {
+            sh_flags = default_section_flags(sec_name);
+        }
+
+        let align = if sec_name == ".text" { 4 } else { 1 };
+        self.ensure_section(sec_name, sh_type, sh_flags, align);
+        self.current_section = sec_name.clone();
+    }
+
+    /// Emit typed data values (Long or Quad) with proper relocations.
+    fn emit_data_values(&mut self, vals: &[DataValue], size: usize) -> Result<(), String> {
+        for val in vals {
+            match val {
+                DataValue::Integer(v) => {
+                    if size == 4 {
+                        self.emit_bytes(&(*v as u32).to_le_bytes());
+                    } else {
+                        self.emit_bytes(&(*v as u64).to_le_bytes());
+                    }
+                }
+                DataValue::Symbol(sym) => {
+                    let reloc_type = if size == 4 {
+                        RelocType::Abs32.elf_type()
+                    } else {
+                        RelocType::Abs64.elf_type()
+                    };
+                    self.add_reloc(reloc_type, sym.clone(), 0);
+                    if size == 4 {
+                        self.emit_bytes(&0u32.to_le_bytes());
+                    } else {
+                        self.emit_bytes(&0u64.to_le_bytes());
+                    }
+                }
+                DataValue::SymbolOffset(sym, addend) => {
+                    let reloc_type = if size == 4 {
+                        RelocType::Abs32.elf_type()
+                    } else {
+                        RelocType::Abs64.elf_type()
+                    };
+                    self.add_reloc(reloc_type, sym.clone(), *addend);
+                    if size == 4 {
+                        self.emit_bytes(&0u32.to_le_bytes());
+                    } else {
+                        self.emit_bytes(&0u64.to_le_bytes());
+                    }
+                }
+                DataValue::SymbolDiff(sym_a, sym_b) => {
+                    self.record_sym_diff(sym_a, sym_b, 0, size);
+                }
+                DataValue::SymbolDiffAddend(sym_a, sym_b, addend) => {
+                    self.record_sym_diff(sym_a, sym_b, *addend, size);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Record a pending symbol difference for deferred resolution.
+    fn record_sym_diff(&mut self, sym_a: &str, sym_b: &str, extra_addend: i64, size: usize) {
+        let section = self.current_section.clone();
+        let offset = self.current_offset();
+        self.pending_sym_diffs.push(PendingSymDiff {
+            section,
+            offset,
+            sym_a: sym_a.to_string(),
+            sym_b: sym_b.to_string(),
+            extra_addend,
+            size,
+        });
+        // Emit placeholder bytes
+        if size == 4 {
+            self.emit_bytes(&0u32.to_le_bytes());
+        } else {
+            self.emit_bytes(&0u64.to_le_bytes());
         }
     }
 
@@ -1264,185 +1164,3 @@ fn default_section_flags(name: &str) -> u64 {
     }
 }
 
-/// Parse a .section directive's arguments.
-/// Returns (section_name, flags, type).
-fn parse_section_directive(args: &str) -> (String, String, String) {
-    let parts: Vec<&str> = args.split(',').collect();
-    let name = parts[0].trim().to_string();
-    let flags = if parts.len() > 1 {
-        parts[1].trim().trim_matches('"').to_string()
-    } else {
-        String::new()
-    };
-    let sec_type = if parts.len() > 2 {
-        parts[2].trim().to_string()
-    } else {
-        // Default type based on section name
-        if name == ".bss" || name.starts_with(".bss.") || name.starts_with(".tbss") {
-            "@nobits".to_string()
-        } else {
-            "@progbits".to_string()
-        }
-    };
-    (name, flags, sec_type)
-}
-
-/// Parse a data value (integer literal, possibly negative).
-fn parse_data_value(s: &str) -> Result<i64, String> {
-    let s = s.trim();
-    if s.is_empty() {
-        return Ok(0);
-    }
-
-    let (negative, s) = if s.starts_with('-') {
-        (true, &s[1..])
-    } else {
-        (false, s)
-    };
-
-    let val = if s.starts_with("0x") || s.starts_with("0X") {
-        u64::from_str_radix(&s[2..], 16)
-            .map_err(|e| format!("invalid hex: {}: {}", s, e))?
-    } else {
-        s.parse::<u64>()
-            .map_err(|e| format!("invalid integer: {}: {}", s, e))?
-    };
-
-    if negative {
-        Ok(-(val as i64))
-    } else {
-        Ok(val as i64)
-    }
-}
-
-/// Parse a string literal (strip quotes, handle escapes).
-fn parse_string_literal(s: &str) -> Result<String, String> {
-    let s = s.trim();
-    if !s.starts_with('"') || !s.ends_with('"') {
-        return Err(format!("expected string literal: {}", s));
-    }
-    let inner = &s[1..s.len() - 1];
-    let mut result = String::new();
-    let mut chars = inner.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some('n') => result.push('\n'),
-                Some('t') => result.push('\t'),
-                Some('r') => result.push('\r'),
-                Some('\\') => result.push('\\'),
-                Some('"') => result.push('"'),
-                Some('a') => result.push('\x07'),
-                Some('b') => result.push('\x08'),
-                Some('f') => result.push('\x0c'),
-                Some('v') => result.push('\x0b'),
-                Some(c) if c >= '0' && c <= '7' => {
-                    // Octal escape: up to 3 octal digits
-                    let mut octal = String::new();
-                    octal.push(c);
-                    while octal.len() < 3 {
-                        if let Some(&next) = chars.peek() {
-                            if next >= '0' && next <= '7' {
-                                octal.push(chars.next().unwrap());
-                            } else {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                    if let Ok(val) = u8::from_str_radix(&octal, 8) {
-                        result.push(val as char);
-                    }
-                }
-                Some('x') => {
-                    // Hex escape: up to 2 hex digits
-                    let mut hex = String::new();
-                    while hex.len() < 2 {
-                        if let Some(&next) = chars.peek() {
-                            if next.is_ascii_hexdigit() {
-                                hex.push(chars.next().unwrap());
-                            } else {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                    if let Ok(val) = u8::from_str_radix(&hex, 16) {
-                        result.push(val as char);
-                    }
-                }
-                Some(c) => {
-                    result.push('\\');
-                    result.push(c);
-                }
-                None => result.push('\\'),
-            }
-        } else {
-            result.push(c);
-        }
-    }
-    Ok(result)
-}
-
-/// Check if a string looks like a symbol reference (starts with a letter, underscore, or dot).
-fn is_symbol_ref(s: &str) -> bool {
-    let s = s.trim();
-    if s.is_empty() {
-        return false;
-    }
-    let first = s.chars().next().unwrap();
-    first.is_ascii_alphabetic() || first == '_' || first == '.'
-}
-
-/// Parse a symbol reference with optional addend: "symbol", "symbol+offset", "symbol-offset"
-fn parse_symbol_addend(s: &str) -> (String, i64) {
-    let s = s.trim();
-    if let Some(plus_pos) = s.find('+') {
-        let sym = s[..plus_pos].trim().to_string();
-        let off: i64 = s[plus_pos + 1..].trim().parse().unwrap_or(0);
-        (sym, off)
-    } else if let Some(minus_pos) = s.rfind('-') {
-        if minus_pos > 0 {
-            let sym = s[..minus_pos].trim();
-            // Make sure the part after '-' is a number, not another symbol
-            let off_str = s[minus_pos..].trim();
-            if let Ok(off) = off_str.parse::<i64>() {
-                return (sym.to_string(), off);
-            }
-        }
-        (s.to_string(), 0)
-    } else {
-        (s.to_string(), 0)
-    }
-}
-
-/// Find the position of the '-' operator in a symbol difference expression
-/// like "sym_a - sym_b". Returns None if no valid symbol difference is found.
-fn find_symbol_diff_minus(expr: &str) -> Option<usize> {
-    let bytes = expr.as_bytes();
-    let len = bytes.len();
-    let mut i = 1; // Start at 1 to skip leading '-' (negative)
-
-    while i < len {
-        if bytes[i] == b'-' {
-            // Check if left side looks like the end of a symbol name
-            let left_char = bytes[i - 1];
-            let left_ok = left_char.is_ascii_alphanumeric() || left_char == b'_' || left_char == b'.' || left_char == b' ';
-
-            // Check if right side looks like the start of a symbol name (possibly after whitespace)
-            let right_start = expr[i + 1..].trim_start();
-            if !right_start.is_empty() {
-                let right_char = right_start.as_bytes()[0];
-                let right_ok = right_char.is_ascii_alphabetic() || right_char == b'_' || right_char == b'.';
-                if left_ok && right_ok {
-                    return Some(i);
-                }
-            }
-        }
-        i += 1;
-    }
-
-    None
-}
