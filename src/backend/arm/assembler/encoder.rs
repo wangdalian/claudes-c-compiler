@@ -703,7 +703,7 @@ fn encode_add_sub(operands: &[Operand], is_sub: bool, set_flags: bool) -> Result
             });
         }
         if kind == "tprel_hi12" {
-            let word = (sf << 31) | (op << 30) | (s_bit << 29) | (0b10001 << 24) | (0 << 22) | (0 << 10) | (rn << 5) | rd;
+            let word = (sf << 31) | (op << 30) | (s_bit << 29) | (0b10001 << 24) | (1 << 22) | (0 << 10) | (rn << 5) | rd;
             return Ok(EncodeResult::WordWithReloc {
                 word,
                 reloc: Relocation {
@@ -1868,9 +1868,8 @@ fn encode_adrp(operands: &[Operand]) -> Result<EncodeResult, String> {
         }
         Some(Operand::SymbolOffset(s, off)) => (s.clone(), *off),
         Some(Operand::Label(s)) => (s.clone(), 0i64),
-        // Parser may misidentify symbol names like "s1", "d1", "v0" as registers
-        // since those are also valid FP/SIMD register names. In adrp context, the
-        // second operand is always a symbol.
+        // TODO: parser misclassifies symbol names that collide with register names (s1, v0, d1, etc.)
+        // ADRP never takes a register as second operand, so treat Reg as a symbol here.
         Some(Operand::Reg(name)) => (name.clone(), 0i64),
         _ => return Err(format!("adrp needs symbol operand, got {:?}", operands.get(1))),
     };

@@ -297,8 +297,16 @@ impl Target {
         // handle MY_LD=builtin inside common::link_with_args.
         if let Ok(ref val) = std::env::var("MY_LD") {
             if val == "builtin" {
-                if let Target::Riscv64 = self {
-                    return riscv::linker::link_to_executable(object_files, output_path, user_args);
+                match self {
+                    Target::Riscv64 => {
+                        return riscv::linker::link_to_executable(object_files, output_path, user_args);
+                    }
+                    Target::Aarch64 => {
+                        return arm::linker::link(object_files, output_path, user_args);
+                    }
+                    _ => {
+                        // Other targets handle MY_LD=builtin in common::link_with_args
+                    }
                 }
             }
         }
