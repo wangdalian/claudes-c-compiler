@@ -1,0 +1,18 @@
+Fix RISC-V assembler pcrel_lo12 relocation to reference the auipc label
+instead of the target symbol directly.
+
+The R_RISCV_PCREL_LO12_I and R_RISCV_PCREL_LO12_S relocations must reference
+a local label placed on the corresponding AUIPC instruction (which has the
+R_RISCV_PCREL_HI20 relocation), NOT the target symbol itself.
+
+Currently, both pcrel_hi20 and pcrel_lo12 reference the target symbol (e.g.,
+"global"), causing the linker error:
+  "dangerous relocation: %pcrel_lo missing matching %pcrel_hi"
+
+This accounts for ~96% of all RISC-V builtin assembler test failures.
+
+The fix involves:
+1. In ElfWriter, when processing WordsWithRelocs containing a pcrel_hi20+pcrel_lo12
+   pair, create a synthetic local label at the auipc offset
+2. Rewrite the pcrel_lo12 relocation to reference that synthetic label
+3. Add the synthetic label to the symbol table so the linker can find it
