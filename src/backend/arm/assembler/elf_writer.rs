@@ -270,7 +270,19 @@ impl ElfWriter {
             let current = section.data.len() as u64;
             let aligned = (current + align - 1) & !(align - 1);
             let padding = (aligned - current) as usize;
-            section.data.extend(std::iter::repeat(0u8).take(padding));
+            if section.sh_flags & SHF_EXECINSTR != 0 {
+                // NOP-fill for code sections: AArch64 NOP = 0xD503201F (little-endian)
+                let nop: [u8; 4] = [0x1f, 0x20, 0x03, 0xd5];
+                let full_nops = padding / 4;
+                let remainder = padding % 4;
+                for _ in 0..full_nops {
+                    section.data.extend_from_slice(&nop);
+                }
+                // Fill any remaining bytes (shouldn't happen if alignment is >= 4)
+                section.data.extend(std::iter::repeat(0u8).take(remainder));
+            } else {
+                section.data.extend(std::iter::repeat(0u8).take(padding));
+            }
             if align > section.sh_addralign {
                 section.sh_addralign = align;
             }

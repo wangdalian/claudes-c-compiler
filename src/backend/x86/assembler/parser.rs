@@ -37,8 +37,8 @@ pub enum AsmItem {
     Long(Vec<DataValue>),
     /// Emit 64-bit values: `.quad val, ...` (can be symbol references)
     Quad(Vec<DataValue>),
-    /// Emit zero bytes: `.zero N`
-    Zero(u32),
+    /// Emit fill bytes: `.zero N` or `.zero N, fill`
+    Zero(u32, u8),
     /// NUL-terminated string: `.asciz "str"`
     Asciz(Vec<u8>),
     /// String without NUL: `.ascii "str"`
@@ -375,10 +375,10 @@ fn parse_directive(line: &str) -> Result<AsmItem, String> {
         ".internal" => Ok(AsmItem::Internal(args.trim().to_string())),
         ".type" => parse_type_directive(args),
         ".size" => parse_size_directive(args),
-        ".align" | ".p2align" => {
+        ".align" | ".p2align" | ".balign" => {
             let val: u32 = args.split(',').next().unwrap_or("1").trim()
                 .parse().map_err(|_| format!("bad alignment: {}", args))?;
-            // .p2align is power-of-2, .align on x86 gas is byte count
+            // .p2align is power-of-2, .align and .balign on x86 gas are byte count
             if directive == ".p2align" {
                 Ok(AsmItem::Align(1 << val))
             } else {
@@ -389,7 +389,7 @@ fn parse_directive(line: &str) -> Result<AsmItem, String> {
             let vals = parse_comma_separated_integers(args)?;
             Ok(AsmItem::Byte(vals.iter().map(|v| *v as u8).collect()))
         }
-        ".short" | ".value" | ".2byte" => {
+        ".short" | ".value" | ".2byte" | ".hword" | ".half" | ".word" => {
             let vals = parse_comma_separated_integers(args)?;
             Ok(AsmItem::Short(vals.iter().map(|v| *v as i16).collect()))
         }
@@ -401,10 +401,17 @@ fn parse_directive(line: &str) -> Result<AsmItem, String> {
             let vals = parse_data_values(args)?;
             Ok(AsmItem::Quad(vals))
         }
-        ".zero" | ".skip" => {
-            let val: u32 = args.split(',').next().unwrap_or("0").trim()
+        ".zero" | ".skip" | ".space" => {
+            let parts: Vec<&str> = args.split(',').collect();
+            let val: u32 = parts[0].trim()
                 .parse().map_err(|_| format!("bad zero count: {}", args))?;
-            Ok(AsmItem::Zero(val))
+            let fill: u8 = if parts.len() > 1 {
+                parse_integer_expr(parts[1].trim())
+                    .map_err(|_| format!("bad fill value: {}", args))? as u8
+            } else {
+                0
+            };
+            Ok(AsmItem::Zero(val, fill))
         }
         ".asciz" | ".string" => {
             let s = parse_string_literal(args)?;
@@ -417,7 +424,8 @@ fn parse_directive(line: &str) -> Result<AsmItem, String> {
             Ok(AsmItem::Ascii(s))
         }
         ".comm" => parse_comm_directive(args),
-        ".set" => parse_set_directive(args),
+        ".local" => Ok(AsmItem::Empty), // symbols are local by default
+        ".set" | ".equ" => parse_set_directive(args),
         ".cfi_startproc" => Ok(AsmItem::Cfi(CfiDirective::StartProc)),
         ".cfi_endproc" => Ok(AsmItem::Cfi(CfiDirective::EndProc)),
         ".cfi_def_cfa_offset" => {

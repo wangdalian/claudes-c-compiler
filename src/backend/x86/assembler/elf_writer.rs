@@ -300,9 +300,9 @@ impl ElfWriter {
             AsmItem::Quad(vals) => {
                 self.emit_data_values(vals, 8)?;
             }
-            AsmItem::Zero(n) => {
+            AsmItem::Zero(n, fill) => {
                 let section = self.current_section_mut()?;
-                section.data.extend(std::iter::repeat(0).take(*n as usize));
+                section.data.extend(std::iter::repeat(*fill).take(*n as usize));
             }
             AsmItem::Asciz(bytes) | AsmItem::Ascii(bytes) => {
                 let section = self.current_section_mut()?;
