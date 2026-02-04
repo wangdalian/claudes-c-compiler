@@ -1,0 +1,9 @@
+Fix i686 builtin assembler missing undefined symbols for external references
+
+The i686 assembler has the same bug that was just fixed for x86 in commit b3473c70:
+external symbols referenced in relocations (like printf, strlen, malloc, free)
+are not added to the ELF symbol table as undefined symbols, causing R_386_PC32
+relocations to point to symbol index 0 (null) and resulting in segfaults.
+
+Will mirror the x86 fix pattern for the i686 backend.
+Testing with jsmn project.
