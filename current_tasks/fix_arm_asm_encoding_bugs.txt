@@ -1,0 +1,7 @@
+Fix ARM assembler encoding bugs:
+1. sp/xzr register encoding in add/sub (use extended register form when Rn or Rd is sp)
+2. Bare integer parsing (255 parsed as Symbol instead of Imm)
+3. Symbol/register name ambiguity (s1/d1/v0 misidentified in adrp)
+4. Add fcvtas instruction encoding
+5. Add tprel_hi12 TLS relocation support
+6. Fix mbedtls: AES intrinsics stubs + +crypto assembler flag
