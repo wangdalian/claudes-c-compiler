@@ -412,6 +412,73 @@ pub fn collect_inline_asm_callee_saved(
     collect_inline_asm_callee_saved_inner(func, used, constraint_to_phys, clobber_to_phys, &[])
 }
 
+/// Like `collect_inline_asm_callee_saved`, but triggers conservative marking
+/// of all callee-saved registers when any single inline asm has more generic GP
+/// register operands than the caller-saved scratch pool can hold. This avoids
+/// the overly conservative behavior of `_with_generic` (which marks all callee-saved
+/// for ANY generic "r" constraint, even if only 1 register is needed).
+pub fn collect_inline_asm_callee_saved_with_overflow(
+    func: &IrFunction,
+    used: &mut Vec<super::regalloc::PhysReg>,
+    constraint_to_phys: impl Fn(&str) -> Option<super::regalloc::PhysReg>,
+    clobber_to_phys: impl Fn(&str) -> Option<super::regalloc::PhysReg>,
+    all_callee_saved: &[super::regalloc::PhysReg],
+    caller_saved_scratch_count: usize,
+) {
+    let mut already: FxHashSet<u8> = used.iter().map(|r| r.0).collect();
+    for block in &func.blocks {
+        for inst in &block.instructions {
+            if let Instruction::InlineAsm { outputs, inputs, clobbers, .. } = inst {
+                // Count how many generic GP register operands this inline asm has.
+                // This approximates how many scratch registers will be needed.
+                // Note: "+" outputs create synthetic inputs too, but those are handled
+                // by finalize (not scratch alloc), so we only count non-plus outputs
+                // and non-synthetic inputs for the overflow check.
+                let mut generic_gp_count = 0usize;
+                let mut specific_claimed = 0usize;
+                let mut clobber_claimed = 0usize;
+                let num_plus = outputs.iter().filter(|(c, _, _)| c.contains('+')).count();
+
+                for (constraint, _, _) in outputs {
+                    let c = constraint.trim_start_matches(['=', '+', '&', '%']);
+                    if let Some(phys) = constraint_to_phys(c) {
+                        if already.insert(phys.0) { used.push(phys); }
+                        specific_claimed += 1;
+                    } else if is_generic_gp_constraint(c) {
+                        generic_gp_count += 1;
+                    }
+                }
+                for (idx, (constraint, _, _)) in inputs.iter().enumerate() {
+                    let c = constraint.trim_start_matches(['=', '+', '&', '%']);
+                    if let Some(phys) = constraint_to_phys(c) {
+                        if already.insert(phys.0) { used.push(phys); }
+                        specific_claimed += 1;
+                    } else if idx >= num_plus && is_generic_gp_constraint(c) {
+                        // Only count non-synthetic inputs (synthetic "+" inputs
+                        // don't consume scratch registers)
+                        generic_gp_count += 1;
+                    }
+                }
+                for clobber in clobbers {
+                    if let Some(phys) = clobber_to_phys(clobber.as_str()) {
+                        if already.insert(phys.0) { used.push(phys); }
+                        clobber_claimed += 1;
+                    }
+                }
+                // If generic GP operands exceed the available caller-saved scratch
+                // pool (after accounting for specific/clobber claims), the scratch
+                // allocator will overflow into callee-saved registers.
+                let available_scratch = caller_saved_scratch_count.saturating_sub(specific_claimed + clobber_claimed);
+                if generic_gp_count > available_scratch {
+                    for &phys in all_callee_saved {
+                        if already.insert(phys.0) { used.push(phys); }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Like `collect_inline_asm_callee_saved`, but with an additional
 /// `all_callee_saved` list. When a constraint is a generic GP register class
 /// (like "r", "q", "g") that doesn't map to a specific callee-saved register,

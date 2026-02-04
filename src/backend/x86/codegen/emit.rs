@@ -85,6 +85,13 @@ pub(super) fn phys_reg_name_32(reg: PhysReg) -> &'static str {
 /// Scan inline asm instructions in a function and collect any callee-saved
 /// registers that are used via specific constraints or listed in clobbers.
 /// These must be saved/restored in the function prologue/epilogue.
+///
+/// On x86-64, the scratch register pool has 8 caller-saved GP registers
+/// (rcx, rdx, rsi, rdi, r8-r11). When an inline asm block needs more than
+/// 8 generic "r" operands, the scratch allocator overflows into callee-saved
+/// registers (r12-r15). We use `_with_overflow` to detect this and
+/// conservatively mark all callee-saved registers as clobbered only when
+/// overflow is likely, avoiding unnecessary save/restore in common cases.
 pub(super) fn collect_inline_asm_callee_saved_x86(func: &IrFunction, used: &mut Vec<PhysReg>) {
     fn clobber_to_phys(name: &str) -> Option<PhysReg> {
         match name {
@@ -96,8 +103,9 @@ pub(super) fn collect_inline_asm_callee_saved_x86(func: &IrFunction, used: &mut 
             _ => None,
         }
     }
-    crate::backend::generation::collect_inline_asm_callee_saved(
+    crate::backend::stack_layout::collect_inline_asm_callee_saved_with_overflow(
         func, used, constraint_to_callee_saved_x86, clobber_to_phys,
+        &X86_CALLEE_SAVED, 8,
     );
 }
 

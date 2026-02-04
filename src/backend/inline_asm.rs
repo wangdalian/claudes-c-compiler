@@ -700,41 +700,105 @@ fn assign_scratch_registers(
     inputs: &[(String, Operand, Option<String>)],
 ) {
     let total_operands = outputs.len() + inputs.len();
-    for i in 0..total_operands {
-        if !operands[i].reg.is_empty() {
-            continue;
-        }
-        match &operands[i].kind {
-            AsmOperandKind::Memory | AsmOperandKind::Immediate => continue,
-            AsmOperandKind::Tied(_) => continue,
-            AsmOperandKind::X87St0 => { operands[i].reg = "st(0)".to_string(); continue; }
-            AsmOperandKind::X87St1 => { operands[i].reg = "st(1)".to_string(); continue; }
-            kind => {
-                if i >= outputs.len() {
-                    let input_idx = i - outputs.len();
-                    if input_tied_to[input_idx].is_some() {
-                        continue;
-                    }
+
+    // Count synthetic "+" inputs. These are the first `num_plus` entries in the
+    // inputs array, one per output that has a "+" constraint. They will be
+    // overwritten by finalize_operands_and_build_gcc_map with the output's
+    // register, so we must NOT allocate scratch registers for them (doing so
+    // would waste the limited register pool).
+    let num_plus = outputs.iter().filter(|(c, _, _)| c.contains('+')).count();
+
+    // First pass: assign registers to output operands only.
+    for i in 0..outputs.len() {
+        assign_one_scratch(emitter, operands, input_tied_to, specific_regs, outputs, inputs, i, num_plus);
+    }
+
+    // Collect registers assigned to early-clobber outputs ("&" in constraint).
+    // Early-clobber means the output is written before all inputs are consumed,
+    // so input operands must NOT share a register with any early-clobber output.
+    let mut input_excluded: Vec<String> = specific_regs.to_vec();
+    for i in 0..outputs.len() {
+        if outputs[i].0.contains('&') && !operands[i].reg.is_empty() {
+            let reg = &operands[i].reg;
+            // Normalize to 64-bit canonical name for x86 (e.g., "ecx" -> "rcx")
+            let canonical = x86_normalize_reg_to_64bit(reg)
+                .map(|c| c.into_owned())
+                .unwrap_or_else(|| reg.clone());
+            if !input_excluded.contains(&canonical) {
+                input_excluded.push(canonical);
+            }
+            // Also exclude the register name as-is in case it's already canonical
+            // or a non-x86 target
+            if !input_excluded.contains(reg) {
+                input_excluded.push(reg.clone());
+            }
+            // Exclude high register of a register pair if present
+            if !operands[i].reg_hi.is_empty() {
+                let reg_hi = &operands[i].reg_hi;
+                if !input_excluded.contains(reg_hi) {
+                    input_excluded.push(reg_hi.clone());
                 }
-                let reg = emitter.assign_scratch_reg(kind, specific_regs);
-                if reg.is_empty() && constraint_has_memory_alt(&operands[i].constraint) {
-                    operands[i].kind = AsmOperandKind::Memory;
-                    if i < outputs.len() {
-                        let val = Operand::Value(outputs[i].1);
-                        emitter.setup_memory_fallback(&mut operands[i], &val);
-                    } else {
-                        let input_idx = i - outputs.len();
-                        let val = inputs[input_idx].1;
-                        emitter.setup_memory_fallback(&mut operands[i], &val);
-                    }
+            }
+        }
+    }
+
+    // Second pass: assign registers to non-synthetic input operands using the
+    // extended exclusion list that includes early-clobber output registers.
+    for i in outputs.len()..total_operands {
+        assign_one_scratch(emitter, operands, input_tied_to, &input_excluded, outputs, inputs, i, num_plus);
+    }
+}
+
+/// Helper: assign a scratch register to a single operand at index `i`.
+fn assign_one_scratch(
+    emitter: &mut dyn InlineAsmEmitter,
+    operands: &mut [AsmOperand],
+    input_tied_to: &[Option<usize>],
+    excluded: &[String],
+    outputs: &[(String, Value, Option<String>)],
+    inputs: &[(String, Operand, Option<String>)],
+    i: usize,
+    num_plus: usize,
+) {
+    if !operands[i].reg.is_empty() {
+        return;
+    }
+    match &operands[i].kind {
+        AsmOperandKind::Memory | AsmOperandKind::Immediate => return,
+        AsmOperandKind::Tied(_) => return,
+        AsmOperandKind::X87St0 => { operands[i].reg = "st(0)".to_string(); return; }
+        AsmOperandKind::X87St1 => { operands[i].reg = "st(1)".to_string(); return; }
+        kind => {
+            if i >= outputs.len() {
+                let input_idx = i - outputs.len();
+                if input_tied_to[input_idx].is_some() {
+                    return;
+                }
+                // Skip synthetic "+" inputs: they are the first `num_plus` entries
+                // in the inputs array and will get their registers from the
+                // corresponding output in finalize_operands_and_build_gcc_map.
+                if input_idx < num_plus {
+                    return;
+                }
+            }
+            let reg = emitter.assign_scratch_reg(kind, excluded);
+            if reg.is_empty() && constraint_has_memory_alt(&operands[i].constraint) {
+                operands[i].kind = AsmOperandKind::Memory;
+                if i < outputs.len() {
+                    let val = Operand::Value(outputs[i].1);
+                    emitter.setup_memory_fallback(&mut operands[i], &val);
                 } else {
-                    operands[i].reg = reg;
-                    // For 64-bit register pairs on 32-bit architectures (i686),
-                    // allocate a second GP register for the high 32 bits.
-                    if matches!(kind, AsmOperandKind::GpReg) && emitter.needs_register_pair(operands[i].operand_type) {
-                        let reg_hi = emitter.assign_scratch_reg(kind, specific_regs);
-                        operands[i].reg_hi = reg_hi;
-                    }
+                    let input_idx = i - outputs.len();
+                    let val = inputs[input_idx].1;
+                    emitter.setup_memory_fallback(&mut operands[i], &val);
+                }
+            } else {
+                operands[i].reg = reg;
+                // For 64-bit register pairs on 32-bit architectures (i686),
+                // allocate a second GP register for the high 32 bits.
+                if matches!(kind, AsmOperandKind::GpReg) && emitter.needs_register_pair(operands[i].operand_type) {
+                    let reg_hi = emitter.assign_scratch_reg(kind, excluded);
+                    operands[i].reg_hi = reg_hi;
                 }
             }
         }
