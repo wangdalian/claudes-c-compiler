@@ -1,0 +1,11 @@
+Fix missing ARM NEON intrinsics needed by PostgreSQL's simd.h:
+- vmaxvq_u8: horizontal max across uint8x16_t vector
+- vqsubq_u8: unsigned saturating subtract of uint8x16_t vectors
+- vceqq_u32: compare equal of uint32x4_t vectors
+
+These are used in src/include/port/simd.h and cause build failures
+because they're treated as implicit function declarations.
+
+Also fix any other ARM-specific issues blocking postgres build/test.
+
+Started 2026-02-04.
