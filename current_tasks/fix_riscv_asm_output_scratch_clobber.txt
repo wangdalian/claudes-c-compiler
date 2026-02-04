@@ -1,0 +1,14 @@
+Fix RISC-V inline asm output store scratch register clobbering.
+
+Problem: When inline asm has many GP register outputs (e.g., 8 outputs using
+t0-t6 and a2), the store_output_from_reg function needs a scratch register to
+load pointer addresses for non-alloca outputs. The candidate list is only
+["t0","t1","t2","t3","t4","t5","t6"], which are all used as output registers.
+The fallback unwrap_or gives t0/t1, clobbering output values before they're stored.
+
+Fix: Expand scratch candidate list to include a0, a1, and use a stack-based
+save/restore fallback when all candidates are exhausted.
+
+Reproducer: asm-stack-frame-riscv-001-run1 test (SIGSEGV from clobbered outputs)
+
+Started: 2026-02-04
