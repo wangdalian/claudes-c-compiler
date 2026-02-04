@@ -59,6 +59,8 @@ pub enum RelocType {
     CondBr19,
     /// R_AARCH64_TSTBR14 - test-and-branch, 14-bit offset
     TstBr14,
+    /// R_AARCH64_ADR_PREL_LO21 - for ADR (21-bit PC-relative)
+    AdrPrelLo21,
     /// R_AARCH64_ABS64 - 64-bit absolute
     Abs64,
     /// R_AARCH64_ABS32 - 32-bit absolute
@@ -76,6 +78,7 @@ impl RelocType {
             RelocType::Prel32 => 261,          // R_AARCH64_PREL32
             RelocType::Call26 => 283,          // R_AARCH64_CALL26
             RelocType::Jump26 => 282,          // R_AARCH64_JUMP26
+            RelocType::AdrPrelLo21 => 274,      // R_AARCH64_ADR_PREL_LO21
             RelocType::AdrpPage21 => 275,      // R_AARCH64_ADR_PREL_PG_HI21
             RelocType::AddAbsLo12 => 277,      // R_AARCH64_ADD_ABS_LO12_NC
             RelocType::Ldst8AbsLo12 => 278,    // R_AARCH64_LDST8_ABS_LO12_NC
@@ -323,7 +326,9 @@ pub fn encode_instruction(mnemonic: &str, operands: &[Operand], raw_operands: &s
         "bsl" => encode_neon_bsl(operands),
         "rev64" => encode_neon_rev64(operands),
         "tbl" => encode_neon_tbl(operands),
+        "tbx" => encode_neon_tbx(operands),
         "ld1" => encode_neon_ld1(operands),
+        "ld1r" => encode_neon_ld1r(operands),
         "st1" => encode_neon_st1(operands),
         "uzp1" => encode_neon_zip_uzp(operands, 0b001, false),
         "uzp2" => encode_neon_zip_uzp(operands, 0b101, false),
@@ -338,6 +343,7 @@ pub fn encode_instruction(mnemonic: &str, operands: &[Operand], raw_operands: &s
         "aesimc" => encode_neon_aes(operands, 0b00111),
 
         // System
+        "hint" => encode_hint(operands),
         "nop" => Ok(EncodeResult::Word(0xd503201f)),
         "yield" => Ok(EncodeResult::Word(0xd503203f)),
         "clrex" => Ok(EncodeResult::Word(0xd503305f)),
@@ -349,6 +355,21 @@ pub fn encode_instruction(mnemonic: &str, operands: &[Operand], raw_operands: &s
         "msr" => encode_msr(operands),
         "svc" => encode_svc(operands),
         "brk" => encode_brk(operands),
+
+        // Bitfield extract/insert
+        "ubfx" => encode_ubfx(operands),
+        "sbfx" => encode_sbfx(operands),
+        "ubfm" => encode_ubfm(operands),
+        "sbfm" => encode_sbfm(operands),
+        "bfm" => encode_bfm(operands),
+        "bfi" => encode_bfi(operands),
+        "bfxil" => encode_bfxil(operands),
+        "extr" => encode_extr(operands),
+
+        // Additional conditional operations
+        "cneg" => encode_cneg(operands),
+        "cinc" => encode_cinc(operands),
+        "cinv" => encode_cinv(operands),
 
         // Bit manipulation
         "clz" => encode_clz(operands),
@@ -400,10 +421,11 @@ fn get_symbol(operands: &[Operand], idx: usize) -> Result<(String, i64), String>
         Some(Operand::SymbolOffset(s, off)) => Ok((s.clone(), *off)),
         Some(Operand::Modifier { symbol, .. }) => Ok((symbol.clone(), 0)),
         Some(Operand::ModifierOffset { symbol, offset, .. }) => Ok((symbol.clone(), *offset)),
-        // A label/symbol name may coincidentally match a register name (e.g. a C function
-        // named `x16`). When the caller expects a symbol (branch targets, adrp, etc.),
-        // treat a register-parsed operand as a symbol reference.
-        Some(Operand::Reg(s)) => Ok((s.clone(), 0)),
+        // The parser misclassifies symbol names that collide with register names,
+        // condition codes, or barrier names. These are valid symbols in context.
+        Some(Operand::Reg(name)) => Ok((name.clone(), 0)),
+        Some(Operand::Cond(name)) => Ok((name.clone(), 0)),
+        Some(Operand::Barrier(name)) => Ok((name.clone(), 0)),
         other => Err(format!("expected symbol at operand {}, got {:?}", idx, other)),
     }
 }
@@ -1084,6 +1106,13 @@ fn encode_shift(operands: &[Operand], shift_type: u32) -> Result<EncodeResult, S
                 let immr = imm;
                 let imms = width - 1;
                 let word = (sf << 31) | (0b100110 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd;
+                return Ok(EncodeResult::Word(word));
+            }
+            0b11 => {
+                // ROR #imm -> EXTR Rd, Rn, Rn, #imm
+                // EXTR: sf 0 0 100111 N 0 Rm imms Rn Rd
+                let word = (sf << 31) | (0b00100111 << 23) | (n << 22) | (rn << 16)
+                    | (imm << 10) | (rn << 5) | rd;
                 return Ok(EncodeResult::Word(word));
             }
             _ => {}
@@ -1877,9 +1906,12 @@ fn encode_adrp(operands: &[Operand]) -> Result<EncodeResult, String> {
         }
         Some(Operand::SymbolOffset(s, off)) => (s.clone(), *off),
         Some(Operand::Label(s)) => (s.clone(), 0i64),
-        // TODO: parser misclassifies symbol names that collide with register names (s1, v0, d1, etc.)
-        // ADRP never takes a register as second operand, so treat Reg as a symbol here.
+        // Parser misclassifies symbol names that collide with register names (s1, v0, d1, etc.),
+        // condition codes (cc, lt, le), or barrier names (st, ld).
+        // ADRP never takes these as actual operand types, so treat them as symbols.
         Some(Operand::Reg(name)) => (name.clone(), 0i64),
+        Some(Operand::Cond(name)) => (name.clone(), 0i64),
+        Some(Operand::Barrier(name)) => (name.clone(), 0i64),
         _ => return Err(format!("adrp needs symbol operand, got {:?}", operands.get(1))),
     };
 
@@ -1903,7 +1935,7 @@ fn encode_adr(operands: &[Operand]) -> Result<EncodeResult, String> {
     Ok(EncodeResult::WordWithReloc {
         word,
         reloc: Relocation {
-            reloc_type: RelocType::AdrpPage21, // TODO: should use ADR reloc
+            reloc_type: RelocType::AdrPrelLo21,
             symbol: sym,
             addend,
         },
@@ -2308,6 +2340,180 @@ fn encode_brk(operands: &[Operand]) -> Result<EncodeResult, String> {
     Ok(EncodeResult::Word(word))
 }
 
+/// Encode HINT #imm (system hint instruction)
+fn encode_hint(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let imm = get_imm(operands, 0)?;
+    // HINT: 11010101 00000011 0010 CRm op2 11111
+    // CRm = imm >> 3, op2 = imm & 7
+    let crm = ((imm as u32) >> 3) & 0xF;
+    let op2 = (imm as u32) & 0x7;
+    let word = 0xd503201f | (crm << 8) | (op2 << 5);
+    Ok(EncodeResult::Word(word))
+}
+
+// ── Bitfield extract/insert ──────────────────────────────────────────────
+
+/// Encode UBFX Rd, Rn, #lsb, #width -> UBFM Rd, Rn, #lsb, #(lsb+width-1)
+fn encode_ubfx(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, is_64) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let lsb = get_imm(operands, 2)? as u32;
+    let width = get_imm(operands, 3)? as u32;
+    let sf = sf_bit(is_64);
+    let n = if is_64 { 1u32 } else { 0u32 };
+    let immr = lsb;
+    let imms = lsb + width - 1;
+    // UBFM: sf 10 100110 N immr imms Rn Rd
+    let word = (sf << 31) | (0b10 << 29) | (0b100110 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode SBFX Rd, Rn, #lsb, #width -> SBFM Rd, Rn, #lsb, #(lsb+width-1)
+fn encode_sbfx(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, is_64) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let lsb = get_imm(operands, 2)? as u32;
+    let width = get_imm(operands, 3)? as u32;
+    let sf = sf_bit(is_64);
+    let n = if is_64 { 1u32 } else { 0u32 };
+    let immr = lsb;
+    let imms = lsb + width - 1;
+    // SBFM: sf 00 100110 N immr imms Rn Rd
+    let word = (sf << 31) | (0b100110 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode UBFM Rd, Rn, #immr, #imms (raw form)
+fn encode_ubfm(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, is_64) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let immr = get_imm(operands, 2)? as u32;
+    let imms = get_imm(operands, 3)? as u32;
+    let sf = sf_bit(is_64);
+    let n = if is_64 { 1u32 } else { 0u32 };
+    let word = (sf << 31) | (0b10 << 29) | (0b100110 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode SBFM Rd, Rn, #immr, #imms (raw form)
+fn encode_sbfm(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, is_64) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let immr = get_imm(operands, 2)? as u32;
+    let imms = get_imm(operands, 3)? as u32;
+    let sf = sf_bit(is_64);
+    let n = if is_64 { 1u32 } else { 0u32 };
+    let word = (sf << 31) | (0b100110 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode BFM Rd, Rn, #immr, #imms (bitfield move)
+fn encode_bfm(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, is_64) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let immr = get_imm(operands, 2)? as u32;
+    let imms = get_imm(operands, 3)? as u32;
+    let sf = sf_bit(is_64);
+    let n = if is_64 { 1u32 } else { 0u32 };
+    // BFM: sf 01 100110 N immr imms Rn Rd
+    let word = (sf << 31) | (0b01 << 29) | (0b100110 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode BFI Rd, Rn, #lsb, #width -> BFM Rd, Rn, #(-lsb mod width_reg), #(width-1)
+fn encode_bfi(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, is_64) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let lsb = get_imm(operands, 2)? as u32;
+    let width = get_imm(operands, 3)? as u32;
+    let sf = sf_bit(is_64);
+    let n = if is_64 { 1u32 } else { 0u32 };
+    let reg_width = if is_64 { 64u32 } else { 32u32 };
+    let immr = (reg_width - lsb) % reg_width;
+    let imms = width - 1;
+    let word = (sf << 31) | (0b01 << 29) | (0b100110 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode BFXIL Rd, Rn, #lsb, #width -> BFM Rd, Rn, #lsb, #(lsb+width-1)
+fn encode_bfxil(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, is_64) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let lsb = get_imm(operands, 2)? as u32;
+    let width = get_imm(operands, 3)? as u32;
+    let sf = sf_bit(is_64);
+    let n = if is_64 { 1u32 } else { 0u32 };
+    let immr = lsb;
+    let imms = lsb + width - 1;
+    let word = (sf << 31) | (0b01 << 29) | (0b100110 << 23) | (n << 22) | (immr << 16) | (imms << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode EXTR Rd, Rn, Rm, #lsb
+fn encode_extr(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, is_64) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let (rm, _) = get_reg(operands, 2)?;
+    let lsb = get_imm(operands, 3)? as u32;
+    let sf = sf_bit(is_64);
+    let n = if is_64 { 1u32 } else { 0u32 };
+    // EXTR: sf 0 0 100111 N 0 Rm imms Rn Rd
+    let word = (sf << 31) | (0b00100111 << 23) | (n << 22) | (rm << 16)
+        | (lsb << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+// ── Additional conditional operations ────────────────────────────────────
+
+/// Encode CNEG Rd, Rn, cond -> CSNEG Rd, Rn, Rn, invert(cond)
+fn encode_cneg(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, is_64) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let cond = match operands.get(2) {
+        Some(Operand::Cond(c)) => encode_cond(c).ok_or_else(|| format!("unknown condition: {}", c))?,
+        _ => return Err("cneg: expected condition code as third operand".to_string()),
+    };
+    let sf = sf_bit(is_64);
+    // Invert the condition (flip bit 0)
+    let inv_cond = cond ^ 1;
+    // CSNEG: sf 1 0 11010100 Rm cond 0 1 Rn Rd (with Rm = Rn)
+    let word = (sf << 31) | (1 << 30) | (0b011010100 << 21) | (rn << 16)
+        | (inv_cond << 12) | (0b01 << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode CINC Rd, Rn, cond -> CSINC Rd, Rn, Rn, invert(cond)
+fn encode_cinc(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, is_64) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let cond = match operands.get(2) {
+        Some(Operand::Cond(c)) => encode_cond(c).ok_or_else(|| format!("unknown condition: {}", c))?,
+        _ => return Err("cinc: expected condition code as third operand".to_string()),
+    };
+    let sf = sf_bit(is_64);
+    let inv_cond = cond ^ 1;
+    // CSINC: sf 0 0 11010100 Rm cond 0 1 Rn Rd (with Rm = Rn)
+    let word = (sf << 31) | (0b011010100 << 21) | (rn << 16)
+        | (inv_cond << 12) | (0b01 << 10) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode CINV Rd, Rn, cond -> CSINV Rd, Rn, Rn, invert(cond)
+fn encode_cinv(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let (rd, is_64) = get_reg(operands, 0)?;
+    let (rn, _) = get_reg(operands, 1)?;
+    let cond = match operands.get(2) {
+        Some(Operand::Cond(c)) => encode_cond(c).ok_or_else(|| format!("unknown condition: {}", c))?,
+        _ => return Err("cinv: expected condition code as third operand".to_string()),
+    };
+    let sf = sf_bit(is_64);
+    let inv_cond = cond ^ 1;
+    // CSINV: sf 1 0 11010100 Rm cond 0 0 Rn Rd (with Rm = Rn)
+    let word = (sf << 31) | (1 << 30) | (0b011010100 << 21) | (rn << 16)
+        | (inv_cond << 12) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
 // ── Bit manipulation ─────────────────────────────────────────────────────
 
 fn encode_clz(operands: &[Operand]) -> Result<EncodeResult, String> {
@@ -2357,6 +2563,16 @@ fn encode_rev16(operands: &[Operand]) -> Result<EncodeResult, String> {
 }
 
 fn encode_rev32(operands: &[Operand]) -> Result<EncodeResult, String> {
+    // Check for NEON vector form: REV32 Vd.T, Vn.T
+    if let Some(Operand::RegArrangement { .. }) = operands.first() {
+        let (rd, arr_d) = get_neon_reg(operands, 0)?;
+        let (rn, _) = get_neon_reg(operands, 1)?;
+        let (q, size) = neon_arr_to_q_size(&arr_d)?;
+        // REV32 Vd.T, Vn.T: 0 Q 1 01110 size 10 0000 0000 10 Rn Rd
+        let word = (q << 30) | (1 << 29) | (0b01110 << 24) | (size << 22)
+            | (0b100000 << 16) | (0b000010 << 10) | (rn << 5) | rd;
+        return Ok(EncodeResult::Word(word));
+    }
     let (rd, _) = get_reg(operands, 0)?;
     let (rn, _) = get_reg(operands, 1)?;
     // REV32 is 64-bit only: 1 1 0 11010110 00000 000010 Rn Rd
@@ -2674,10 +2890,8 @@ fn encode_neon_ins(operands: &[Operand]) -> Result<EncodeResult, String> {
     if operands.len() < 2 {
         return Err("ins requires 2 operands".to_string());
     }
-    // INS Vd.Ts[index], Xn
-    // Encoding: 0 1 0 0 1110 000 imm5 0 0011 1 Rn Rd
-    // This is the same as MOV Vd.Ts[index], Xn (alias)
     match (&operands[0], &operands[1]) {
+        // INS Vd.Ts[dst_idx], Xn (general register to element)
         (Operand::RegLane { reg, elem_size, index }, Operand::Reg(rn_name)) => {
             let rd = parse_reg_num(reg).ok_or("invalid NEON register")?;
             let rn = parse_reg_num(rn_name).ok_or("invalid register")?;
@@ -2695,7 +2909,38 @@ fn encode_neon_ins(operands: &[Operand]) -> Result<EncodeResult, String> {
                 | (0b000111 << 10) | (rn << 5) | rd;
             Ok(EncodeResult::Word(word))
         }
-        _ => Err("ins: expected RegLane and Reg operands".to_string()),
+        // INS Vd.Ts[dst_idx], Vn.Ts[src_idx] (element to element)
+        (Operand::RegLane { reg: rd_name, elem_size: dst_size, index: dst_idx },
+         Operand::RegLane { reg: rn_name, elem_size: _src_size, index: src_idx }) => {
+            let rd = parse_reg_num(rd_name).ok_or("invalid NEON rd")?;
+            let rn = parse_reg_num(rn_name).ok_or("invalid NEON rn")?;
+
+            let (imm5, imm4) = match dst_size.as_str() {
+                "b" => (
+                    ((*dst_idx & 0xF) << 1) | 0b00001,
+                    (*src_idx & 0xF) << 0,
+                ),
+                "h" => (
+                    ((*dst_idx & 0x7) << 2) | 0b00010,
+                    (*src_idx & 0x7) << 1,
+                ),
+                "s" => (
+                    ((*dst_idx & 0x3) << 3) | 0b00100,
+                    (*src_idx & 0x3) << 2,
+                ),
+                "d" => (
+                    ((*dst_idx & 0x1) << 4) | 0b01000,
+                    (*src_idx & 0x1) << 3,
+                ),
+                _ => return Err(format!("unsupported ins element size: {}", dst_size)),
+            };
+
+            // INS Vd.Ts[dst], Vn.Ts[src]: 0 1 1 01110 000 imm5 0 imm4 1 Rn Rd
+            let word = (0b01101110000u32 << 21) | (imm5 << 16)
+                | (imm4 << 11) | (1 << 10) | (rn << 5) | rd;
+            Ok(EncodeResult::Word(word))
+        }
+        _ => Err("ins: expected (RegLane, Reg) or (RegLane, RegLane) operands".to_string()),
     }
 }
 
@@ -2941,6 +3186,82 @@ fn encode_neon_tbl(operands: &[Operand]) -> Result<EncodeResult, String> {
     // TBL: 0 Q 00 1110 000 Rm 0 len 0 00 Rn Rd
     let word = ((((q << 30) | (0b001110 << 24))
         | (rm << 16)) | (len << 13)) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode NEON TBX: table vector lookup with insert (preserves out-of-range lanes)
+fn encode_neon_tbx(operands: &[Operand]) -> Result<EncodeResult, String> {
+    if operands.len() < 3 {
+        return Err("tbx requires 3 operands".to_string());
+    }
+    let (rd, arr_d) = get_neon_reg(operands, 0)?;
+    let q: u32 = if arr_d == "16b" { 1 } else { 0 };
+
+    let (rn, num_regs) = match &operands[1] {
+        Operand::RegList(regs) => {
+            let first_reg = match &regs[0] {
+                Operand::RegArrangement { reg, .. } => parse_reg_num(reg).ok_or("invalid reg")?,
+                Operand::Reg(name) => parse_reg_num(name).ok_or("invalid reg")?,
+                _ => return Err("tbx: expected register in list".to_string()),
+            };
+            (first_reg, regs.len() as u32)
+        }
+        _ => return Err("tbx: expected register list as second operand".to_string()),
+    };
+
+    let (rm, _) = get_neon_reg(operands, 2)?;
+    let len = (num_regs - 1) & 0x3;
+
+    // TBX: 0 Q 00 1110 000 Rm 0 len 1 00 Rn Rd (op=1 for TBX vs op=0 for TBL)
+    let word = (q << 30) | (0b001110 << 24) | (rm << 16) | (len << 13)
+        | (1 << 12) | (rn << 5) | rd;
+    Ok(EncodeResult::Word(word))
+}
+
+/// Encode NEON LD1R: load single structure and replicate to all lanes
+fn encode_neon_ld1r(operands: &[Operand]) -> Result<EncodeResult, String> {
+    // LD1R {Vt.T}, [Xn]
+    if operands.len() < 2 {
+        return Err("ld1r requires 2 operands".to_string());
+    }
+
+    let (rt, arr) = match &operands[0] {
+        Operand::RegList(regs) => {
+            if regs.len() != 1 {
+                return Err("ld1r expects exactly one register in list".to_string());
+            }
+            match &regs[0] {
+                Operand::RegArrangement { reg, arrangement } => {
+                    let num = parse_reg_num(reg).ok_or("invalid reg")?;
+                    (num, arrangement.clone())
+                }
+                _ => return Err("ld1r: expected register with arrangement".to_string()),
+            }
+        }
+        _ => return Err("ld1r: expected register list as first operand".to_string()),
+    };
+
+    let base = match &operands[1] {
+        Operand::Mem { base, offset: 0 } => parse_reg_num(base).ok_or("invalid base reg")?,
+        _ => return Err("ld1r: expected [Xn] memory operand".to_string()),
+    };
+
+    let (q, size) = match arr.as_str() {
+        "8b"  => (0u32, 0b00u32),
+        "16b" => (1, 0b00),
+        "4h"  => (0, 0b01),
+        "8h"  => (1, 0b01),
+        "2s"  => (0, 0b10),
+        "4s"  => (1, 0b10),
+        "1d"  => (0, 0b11),
+        "2d"  => (1, 0b11),
+        _ => return Err(format!("ld1r: unsupported arrangement: {}", arr)),
+    };
+
+    // LD1R: 0 Q 0 01101 0 L 0 Rm opcode S size Rn Rt
+    // L=1 (load), Rm=00000 (no post-index), opcode=110, S=0
+    let word = (q << 30) | (0b001101 << 24) | (1 << 22) | (0b110 << 13)
+        | (size << 10) | (base << 5) | rt;
     Ok(EncodeResult::Word(word))
 }
 

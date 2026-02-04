@@ -632,6 +632,26 @@ impl ElfWriter {
                         let imm14 = ((pc_offset >> 2) as u32) & 0x3FFF;
                         word |= imm14 << 5;
                     }
+                    274 => {
+                        // R_AARCH64_ADR_PREL_LO21 - ADR instruction
+                        // ADR: op immlo[1:0] 10000 immhi[18:0] Rd
+                        // immlo is bits [30:29], immhi is bits [23:5]
+                        let imm = pc_offset as i32;
+                        let immlo = ((imm as u32) & 0x3) as u32;
+                        let immhi = (((imm as u32) >> 2) & 0x7FFFF) as u32;
+                        word |= (immlo << 29) | (immhi << 5);
+                    }
+                    275 => {
+                        // R_AARCH64_ADR_PREL_PG_HI21 - ADRP instruction (local resolution)
+                        // For same-section local labels, compute page-relative offset
+                        let pc_page = (reloc.offset as i64) & !0xFFF;
+                        let target_page = (target_offset as i64) & !0xFFF;
+                        let page_off = target_page - pc_page;
+                        let imm = (page_off >> 12) as i32;
+                        let immlo = ((imm as u32) & 0x3) as u32;
+                        let immhi = (((imm as u32) >> 2) & 0x7FFFF) as u32;
+                        word |= (immlo << 29) | (immhi << 5);
+                    }
                     _ => {
                         // Unknown reloc type for local branch - leave as external
                         section.relocs.push(ElfReloc {

@@ -413,7 +413,8 @@ fn parse_directive(line: &str) -> Result<AsmStatement, String> {
         | ".cfi_undefined" | ".cfi_same_value" | ".cfi_escape" => AsmDirective::Cfi,
         // Other directives we can safely ignore
         ".file" | ".loc" | ".ident" | ".addrsig" | ".addrsig_sym"
-        | ".build_attributes" | ".eabi_attribute" => AsmDirective::Ignored,
+        | ".build_attributes" | ".eabi_attribute"
+        | ".arch" | ".arch_extension" => AsmDirective::Ignored,
         _ => {
             return Err(format!("unsupported AArch64 assembler directive: {} {}", name, args));
         }
