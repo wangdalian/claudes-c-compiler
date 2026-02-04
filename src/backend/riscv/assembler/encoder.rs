@@ -78,7 +78,7 @@ impl RelocType {
             RelocType::CallPlt => 19,     // R_RISCV_CALL_PLT
             RelocType::GotHi20 => 20,     // R_RISCV_GOT_HI20
             RelocType::TlsGdHi20 => 22,   // R_RISCV_TLS_GD_HI20
-            RelocType::TlsGotHi20 => 23,  // R_RISCV_TLS_GOT_HI20
+            RelocType::TlsGotHi20 => 21,  // R_RISCV_TLS_GOT_HI20
             RelocType::PcrelHi20 => 23,   // R_RISCV_PCREL_HI20 = 23
             RelocType::PcrelLo12I => 24,  // R_RISCV_PCREL_LO12_I = 24
             RelocType::PcrelLo12S => 25,  // R_RISCV_PCREL_LO12_S = 25
@@ -495,6 +495,14 @@ pub fn encode_instruction(mnemonic: &str, operands: &[Operand], raw_operands: &s
         "ebreak" => Ok(EncodeResult::Word(0x00100073)),
         "fence" => encode_fence(operands),
         "fence.i" => Ok(EncodeResult::Word(0x0000100F)),
+        "fence.tso" => Ok(EncodeResult::Word(0x8330000F)),
+
+        // ── Privileged instructions ──
+        "wfi" => Ok(EncodeResult::Word(0x10500073)),
+        "mret" => Ok(EncodeResult::Word(0x30200073)),
+        "sret" => Ok(EncodeResult::Word(0x10200073)),
+        "sfence.vma" => encode_sfence_vma(operands),
+
         "csrrw" => encode_csr(operands, 0b001),
         "csrrs" => encode_csr(operands, 0b010),
         "csrrc" => encode_csr(operands, 0b011),
@@ -1025,6 +1033,19 @@ fn encode_fence(operands: &[Operand]) -> Result<EncodeResult, String> {
     };
     let imm = ((pred << 4) | succ) as i32;
     Ok(EncodeResult::Word(encode_i(OP_MISC_MEM, 0, 0, 0, imm)))
+}
+
+/// Encode sfence.vma rs1, rs2
+/// Format: funct7=0001001 | rs2 | rs1 | funct3=000 | rd=00000 | opcode=1110011
+/// If no operands: sfence.vma zero, zero
+/// If 1 operand: sfence.vma rs1, zero
+/// If 2 operands: sfence.vma rs1, rs2
+fn encode_sfence_vma(operands: &[Operand]) -> Result<EncodeResult, String> {
+    let rs1 = if operands.is_empty() { 0 } else { get_reg(operands, 0)? };
+    let rs2 = if operands.len() < 2 { 0 } else { get_reg(operands, 1)? };
+    // sfence.vma is encoded as: funct7=0001001(0x09) | rs2 | rs1 | 000 | 00000 | SYSTEM(1110011)
+    let word = encode_r(OP_SYSTEM, 0, 0b000, rs1, rs2, 0b0001001);
+    Ok(EncodeResult::Word(word))
 }
 
 // ── CSR ──
