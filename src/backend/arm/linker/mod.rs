@@ -574,6 +574,24 @@ fn emit_executable(
     let rx_filesz = offset; // RX segment: [0, rx_filesz)
     let rx_memsz = rx_filesz;
 
+    // Pre-count IFUNC symbols so we can reserve space for IPLT stubs in the RX gap.
+    // Each IPLT stub is 16 bytes (ADRP + LDR + BR + NOP), placed in the gap between
+    // the RX segment end and the page-aligned RW segment start.
+    let pre_iplt_count = globals.iter()
+        .filter(|(_, gsym)| gsym.info & 0xf == STT_GNU_IFUNC && gsym.defined_in.is_some())
+        .count() as u64;
+    let iplt_stubs_needed = pre_iplt_count * 16;
+    if iplt_stubs_needed > 0 {
+        // Ensure the gap after rx_filesz is large enough for IPLT stubs.
+        // The stubs will be placed at 16-byte aligned offset after rx_filesz.
+        let stub_start = (offset + 15) & !15;
+        let stub_end = stub_start + iplt_stubs_needed;
+        // Make sure offset is at least stub_end so page-alignment leaves enough room
+        if offset < stub_end {
+            offset = stub_end;
+        }
+    }
+
     // === Layout: RW segment (page-aligned) ===
     offset = (offset + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
     let rw_page_offset = offset;
