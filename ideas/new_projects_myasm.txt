@@ -2,18 +2,19 @@ Tracking project build/test results with MY_ASM=builtin MY_LD=builtin
 
 | Project | x86 | i686 | arm | riscv | Notes |
 |---------|-----|------|-----|-------|-------|
-| lz4     | PASS | FAIL (segfault in datagen) | FAIL | FAIL | x86 works after fixing -shared fallback |
-| libyaml | PASS | FAIL (segfault in builtin linker) | PASS | PASS | Fixed R_RISCV_ALIGN/RVC_BRANCH/RVC_JUMP relocations |
-| tomlc99 | PASS | FAIL (segfault in unittest) | PASS | PASS | Fixed ARM IPLT stubs gap error; riscv fixed by TLS GOT local sym fix |
-| parson  | PASS | FAIL (segfault/crash) | PASS | PASS | Fixed RISC-V local TLS GOT symbol resolution (.LANCHOR0 etc) |
+| lz4     | PASS | PASS | FAIL | FAIL | i686 fixed by local symbol reloc fix |
+| libyaml | PASS | PASS | PASS | PASS | i686 fixed by local symbol reloc fix |
+| tomlc99 | PASS | PASS | PASS | PASS | i686 fixed by local symbol reloc fix |
+| parson  | PASS | PASS | PASS | PASS | i686 fixed by local symbol reloc fix |
 | jsmn    | PASS | PASS | N/A  | N/A  | Fixed i686: IFUNC support (IPLT/IRELATIVE), TLS, local sym resolution, generic section writes |
 | zstd    | PASS | TODO | TODO | TODO | Fixed __ASSEMBLER__ for .S files, .pushsection/.popsection, BMI2 instrs, bitwise expr parsing |
 | 8cc     | PASS | FAIL (i686 asm undefined syms) | TODO | TODO | Fixed x86 builtin linker copy-reloc st_shndx and .gnu.hash |
-| bzip2   | PASS | FAIL (i686 asm undefined syms) | PASS | PASS | x86/arm/riscv work; i686 blocked by known i686 asm issue |
-| miniz   | PASS | FAIL (i686 asm undefined syms) | PASS | PASS | All pass except i686 |
-| utf8proc | PASS | FAIL (i686 asm undefined syms) | PASS | PASS | All pass except i686 |
+| bzip2   | PASS | PASS | PASS | PASS | i686 fixed by local symbol reloc fix |
+| miniz   | PASS | FAIL (i686 asm) | PASS | PASS | i686 still fails (different issue) |
+| utf8proc | PASS | PASS | PASS | PASS | i686 fixed by local symbol reloc fix |
 | chibicc | PASS | TODO | TODO | TODO | Passes x86 |
 | QuickJS | PASS | TODO | TODO | TODO | Passes x86 |
+| cJSON   | PASS | PASS | PASS | PASS | All arches pass with builtin asm/ld |
 | monocypher | PASS | PASS | PASS | PASS | Fixed ARM asm: symbol names matching register names (e.g. x16) |
 | sundown | PASS | PASS | PASS | PASS | All architectures pass out of the box |
 | termbox | PASS | PASS | PASS | PASS | All architectures pass out of the box |

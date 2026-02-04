@@ -2241,6 +2241,10 @@ pub fn link_builtin(
                     return Err(format!("invalid symbol index {} in reloc", sym_idx));
                 };
 
+                // Resolve the symbol address.
+                // LOCAL symbols must always be resolved per-object via section_map
+                // to avoid collisions between identically-named locals (e.g. .LC0)
+                // from different translation units.
                 let sym_addr = if sym.sym_type == STT_SECTION {
                     // Section symbol: resolve to the section's address in output
                     if sym.section_index != SHN_UNDEF && sym.section_index != SHN_ABS {
@@ -2255,11 +2259,25 @@ pub fn link_builtin(
                     }
                 } else if sym.name.is_empty() {
                     0
+                } else if sym.binding == STB_LOCAL {
+                    // Local symbol: resolve via section_map + sym.value (per-object)
+                    if sym.section_index != SHN_UNDEF && sym.section_index != SHN_ABS {
+                        match section_map.get(&(obj_idx, sym.section_index as usize)) {
+                            Some(&(sec_out_idx, sec_out_offset)) => {
+                                output_sections[sec_out_idx].addr + sec_out_offset + sym.value
+                            }
+                            None => sym.value,
+                        }
+                    } else if sym.section_index == SHN_ABS {
+                        sym.value
+                    } else {
+                        0
+                    }
                 } else {
                     match global_symbols.get(&sym.name) {
                         Some(gs) => gs.address,
                         None => {
-                            // Local symbol not in global_symbols: resolve via section_map + sym.value
+                            // Symbol not in global_symbols: resolve via section_map + sym.value
                             if sym.section_index != SHN_UNDEF && sym.section_index != SHN_ABS {
                                 match section_map.get(&(obj_idx, sym.section_index as usize)) {
                                     Some(&(sec_out_idx, sec_out_offset)) => {
