@@ -1,7 +1,0 @@
-Fix multiple encoding bugs in the x86-64 and i686 builtin assemblers:
-
-1. fsubrp/fsubp opcodes are swapped (both encoders)
-2. fdivrp/fdivp opcodes are swapped (both encoders)
-3. i686 REL relocation addend patching overwrites ModR/M bytes
-   (relocation offset recorded before ModR/M/SIB, but addend patching writes at that offset)
-4. ret $imm16 not handled (both encoders)

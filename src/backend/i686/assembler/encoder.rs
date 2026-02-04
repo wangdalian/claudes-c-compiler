@@ -245,7 +245,18 @@ impl InstructionEncoder {
 
             // Call/return
             "call" => self.encode_call(ops),
-            "ret" => { self.bytes.push(0xC3); Ok(()) }
+            "ret" => {
+                if ops.is_empty() {
+                    self.bytes.push(0xC3);
+                } else if let Some(Operand::Immediate(ImmediateValue::Integer(val))) = ops.first() {
+                    // ret $imm16 - pop return address and deallocate imm16 bytes
+                    self.bytes.push(0xC2);
+                    self.bytes.extend_from_slice(&(*val as u16).to_le_bytes());
+                } else {
+                    return Err("unsupported ret operand".to_string());
+                }
+                Ok(())
+            }
 
             // No-ops and misc
             "nop" => { self.bytes.push(0x90); Ok(()) }
@@ -461,11 +472,14 @@ impl InstructionEncoder {
             "fisttpq" => self.encode_x87_mem(ops, &[0xDD], 1),
             "fisttpl" => self.encode_x87_mem(ops, &[0xDB], 1),
             "faddp" => { self.bytes.extend_from_slice(&[0xDE, 0xC1]); Ok(()) }
-            "fsubrp" => { self.bytes.extend_from_slice(&[0xDE, 0xE9]); Ok(()) }
+            // Note: AT&T syntax swaps the meaning of fsub/fsubr and fdiv/fdivr
+            // relative to Intel mnemonics for the *p (pop) forms.
+            // GAS: fsubp = DE E1, fsubrp = DE E9, fdivp = DE F1, fdivrp = DE F9
             "fsubp" => { self.bytes.extend_from_slice(&[0xDE, 0xE1]); Ok(()) }
+            "fsubrp" => { self.bytes.extend_from_slice(&[0xDE, 0xE9]); Ok(()) }
             "fmulp" => { self.bytes.extend_from_slice(&[0xDE, 0xC9]); Ok(()) }
-            "fdivrp" => { self.bytes.extend_from_slice(&[0xDE, 0xF9]); Ok(()) }
             "fdivp" => { self.bytes.extend_from_slice(&[0xDE, 0xF1]); Ok(()) }
+            "fdivrp" => { self.bytes.extend_from_slice(&[0xDE, 0xF9]); Ok(()) }
             "fchs" => { self.bytes.extend_from_slice(&[0xD9, 0xE0]); Ok(()) }
             "fabs" => { self.bytes.extend_from_slice(&[0xD9, 0xE1]); Ok(()) }
             "fsqrt" => { self.bytes.extend_from_slice(&[0xD9, 0xFA]); Ok(()) }
@@ -540,30 +554,30 @@ impl InstructionEncoder {
     }
 
     /// Encode ModR/M + SIB + displacement for a memory operand.
+    ///
+    /// For i686 REL relocations, the relocation offset must point to the
+    /// displacement field (where the addend is embedded), not to the ModR/M
+    /// byte. So we defer add_relocation() until after emitting ModR/M and SIB.
     fn encode_modrm_mem(&mut self, reg_field: u8, mem: &MemoryOperand) -> Result<(), String> {
         let base = mem.base.as_ref();
         let index = mem.index.as_ref();
 
-        // Handle symbol displacements that need relocations
-        let (disp_val, has_symbol) = match &mem.displacement {
-            Displacement::None => (0i64, false),
-            Displacement::Integer(v) => (*v, false),
+        // Parse displacement but defer relocation until after ModR/M+SIB bytes
+        let (disp_val, has_symbol, pending_reloc) = match &mem.displacement {
+            Displacement::None => (0i64, false, None),
+            Displacement::Integer(v) => (*v, false, None),
             Displacement::Symbol(sym) => {
-                self.add_relocation(sym, R_386_32, 0);
-                (0i64, true)
+                (0i64, true, Some((sym.clone(), R_386_32, 0i64)))
             }
             Displacement::SymbolAddend(sym, addend) => {
-                self.add_relocation(sym, R_386_32, *addend);
-                (0i64, true)
+                (0i64, true, Some((sym.clone(), R_386_32, *addend)))
             }
             Displacement::SymbolPlusOffset(sym, offset) => {
-                self.add_relocation(sym, R_386_32, *offset);
-                (0i64, true)
+                (0i64, true, Some((sym.clone(), R_386_32, *offset)))
             }
             Displacement::SymbolMod(sym, modifier) => {
                 let reloc_type = self.tls_reloc_type(modifier);
-                self.add_relocation(sym, reloc_type, 0);
-                (0i64, true)
+                (0i64, true, Some((sym.clone(), reloc_type, 0i64)))
             }
         };
 
@@ -571,6 +585,10 @@ impl InstructionEncoder {
         if base.is_none() && index.is_none() {
             // Direct memory reference - mod=00, rm=101 (disp32)
             self.bytes.push(self.modrm(0, reg_field, 5));
+            // Emit relocation now, pointing at the displacement bytes
+            if let Some((sym, reloc_type, addend)) = pending_reloc {
+                self.add_relocation(&sym, reloc_type, addend);
+            }
             self.bytes.extend_from_slice(&(disp_val as i32).to_le_bytes());
             return Ok(());
         }
@@ -604,10 +622,18 @@ impl InstructionEncoder {
                 // No base - disp32 with SIB
                 self.bytes.push(self.modrm(0, reg_field, 4));
                 self.bytes.push(self.sib(scale, idx_num, 5));
+                // Emit relocation after ModR/M+SIB, before displacement
+                if let Some((sym, reloc_type, addend)) = pending_reloc {
+                    self.add_relocation(&sym, reloc_type, addend);
+                }
                 self.bytes.extend_from_slice(&(disp_val as i32).to_le_bytes());
             } else {
                 self.bytes.push(self.modrm(mod_bits, reg_field, 4));
                 self.bytes.push(self.sib(scale, idx_num, base_num));
+                // Emit relocation after ModR/M+SIB, before displacement
+                if let Some((sym, reloc_type, addend)) = pending_reloc {
+                    self.add_relocation(&sym, reloc_type, addend);
+                }
                 match disp_size {
                     0 => {}
                     1 => self.bytes.push(disp_val as u8),
@@ -617,6 +643,10 @@ impl InstructionEncoder {
             }
         } else {
             self.bytes.push(self.modrm(mod_bits, reg_field, base_num));
+            // Emit relocation after ModR/M, before displacement
+            if let Some((sym, reloc_type, addend)) = pending_reloc {
+                self.add_relocation(&sym, reloc_type, addend);
+            }
             match disp_size {
                 0 => {}
                 1 => self.bytes.push(disp_val as u8),

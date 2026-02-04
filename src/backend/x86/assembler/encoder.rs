@@ -285,7 +285,18 @@ impl InstructionEncoder {
 
             // Call/return
             "call" => self.encode_call(ops),
-            "ret" => { self.bytes.push(0xC3); Ok(()) }
+            "ret" => {
+                if ops.is_empty() {
+                    self.bytes.push(0xC3);
+                } else if let Some(Operand::Immediate(ImmediateValue::Integer(val))) = ops.first() {
+                    // ret $imm16 - pop return address and deallocate imm16 bytes
+                    self.bytes.push(0xC2);
+                    self.bytes.extend_from_slice(&(*val as u16).to_le_bytes());
+                } else {
+                    return Err("unsupported ret operand".to_string());
+                }
+                Ok(())
+            }
 
             // No-ops and misc
             "nop" => { self.bytes.push(0x90); Ok(()) }
@@ -473,9 +484,14 @@ impl InstructionEncoder {
             "fildq" => self.encode_x87_mem(ops, &[0xDF], 5),
             "fisttpq" => self.encode_x87_mem(ops, &[0xDD], 1),
             "faddp" => { self.bytes.extend_from_slice(&[0xDE, 0xC1]); Ok(()) }
-            "fsubrp" => { self.bytes.extend_from_slice(&[0xDE, 0xE1]); Ok(()) }
+            // Note: AT&T syntax swaps the meaning of fsub/fsubr and fdiv/fdivr
+            // relative to Intel mnemonics for the *p (pop) forms.
+            // GAS: fsubp = DE E1, fsubrp = DE E9, fdivp = DE F1, fdivrp = DE F9
+            "fsubp" => { self.bytes.extend_from_slice(&[0xDE, 0xE1]); Ok(()) }
+            "fsubrp" => { self.bytes.extend_from_slice(&[0xDE, 0xE9]); Ok(()) }
             "fmulp" => { self.bytes.extend_from_slice(&[0xDE, 0xC9]); Ok(()) }
-            "fdivrp" => { self.bytes.extend_from_slice(&[0xDE, 0xF1]); Ok(()) }
+            "fdivp" => { self.bytes.extend_from_slice(&[0xDE, 0xF1]); Ok(()) }
+            "fdivrp" => { self.bytes.extend_from_slice(&[0xDE, 0xF9]); Ok(()) }
             "fchs" => { self.bytes.extend_from_slice(&[0xD9, 0xE0]); Ok(()) }
             "fcomip" => self.encode_fcomip(ops),
             "fucomip" => self.encode_fucomip(ops),
