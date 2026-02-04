@@ -1,0 +1,7 @@
+Fix i686 builtin linker: local symbol collision in relocation resolution.
+
+LOCAL symbols (.LC0, .LC1, etc.) from different object files were being looked up
+in the global_symbols HashMap, causing cross-object collisions. The fix resolves
+local symbols per-object via section_map + sym.value instead.
+
+This fixes i686 builtin linker crashes in: cJSON, libyaml, tomlc99, parson, lz4, bzip2, utf8proc.
