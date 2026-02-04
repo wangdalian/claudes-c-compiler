@@ -441,17 +441,15 @@ Linker arguments are constructed by `build_linker_args()`:
 
 ### Assembler Selection
 
-The assembler used for both compiler-generated assembly and source `.s`/`.S`
-files is controlled by the `MY_ASM` environment variable:
+Assembler selection is a **compile-time** decision via Cargo features:
 
-| `MY_ASM` value | Behavior |
-|----------------|----------|
-| `builtin` | Use the per-architecture builtin assembler |
-| any other value | Use as custom assembler command |
-| unset | Fall back to GCC cross-compiler (with a warning) |
+| Build Configuration | Behavior |
+|---------------------|----------|
+| Default (no features) | Use the per-architecture **builtin assembler** |
+| `--features gcc_assembler` | Use GCC as the assembler |
 
-When `MY_ASM=builtin` is set and assembling a source `.S` file, the driver runs
-its own C preprocessor first (with `__ASSEMBLER__` defined and assembly-mode
+When using the builtin assembler for a source `.S` file, the driver runs its
+own C preprocessor first (with `__ASSEMBLER__` defined and assembly-mode
 tokenization enabled) before passing the result to the builtin assembler. For
 `.s` files, the content is read directly.
 
@@ -461,15 +459,13 @@ kernel's `scripts/as-version.sh`.
 
 ### Linker Selection
 
-The linker is controlled by `MY_LD` (handled in `backend/common.rs` and
-`backend/mod.rs`, not in the driver module):
+Linker selection is also a **compile-time** decision (handled in
+`backend/common.rs` and `backend/mod.rs`):
 
-| `MY_LD` value | Behavior |
-|---------------|----------|
-| `builtin` | Use the per-architecture builtin linker |
-| `1`/`true`/`yes` | Auto-detect system `ld` for the target |
-| any other value | Use as a specific external linker |
-| unset | Fall back to GCC cross-compiler |
+| Build Configuration | Behavior |
+|---------------------|----------|
+| Default (no features) | Use the per-architecture **builtin linker** |
+| `--features gcc_linker` | Use GCC as the linker |
 
 The driver calls `Target::link()` or `Target::link_with_args()` which dispatch
 to the selected linker implementation.
@@ -624,11 +620,13 @@ computations.
 
 | Variable | Purpose |
 |----------|---------|
-| `MY_ASM` | Assembler selection (`builtin`, custom command, or unset for GCC) |
-| `MY_LD` | Linker selection (`builtin`, `1`, custom command, or unset for GCC) |
 | `CCC_TIME_PHASES` | Print per-phase compilation timing to stderr |
 | `CCC_KEEP_ASM` | Preserve intermediate `.s` files next to output (for debugging) |
 | `CCC_ASM_DEBUG` | Dump preprocessed assembly to `/tmp/asm_debug_<name>.s` |
+
+Note: Assembler/linker selection is a compile-time decision via Cargo features
+(`gcc_assembler`, `gcc_linker`), not environment variables. See the top-level
+[README.md](../../README.md) for details.
 
 ---
 

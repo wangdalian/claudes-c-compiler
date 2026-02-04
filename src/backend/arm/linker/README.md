@@ -4,8 +4,9 @@
 
 The built-in AArch64 linker links ELF64 relocatable object files (`.o`) and
 static archives (`.a`) into statically-linked ELF64 executables for AArch64
-Linux.  It replaces the external `ld` dependency when the environment variable
-`MY_LD=builtin` is set, making the compiler fully self-hosting.
+Linux.  It replaces the external `ld` dependency when
+the `gcc_linker` Cargo feature is not enabled (the default), making the
+compiler fully self-hosting.
 
 The linker implements the complete static linking pipeline: ELF object parsing,
 archive member extraction, symbol resolution, section merging, virtual address

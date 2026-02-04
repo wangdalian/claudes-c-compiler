@@ -1,2 +1,0 @@
-Testing and fixing the 'ini' project (inih/ini parser library).
-Will test on all architectures with standalone asm/linker.

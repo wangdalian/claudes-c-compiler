@@ -127,10 +127,26 @@ Tracking project build/test results with MY_ASM=builtin MY_LD=builtin
 | rax     | PASS | TODO | TODO | TODO | Passes x86 |
 | uthash  | PASS | TODO | TODO | TODO | Passes x86 |
 | pngcrush | PASS | TODO | TODO | TODO | Passes x86 |
-| less    | PASS | TODO | TODO | TODO | Passes x86 |
 | bc_GNU  | PASS | TODO | TODO | TODO | Passes x86 |
-| check   | PASS | TODO | TODO | TODO | Passes x86 |
-| pkgconf | PASS | TODO | TODO | TODO | Passes x86 |
 | toybox  | PASS | TODO | TODO | TODO | Passes x86 |
 | zopfli  | PASS | TODO | TODO | TODO | Passes x86 |
 | tree-sitter | TODO | PASS | TODO | TODO | i686 fixed by COMDAT groups + GOTPC + PIC codegen fixes |
+| ini     | PASS | PASS | PASS | PASS | All architectures pass out of the box |
+| check   | PASS | PASS | PASS | PASS | All architectures pass out of the box |
+| minunit | PASS | TODO | TODO | TODO | Passes x86 |
+| vec     | PASS | TODO | TODO | TODO | Passes x86 |
+| optparse | PASS | TODO | TODO | TODO | Passes x86 |
+| c-algorithms | PASS | TODO | TODO | TODO | Passes x86 |
+| kilo    | PASS | TODO | TODO | TODO | Passes x86 |
+| miniaudio | PASS | PASS | FAIL (ARM NEON parse) | PASS | Fixed x86/i686 asm: added rsqrtss/rcpss instructions |
+| nanopb  | PASS | TODO | TODO | TODO | Passes x86 |
+| lzfse   | PASS | TODO | TODO | TODO | Passes x86 |
+| dnsmasq | PASS | TODO | TODO | TODO | Passes x86 |
+| pkgconf | PASS | TODO | TODO | TODO | Passes x86 |
+| picocom | PASS | TODO | TODO | TODO | Passes x86 |
+| less    | PASS | TODO | TODO | TODO | Passes x86 |
+| cfitsio | PASS | TODO | TODO | TODO | Passes x86 |
+| mandoc  | PASS | TODO | TODO | TODO | Passes x86 |
+| dropbear | PASS | TODO | TODO | TODO | Passes x86 |
+| pigz    | PASS | TODO | TODO | TODO | Passes x86 |
+| peg_leg | PASS | TODO | TODO | TODO | Passes x86 |

@@ -6,6 +6,19 @@ Last audited: 2026-02-04
 All README.md files have been systematically verified against the actual
 source code. This file tracks what was checked and what was fixed.
 
+README/DESIGN_DOC Split + MY_ASM/MY_LD Correction (2026-02-04):
+  - Split top-level README.md into focused README (building, usage, status)
+    and DESIGN_DOC.md (architecture, pipeline, design decisions)
+  - Fixed incorrect MY_ASM/MY_LD environment variable documentation across
+    all READMEs. The actual mechanism is compile-time Cargo features
+    (gcc_assembler, gcc_linker, gcc_m16), not runtime env vars. The builtin
+    assembler and linker are the default; no env vars needed.
+  - Updated: README.md, DESIGN_DOC.md (new), src/backend/README.md,
+    src/driver/README.md, src/backend/x86/README.md,
+    src/backend/x86/assembler/README.md, src/backend/arm/README.md,
+    src/backend/arm/assembler/README.md, src/backend/arm/linker/README.md,
+    src/backend/riscv/README.md, src/backend/riscv/linker/README.md
+
 Builtin Assembler/Linker Documentation Update (2026-02-04):
   README.md (top-level):
   - Fixed false claim "Assembly and linking currently delegate to GNU toolchain"

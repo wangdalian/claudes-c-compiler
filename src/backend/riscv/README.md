@@ -2,7 +2,7 @@
 
 Code generator targeting **RV64GC** (the general-purpose profile: RV64IMAFDC)
 with the **LP64D** calling convention. The backend includes a native assembler
-(`MY_ASM=builtin`) with RV64C compressed instruction support, producing ELF
+(enabled by default) with RV64C compressed instruction support, producing ELF
 object files directly without requiring an external assembler.
 
 ---

@@ -957,9 +957,9 @@ that affect code generation. These are propagated to the backends via
 
 Each architecture has a native assembler that parses the generated assembly
 text into instructions, encodes them into machine code, and writes ELF
-object files directly. The builtin assembler is activated with
-`MY_ASM=builtin`. When not set, the compiler falls back to the GCC
-toolchain.
+object files directly. The builtin assembler is the default. When the
+`gcc_assembler` Cargo feature is enabled at compile time, GCC is used
+instead.
 
 ### Architecture
 
@@ -1032,8 +1032,8 @@ Each backend's `assembler/` directory contains:
 
 Each architecture has a native ELF linker that reads object files and
 static archives, resolves symbols, applies relocations, and writes a
-complete ELF executable. The builtin linker is activated with
-`MY_LD=builtin`.
+complete ELF executable. The builtin linker is the default. When the
+`gcc_linker` Cargo feature is enabled at compile time, GCC is used instead.
 
 ### Architecture
 
@@ -1100,27 +1100,19 @@ Each backend's `linker/` directory contains:
 
 ## Assembler and Linker Selection (common.rs + mod.rs)
 
-The `MY_ASM` and `MY_LD` environment variables control which assembler
-and linker are used:
+Assembler and linker selection is controlled at **compile time** via Cargo
+features, not by environment variables:
 
-| Variable | Value | Behavior |
-|----------|-------|----------|
-| `MY_ASM` | `builtin` | Use per-architecture builtin assembler |
-| `MY_ASM` | path/command | Use a custom external assembler |
-| `MY_ASM` | unset | Fall back to GCC cross-compiler |
-| `MY_LD` | `builtin` | Use per-architecture builtin linker |
-| `MY_LD` | `1`/`true`/`yes` | Auto-detect system `ld` for the target |
-| `MY_LD` | path/command | Use a specific external linker |
-| `MY_LD` | unset | Fall back to GCC cross-compiler |
+| Feature | Effect |
+|---------|--------|
+| (default, no features) | **Builtin assembler and linker** for all architectures |
+| `gcc_assembler` | Use GCC as the assembler instead of the builtin |
+| `gcc_linker` | Use GCC as the linker instead of the builtin |
+| `gcc_m16` | Use GCC for `-m16` (16-bit real mode boot code) |
 
 When using the GCC fallback, each target provides an `AssemblerConfig`
 and `LinkerConfig` that specify the toolchain command, static flags,
 and expected ELF `e_machine` value for input validation.
-
-When using an external `ld` directly (`MY_LD=1` or a path), the compiler
-automatically discovers CRT startup objects, adds library search paths,
-converts `-Wl,` flags, sets the dynamic linker and emulation mode, and
-handles `-nostdlib`, `-shared`, `-static`, and `-r` modes.
 
 The `CCC_KEEP_ASM` environment variable preserves the intermediate `.s`
 file next to the output for debugging.
@@ -1128,20 +1120,15 @@ file next to the output for debugging.
 ### Usage Examples
 
 ```bash
-# Builtin assembler and linker (fully self-contained)
-MY_ASM=builtin MY_LD=builtin ccc -o output input.c
+# Default build: builtin assembler and linker (fully self-contained)
+cargo build --release
+./target/release/ccc -o output input.c
 
-# GCC fallback (default when MY_ASM/MY_LD not set)
-ccc -o output input.c
-
-# External ld (auto-detect for target)
-MY_LD=1 ccc-riscv file.c -o file
-
-# Specific external linker
-MY_LD=ld.bfd ccc-x86 file.c -o file
+# Build with GCC assembler and linker fallback
+cargo build --release --features gcc_assembler,gcc_linker
 
 # Static linking with builtin linker
-MY_ASM=builtin MY_LD=builtin ccc -static file.c -o file
+ccc -static file.c -o file
 ```
 
 ---

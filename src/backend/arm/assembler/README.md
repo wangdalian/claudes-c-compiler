@@ -8,9 +8,9 @@ codegen, into ELF64 relocatable object files (`.o`).  Its purpose is to
 eliminate the external dependency on `aarch64-linux-gnu-gcc` for assembling,
 making the compiler fully self-hosting on AArch64 Linux targets.
 
-The assembler is activated when the environment variable `MY_ASM=builtin` is
-set.  It accepts the same textual assembly that GCC's gas would consume and
-produces ABI-compatible `.o` files that any standard AArch64 ELF linker (or
+The assembler is active by default (when the `gcc_assembler` Cargo feature is
+not enabled).  It accepts the same textual assembly that GCC's gas would consume
+and produces ABI-compatible `.o` files that any standard AArch64 ELF linker (or
 the companion built-in linker) can link.
 
 The implementation spans roughly 5,930 lines of Rust across four files and is

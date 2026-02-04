@@ -23,7 +23,7 @@ pub fn assemble(asm_text: &str, output_path: &str) -> Result<(), String>
 ```
 
 Defined in `mod.rs`.  Called when the built-in assembler is selected
-(`MY_ASM` mode).  The implementation is three lines:
+(the default mode).  The implementation is three lines:
 
 1. `parse_asm(asm_text)` -- parse into `Vec<AsmItem>`
 2. `ElfWriter::new().build(&items)` -- encode, relax, resolve, serialize

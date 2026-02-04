@@ -414,6 +414,8 @@ impl InstructionEncoder {
             "divss" => self.encode_sse_op(ops, &[0xF3, 0x0F, 0x5E]),
             "sqrtsd" => self.encode_sse_op(ops, &[0xF2, 0x0F, 0x51]),
             "sqrtss" => self.encode_sse_op(ops, &[0xF3, 0x0F, 0x51]),
+            "rsqrtss" => self.encode_sse_op(ops, &[0xF3, 0x0F, 0x52]),
+            "rcpss" => self.encode_sse_op(ops, &[0xF3, 0x0F, 0x53]),
             "maxsd" => self.encode_sse_op(ops, &[0xF2, 0x0F, 0x5F]),
             "maxss" => self.encode_sse_op(ops, &[0xF3, 0x0F, 0x5F]),
             "minsd" => self.encode_sse_op(ops, &[0xF2, 0x0F, 0x5D]),

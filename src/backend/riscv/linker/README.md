@@ -10,8 +10,7 @@ dynamically-linked (or optionally static) ELF executable.
 
 The linker is invoked in-process by the compiler driver (no fork/exec of a
 system `ld`), removing any dependency on a RISC-V cross-linker installation.
-It is activated when the compiler is configured with `MY_LD=builtin` for the
-RISC-V backend.
+It is active by default (when the `gcc_linker` Cargo feature is not enabled).
 
 ### Capabilities at a glance
 
