@@ -120,6 +120,8 @@ pub struct ElfWriter {
     /// GNU numeric labels: e.g., "1" -> [(section, offset), ...] in definition order.
     /// Used to resolve `1b` (backward ref) and `1f` (forward ref) references.
     numeric_labels: HashMap<String, Vec<(String, u64)>>,
+    /// Symbol aliases from .set/.equ directives
+    aliases: HashMap<String, String>,
 }
 
 struct PendingReloc {
@@ -301,6 +303,7 @@ impl ElfWriter {
             symbol_visibility: HashMap::new(),
             pcrel_hi_counter: 0,
             numeric_labels: HashMap::new(),
+            aliases: HashMap::new(),
         }
     }
 
@@ -621,9 +624,8 @@ impl ElfWriter {
                 Ok(())
             }
 
-            Directive::Set(_, _) => {
-                // .set name, value - define a symbol with a value
-                // TODO: implement properly
+            Directive::Set(alias, target) => {
+                self.aliases.insert(alias.clone(), target.clone());
                 Ok(())
             }
 
@@ -1417,6 +1419,60 @@ impl ElfWriter {
                 visibility,
                 section_name: section.clone(),
             });
+        }
+
+        // Add alias symbols from .set/.equ directives
+        let aliases = self.aliases.clone();
+        let defined_names: HashMap<String, usize> = self.symbols.iter()
+            .enumerate()
+            .map(|(i, s)| (s.name.clone(), i))
+            .collect();
+        for (alias, target) in &aliases {
+            // Resolve through alias chains (e.g., .set a, b; .set b, c)
+            let mut resolved = target.as_str();
+            let mut seen = HashSet::new();
+            seen.insert(target.as_str());
+            while let Some(next) = aliases.get(resolved) {
+                if !seen.insert(next.as_str()) {
+                    break; // Avoid infinite loops in circular aliases
+                }
+                resolved = next.as_str();
+            }
+            // Determine alias-specific overrides for binding, type, visibility
+            let alias_binding = if self.weak_symbols.contains_key(alias) {
+                Some(STB_WEAK)
+            } else if self.global_symbols.contains_key(alias) {
+                Some(STB_GLOBAL)
+            } else {
+                None
+            };
+            let alias_type = self.symbol_types.get(alias).copied();
+            let alias_vis = self.symbol_visibility.get(alias).copied();
+
+            // Find the target symbol and copy its properties, with alias overrides
+            if let Some(&idx) = defined_names.get(resolved) {
+                let target_sym = &self.symbols[idx];
+                self.symbols.push(ElfSymbol {
+                    name: alias.clone(),
+                    value: target_sym.value,
+                    size: target_sym.size,
+                    binding: alias_binding.unwrap_or(target_sym.binding),
+                    sym_type: alias_type.unwrap_or(target_sym.sym_type),
+                    visibility: alias_vis.unwrap_or(target_sym.visibility),
+                    section_name: target_sym.section_name.clone(),
+                });
+            } else if let Some((section, offset)) = self.labels.get(resolved) {
+                // Target is a local label (.L*) that wasn't promoted to a symbol
+                self.symbols.push(ElfSymbol {
+                    name: alias.clone(),
+                    value: *offset,
+                    size: 0,
+                    binding: alias_binding.unwrap_or(STB_LOCAL),
+                    sym_type: alias_type.unwrap_or(STT_NOTYPE),
+                    visibility: alias_vis.unwrap_or(STV_DEFAULT),
+                    section_name: section.clone(),
+                });
+            }
         }
 
         // Add undefined symbols
