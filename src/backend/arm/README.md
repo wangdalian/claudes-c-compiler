@@ -66,7 +66,7 @@ All codegen source files reside under `src/backend/arm/codegen/`.
 | `i128_ops.rs` | 128-bit integer arithmetic: add/sub via `ADDS`/`ADC`/`SUBS`/`SBC`, multiplication via `MUL`/`UMULH`/`MADD`, bitwise ops, shifts (with >64 and ==64 special cases), division/remainder via `__divti3`/`__modti3` libcalls, float-to-i128 and i128-to-float conversions, and comparisons. |
 | `atomics.rs` | Atomic operations: `LDXR`/`STXR` exclusive load/store loops for RMW (exchange, add, sub, and, or, xor, test-and-set), compare-and-exchange with `CLREX` on failure, atomic loads (`LDAR`/`LDARB`/`LDARH`), atomic stores (`STLR`/`STLRB`/`STLRH`), and fences (`DMB ISH`/`ISHLD`/`ISHST`). |
 | `intrinsics.rs` | NEON/SIMD intrinsic emission (SSE-equivalent operations), hardware builtins (CRC32, `fsqrt`, `fabs`), memory barriers (`DMB`), non-temporal stores, cache maintenance (`DC CIVAC`), `__builtin_frame_address`, `__builtin_return_address`, and `__builtin_thread_pointer`. |
-| `globals.rs` | Global symbol addressing: `ADRP`+`ADD :lo12:` for direct access, `ADRP`+`LDR :got:` for GOT-indirect PIC access, and TLS access via `MRS TPIDR_EL0` + `tprel_hi12`/`tprel_lo12_nc`. |
+| `globals.rs` | Global symbol addressing: `ADRP`+`ADD :lo12:` for direct access (used for all regular symbols, including in PIC/PIE mode), `ADRP`+`LDR :got:` for GOT-indirect access (weak extern symbols only), and TLS access via `MRS TPIDR_EL0` + `tprel_hi12`/`tprel_lo12_nc`. |
 | `returns.rs` | Return value handling: integer returns in `x0`, F32 in `s0`, F64 in `d0`, F128 in `q0` (with `__extenddftf2` promotion), I128 in `x0:x1`, struct return via `x8` (sret pointer), and second-slot float returns in `d1`/`s1`. |
 | `variadic.rs` | Variadic function support: `va_arg` implementation (GP register save area at offset 24, FP register save area at offset 28), `va_start` initialization of the `va_list` struct (stack pointer, `gr_top`, `vr_top`, `gr_offs`, `vr_offs`), and `va_copy`. |
 | `inline_asm.rs` | Inline assembly template substitution: `%0`/`%[name]` positional and named operand references, `%w`/`%x`/`%s`/`%d`/`%q`/`%c`/`%a` register modifiers, GCC `r0`-`r30` alias normalization, and `%%` literal percent. |
@@ -266,15 +266,16 @@ The backend supports three addressing modes for global symbols:
     add  x0, x0, :lo12:symbol // add page offset
 ```
 
-**GOT-indirect (PIC):**
+**GOT-indirect (weak extern symbols only):**
 ```asm
     adrp x0, :got:symbol           // load page of GOT entry
     ldr  x0, [x0, :got_lo12:symbol] // load address from GOT
 ```
 
-The choice between direct and GOT-indirect is made per-symbol based on whether PIC
-mode is enabled and whether the symbol requires GOT indirection (external symbols,
-weak symbols, etc.).
+On AArch64, GOT-indirect addressing is only used for weak extern symbols.
+Regular extern symbols use direct PC-relative ADRP+ADD even in PIC/PIE mode,
+since this is inherently position-independent and works correctly for
+statically-linked executables and early boot code (pre-MMU).
 
 **Thread-Local Storage (TLS):**
 ```asm
@@ -691,7 +692,7 @@ The backend supports several command-line-driven options:
 
 | Option | Effect |
 |--------|--------|
-| `-fPIC` / `-fpie` | Enable position-independent code generation. Global symbol access uses GOT-indirect addressing (`ADRP` + `LDR :got:`). |
+| `-fPIC` / `-fpie` | Enable position-independent code generation. On AArch64, regular extern symbols use direct PC-relative addressing (`ADRP` + `ADD`), which works correctly for both PIC executables and early boot code (pre-MMU). Only weak extern symbols use GOT-indirect addressing (`ADRP` + `LDR :got:`). |
 | `-mgeneral-regs-only` | Disable FP/SIMD register use in variadic prologues. The FP register save area is skipped, and `__vr_offs` is set to 0. |
 | `-fno-jump-tables` | Disable jump table emission for `switch` statements. |
 | Patchable function entry | Reserved NOP sled at function entry for runtime patching. |

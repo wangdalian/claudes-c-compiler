@@ -392,7 +392,15 @@ impl CodegenState {
     /// Returns true if a symbol needs GOT indirection on AArch64.
     /// On AArch64, weak extern symbols always need GOT indirection because the
     /// kernel linker rejects R_AARCH64_ADR_PREL_PG_HI21 against symbols that
-    /// may bind externally. Additionally, PIC mode requires GOT for all non-local symbols.
+    /// may bind externally.
+    ///
+    /// Unlike x86-64, AArch64 does NOT need GOT for regular extern symbols in
+    /// PIC/PIE mode. The ADRP+ADD sequence is inherently PC-relative and works
+    /// correctly for position-independent code in statically-linked executables.
+    /// GOT indirection would load virtual addresses from the GOT, which fails
+    /// in early boot code (e.g., Linux kernel arch/arm64/kernel/pi/) that runs
+    /// before the MMU is enabled. GCC also uses direct PC-relative addressing
+    /// for extern symbols on AArch64 with -fpie.
     pub fn needs_got_aarch64(&self, name: &str) -> bool {
         if name.starts_with('.') {
             return false;
@@ -401,10 +409,8 @@ impl CodegenState {
         if self.weak_extern_symbols.contains(name) {
             return true;
         }
-        // PIC mode: all non-local symbols need GOT
-        if self.pic_mode {
-            return !self.local_symbols.contains(name);
-        }
+        // On AArch64, regular extern symbols use direct PC-relative ADRP+ADD
+        // even in PIC/PIE mode. No GOT needed.
         false
     }
 }
