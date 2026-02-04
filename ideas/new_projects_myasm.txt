@@ -234,3 +234,4 @@ Tracking project build/test results with MY_ASM=builtin MY_LD=builtin
 | s2n-tls | PASS* | TODO | TODO | TODO | x86: 281/282 tests pass (1 codegen segfault in s2n_tls13_key_schedule_test). Fixed: COMMON symbol archive extraction, decimal constant type promotion (C11 6.4.4.1), nested designated initializer pointer placement |
 | crun    | PASS | PASS | PASS | FAIL | Fixed i686: DT_TEXTREL for WEAK dynamic data symbols (environ) referenced by R_386_32 |
 | lame    | PASS | TODO | TODO | TODO | Passes x86 out of the box |
+| sdcc    | PASS (build script fix) | TODO | TODO | TODO | Build script fix: repo has stale RISC-V .o files; distclean bug (clean.mk lists "pic" not "pic14") leaves them; need find . -name "*.o" -delete before build |
