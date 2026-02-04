@@ -720,6 +720,17 @@ impl ElfWriter {
                         let start_off = self.label_positions.get(start_label).map(|p| p.1 as u64).unwrap_or(0);
                         end_off.wrapping_sub(start_off)
                     }
+                    SizeExpr::SymbolRef(sym_ref) => {
+                        if let Some(alias_target) = self.aliases.get(sym_ref) {
+                            let normalized = alias_target.replace(' ', "");
+                            if let Some(rest) = normalized.strip_prefix(".-") {
+                                if let Some(&(sec_idx, start_off)) = self.label_positions.get(rest) {
+                                    let end = self.sections[sec_idx].data.len() as u64;
+                                    end - start_off as u64
+                                } else { 0 }
+                            } else { 0 }
+                        } else { 0 }
+                    }
                 };
                 (name.clone(), size)
             })

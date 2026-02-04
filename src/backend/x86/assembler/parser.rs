@@ -109,6 +109,8 @@ pub enum SizeExpr {
     CurrentMinusSymbol(String),
     /// end_label - start_label (resolved by ELF writer after relaxation)
     SymbolDiff(String, String),
+    /// Symbol reference (e.g., .L__sym_size_*) - resolved through .set aliases
+    SymbolRef(String),
 }
 
 /// A data value that can be a constant, a symbol, or a symbol expression.
@@ -244,12 +246,21 @@ fn strip_c_comments(text: &str) -> String {
 }
 
 /// Expand .rept/.endr blocks by repeating contained lines.
+/// Note: .irp/.endr blocks are handled separately by expand_gas_macros, so we must
+/// track .irp depth to avoid swallowing .endr lines that belong to .irp blocks.
 fn expand_rept_blocks(lines: &[&str]) -> Result<Vec<String>, String> {
     let mut result = Vec::new();
     let mut i = 0;
+    let mut irp_depth = 0; // Track .irp nesting to avoid consuming their .endr
     while i < lines.len() {
         let trimmed = strip_comment(lines[i]).trim().to_string();
         if trimmed.starts_with(".rept ") || trimmed.starts_with(".rept\t") {
+            if irp_depth > 0 {
+                // Inside .irp block - pass through as-is
+                result.push(lines[i].to_string());
+                i += 1;
+                continue;
+            }
             let count_str = trimmed[".rept".len()..].trim();
             let count = parse_integer_expr(count_str)
                 .map_err(|e| format!(".rept: bad count '{}': {}", count_str, e))? as usize;
@@ -276,8 +287,15 @@ fn expand_rept_blocks(lines: &[&str]) -> Result<Vec<String>, String> {
             for _ in 0..count {
                 result.extend(expanded_body.iter().cloned());
             }
+        } else if trimmed.starts_with(".irp ") || trimmed.starts_with(".irp\t") {
+            irp_depth += 1;
+            result.push(lines[i].to_string());
         } else if trimmed == ".endr" {
-            // stray .endr without .rept - skip
+            if irp_depth > 0 {
+                irp_depth -= 1;
+                result.push(lines[i].to_string());
+            }
+            // else: stray .endr without .rept or .irp - skip
         } else {
             result.push(lines[i].to_string());
         }
@@ -294,6 +312,7 @@ pub fn parse_asm(text: &str) -> Result<Vec<AsmItem>, String> {
     let text = strip_c_comments(text);
     let lines: Vec<&str> = text.lines().collect();
     let expanded = expand_rept_blocks(&lines)?;
+    let expanded = expand_gas_macros(&expanded)?;
 
     for (line_num, line) in expanded.iter().enumerate() {
         let line_num = line_num + 1; // 1-based
@@ -701,18 +720,25 @@ fn split_section_args(s: &str) -> Vec<String> {
 }
 
 /// Parse `.type name, @function` or `@object` or `@tls_object`.
+/// Also handles Linux kernel format: `.type name STT_FUNC`.
 fn parse_type_directive(args: &str) -> Result<AsmItem, String> {
-    let parts: Vec<&str> = args.splitn(2, ',').collect();
-    if parts.len() != 2 {
-        return Err(format!("bad .type directive: {}", args));
-    }
-    let name = parts[0].trim().to_string();
-    let kind_str = parts[1].trim();
+    let (name, kind_str) = if let Some(comma_pos) = args.find(',') {
+        // Standard GAS format: .type name, @function
+        (args[..comma_pos].trim(), args[comma_pos+1..].trim())
+    } else {
+        // Linux kernel format: .type name STT_FUNC (space-separated, no comma)
+        let parts: Vec<&str> = args.splitn(2, char::is_whitespace).collect();
+        if parts.len() != 2 {
+            return Err(format!("bad .type directive: {}", args));
+        }
+        (parts[0].trim(), parts[1].trim())
+    };
+    let name = name.to_string();
     let kind = match kind_str {
-        "@function" | "%function" => SymbolKind::Function,
-        "@object" | "%object" => SymbolKind::Object,
-        "@tls_object" | "%tls_object" => SymbolKind::TlsObject,
-        "@notype" | "%notype" => SymbolKind::NoType,
+        "@function" | "%function" | "STT_FUNC" => SymbolKind::Function,
+        "@object" | "%object" | "STT_OBJECT" => SymbolKind::Object,
+        "@tls_object" | "%tls_object" | "STT_TLS" => SymbolKind::TlsObject,
+        "@notype" | "%notype" | "STT_NOTYPE" => SymbolKind::NoType,
         _ => return Err(format!("unknown symbol type: {}", kind_str)),
     };
     Ok(AsmItem::SymbolType(name, kind))
@@ -732,10 +758,14 @@ fn parse_size_directive(args: &str) -> Result<AsmItem, String> {
     if let Some(rest) = normalized.strip_prefix(".-") {
         let sym = rest.trim().to_string();
         Ok(AsmItem::Size(name, SizeExpr::CurrentMinusSymbol(sym)))
+    } else if let Ok(val) = parse_integer_expr(expr_str) {
+        Ok(AsmItem::Size(name, SizeExpr::Constant(val as u64)))
+    } else if expr_str.starts_with('.') || expr_str.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_') {
+        // Symbol reference (e.g., .L__sym_size_*) - resolve through .set aliases
+        // Treat as a symbol that will be resolved during ELF writing
+        Ok(AsmItem::Size(name, SizeExpr::SymbolRef(expr_str.to_string())))
     } else {
-        let val: u64 = parse_integer_expr(expr_str)
-            .map_err(|_| format!("bad size expr: {}", expr_str))? as u64;
-        Ok(AsmItem::Size(name, SizeExpr::Constant(val)))
+        Err(format!("bad size expr: {}", expr_str))
     }
 }
 
@@ -1390,6 +1420,412 @@ fn eval_unary(tokens: &[ExprToken], pos: &mut usize) -> Result<i64, String> {
         ExprToken::Num(v) => { let v = *v; *pos += 1; Ok(v) }
         other => Err(format!("unexpected token in expression: {:?}", other)),
     }
+}
+
+/// GAS macro definition
+#[derive(Clone, Debug)]
+struct GasMacro {
+    params: Vec<(String, Option<String>)>, // (name, default_value)
+    body: Vec<String>,
+}
+
+/// Expand GAS macro directives: .macro/.endm, .purgem, .irp/.endr, .ifc/.endif, .if/.endif, .set
+///
+/// This runs as a text-level expansion pass before instruction parsing.
+/// It handles the Linux kernel's extable_type_reg pattern and similar constructs.
+fn expand_gas_macros(lines: &[String]) -> Result<Vec<String>, String> {
+    let mut macros = std::collections::HashMap::new();
+    let mut symbols = std::collections::HashMap::new();
+    expand_gas_macros_with_state(lines, &mut macros, &mut symbols)
+}
+
+fn expand_gas_macros_with_state(
+    lines: &[String],
+    macros: &mut std::collections::HashMap<String, GasMacro>,
+    symbols: &mut std::collections::HashMap<String, i64>,
+) -> Result<Vec<String>, String> {
+    let mut result = Vec::new();
+    let mut i = 0;
+
+    while i < lines.len() {
+        let trimmed = strip_comment(&lines[i]).trim().to_string();
+
+        // .macro name param1:req param2:req ...
+        if trimmed.starts_with(".macro ") || trimmed.starts_with(".macro\t") {
+            let rest = trimmed[".macro".len()..].trim();
+            let (name, params) = parse_macro_def(rest)?;
+            let mut body = Vec::new();
+            let mut depth = 1;
+            i += 1;
+            while i < lines.len() {
+                let inner = strip_comment(&lines[i]).trim().to_string();
+                if inner.starts_with(".macro ") || inner.starts_with(".macro\t") {
+                    depth += 1;
+                } else if inner == ".endm" {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                body.push(lines[i].clone());
+                i += 1;
+            }
+            if depth != 0 {
+                return Err(".macro without matching .endm".to_string());
+            }
+            macros.insert(name, GasMacro { params, body });
+            i += 1;
+            continue;
+        }
+
+        // .purgem name
+        if trimmed.starts_with(".purgem ") || trimmed.starts_with(".purgem\t") {
+            let name = trimmed[".purgem".len()..].trim().to_string();
+            macros.remove(&name);
+            i += 1;
+            continue;
+        }
+
+        // .set symbol, expr (with symbol resolution)
+        if trimmed.starts_with(".set ") || trimmed.starts_with(".set\t") {
+            let rest = trimmed[".set".len()..].trim();
+            if let Some(comma_pos) = rest.find(',') {
+                let sym_name = rest[..comma_pos].trim().to_string();
+                let expr_str = rest[comma_pos+1..].trim();
+                // Try to evaluate expression with current symbol values
+                let resolved = resolve_set_expr(expr_str, &symbols);
+                if let Ok(val) = parse_integer_expr(&resolved) {
+                    symbols.insert(sym_name.clone(), val);
+                    // For local symbols (.L*), don't emit the .set - we handle them internally
+                    if sym_name.starts_with(".L") {
+                        i += 1;
+                        continue;
+                    }
+                }
+                // Emit the .set directive for non-local or unresolvable symbols
+                let resolved_line = format!(".set {}, {}", sym_name, resolved);
+                result.push(resolved_line);
+            } else {
+                result.push(lines[i].clone());
+            }
+            i += 1;
+            continue;
+        }
+
+        // .irp var, item1, item2, ...  /  .endr
+        if trimmed.starts_with(".irp ") || trimmed.starts_with(".irp\t") {
+            let rest = trimmed[".irp".len()..].trim();
+            let (var, items) = parse_irp_header(rest)?;
+            let mut body = Vec::new();
+            let mut depth = 1;
+            i += 1;
+            while i < lines.len() {
+                let inner = strip_comment(&lines[i]).trim().to_string();
+                if inner.starts_with(".irp ") || inner.starts_with(".irp\t")
+                    || inner.starts_with(".rept ") || inner.starts_with(".rept\t") {
+                    depth += 1;
+                } else if inner == ".endr" {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                body.push(lines[i].clone());
+                i += 1;
+            }
+            // Expand: for each item, substitute \var with the item, then recursively process
+            let mut all_expanded = Vec::new();
+            for item in &items {
+                for bline in &body {
+                    let expanded = bline.replace(&format!("\\{}", var), item);
+                    all_expanded.push(expanded);
+                }
+            }
+            let processed = expand_gas_macros_with_state(&all_expanded, macros, symbols)?;
+            result.extend(processed);
+            i += 1;
+            continue;
+        }
+
+        // .if expr / .endif (with possible .else)
+        if trimmed.starts_with(".if ") || trimmed.starts_with(".if\t") || trimmed.starts_with(".if(") {
+            let rest = if trimmed.starts_with(".if(") {
+                &trimmed[".if".len()..]
+            } else {
+                trimmed[".if".len()..].trim()
+            };
+            let resolved = resolve_set_expr(rest, &symbols);
+            let cond = parse_integer_expr(&resolved).unwrap_or(0) != 0;
+            let mut depth = 1;
+            let mut then_lines = Vec::new();
+            let mut else_lines = Vec::new();
+            let mut in_else = false;
+            i += 1;
+            while i < lines.len() {
+                let inner = strip_comment(&lines[i]).trim().to_string();
+                if inner.starts_with(".if ") || inner.starts_with(".if\t") || inner.starts_with(".if(")
+                    || inner.starts_with(".ifc ") || inner.starts_with(".ifc\t")
+                    || inner.starts_with(".ifdef ") || inner.starts_with(".ifndef ") {
+                    depth += 1;
+                    if in_else { else_lines.push(lines[i].clone()); } else { then_lines.push(lines[i].clone()); }
+                } else if inner == ".endif" {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    if in_else { else_lines.push(lines[i].clone()); } else { then_lines.push(lines[i].clone()); }
+                } else if inner == ".else" && depth == 1 {
+                    in_else = true;
+                } else {
+                    if in_else { else_lines.push(lines[i].clone()); } else { then_lines.push(lines[i].clone()); }
+                }
+                i += 1;
+            }
+            let chosen = if cond { &then_lines } else { &else_lines };
+            // Recursively expand the chosen branch
+            let expanded = expand_gas_macros_with_state(chosen, macros, symbols)?;
+            result.extend(expanded);
+            i += 1;
+            continue;
+        }
+
+        // .ifc str1, str2 / .endif
+        if trimmed.starts_with(".ifc ") || trimmed.starts_with(".ifc\t") {
+            let rest = trimmed[".ifc".len()..].trim();
+            let cond = eval_ifc(rest);
+            let mut depth = 1;
+            let mut then_lines = Vec::new();
+            let mut else_lines = Vec::new();
+            let mut in_else = false;
+            i += 1;
+            while i < lines.len() {
+                let inner = strip_comment(&lines[i]).trim().to_string();
+                if inner.starts_with(".if ") || inner.starts_with(".if\t") || inner.starts_with(".if(")
+                    || inner.starts_with(".ifc ") || inner.starts_with(".ifc\t")
+                    || inner.starts_with(".ifdef ") || inner.starts_with(".ifndef ") {
+                    depth += 1;
+                    if in_else { else_lines.push(lines[i].clone()); } else { then_lines.push(lines[i].clone()); }
+                } else if inner == ".endif" {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                    if in_else { else_lines.push(lines[i].clone()); } else { then_lines.push(lines[i].clone()); }
+                } else if inner == ".else" && depth == 1 {
+                    in_else = true;
+                } else {
+                    if in_else { else_lines.push(lines[i].clone()); } else { then_lines.push(lines[i].clone()); }
+                }
+                i += 1;
+            }
+            let chosen = if cond { &then_lines } else { &else_lines };
+            let expanded = expand_gas_macros_with_state(chosen, macros, symbols)?;
+            result.extend(expanded);
+            i += 1;
+            continue;
+        }
+
+        // .error "message" - assembler error directive
+        if trimmed.starts_with(".error ") || trimmed.starts_with(".error\t") {
+            return Err(format!("assembler error: {}", trimmed[".error".len()..].trim()));
+        }
+
+        // Check if line is a macro invocation
+        let first_word = trimmed.split_whitespace().next().unwrap_or("");
+        // Strip label prefix if present (e.g., "label: macroname args")
+        let macro_name = if first_word.ends_with(':') {
+            // There might be a macro after the label
+            trimmed[first_word.len()..].trim().split_whitespace().next().unwrap_or("")
+        } else {
+            first_word
+        };
+
+        if macros.contains_key(macro_name) {
+            let mac = macros[macro_name].clone();
+            let args_str = if first_word.ends_with(':') {
+                // Label before macro
+                let after_label = trimmed[first_word.len()..].trim();
+                let after_name = after_label[macro_name.len()..].trim();
+                // Emit label first
+                result.push(first_word.to_string());
+                after_name
+            } else {
+                trimmed[macro_name.len()..].trim()
+            };
+            let args = parse_macro_args(args_str, &mac.params)?;
+            // Substitute parameters in body
+            let mut expanded_body: Vec<String> = mac.body.iter().map(|line| {
+                let mut l = line.clone();
+                for (pname, pval) in &args {
+                    l = l.replace(&format!("\\{}", pname), pval);
+                }
+                l
+            }).collect();
+            // Recursively expand the body (handles nested .irp, .set, .if, etc.)
+            expanded_body = expand_gas_macros_with_state(&expanded_body, macros, symbols)?;
+            result.extend(expanded_body);
+            i += 1;
+            continue;
+        }
+
+        // For regular lines, resolve any .set symbol references
+        if !symbols.is_empty() {
+            let resolved = resolve_set_expr(&lines[i], &symbols);
+            result.push(resolved);
+        } else {
+            result.push(lines[i].clone());
+        }
+        i += 1;
+    }
+
+    Ok(result)
+}
+
+/// Parse a .macro definition header: "name param1:req param2:req ..."
+fn parse_macro_def(rest: &str) -> Result<(String, Vec<(String, Option<String>)>), String> {
+    let parts: Vec<&str> = rest.split_whitespace().collect();
+    if parts.is_empty() {
+        return Err(".macro: missing name".to_string());
+    }
+    let name = parts[0].to_string();
+    let mut params = Vec::new();
+    for &part in &parts[1..] {
+        // Handle param:req, param=default, or just param
+        let part = part.trim_end_matches(',');
+        if part.contains(':') {
+            let pname = part.split(':').next().unwrap().to_string();
+            params.push((pname, None));
+        } else if part.contains('=') {
+            let mut split = part.splitn(2, '=');
+            let pname = split.next().unwrap().to_string();
+            let default = split.next().map(|s| s.to_string());
+            params.push((pname, default));
+        } else {
+            params.push((part.to_string(), None));
+        }
+    }
+    Ok((name, params))
+}
+
+/// Parse macro invocation arguments: "param1=val1, param2=val2" or positional
+fn parse_macro_args(args_str: &str, params: &[(String, Option<String>)]) -> Result<Vec<(String, String)>, String> {
+    let mut result = Vec::new();
+    if args_str.is_empty() {
+        // Use defaults for all params
+        for (name, default) in params {
+            result.push((name.clone(), default.clone().unwrap_or_default()));
+        }
+        return Ok(result);
+    }
+
+    // Split on commas (respecting parentheses)
+    let arg_parts = split_macro_args(args_str);
+
+    // Check if arguments are named (contain '=') or positional
+    let named = arg_parts.iter().any(|a| a.contains('='));
+
+    // Helper: strip surrounding quotes from GAS macro arguments
+    // In GAS, "" means empty string, "foo bar" means foo bar
+    let strip_quotes = |s: &str| -> String {
+        let t = s.trim();
+        if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
+            t[1..t.len()-1].to_string()
+        } else {
+            t.to_string()
+        }
+    };
+
+    if named {
+        // Named arguments: param=value
+        let mut arg_map = std::collections::HashMap::new();
+        for part in &arg_parts {
+            let part = part.trim();
+            if let Some(eq_pos) = part.find('=') {
+                let key = part[..eq_pos].trim().to_string();
+                let val = strip_quotes(part[eq_pos+1..].trim());
+                arg_map.insert(key, val);
+            }
+        }
+        for (name, default) in params {
+            let val = arg_map.get(name)
+                .cloned()
+                .or_else(|| default.clone())
+                .unwrap_or_default();
+            result.push((name.clone(), val));
+        }
+    } else {
+        // Positional arguments
+        for (idx, (name, default)) in params.iter().enumerate() {
+            let val = if idx < arg_parts.len() {
+                strip_quotes(&arg_parts[idx])
+            } else {
+                default.clone().unwrap_or_default()
+            };
+            result.push((name.clone(), val));
+        }
+    }
+
+    Ok(result)
+}
+
+/// Split macro arguments on commas, respecting parentheses
+fn split_macro_args(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut depth = 0;
+    let mut current = String::new();
+    for ch in s.chars() {
+        match ch {
+            '(' => { depth += 1; current.push(ch); }
+            ')' => { depth -= 1; current.push(ch); }
+            ',' if depth == 0 => {
+                parts.push(current.clone());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+/// Parse .irp header: "var, item1, item2, ..."
+fn parse_irp_header(rest: &str) -> Result<(String, Vec<String>), String> {
+    // Format: var,item1,item2,... or var item1,item2,...
+    let rest = rest.trim();
+    // First find the variable name (before the first comma)
+    let comma_pos = rest.find(',').ok_or(".irp: missing comma after variable")?;
+    let var = rest[..comma_pos].trim().to_string();
+    let items_str = rest[comma_pos+1..].trim();
+    let items: Vec<String> = items_str.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    Ok((var, items))
+}
+
+/// Evaluate .ifc string comparison: "str1, str2" => true if equal
+fn eval_ifc(rest: &str) -> bool {
+    if let Some(comma_pos) = rest.find(',') {
+        let s1 = rest[..comma_pos].trim();
+        let s2 = rest[comma_pos+1..].trim();
+        s1 == s2
+    } else {
+        false
+    }
+}
+
+/// Resolve symbols in a .set expression string
+fn resolve_set_expr(expr: &str, symbols: &std::collections::HashMap<String, i64>) -> String {
+    let mut result = expr.to_string();
+    // Sort by length (longest first) to avoid partial replacements
+    let mut sym_list: Vec<_> = symbols.iter().collect();
+    sym_list.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    for (name, val) in sym_list {
+        result = result.replace(name.as_str(), &val.to_string());
+    }
+    result
 }
 
 /// Parse an integer expression with full operator precedence.

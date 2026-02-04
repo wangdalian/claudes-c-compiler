@@ -71,6 +71,21 @@ fn is_segment_reg(name: &str) -> bool {
     matches!(name, "es" | "cs" | "ss" | "ds" | "fs" | "gs")
 }
 
+fn is_control_reg(name: &str) -> bool {
+    matches!(name, "cr0" | "cr2" | "cr3" | "cr4" | "cr8")
+}
+
+fn control_reg_num(name: &str) -> Option<u8> {
+    match name {
+        "cr0" => Some(0),
+        "cr2" => Some(2),
+        "cr3" => Some(3),
+        "cr4" => Some(4),
+        "cr8" => Some(8),
+        _ => None,
+    }
+}
+
 /// Is this a YMM register?
 fn is_ymm(name: &str) -> bool {
     name.starts_with("ymm")
@@ -214,7 +229,7 @@ fn mnemonic_size_suffix(mnemonic: &str) -> Option<u8> {
     match mnemonic {
         "cltq" | "cqto" | "cltd" | "cdq" | "cqo" | "ret" | "nop" | "ud2"
         | "endbr64" | "pause" | "mfence" | "lfence" | "sfence" | "clflush"
-        | "syscall" | "sysenter" | "cpuid" | "rdtsc" | "rdtscp"
+        | "syscall" | "sysenter" | "cpuid" | "rdtsc" | "rdtscp" | "rdpmc"
         | "clc" | "stc" | "cli" | "sti" | "cld" | "std" | "sahf" | "lahf" | "fninit" | "fwait" | "wait" | "fnstcw" | "fstcw"
         | "fld1" | "fldl2e" | "fldlg2" | "fldln2" | "fldz" | "fldpi" | "fldl2t"
         | "fabs" | "fsqrt" | "frndint" | "f2xm1" | "fscale" | "fpatan" | "fprem" | "fprem1"
@@ -224,7 +239,8 @@ fn mnemonic_size_suffix(mnemonic: &str) -> Option<u8> {
         | "pushf" | "pushfq" | "popf" | "popfq" | "int3"
         | "movsq" | "stosq" | "movsw" | "stosw" | "lodsb" | "lodsw" | "lodsd" | "lodsq"
         | "scasb" | "scasw" | "scasd" | "scasq" | "cmpsb" | "cmpsw" | "cmpsd" | "cmpsq"
-        | "insb" | "insw" | "insd" | "outsb" | "outsw" | "outsd" => return None,
+        | "insb" | "insw" | "insd" | "insl" | "outsb" | "outsw" | "outsd" | "outsl"
+        | "inb" | "inw" | "inl" | "outb" | "outw" | "outl" => return None,
         _ => {}
     }
 
@@ -296,12 +312,15 @@ impl InstructionEncoder {
                 let has_xmm = ops.iter().any(|op| matches!(op, Operand::Register(r) if is_xmm(&r.name)));
                 let has_mmx = ops.iter().any(|op| matches!(op, Operand::Register(r) if is_mmx(&r.name)));
                 let has_seg = ops.iter().any(|op| matches!(op, Operand::Register(r) if is_segment_reg(&r.name)));
+                let has_cr = ops.iter().any(|op| matches!(op, Operand::Register(r) if is_control_reg(&r.name)));
                 if has_xmm {
                     self.encode_movq_xmm(ops)
                 } else if has_mmx {
                     self.encode_mmx_movq(ops)
                 } else if has_seg {
                     self.encode_mov_seg(ops)
+                } else if has_cr {
+                    self.encode_mov_cr(ops)
                 } else {
                     self.encode_mov(ops, 8)
                 }
@@ -309,6 +328,8 @@ impl InstructionEncoder {
             "movl" => {
                 if ops.iter().any(|op| matches!(op, Operand::Register(r) if is_segment_reg(&r.name))) {
                     self.encode_mov_seg(ops)
+                } else if ops.iter().any(|op| matches!(op, Operand::Register(r) if is_control_reg(&r.name))) {
+                    self.encode_mov_cr(ops)
                 } else {
                     self.encode_mov(ops, 4)
                 }
@@ -518,10 +539,14 @@ impl InstructionEncoder {
             // I/O string ops
             "insb" => { self.bytes.push(0x6C); Ok(()) }
             "insw" => { self.bytes.extend_from_slice(&[0x66, 0x6D]); Ok(()) }
-            "insd" => { self.bytes.push(0x6D); Ok(()) }
+            "insd" | "insl" => { self.bytes.push(0x6D); Ok(()) }
             "outsb" => { self.bytes.push(0x6E); Ok(()) }
             "outsw" => { self.bytes.extend_from_slice(&[0x66, 0x6F]); Ok(()) }
-            "outsd" => { self.bytes.push(0x6F); Ok(()) }
+            "outsd" | "outsl" => { self.bytes.push(0x6F); Ok(()) }
+
+            // Port I/O instructions
+            "outb" | "outw" | "outl" => self.encode_out(ops, mnemonic),
+            "inb" | "inw" | "inl" => self.encode_in(ops, mnemonic),
 
             // Atomic exchange
             "xchgb" | "xchgw" | "xchgl" | "xchgq" => self.encode_xchg(ops, mnemonic),
@@ -1564,6 +1589,12 @@ impl InstructionEncoder {
             "wrmsr" => { self.bytes.extend_from_slice(&[0x0F, 0x30]); Ok(()) }
             "xgetbv" => { self.bytes.extend_from_slice(&[0x0F, 0x01, 0xD0]); Ok(()) }
             "xsetbv" => { self.bytes.extend_from_slice(&[0x0F, 0x01, 0xD1]); Ok(()) }
+            "rdpmc" => { self.bytes.extend_from_slice(&[0x0F, 0x33]); Ok(()) }
+            "verw" => self.encode_verw(ops),
+            "lsl" => self.encode_lsl(ops),
+
+            // System table instructions
+            "sgdt" | "sidt" | "lgdt" | "lidt" => self.encode_system_table(ops, mnemonic),
 
             _ if mnemonic.starts_with("set") => {
                 // Handle setXXb forms (e.g., setcb = setc with byte suffix)
@@ -2828,6 +2859,88 @@ impl InstructionEncoder {
         }
     }
 
+    /// Encode OUT instruction: outb/outw/outl
+    /// AT&T syntax: outb %al, %dx  OR  outb %al, $imm8
+    fn encode_out(&mut self, ops: &[Operand], mnemonic: &str) -> Result<(), String> {
+        let size: u8 = match mnemonic {
+            "outb" => 1,
+            "outw" => 2,
+            "outl" => 4,
+            _ => return Err(format!("unknown out mnemonic: {}", mnemonic)),
+        };
+
+        // Handle zero-operand form (implicit operands)
+        if ops.is_empty() {
+            if size == 2 { self.bytes.push(0x66); }
+            self.bytes.push(if size == 1 { 0xEE } else { 0xEF });
+            return Ok(());
+        }
+
+        if ops.len() != 2 {
+            return Err(format!("{} requires 0 or 2 operands", mnemonic));
+        }
+
+        // AT&T: outb %al, %dx  (src=al, dst=dx)
+        // AT&T: outb %al, $imm8  (src=al, dst=imm)
+        match (&ops[0], &ops[1]) {
+            (Operand::Register(_src), Operand::Register(_dst)) => {
+                // outb %al, %dx  =>  0xEE (byte) or 0xEF (word/dword)
+                if size == 2 { self.bytes.push(0x66); }
+                self.bytes.push(if size == 1 { 0xEE } else { 0xEF });
+                Ok(())
+            }
+            (Operand::Register(_src), Operand::Immediate(ImmediateValue::Integer(val))) => {
+                // outb %al, $imm8  =>  0xE6 ib (byte) or 0xE7 ib (word/dword)
+                if size == 2 { self.bytes.push(0x66); }
+                self.bytes.push(if size == 1 { 0xE6 } else { 0xE7 });
+                self.bytes.push(*val as u8);
+                Ok(())
+            }
+            _ => Err(format!("unsupported {} operands", mnemonic)),
+        }
+    }
+
+    /// Encode IN instruction: inb/inw/inl
+    /// AT&T syntax: inb %dx, %al  OR  inb $imm8, %al
+    fn encode_in(&mut self, ops: &[Operand], mnemonic: &str) -> Result<(), String> {
+        let size: u8 = match mnemonic {
+            "inb" => 1,
+            "inw" => 2,
+            "inl" => 4,
+            _ => return Err(format!("unknown in mnemonic: {}", mnemonic)),
+        };
+
+        // Handle zero-operand form (implicit operands)
+        if ops.is_empty() {
+            if size == 2 { self.bytes.push(0x66); }
+            self.bytes.push(if size == 1 { 0xEC } else { 0xED });
+            return Ok(());
+        }
+
+        if ops.len() != 2 {
+            return Err(format!("{} requires 0 or 2 operands", mnemonic));
+        }
+
+        // AT&T: inb %dx, %al  (src=dx, dst=al)
+        // AT&T: inb $imm8, %al  (src=imm, dst=al)
+        match (&ops[0], &ops[1]) {
+            (Operand::Register(_src), Operand::Register(_dst)) => {
+                // inb %dx, %al  =>  0xEC (byte) or 0xED (word/dword)
+                if size == 2 { self.bytes.push(0x66); }
+                self.bytes.push(if size == 1 { 0xEC } else { 0xED });
+                Ok(())
+            }
+            (Operand::Immediate(ImmediateValue::Integer(val)), Operand::Register(_dst)) => {
+                // inb $imm8, %al  =>  0xE4 ib (byte) or 0xE5 ib (word/dword)
+                if size == 2 { self.bytes.push(0x66); }
+                self.bytes.push(if size == 1 { 0xE4 } else { 0xE5 });
+                self.bytes.push(*val as u8);
+                Ok(())
+            }
+            _ => Err(format!("unsupported {} operands", mnemonic)),
+        }
+    }
+
     fn encode_clflush(&mut self, ops: &[Operand]) -> Result<(), String> {
         if ops.len() != 1 {
             return Err("clflush requires 1 operand".to_string());
@@ -2839,6 +2952,116 @@ impl InstructionEncoder {
                 self.encode_modrm_mem(7, mem)
             }
             _ => Err("clflush requires memory operand".to_string()),
+        }
+    }
+
+    /// Encode VERW instruction: 0F 00 /5
+    fn encode_verw(&mut self, ops: &[Operand]) -> Result<(), String> {
+        if ops.len() != 1 {
+            return Err("verw requires 1 operand".to_string());
+        }
+        match &ops[0] {
+            Operand::Memory(mem) => {
+                self.emit_rex_rm(0, "", mem);
+                self.bytes.extend_from_slice(&[0x0F, 0x00]);
+                self.encode_modrm_mem(5, mem)
+            }
+            Operand::Register(reg) => {
+                let rm = reg_num(&reg.name).ok_or("bad register")?;
+                self.bytes.extend_from_slice(&[0x0F, 0x00]);
+                self.bytes.push(self.modrm(3, 5, rm));
+                Ok(())
+            }
+            _ => Err("verw requires memory or register operand".to_string()),
+        }
+    }
+
+    /// Encode MOV to/from control register: 0F 20 /r (read) or 0F 22 /r (write)
+    fn encode_mov_cr(&mut self, ops: &[Operand]) -> Result<(), String> {
+        if ops.len() != 2 {
+            return Err("mov cr requires 2 operands".to_string());
+        }
+        match (&ops[0], &ops[1]) {
+            (Operand::Register(cr), Operand::Register(gp)) if is_control_reg(&cr.name) => {
+                // movq %crN, %rax  =>  0F 20 ModR/M
+                let cr_num = control_reg_num(&cr.name).ok_or("bad control register")?;
+                let gp_num = reg_num(&gp.name).ok_or("bad register")?;
+                // Need REX prefix for r8-r15 or for cr8
+                let mut rex = 0u8;
+                if cr_num >= 8 { rex |= 0x44; } // REX.R
+                if needs_rex_ext(&gp.name) { rex |= 0x41; } // REX.B
+                if rex != 0 { self.bytes.push(rex); }
+                self.bytes.extend_from_slice(&[0x0F, 0x20]);
+                self.bytes.push(self.modrm(3, cr_num & 7, gp_num));
+                Ok(())
+            }
+            (Operand::Register(gp), Operand::Register(cr)) if is_control_reg(&cr.name) => {
+                // movq %rax, %crN  =>  0F 22 ModR/M
+                let cr_num = control_reg_num(&cr.name).ok_or("bad control register")?;
+                let gp_num = reg_num(&gp.name).ok_or("bad register")?;
+                let mut rex = 0u8;
+                if cr_num >= 8 { rex |= 0x44; } // REX.R
+                if needs_rex_ext(&gp.name) { rex |= 0x41; } // REX.B
+                if rex != 0 { self.bytes.push(rex); }
+                self.bytes.extend_from_slice(&[0x0F, 0x22]);
+                self.bytes.push(self.modrm(3, cr_num & 7, gp_num));
+                Ok(())
+            }
+            _ => Err("unsupported mov cr operands".to_string()),
+        }
+    }
+
+    /// Encode SGDT/SIDT/LGDT/LIDT: 0F 01 /N (memory operand)
+    fn encode_system_table(&mut self, ops: &[Operand], mnemonic: &str) -> Result<(), String> {
+        if ops.len() != 1 {
+            return Err(format!("{} requires 1 operand", mnemonic));
+        }
+        let reg_ext = match mnemonic {
+            "sgdt" => 0,
+            "sidt" => 1,
+            "lgdt" => 2,
+            "lidt" => 3,
+            _ => return Err(format!("unknown system table instruction: {}", mnemonic)),
+        };
+        match &ops[0] {
+            Operand::Memory(mem) => {
+                self.emit_rex_rm(0, "", mem);
+                self.bytes.extend_from_slice(&[0x0F, 0x01]);
+                self.encode_modrm_mem(reg_ext, mem)
+            }
+            _ => Err(format!("{} requires memory operand", mnemonic)),
+        }
+    }
+
+    /// Encode LSL (Load Segment Limit): 0F 03 /r
+    fn encode_lsl(&mut self, ops: &[Operand]) -> Result<(), String> {
+        if ops.len() != 2 {
+            return Err("lsl requires 2 operands".to_string());
+        }
+        match (&ops[0], &ops[1]) {
+            (Operand::Register(src), Operand::Register(dst)) => {
+                let src_num = reg_num(&src.name).ok_or("bad register")?;
+                let dst_num = reg_num(&dst.name).ok_or("bad register")?;
+                // 16-bit operand size prefix
+                if src.name.starts_with('w') || src.name.len() == 2 && src.name.ends_with('x') || src.name.ends_with('i') && !src.name.starts_with('e') && !src.name.starts_with('r') {
+                    // Heuristic: check if it's 16-bit register
+                    let is_16 = matches!(src.name.as_str(), "ax"|"bx"|"cx"|"dx"|"si"|"di"|"sp"|"bp");
+                    if is_16 {
+                        self.bytes.push(0x66);
+                    }
+                }
+                self.emit_rex_rr(4, &dst.name, &src.name);
+                self.bytes.extend_from_slice(&[0x0F, 0x03]);
+                self.bytes.push(self.modrm(3, dst_num, src_num));
+                Ok(())
+            }
+            (Operand::Memory(mem), Operand::Register(dst)) => {
+                let dst_num = reg_num(&dst.name).ok_or("bad register")?;
+                self.emit_rex_rm(4, &dst.name, mem);
+                self.bytes.extend_from_slice(&[0x0F, 0x03]);
+                self.encode_modrm_mem(dst_num, mem)
+            }
+            _ => Err("unsupported lsl operands".to_string()),
         }
     }
 
