@@ -81,7 +81,8 @@ fn mnemonic_size_suffix(mnemonic: &str) -> Option<u8> {
         | "ldmxcsr" | "stmxcsr"
         | "syscall" | "sysenter" | "cpuid" | "rdtsc" | "rdtscp"
         // Base ALU/shift mnemonics whose last letter is NOT a size suffix
-        | "sub" | "sbb" | "add" | "and" | "shl" | "rol" | "xadd" => return None,
+        | "sub" | "sbb" | "add" | "and" | "shl" | "rol" | "xadd"
+        | "insb" | "insw" | "insl" | "outsb" | "outsw" | "outsl" => return None,
         _ => {}
     }
     let last = mnemonic.as_bytes().last()?;
@@ -299,6 +300,14 @@ impl InstructionEncoder {
             "scasl" => { self.bytes.push(0xAF); Ok(()) }
             "lodsb" => { self.bytes.push(0xAC); Ok(()) }
             "lodsl" => { self.bytes.push(0xAD); Ok(()) }
+
+            // I/O string ops
+            "insb" => { self.bytes.push(0x6C); Ok(()) }
+            "insw" => { self.bytes.extend_from_slice(&[0x66, 0x6D]); Ok(()) }
+            "insl" => { self.bytes.push(0x6D); Ok(()) }
+            "outsb" => { self.bytes.push(0x6E); Ok(()) }
+            "outsw" => { self.bytes.extend_from_slice(&[0x66, 0x6F]); Ok(()) }
+            "outsl" => { self.bytes.push(0x6F); Ok(()) }
 
             // Atomic exchange
             "xchgb" | "xchgw" | "xchgl" | "xchg" => self.encode_xchg(ops, mnemonic),

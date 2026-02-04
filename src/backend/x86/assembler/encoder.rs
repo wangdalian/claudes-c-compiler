@@ -223,7 +223,8 @@ fn mnemonic_size_suffix(mnemonic: &str) -> Option<u8> {
         | "ldmxcsr" | "stmxcsr" | "wbinvd" | "invd" | "rdsspq" | "rdsspd"
         | "pushf" | "pushfq" | "popf" | "popfq" | "int3"
         | "movsq" | "stosq" | "movsw" | "stosw" | "lodsb" | "lodsw" | "lodsd" | "lodsq"
-        | "scasb" | "scasw" | "scasd" | "scasq" | "cmpsb" | "cmpsw" | "cmpsd" | "cmpsq" => return None,
+        | "scasb" | "scasw" | "scasd" | "scasq" | "cmpsb" | "cmpsw" | "cmpsd" | "cmpsq"
+        | "insb" | "insw" | "insd" | "outsb" | "outsw" | "outsd" => return None,
         _ => {}
     }
 
@@ -513,6 +514,14 @@ impl InstructionEncoder {
             "cmpsb" => { self.bytes.push(0xA6); Ok(()) }
             "cmpsd" if ops.is_empty() => { self.bytes.push(0xA7); Ok(()) }
             "cmpsq" => { self.bytes.extend_from_slice(&[0x48, 0xA7]); Ok(()) }
+
+            // I/O string ops
+            "insb" => { self.bytes.push(0x6C); Ok(()) }
+            "insw" => { self.bytes.extend_from_slice(&[0x66, 0x6D]); Ok(()) }
+            "insd" => { self.bytes.push(0x6D); Ok(()) }
+            "outsb" => { self.bytes.push(0x6E); Ok(()) }
+            "outsw" => { self.bytes.extend_from_slice(&[0x66, 0x6F]); Ok(()) }
+            "outsd" => { self.bytes.push(0x6F); Ok(()) }
 
             // Atomic exchange
             "xchgb" | "xchgw" | "xchgl" | "xchgq" => self.encode_xchg(ops, mnemonic),

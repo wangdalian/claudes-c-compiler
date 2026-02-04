@@ -518,8 +518,9 @@ impl ArmCodegen {
             IrConst::I64(v) => *v,
             _ => return None,
         };
-        if v < 0 && (-v) >= 1 && (-v) <= 4095 {
-            Some((-v) as u64)
+        let neg = v.checked_neg()?;
+        if neg >= 1 && neg <= 4095 {
+            Some(neg as u64)
         } else {
             None
         }
