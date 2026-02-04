@@ -650,7 +650,27 @@ impl ElfWriter {
         }
     }
 
+    /// Check whether a symbol is local (not global/weak).
+    /// Only local symbols can have their relocations resolved inline;
+    /// global/weak symbols must keep relocations for the linker so that
+    /// symbol interposition and PLT redirection work correctly.
+    fn is_local_symbol(&self, name: &str) -> bool {
+        // Internal assembler labels (.L*) are always local
+        if name.starts_with('.') {
+            return true;
+        }
+        // Check the symbol table for binding
+        if let Some(&sym_idx) = self.symbol_map.get(name) {
+            self.symbols[sym_idx].binding == STB_LOCAL
+        } else {
+            // Unknown symbol - treat as external (non-local)
+            false
+        }
+    }
+
     /// Resolve relocations that reference internal labels (same-section).
+    /// Only resolves relocations for local symbols; global/weak symbols
+    /// keep their relocations so the linker can handle interposition/PLT.
     fn resolve_internal_relocations(&mut self) {
         for sec_idx in 0..self.sections.len() {
             let mut resolved = Vec::new();
@@ -658,8 +678,11 @@ impl ElfWriter {
 
             for reloc in &self.sections[sec_idx].relocations {
                 if let Some(&(target_sec, target_off)) = self.label_positions.get(&reloc.symbol) {
-                    if target_sec == sec_idx && (reloc.reloc_type == R_X86_64_PC32 || reloc.reloc_type == R_X86_64_PLT32) {
-                        // Same-section PC-relative: resolve now.
+                    let is_local = self.is_local_symbol(&reloc.symbol);
+                    if target_sec == sec_idx && is_local
+                        && (reloc.reloc_type == R_X86_64_PC32 || reloc.reloc_type == R_X86_64_PLT32)
+                    {
+                        // Same-section PC-relative to a local symbol: resolve now.
                         // ELF formula: S + A - P
                         // S = target_off (symbol value)
                         // A = reloc.addend
