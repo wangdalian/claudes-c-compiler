@@ -2012,6 +2012,77 @@ impl ElfWriterBase {
         self.aliases.insert(alias.to_string(), target.to_string());
     }
 
+    /// Resolve .set/.equ aliases in an expression string.
+    /// Replaces symbol names (like `.L__gpr_num_t0`) with their numeric values.
+    pub fn resolve_expr_aliases(&self, expr: &str) -> String {
+        let mut result = String::with_capacity(expr.len());
+        let bytes = expr.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let c = bytes[i];
+            // Symbol names start with a letter, underscore, or dot
+            if c == b'.' || c == b'_' || c.is_ascii_alphabetic() {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && (bytes[i] == b'.' || bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric()) {
+                    i += 1;
+                }
+                let sym = &expr[start..i];
+                // Chase alias chain
+                let mut resolved = sym;
+                let mut seen = 0;
+                while let Some(target) = self.aliases.get(resolved) {
+                    resolved = target.as_str();
+                    seen += 1;
+                    if seen > 20 { break; }
+                }
+                result.push_str(resolved);
+            } else {
+                result.push(c as char);
+                i += 1;
+            }
+        }
+        result
+    }
+
+    /// Resolve label names in an expression to their numeric offsets.
+    /// This handles `.Ldot_N` synthetic labels (current position) and any
+    /// section-local labels that can be resolved to constant offsets.
+    pub fn resolve_expr_labels(&self, expr: &str) -> String {
+        let cur_section = &self.current_section;
+        let cur_offset = self.current_offset();
+        let mut result = String::with_capacity(expr.len());
+        let bytes = expr.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let c = bytes[i];
+            if c == b'.' || c == b'_' || c.is_ascii_alphabetic() {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && (bytes[i] == b'.' || bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric()) {
+                    i += 1;
+                }
+                let sym = &expr[start..i];
+                // Check if this is a .Ldot_N label (current position)
+                if sym.starts_with(".Ldot_") {
+                    result.push_str(&cur_offset.to_string());
+                } else if let Some((sec, off)) = self.labels.get(sym) {
+                    if sec == cur_section {
+                        result.push_str(&off.to_string());
+                    } else {
+                        result.push_str(sym);
+                    }
+                } else {
+                    result.push_str(sym);
+                }
+            } else {
+                result.push(c as char);
+                i += 1;
+            }
+        }
+        result
+    }
+
     /// Emit a plain integer value for .long (size=4) or .quad (size=8).
     pub fn emit_data_integer(&mut self, val: i64, size: usize) {
         if size == 4 {
@@ -2050,6 +2121,12 @@ impl ElfWriterBase {
         for sec_name in &self.section_order.clone() {
             if let Some(section) = self.sections.get_mut(sec_name) {
                 for reloc in &mut section.relocs {
+                    // Skip pcrel_lo12 relocations — they must keep their
+                    // .Lpcrel_hi label reference (not section+offset)
+                    let is_pcrel_lo = reloc.reloc_type == 24 || reloc.reloc_type == 25;
+                    if is_pcrel_lo {
+                        continue;
+                    }
                     if (reloc.symbol_name.starts_with(".L") || reloc.symbol_name.starts_with(".l"))
                         && !reloc.symbol_name.is_empty()
                     {

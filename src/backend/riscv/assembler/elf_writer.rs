@@ -106,6 +106,7 @@ fn resolve_numeric_label_refs(statements: &[AsmStatement]) -> Vec<AsmStatement> 
 
     // Second pass: rewrite labels and references
     let mut result = Vec::with_capacity(statements.len());
+    let mut dot_counter: usize = 0;
 
     for (i, stmt) in statements.iter().enumerate() {
         match stmt {
@@ -131,6 +132,14 @@ fn resolve_numeric_label_refs(statements: &[AsmStatement]) -> Vec<AsmStatement> 
                     operands: new_operands,
                     raw_operands: raw_operands.clone(),
                 });
+            }
+            AsmStatement::Directive(dir) => {
+                let new_dir = rewrite_numeric_refs_in_directive(dir, i, &label_defs, &mut dot_counter);
+                // If the directive references '.', a synthetic label was inserted
+                // before the directive. Check and handle.
+                for d in new_dir {
+                    result.push(d);
+                }
             }
             _ => result.push(stmt.clone()),
         }
@@ -196,6 +205,164 @@ fn resolve_numeric_ref_name(
         }
         None
     }
+}
+
+/// Rewrite a symbol name that may be a numeric label ref or `.` (current position).
+/// If it's `.`, a synthetic label is generated and `needs_dot_label` is set.
+fn rewrite_symbol_name(
+    name: &str,
+    stmt_idx: usize,
+    label_defs: &HashMap<String, Vec<(usize, usize)>>,
+    dot_counter: &mut usize,
+    needs_dot_label: &mut Option<String>,
+) -> String {
+    if name == "." {
+        let label = format!(".Ldot_{}", *dot_counter);
+        *dot_counter += 1;
+        *needs_dot_label = Some(label.clone());
+        label
+    } else if let Some(resolved) = resolve_numeric_ref_name(name, stmt_idx, label_defs) {
+        resolved
+    } else {
+        name.to_string()
+    }
+}
+
+/// Rewrite numeric label refs and `.` in a DataValue.
+fn rewrite_data_value(
+    dv: &DataValue,
+    stmt_idx: usize,
+    label_defs: &HashMap<String, Vec<(usize, usize)>>,
+    dot_counter: &mut usize,
+    dot_labels: &mut Vec<String>,
+) -> DataValue {
+    match dv {
+        DataValue::SymbolDiff { sym_a, sym_b, addend } => {
+            let mut needs_dot = None;
+            let new_a = rewrite_symbol_name(sym_a, stmt_idx, label_defs, dot_counter, &mut needs_dot);
+            if let Some(l) = needs_dot.take() { dot_labels.push(l); }
+            let new_b = rewrite_symbol_name(sym_b, stmt_idx, label_defs, dot_counter, &mut needs_dot);
+            if let Some(l) = needs_dot.take() { dot_labels.push(l); }
+            DataValue::SymbolDiff { sym_a: new_a, sym_b: new_b, addend: *addend }
+        }
+        DataValue::Symbol { name, addend } => {
+            let mut needs_dot = None;
+            let new_name = rewrite_symbol_name(name, stmt_idx, label_defs, dot_counter, &mut needs_dot);
+            if let Some(l) = needs_dot.take() { dot_labels.push(l); }
+            DataValue::Symbol { name: new_name, addend: *addend }
+        }
+        DataValue::Expression(expr) => {
+            // Rewrite numeric refs and '.' in expression strings
+            let resolved = rewrite_expr_numeric_refs(expr, stmt_idx, label_defs, dot_counter, dot_labels);
+            DataValue::Expression(resolved)
+        }
+        other => other.clone(),
+    }
+}
+
+/// Rewrite numeric label refs and '.' inside a raw expression string.
+fn rewrite_expr_numeric_refs(
+    expr: &str,
+    stmt_idx: usize,
+    label_defs: &HashMap<String, Vec<(usize, usize)>>,
+    dot_counter: &mut usize,
+    dot_labels: &mut Vec<String>,
+) -> String {
+    // Replace standalone '.' that represents current position
+    // We need to be careful: '.' could appear in symbol names like '.Lfoo'
+    // The pattern we're looking for is '.' surrounded by operators or parens
+    let mut result = String::with_capacity(expr.len());
+    let bytes = expr.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'.' {
+            // Check if this is a standalone '.' (current position)
+            let prev_is_sep = i == 0 || matches!(bytes[i-1], b' ' | b'(' | b')' | b'+' | b'-' | b'*' | b'/' | b'|' | b'&' | b'^' | b',' | b'~');
+            let next_is_sep = i + 1 >= len || matches!(bytes[i+1], b' ' | b'(' | b')' | b'+' | b'-' | b'*' | b'/' | b'|' | b'&' | b'^' | b',' | b'~');
+            if prev_is_sep && next_is_sep {
+                let label = format!(".Ldot_{}", *dot_counter);
+                *dot_counter += 1;
+                dot_labels.push(label.clone());
+                result.push_str(&label);
+                i += 1;
+                continue;
+            }
+        }
+        // Try to match a numeric label reference (digits followed by 'f' or 'b')
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < len && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i < len && (bytes[i] == b'f' || bytes[i] == b'F' || bytes[i] == b'b' || bytes[i] == b'B') {
+                let next_after = if i + 1 < len { bytes[i + 1] } else { b' ' };
+                // Must not be followed by an alphanumeric (to avoid matching hex or identifiers)
+                if !next_after.is_ascii_alphanumeric() && next_after != b'_' {
+                    let ref_str = &expr[start..=i];
+                    if let Some(resolved) = resolve_numeric_ref_name(ref_str, stmt_idx, label_defs) {
+                        result.push_str(&resolved);
+                        i += 1;
+                        continue;
+                    }
+                }
+            }
+            // Not a numeric ref, push digits as-is
+            result.push_str(&expr[start..i]);
+            continue;
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+    result
+}
+
+/// Rewrite a list of DataValues, collecting any dot labels needed.
+fn rewrite_data_values(
+    values: &[DataValue],
+    stmt_idx: usize,
+    label_defs: &HashMap<String, Vec<(usize, usize)>>,
+    dot_counter: &mut usize,
+    dot_labels: &mut Vec<String>,
+) -> Vec<DataValue> {
+    values.iter().map(|dv| rewrite_data_value(dv, stmt_idx, label_defs, dot_counter, dot_labels)).collect()
+}
+
+/// Rewrite numeric label references and '.' in a directive.
+/// Returns a list of statements: possibly a synthetic label before the directive.
+fn rewrite_numeric_refs_in_directive(
+    dir: &Directive,
+    stmt_idx: usize,
+    label_defs: &HashMap<String, Vec<(usize, usize)>>,
+    dot_counter: &mut usize,
+) -> Vec<AsmStatement> {
+    let mut dot_labels: Vec<String> = Vec::new();
+    let new_dir = match dir {
+        Directive::Byte(vals) => {
+            let new_vals = rewrite_data_values(vals, stmt_idx, label_defs, dot_counter, &mut dot_labels);
+            Directive::Byte(new_vals)
+        }
+        Directive::Short(vals) => {
+            let new_vals = rewrite_data_values(vals, stmt_idx, label_defs, dot_counter, &mut dot_labels);
+            Directive::Short(new_vals)
+        }
+        Directive::Long(vals) => {
+            let new_vals = rewrite_data_values(vals, stmt_idx, label_defs, dot_counter, &mut dot_labels);
+            Directive::Long(new_vals)
+        }
+        Directive::Quad(vals) => {
+            let new_vals = rewrite_data_values(vals, stmt_idx, label_defs, dot_counter, &mut dot_labels);
+            Directive::Quad(new_vals)
+        }
+        _ => dir.clone(),
+    };
+    let mut stmts = Vec::new();
+    // Insert synthetic dot labels before the directive
+    for label in dot_labels {
+        stmts.push(AsmStatement::Label(label));
+    }
+    stmts.push(AsmStatement::Directive(new_dir));
+    stmts
 }
 
 impl ElfWriter {
@@ -357,6 +524,13 @@ impl ElfWriter {
                 for dv in values {
                     match dv {
                         DataValue::Integer(v) => self.base.emit_bytes(&(*v as u16).to_le_bytes()),
+                        DataValue::Expression(expr) => {
+                            let resolved = self.base.resolve_expr_aliases(expr);
+                            match crate::backend::asm_expr::parse_integer_expr(&resolved) {
+                                Ok(v) => self.base.emit_bytes(&(v as u16).to_le_bytes()),
+                                Err(e) => return Err(format!("failed to evaluate .short expression '{}': {}", expr, e)),
+                            }
+                        }
                         _ => self.base.emit_bytes(&0u16.to_le_bytes()),
                     }
                 }
@@ -401,7 +575,18 @@ impl ElfWriter {
             Directive::Local(_) => Ok(()),
 
             Directive::Set(alias, target) => {
-                self.base.set_alias(alias, target);
+                // If the target expression contains '.', resolve it as
+                // current offset, then try to evaluate to a constant.
+                let mut resolved = self.base.resolve_expr_aliases(target);
+                if resolved.contains('.') {
+                    resolved = self.base.resolve_expr_labels(&resolved);
+                }
+                // Try to evaluate to a constant; if so, store the constant
+                if let Ok(v) = crate::backend::asm_expr::parse_integer_expr(&resolved) {
+                    self.base.set_alias(alias, &v.to_string());
+                } else {
+                    self.base.set_alias(alias, &resolved);
+                }
                 Ok(())
             }
 
@@ -428,6 +613,29 @@ impl ElfWriter {
                     Ok(_) => Ok(()),
                     Err(e) => Err(e),
                 }
+            }
+
+            Directive::Incbin { path, skip, count } => {
+                let data = std::fs::read(path)
+                    .map_err(|e| format!(".incbin: failed to read '{}': {}", path, e))?;
+                let skip = *skip as usize;
+                let data = if skip < data.len() { &data[skip..] } else { &[] };
+                let data = match count {
+                    Some(c) => {
+                        let c = *c as usize;
+                        if c < data.len() { &data[..c] } else { data }
+                    }
+                    None => data,
+                };
+                self.base.emit_bytes(data);
+                Ok(())
+            }
+
+            Directive::Subsection(_) => {
+                // .subsection is used for code ordering within a section.
+                // For kernel builds, ignoring it is sufficient as the linker
+                // script controls final layout.
+                Ok(())
             }
 
             Directive::Unknown { name, args } => {
@@ -459,6 +667,15 @@ impl ElfWriter {
             }
             DataValue::Integer(v) => {
                 self.base.emit_data_integer(*v, size);
+            }
+            DataValue::Expression(expr) => {
+                let mut resolved = self.base.resolve_expr_aliases(expr);
+                // Resolve .Ldot_N synthetic labels to current offset
+                resolved = self.base.resolve_expr_labels(&resolved);
+                match crate::backend::asm_expr::parse_integer_expr(&resolved) {
+                    Ok(v) => self.base.emit_data_integer(v, size),
+                    Err(e) => return Err(format!("failed to evaluate expression '{}': {}", expr, e)),
+                }
             }
         }
         Ok(())
@@ -678,6 +895,21 @@ impl ElfWriter {
     /// Resolve local branch labels to PC-relative offsets using RISC-V relocation types.
     fn resolve_local_branches(&mut self) -> Result<(), String> {
         for reloc in &self.pending_branch_relocs {
+            // pcrel_lo12 relocations must always be emitted as external relocations
+            // so the linker can pair them with their corresponding pcrel_hi20.
+            let is_pcrel_lo = reloc.reloc_type == 24 || reloc.reloc_type == 25;
+            if is_pcrel_lo {
+                if let Some(section) = self.base.sections.get_mut(&reloc.section) {
+                    section.relocs.push(ObjReloc {
+                        offset: reloc.offset,
+                        reloc_type: reloc.reloc_type,
+                        symbol_name: reloc.symbol.clone(),
+                        addend: reloc.addend,
+                    });
+                }
+                continue;
+            }
+
             let resolved = if let Some((label_name, is_backward)) = parse_numeric_label_ref(&reloc.symbol) {
                 self.resolve_numeric_label_ref(label_name, is_backward, &reloc.section, reloc.offset)
             } else {

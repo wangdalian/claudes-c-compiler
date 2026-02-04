@@ -311,6 +311,8 @@ fn get_reg(operands: &[Operand], idx: usize) -> Result<u32, String> {
         Some(Operand::Reg(name)) => {
             reg_num(name).ok_or_else(|| format!("invalid integer register: {}", name))
         }
+        // GCC sometimes emits bare register numbers (0-31) in inline asm
+        Some(Operand::Imm(n)) if *n >= 0 && *n <= 31 => Ok(*n as u32),
         other => Err(format!("expected register at operand {}, got {:?}", idx, other)),
     }
 }
@@ -329,6 +331,8 @@ fn get_any_reg(operands: &[Operand], idx: usize) -> Result<u32, String> {
         Some(Operand::Reg(name)) => {
             any_reg_num(name).ok_or_else(|| format!("invalid register: {}", name))
         }
+        // GCC sometimes emits bare register numbers (0-31) in inline asm
+        Some(Operand::Imm(n)) if *n >= 0 && *n <= 31 => Ok(*n as u32),
         other => Err(format!("expected register at operand {}, got {:?}", idx, other)),
     }
 }
@@ -568,6 +572,7 @@ pub fn encode_instruction(mnemonic: &str, operands: &[Operand], raw_operands: &s
         "fence" => encode_fence(operands),
         "fence.i" => Ok(EncodeResult::Word(0x0000100F)),
         "fence.tso" => Ok(EncodeResult::Word(0x8330000F)),
+        "pause" => Ok(EncodeResult::Word(0x0100000F)),
 
         // ── Privileged instructions ──
         "wfi" => Ok(EncodeResult::Word(0x10500073)),
@@ -607,8 +612,8 @@ pub fn encode_instruction(mnemonic: &str, operands: &[Operand], raw_operands: &s
         "fcvt.s.wu" => encode_fcvt_from_int(operands, 0b1101000, 0b00001),
         "fcvt.s.l" => encode_fcvt_from_int(operands, 0b1101000, 0b00010),
         "fcvt.s.lu" => encode_fcvt_from_int(operands, 0b1101000, 0b00011),
-        "fmv.x.w" => encode_fmv_x_f(operands, 0b1110000, 0b00),
-        "fmv.w.x" => encode_fmv_f_x(operands, 0b1111000, 0b00),
+        "fmv.x.w" | "fmv.x.s" => encode_fmv_x_f(operands, 0b1110000, 0b00),
+        "fmv.w.x" | "fmv.s.x" => encode_fmv_f_x(operands, 0b1111000, 0b00),
 
         // ── D Extension (double-precision float) ──
         "fld" => encode_float_load(operands, 0b011),
@@ -653,7 +658,7 @@ pub fn encode_instruction(mnemonic: &str, operands: &[Operand], raw_operands: &s
         // ── Pseudo-instructions ──
         "nop" => Ok(EncodeResult::Word(encode_i(OP_OP_IMM, 0, 0, 0, 0))), // addi x0, x0, 0
         "li" => encode_li(operands),
-        "mv" => encode_mv(operands),
+        "mv" | "move" => encode_mv(operands),
         "not" => encode_not(operands),
         "neg" => encode_neg(operands),
         "negw" => encode_negw(operands),
@@ -940,6 +945,23 @@ fn encode_load(operands: &[Operand], funct3: u32) -> Result<EncodeResult, String
                     addend: 0,
                 },
             })
+        }
+        // Bare symbol: "ld rd, symbol" pseudo-instruction
+        // Expand to: auipc rd, %pcrel_hi(symbol) ; ld rd, 0(rd)
+        // with R_RISCV_PCREL_HI20 on auipc and R_RISCV_PCREL_LO12_I on ld
+        Some(Operand::Symbol(s)) | Some(Operand::Label(s)) => {
+            Ok(EncodeResult::WordsWithRelocs(vec![
+                (encode_u(OP_AUIPC, rd, 0), Some(Relocation {
+                    reloc_type: RelocType::PcrelHi20,
+                    symbol: s.clone(),
+                    addend: 0,
+                })),
+                (encode_i(OP_LOAD, rd, funct3, rd, 0), Some(Relocation {
+                    reloc_type: RelocType::PcrelLo12I,
+                    symbol: s.clone(),
+                    addend: 0,
+                })),
+            ]))
         }
         _ => Err("load: expected memory operand".to_string()),
     }
