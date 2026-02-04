@@ -220,7 +220,7 @@ fn mnemonic_size_suffix(mnemonic: &str) -> Option<u8> {
         | "fabs" | "fsqrt" | "frndint" | "f2xm1" | "fscale" | "fpatan" | "fprem" | "fprem1"
         | "fyl2x" | "fyl2xp1" | "fptan" | "fsin" | "fcos" | "fxtract" | "fnclex" | "fxch"
         | "fadd" | "fmul" | "fsub" | "fdiv" | "fnstenv" | "fldenv" | "fnstsw"
-        | "ldmxcsr" | "stmxcsr"
+        | "ldmxcsr" | "stmxcsr" | "wbinvd" | "invd"
         | "pushf" | "pushfq" | "popf" | "popfq" | "int3"
         | "movsq" | "stosq" | "movsw" | "stosw" | "lodsb" | "lodsw" | "lodsd" | "lodsq"
         | "scasb" | "scasw" | "scasd" | "scasq" | "cmpsb" | "cmpsw" | "cmpsd" | "cmpsq" => return None,
@@ -449,6 +449,8 @@ impl InstructionEncoder {
             "cpuid" => { self.bytes.extend_from_slice(&[0x0F, 0xA2]); Ok(()) }
             "rdtsc" => { self.bytes.extend_from_slice(&[0x0F, 0x31]); Ok(()) }
             "rdtscp" => { self.bytes.extend_from_slice(&[0x0F, 0x01, 0xF9]); Ok(()) }
+            "wbinvd" => { self.bytes.extend_from_slice(&[0x0F, 0x09]); Ok(()) }
+            "invd" => { self.bytes.extend_from_slice(&[0x0F, 0x08]); Ok(()) }
 
             // No-ops and misc
             "nop" => { self.bytes.push(0x90); Ok(()) }

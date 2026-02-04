@@ -10,7 +10,9 @@
 //! - The 64-bit data directive (`.quad` vs `.xword` vs `.dword`)
 //! - Extra assembler/linker flags
 
+#[cfg(any(feature = "gcc_assembler", feature = "gcc_linker"))]
 use std::process::Command;
+#[cfg(any(feature = "gcc_assembler", feature = "gcc_linker"))]
 use std::sync::Once;
 use crate::ir::reexports::{
     GlobalInit,
@@ -20,33 +22,33 @@ use crate::ir::reexports::{
 };
 use crate::common::types::IrType;
 
-/// Print a one-time warning when falling back to a GCC-backed assembler.
+/// Print a one-time warning when using a GCC-backed assembler.
 ///
-/// This fires when `MY_ASM` is not set, meaning the compiler shells out to
-/// GCC instead of using its own built-in assembler. The warning is printed
-/// at most once per process to avoid flooding stderr on large builds.
+/// This fires when the `gcc_assembler` feature is enabled and GCC is
+/// being used as the assembler. The warning is printed at most once per
+/// process to avoid flooding stderr on large builds.
+#[cfg(feature = "gcc_assembler")]
 fn warn_gcc_assembler(command: &str) {
     static WARN_ONCE: Once = Once::new();
     WARN_ONCE.call_once(|| {
-        eprintln!("WARNING: Calling GCC-backed assembler ({})", command);
-        eprintln!("WARNING: Set MY_ASM=builtin to use the built-in assembler");
+        eprintln!("WARNING: Using GCC-backed assembler ({}) [gcc_assembler feature enabled]", command);
     });
 }
 
-/// Print a one-time warning when falling back to GCC as the linker driver.
+/// Print a one-time warning when using GCC as the linker driver.
 ///
-/// This fires when `MY_LD` is not set (or disabled), meaning the compiler
-/// shells out to GCC for linking instead of using its own built-in linker
-/// or invoking ld directly. The warning is printed at most once per process.
+/// This fires when the `gcc_linker` feature is enabled and GCC is
+/// being used as the linker. The warning is printed at most once per process.
+#[cfg(feature = "gcc_linker")]
 fn warn_gcc_linker(command: &str) {
     static WARN_ONCE: Once = Once::new();
     WARN_ONCE.call_once(|| {
-        eprintln!("WARNING: Calling GCC-backed linker ({})", command);
-        eprintln!("WARNING: Set MY_LD=builtin to use the built-in linker");
+        eprintln!("WARNING: Using GCC-backed linker ({}) [gcc_linker feature enabled]", command);
     });
 }
 
 /// Configuration for an external assembler.
+#[allow(dead_code)]
 pub struct AssemblerConfig {
     /// The assembler command (e.g., "gcc", "aarch64-linux-gnu-gcc")
     pub command: &'static str,
@@ -55,6 +57,7 @@ pub struct AssemblerConfig {
 }
 
 /// Configuration for an external linker.
+#[allow(dead_code)]
 pub struct LinkerConfig {
     /// The linker command (e.g., "gcc", "aarch64-linux-gnu-gcc")
     pub command: &'static str,
@@ -68,35 +71,24 @@ pub struct LinkerConfig {
     pub arch_name: &'static str,
 }
 
-/// Assemble text to an object file, with additional dynamic arguments.
+/// Assemble text to an object file using GCC as the assembler.
 ///
+/// Only available when the `gcc_assembler` Cargo feature is enabled.
 /// The `extra_dynamic_args` are appended after the config's static extra_args,
 /// allowing runtime overrides (e.g., -mabi=lp64 from CLI flags).
-///
-/// If the `MY_ASM` environment variable is set, its value is used as the
-/// assembler command instead of `config.command`. This allows substituting
-/// a custom assembler (e.g., the project's own assembler stubs in backend/).
+#[cfg(feature = "gcc_assembler")]
 pub fn assemble_with_extra(config: &AssemblerConfig, asm_text: &str, output_path: &str, extra_dynamic_args: &[String]) -> Result<(), String> {
     use crate::common::temp_files::TempFile;
 
-    // Check MY_ASM env var to allow overriding the assembler command.
-    // Note: MY_ASM=builtin is handled at a higher level in Target::assemble_with_extra()
-    // (mod.rs), so by the time we reach here, custom_asm is either a path or unset.
-    let custom_asm = std::env::var("MY_ASM").ok();
+    warn_gcc_assembler(config.command);
 
     let keep_asm = std::env::var("CCC_KEEP_ASM").is_ok();
 
-    // Create an RAII-guarded temp file for the assembly source.
-    // When CCC_KEEP_ASM is set, place the .s next to the output for debugging
-    // and mark it as "keep" so Drop won't delete it.
-    // Otherwise, use TempFile::new() which generates a unique path in $TMPDIR
-    // and automatically cleans up on drop — even on early error returns or panics.
     let asm_file = if keep_asm {
         let mut f = TempFile::with_path(format!("{}.s", output_path).into());
         f.set_keep(true);
         f
     } else {
-        // Extract a short stem from the output path for the temp file name.
         let stem = std::path::Path::new(output_path)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -106,27 +98,17 @@ pub fn assemble_with_extra(config: &AssemblerConfig, asm_text: &str, output_path
     std::fs::write(asm_file.path(), asm_text)
         .map_err(|e| format!("Failed to write assembly: {}", e))?;
 
-    let asm_command = custom_asm.as_deref().unwrap_or(config.command);
-
-    // Warn loudly when falling back to GCC-backed assembler
-    if custom_asm.is_none() {
-        warn_gcc_assembler(config.command);
-    }
-
-    let mut cmd = Command::new(asm_command);
+    let mut cmd = Command::new(config.command);
     cmd.args(config.extra_args);
     cmd.args(extra_dynamic_args);
     cmd.args(["-c", "-o", output_path, asm_file.to_str()]);
 
     let result = cmd.output()
-        .map_err(|e| format!("Failed to run assembler ({}): {}", asm_command, e))?;
-
-    // asm_file is dropped here (or on any early return above), cleaning up
-    // the temp .s file automatically — unless keep_asm is set.
+        .map_err(|e| format!("Failed to run assembler ({}): {}", config.command, e))?;
 
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(format!("Assembly failed ({}): {}", asm_command, stderr));
+        return Err(format!("Assembly failed ({}): {}", config.command, stderr));
     }
 
     Ok(())
@@ -206,70 +188,13 @@ pub fn link(config: &LinkerConfig, object_files: &[&str], output_path: &str) -> 
     link_with_args(config, object_files, output_path, &[])
 }
 
-/// Resolve the ld binary path from MY_LD's value.
-///
-/// If `ld_val` looks like a path or command name (contains `/` or is an executable in PATH),
-/// return it as-is. If it's a boolean-like flag ("1", "true", "yes"), auto-detect the
-/// correct ld for the target architecture's ELF machine type.
-fn resolve_ld_path(ld_val: &str, elf_machine: u16) -> Result<String, String> {
-    // If the value contains a '/' it's an explicit path — use it directly
-    if ld_val.contains('/') {
-        return Ok(ld_val.to_string());
-    }
-
-    // If it looks like a real command name (not a boolean flag), use it as-is
-    // Boolean-like values: "1", "true", "yes", "on", "TRUE", "YES", etc.
-    let lower = ld_val.to_lowercase();
-    let is_boolean = matches!(lower.as_str(), "1" | "true" | "yes" | "on");
-
-    if !is_boolean {
-        // It's something like "ld" or "ld.bfd" or "riscv64-linux-gnu-ld" — use as command name
-        return Ok(ld_val.to_string());
-    }
-
-    // Auto-resolve the correct ld binary for the target architecture
-    let candidates: &[&str] = match elf_machine {
-        62 => &["ld"],   // EM_X86_64: native ld
-        3 => &["i686-linux-gnu-ld", "i386-linux-gnu-ld", "ld"],   // EM_386
-        183 => &["aarch64-linux-gnu-ld", "ld"],   // EM_AARCH64
-        243 => &["riscv64-linux-gnu-ld", "ld"],   // EM_RISCV
-        _ => &["ld"],
-    };
-
-    for candidate in candidates {
-        // Check if the candidate exists in PATH
-        if let Ok(output) = Command::new("which").arg(candidate).output() {
-            if output.status.success() {
-                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !path.is_empty() {
-                    return Ok(path);
-                }
-            }
-        }
-    }
-
-    Err(format!(
-        "MY_LD=1: could not find a suitable ld binary for ELF machine {}. \
-         Tried: {}. Set MY_LD to the full path of your ld binary instead.",
-        elf_machine,
-        candidates.join(", ")
-    ))
-}
-
 /// Link object files into an executable (or shared library), with additional user-provided linker args.
 ///
-/// If the `MY_LD` environment variable is set, its value is used as the
-/// linker command instead of `config.command`. When MY_LD is set, we invoke
-/// the linker directly (ld-style) rather than through GCC, which means we
-/// must provide CRT objects, library paths, and convert -Wl, flags ourselves.
-/// Currently the direct-ld path is implemented for x86-64, i686, AArch64,
-/// and RISC-V 64-bit.
+/// When the `gcc_linker` Cargo feature is enabled, uses GCC as the linker
+/// driver (with a warning). When disabled (default), uses the built-in native
+/// linker for all supported architectures.
 pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path: &str, user_args: &[String]) -> Result<(), String> {
-    // Validate that all input .o files match the target architecture before invoking
-    // the external linker. This catches stale objects from a previous build (e.g.,
-    // x86-64 .o files left in the build directory when cross-compiling for RISC-V)
-    // and gives a clear, actionable error message instead of the cryptic linker error
-    // "Relocations in generic ELF (EM: XX)".
+    // Validate that all input .o files match the target architecture.
     validate_object_architectures(
         object_files.iter().copied().chain(user_args.iter().map(|s| s.as_str())),
         config.expected_elf_machine,
@@ -279,82 +204,79 @@ pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path:
     let is_shared = user_args.iter().any(|a| a == "-shared");
     let is_nostdlib = user_args.iter().any(|a| a == "-nostdlib");
     let is_relocatable = user_args.iter().any(|a| a == "-r");
+    #[allow(unused_variables)]
     let is_static = user_args.iter().any(|a| a == "-static");
 
-    // Check MY_LD env var to allow overriding the linker command.
-    // MY_LD can be either a path to the ld binary (e.g., "/usr/bin/ld") or a boolean
-    // flag (e.g., "1") to auto-resolve the correct ld for the target architecture.
-    let custom_ld = std::env::var("MY_LD").ok();
-
-    // When MY_LD is set, invoke ld directly instead of going through GCC.
-    // This requires us to do everything GCC normally does: find CRT objects,
-    // add library search paths, convert -Wl, flags, etc.
-    // MY_LD=0/false/no/off/empty are treated as "not set" (fall through to GCC).
-    if let Some(ref ld_val) = custom_ld {
-        let lower = ld_val.to_lowercase();
-        let is_disabled = matches!(lower.as_str(), "0" | "false" | "no" | "off" | "");
-
-        if !is_disabled {
-            // Use the built-in native linker for all supported architectures.
-            // This avoids requiring an external ld binary entirely.
-            // All architectures use the same pattern: CRT/library discovery
-            // via DirectLdArchConfig, then delegate to the architecture-specific
-            // native linker.
-            if !is_shared && !is_relocatable {
-                if config.expected_elf_machine == 62 {
-                    return link_builtin_x86(
-                        object_files, output_path, user_args,
-                        is_nostdlib, is_static,
-                    );
-                }
-                if config.expected_elf_machine == 3 {
-                    return link_builtin_i686(
-                        object_files, output_path, user_args,
-                        is_nostdlib, is_static,
-                    );
-                }
-                if config.expected_elf_machine == 183 {
-                    return link_builtin_aarch64(
-                        object_files, output_path, user_args,
-                        is_nostdlib, is_static,
-                    );
-                }
-                if config.expected_elf_machine == 243 {
-                    return link_builtin_riscv(
-                        object_files, output_path, user_args,
-                        is_nostdlib, is_static,
-                    );
-                }
-            }
-
-            // When MY_LD=builtin and the builtin linker can't handle this operation
-            // (e.g., -shared or -r), fall through to the GCC default path rather than
-            // trying to execute a binary named "builtin".
-            if !(lower == "builtin" && (is_shared || is_relocatable)) {
-                // For other architectures, resolve ld path and use direct ld invocation.
-                // If the value is a boolean-like flag ("1", "true", "yes"),
-                // auto-detect the correct ld for the target arch.
-                let ld_path = resolve_ld_path(ld_val, config.expected_elf_machine)?;
-
-                if let Some(arch_config) = get_direct_ld_config(config.expected_elf_machine) {
-                    return link_direct_ld(
-                        &ld_path, arch_config, object_files, output_path, user_args,
-                        is_shared, is_nostdlib, is_relocatable, is_static,
-                    );
-                }
-            }
-        }
+    // When gcc_linker feature is enabled, use GCC for ALL linking
+    #[cfg(feature = "gcc_linker")]
+    {
+        return link_with_gcc(config, object_files, output_path, user_args,
+                            is_shared, is_nostdlib, is_relocatable);
     }
 
-    // Default path: invoke GCC as the linker driver
+    // Default (gcc_linker disabled): use the built-in native linker
+    #[cfg(not(feature = "gcc_linker"))]
+    {
+        if !is_shared && !is_relocatable {
+            if config.expected_elf_machine == 62 {
+                return link_builtin_x86(
+                    object_files, output_path, user_args,
+                    is_nostdlib, is_static,
+                );
+            }
+            if config.expected_elf_machine == 3 {
+                return link_builtin_i686(
+                    object_files, output_path, user_args,
+                    is_nostdlib, is_static,
+                );
+            }
+            if config.expected_elf_machine == 183 {
+                return link_builtin_aarch64(
+                    object_files, output_path, user_args,
+                    is_nostdlib, is_static,
+                );
+            }
+            if config.expected_elf_machine == 243 {
+                return link_builtin_riscv(
+                    object_files, output_path, user_args,
+                    is_nostdlib, is_static,
+                );
+            }
+        }
+
+        if is_shared {
+            return Err("Shared library linking (-shared) requires the gcc_linker feature. \
+                       Rebuild with: cargo build --features gcc_linker".to_string());
+        }
+        if is_relocatable {
+            return Err("Relocatable linking (-r) requires the gcc_linker feature. \
+                       Rebuild with: cargo build --features gcc_linker".to_string());
+        }
+        Err(format!(
+            "No built-in linker for ELF machine {} ({}). \
+             Rebuild with: cargo build --features gcc_linker",
+            config.expected_elf_machine, config.arch_name
+        ))
+    }
+}
+
+/// Link using GCC as the linker driver (fallback path).
+///
+/// Only compiled when the `gcc_linker` Cargo feature is enabled.
+#[cfg(feature = "gcc_linker")]
+fn link_with_gcc(
+    config: &LinkerConfig,
+    object_files: &[&str],
+    output_path: &str,
+    user_args: &[String],
+    is_shared: bool,
+    is_nostdlib: bool,
+    is_relocatable: bool,
+) -> Result<(), String> {
     warn_gcc_linker(config.command);
     let ld_command = config.command;
 
     let mut cmd = Command::new(ld_command);
-    // Skip flags that conflict with -shared or -r:
-    // -no-pie/-pie conflict with -shared and -r, and -static causes the linker to
-    // use static CRT objects (e.g. crtbeginT.o) whose absolute relocations
-    // (R_RISCV_HI20, R_AARCH64_ADR_PREL_PG_HI21) are incompatible with PIC.
     let skip_extra = is_shared || is_relocatable;
     for arg in config.extra_args {
         if skip_extra && (*arg == "-no-pie" || *arg == "-pie" || *arg == "-static") {
@@ -363,9 +285,6 @@ pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path:
         cmd.arg(arg);
     }
     cmd.arg("-o").arg(output_path);
-    // Tell linker not to require .note.GNU-stack section (suppresses warnings from
-    // hand-written .S files like musl's __set_thread_area.S that lack this section).
-    // Skip for relocatable links as this is an executable/shared-lib-only flag.
     if !is_relocatable {
         cmd.arg("-Wl,-z,noexecstack");
     }
@@ -374,17 +293,10 @@ pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path:
         cmd.arg(obj);
     }
 
-    // Add user-provided linker args (-l, -L, -static, -shared, -Wl, pass-through, etc.)
     for arg in user_args {
         cmd.arg(arg);
     }
 
-    // Always append default libs at the end (skip for -nostdlib and -shared).
-    // We must always add -lc and -lm here even if the user already specified them
-    // earlier on the command line, because static archives (.a files) appearing
-    // after the user's -l flags may have unresolved references to libc/libm symbols.
-    // Having a library appear twice on the link line is harmless but ensures all
-    // forward references from later archives are satisfied.
     if !is_nostdlib && !is_shared {
         cmd.arg("-lc");
         cmd.arg("-lm");
@@ -393,9 +305,6 @@ pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path:
     let result = cmd.output()
         .map_err(|e| format!("Failed to run linker ({}): {}", ld_command, e))?;
 
-    // Forward linker stdout to our stdout. Normally empty, but needed for build
-    // systems like Meson that detect the linker by running `-Wl,--version` and
-    // parsing the linker's version output from the compiler process's stdout.
     if !result.stdout.is_empty() {
         use std::io::Write;
         let _ = std::io::stdout().write_all(&result.stdout);
@@ -409,12 +318,13 @@ pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path:
     Ok(())
 }
 
-/// Per-architecture configuration for direct ld invocation.
+/// Per-architecture configuration for direct ld invocation and built-in linker
+/// CRT/library discovery.
 ///
-/// When MY_LD is set, we invoke ld directly instead of going through GCC.
 /// Each architecture has different CRT/GCC library paths, emulation mode,
 /// dynamic linker path, etc. This struct captures all those differences
 /// so a single generic function can handle all backends.
+#[allow(dead_code)]
 struct DirectLdArchConfig {
     /// Human-readable architecture name for error messages (e.g., "x86-64", "RISC-V")
     arch_name: &'static str,
@@ -444,10 +354,13 @@ struct DirectLdArchConfig {
 }
 
 /// Standard GCC versions to probe (newest to oldest), shared across most architectures.
+#[allow(dead_code)]
 const GCC_VERSIONS_FULL: &[&str] = &["14", "13", "12", "11", "10", "9", "8", "7", "6", "5", "4.9"];
 /// Shorter version list for architectures that don't have very old GCC support.
+#[allow(dead_code)]
 const GCC_VERSIONS_SHORT: &[&str] = &["14", "13", "12", "11", "10", "9", "8", "7"];
 
+#[allow(dead_code)]
 const DIRECT_LD_X86_64: DirectLdArchConfig = DirectLdArchConfig {
     arch_name: "x86-64",
     emulation: "elf_x86_64",
@@ -479,6 +392,7 @@ const DIRECT_LD_X86_64: DirectLdArchConfig = DirectLdArchConfig {
     gcc_package_hint: "Is the GCC development package installed?",
 };
 
+#[allow(dead_code)]
 const DIRECT_LD_RISCV64: DirectLdArchConfig = DirectLdArchConfig {
     arch_name: "RISC-V",
     emulation: "elf64lriscv",
@@ -508,6 +422,7 @@ const DIRECT_LD_RISCV64: DirectLdArchConfig = DirectLdArchConfig {
         (e.g., gcc-riscv64-linux-gnu)",
 };
 
+#[allow(dead_code)]
 const DIRECT_LD_I686: DirectLdArchConfig = DirectLdArchConfig {
     arch_name: "i686",
     emulation: "elf_i386",
@@ -542,6 +457,7 @@ const DIRECT_LD_I686: DirectLdArchConfig = DirectLdArchConfig {
     gcc_package_hint: "Is the gcc-i686-linux-gnu package installed?",
 };
 
+#[allow(dead_code)]
 const DIRECT_LD_AARCH64: DirectLdArchConfig = DirectLdArchConfig {
     arch_name: "AArch64",
     emulation: "aarch64linux",
@@ -576,19 +492,9 @@ const DIRECT_LD_AARCH64: DirectLdArchConfig = DirectLdArchConfig {
     gcc_package_hint: "Is the gcc-aarch64-linux-gnu package installed?",
 };
 
-/// Get the DirectLdArchConfig for a given ELF e_machine value.
-fn get_direct_ld_config(e_machine: u16) -> Option<&'static DirectLdArchConfig> {
-    match e_machine {
-        62 => Some(&DIRECT_LD_X86_64),    // EM_X86_64
-        243 => Some(&DIRECT_LD_RISCV64),  // EM_RISCV
-        3 => Some(&DIRECT_LD_I686),       // EM_386
-        183 => Some(&DIRECT_LD_AARCH64),  // EM_AARCH64
-        _ => None,
-    }
-}
-
 /// Discover GCC's library directory by probing well-known paths.
 /// Returns the path containing crtbegin.o (e.g., "/usr/lib/gcc/x86_64-linux-gnu/13").
+#[allow(dead_code)]
 fn find_gcc_lib_dir(arch: &DirectLdArchConfig) -> Option<String> {
     for base in arch.gcc_lib_base_paths {
         for ver in arch.gcc_versions {
@@ -604,6 +510,7 @@ fn find_gcc_lib_dir(arch: &DirectLdArchConfig) -> Option<String> {
 
 /// Discover the system CRT directory containing crt1.o.
 /// Returns the path (e.g., "/usr/lib/x86_64-linux-gnu").
+#[allow(dead_code)]
 fn find_crt_dir(arch: &DirectLdArchConfig) -> Option<String> {
     for dir in arch.crt_dir_candidates {
         let crt1 = format!("{}/crt1.o", dir);
@@ -623,6 +530,7 @@ fn find_crt_dir(arch: &DirectLdArchConfig) -> Option<String> {
 /// - `crt_after`: CRT objects to link after user objects
 /// - `lib_paths`: Combined library search paths (user -L first, then system paths)
 /// - `needed_libs`: Default libraries to link
+#[allow(dead_code)]
 struct BuiltinLinkSetup {
     crt_before: Vec<String>,
     crt_after: Vec<String>,
@@ -630,6 +538,7 @@ struct BuiltinLinkSetup {
     needed_libs: Vec<String>,
 }
 
+#[allow(dead_code)]
 fn resolve_builtin_link_setup(
     arch: &DirectLdArchConfig,
     user_args: &[String],
@@ -740,6 +649,7 @@ fn resolve_builtin_link_setup(
 /// reads ELF .o files and .a archives, resolves symbols against system shared
 /// libraries (libc.so.6), handles relocations, and produces a dynamically-linked
 /// ELF executable.
+#[allow(dead_code)]
 pub(crate) fn link_builtin_x86(
     object_files: &[&str],
     output_path: &str,
@@ -771,6 +681,7 @@ pub(crate) fn link_builtin_x86(
 ///
 /// Parallel to `link_builtin_x86`: uses `DIRECT_LD_I686` for CRT/library
 /// discovery, then delegates to the i686 native linker.
+#[allow(dead_code)]
 pub(crate) fn link_builtin_i686(
     object_files: &[&str],
     output_path: &str,
@@ -811,6 +722,7 @@ pub(crate) fn link_builtin_i686(
 ///
 /// Parallel to `link_builtin_x86`: uses `DIRECT_LD_AARCH64` for CRT/library
 /// discovery, then delegates to the AArch64 native static linker.
+#[allow(dead_code)]
 pub(crate) fn link_builtin_aarch64(
     object_files: &[&str],
     output_path: &str,
@@ -850,6 +762,7 @@ pub(crate) fn link_builtin_aarch64(
 ///
 /// Parallel to `link_builtin_x86`: uses `DIRECT_LD_RISCV64` for CRT/library
 /// discovery, then delegates to the RISC-V native linker.
+#[allow(dead_code)]
 pub(crate) fn link_builtin_riscv(
     object_files: &[&str],
     output_path: &str,
@@ -889,214 +802,6 @@ pub(crate) fn link_builtin_riscv(
         &crt_before_refs,
         &crt_after_refs,
     )
-}
-
-/// Link using ld directly (not through GCC) for any supported architecture.
-///
-/// This replicates what GCC does when it invokes collect2/ld:
-/// - Adds CRT startup objects (crt1.o, crti.o, crtbegin.o) before user objects
-/// - Adds CRT finalization objects (crtend.o, crtn.o) after user objects
-/// - Adds library search paths (-L) for GCC and system libraries
-/// - Adds default libraries (-lgcc, -lgcc_s, -lc) unless -nostdlib
-/// - Sets the dynamic linker, emulation mode, and other ld flags
-/// - Converts -Wl, prefixed flags to direct ld flags
-///
-/// Architecture-specific differences (emulation mode, dynamic linker path, CRT object
-/// locations, extra flags) are captured in `DirectLdArchConfig`.
-#[allow(clippy::too_many_arguments)]
-fn link_direct_ld(
-    ld_command: &str,
-    arch: &DirectLdArchConfig,
-    object_files: &[&str],
-    output_path: &str,
-    user_args: &[String],
-    is_shared: bool,
-    is_nostdlib: bool,
-    is_relocatable: bool,
-    is_static: bool,
-) -> Result<(), String> {
-    let gcc_lib_dir = find_gcc_lib_dir(arch);
-    let crt_dir = find_crt_dir(arch);
-
-    // Early check: if we need CRT objects but can't find them, give a clear error
-    if !is_nostdlib && !is_relocatable {
-        if crt_dir.is_none() {
-            return Err(format!(
-                "MY_LD ({}): could not find system CRT objects (crt1.o). {}",
-                arch.arch_name, arch.crt_package_hint
-            ));
-        }
-        if gcc_lib_dir.is_none() {
-            return Err(format!(
-                "MY_LD ({}): could not find GCC CRT objects (crtbegin.o, crtend.o). {}",
-                arch.arch_name, arch.gcc_package_hint
-            ));
-        }
-    }
-
-    let mut cmd = Command::new(ld_command);
-
-    // Basic ld flags that GCC always passes
-    cmd.arg("--build-id");
-    if !is_relocatable && !is_static {
-        cmd.arg("--eh-frame-hdr");
-    }
-    cmd.arg("-m").arg(arch.emulation);
-    cmd.arg("--hash-style=gnu");
-    cmd.arg("--as-needed");
-
-    // Architecture-specific extra flags (e.g., AArch64 erratum workarounds)
-    for flag in arch.extra_ld_flags {
-        cmd.arg(flag);
-    }
-
-    if is_static {
-        cmd.arg("-static");
-    }
-
-    // Dynamic linker (skip for -shared, -r, and -static)
-    if !is_shared && !is_relocatable && !is_static {
-        cmd.arg("-dynamic-linker").arg(arch.dynamic_linker);
-    }
-
-    // Security hardening
-    if !is_relocatable {
-        cmd.arg("-z").arg("relro");
-        cmd.arg("-z").arg("noexecstack");
-    }
-
-    cmd.arg("-o").arg(output_path);
-
-    if is_shared {
-        cmd.arg("-shared");
-    }
-    if is_relocatable {
-        cmd.arg("-r");
-    }
-
-    // CRT startup objects (skip for -nostdlib and -r)
-    if !is_nostdlib && !is_relocatable {
-        if !is_shared {
-            if let Some(ref crt) = crt_dir {
-                cmd.arg(format!("{}/crt1.o", crt));
-            }
-        }
-        // crti.o: from gcc_lib_dir for cross targets (RISC-V), crt_dir for native
-        if arch.crti_from_gcc_dir {
-            if let Some(ref gcc) = gcc_lib_dir {
-                cmd.arg(format!("{}/crti.o", gcc));
-            }
-        } else if let Some(ref crt) = crt_dir {
-            cmd.arg(format!("{}/crti.o", crt));
-        }
-        if let Some(ref gcc) = gcc_lib_dir {
-            if is_shared {
-                cmd.arg(format!("{}/crtbeginS.o", gcc));
-            } else if is_static {
-                cmd.arg(format!("{}/crtbeginT.o", gcc));
-            } else {
-                cmd.arg(format!("{}/crtbegin.o", gcc));
-            }
-        }
-    }
-
-    for obj in object_files {
-        cmd.arg(obj);
-    }
-
-    // User-provided linker args, with -Wl, prefix stripping and GCC flag conversion.
-    // User args (including -L paths) come BEFORE system library search paths,
-    // matching GCC's behavior so user-supplied libraries take precedence.
-    for arg in user_args {
-        if let Some(wl_arg) = arg.strip_prefix("-Wl,") {
-            for part in wl_arg.split(',') {
-                if !part.is_empty() {
-                    cmd.arg(part);
-                }
-            }
-        } else if arg == "-nostdlib" || arg == "-no-pie" || arg == "-shared"
-               || arg == "-static" || arg == "-r"
-               || arch.extra_skip_flags.contains(&arg.as_str()) {
-            continue;
-        } else if arg == "-rdynamic" {
-            cmd.arg("--export-dynamic");
-        } else {
-            cmd.arg(arg);
-        }
-    }
-
-    // System library search paths come after user args so user -L paths
-    // take precedence (matches GCC linker driver ordering)
-    if let Some(ref gcc) = gcc_lib_dir {
-        cmd.arg(format!("-L{}", gcc));
-    }
-    if let Some(ref crt) = crt_dir {
-        cmd.arg(format!("-L{}", crt));
-    }
-    for dir in arch.system_lib_dirs {
-        if std::path::Path::new(dir).exists() {
-            cmd.arg(format!("-L{}", dir));
-        }
-    }
-
-    // Default libraries (skip for -nostdlib and -r; shared libraries need -lc too)
-    if !is_nostdlib && !is_relocatable {
-        if is_static {
-            cmd.arg("--start-group");
-            cmd.arg("-lgcc");
-            cmd.arg("-lgcc_eh");
-            cmd.arg("-lc");
-            cmd.arg("-lm");
-            cmd.arg("--end-group");
-        } else {
-            cmd.arg("-lgcc");
-            cmd.arg("--push-state");
-            cmd.arg("--as-needed");
-            cmd.arg("-lgcc_s");
-            cmd.arg("--pop-state");
-            cmd.arg("-lc");
-            cmd.arg("-lm");
-            cmd.arg("-lgcc");
-            cmd.arg("--push-state");
-            cmd.arg("--as-needed");
-            cmd.arg("-lgcc_s");
-            cmd.arg("--pop-state");
-        }
-    }
-
-    // CRT finalization objects (skip for -nostdlib and -r)
-    if !is_nostdlib && !is_relocatable {
-        if let Some(ref gcc) = gcc_lib_dir {
-            if is_shared {
-                cmd.arg(format!("{}/crtendS.o", gcc));
-            } else {
-                cmd.arg(format!("{}/crtend.o", gcc));
-            }
-        }
-        // crtn.o: from gcc_lib_dir for cross targets (RISC-V), crt_dir for native
-        if arch.crti_from_gcc_dir {
-            if let Some(ref gcc) = gcc_lib_dir {
-                cmd.arg(format!("{}/crtn.o", gcc));
-            }
-        } else if let Some(ref crt) = crt_dir {
-            cmd.arg(format!("{}/crtn.o", crt));
-        }
-    }
-
-    let result = cmd.output()
-        .map_err(|e| format!("Failed to run linker ({}): {}", ld_command, e))?;
-
-    if !result.stdout.is_empty() {
-        use std::io::Write;
-        let _ = std::io::stdout().write_all(&result.stdout);
-    }
-
-    if !result.status.success() {
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(format!("Linking failed ({}): {}", ld_command, stderr));
-    }
-
-    Ok(())
 }
 
 /// Assembly output buffer with helpers for emitting text.

@@ -3,9 +3,9 @@
 //! Links ELF relocatable object files (.o) and static archives (.a) into
 //! a statically-linked ELF64 executable for AArch64 (ARM 64-bit).
 //!
-//! When `MY_LD=builtin` is set, the compiler uses this built-in linker
-//! instead of calling an external `ld`. CRT object discovery and library
-//! path resolution are handled by common.rs's `resolve_builtin_link_setup`.
+//! This is the default linker (used when the `gcc_linker` feature is disabled).
+//! CRT object discovery and library path resolution are handled by
+//! common.rs's `resolve_builtin_link_setup`.
 //!
 //! Supported AArch64 relocations:
 //! - R_AARCH64_ABS64, ABS32, ABS16 (absolute)

@@ -1,25 +1,27 @@
 //! External tool invocation: assembler, linker, and dependency files.
 //!
-//! The compiler delegates assembly and linking to the system GCC toolchain.
-//! This module centralizes all external process spawning so the rest of the
-//! driver doesn't need to deal with `std::process::Command` building.
+//! By default, the compiler uses built-in assembler and linker implementations.
+//! When the `gcc_assembler` or `gcc_linker` Cargo features are enabled, GCC
+//! can be used as a fallback. The `gcc_m16` feature enables GCC passthrough
+//! for -m16 mode (16-bit real-mode boot code).
 
+#[cfg(feature = "gcc_assembler")]
 use std::sync::Once;
 use super::Driver;
 use crate::backend::Target;
 
-/// Print a one-time warning when falling back to a GCC-backed assembler for
-/// source .s/.S files. Uses a separate `Once` from the compiler-generated
-/// assembly warning in `common.rs` since these are distinct code paths.
+/// Print a one-time warning when using a GCC-backed assembler for
+/// source .s/.S files.
+#[cfg(feature = "gcc_assembler")]
 fn warn_gcc_source_assembler(command: &str) {
     static WARN_ONCE: Once = Once::new();
     WARN_ONCE.call_once(|| {
-        eprintln!("WARNING: Calling GCC-backed assembler for source files ({})", command);
-        eprintln!("WARNING: Set MY_ASM=builtin to use the built-in assembler");
+        eprintln!("WARNING: Using GCC-backed assembler for source files ({}) [gcc_assembler feature enabled]", command);
     });
 }
 
 /// Output mode for GCC -m16 passthrough compilation.
+#[cfg(feature = "gcc_m16")]
 pub(super) enum GccM16Mode {
     /// Generate assembly output (-S)
     Assembly,
@@ -30,22 +32,29 @@ pub(super) enum GccM16Mode {
 impl Driver {
     /// Compile a C source file using GCC instead of the internal compiler.
     ///
+    /// Only available when the `gcc_m16` Cargo feature is enabled.
+    ///
     /// This is a hack for -m16 mode: the internal i686 backend produces code
     /// that is too large for the 32KB real-mode limit in Linux kernel boot code.
     /// Until our code size is competitive with GCC, we delegate -m16 compilation
     /// to GCC so the kernel can boot.
     ///
-    /// We forward the raw CLI arguments directly to GCC, preserving flag ordering
-    /// (critical for overrides like -fcf-protection=none after =branch). We strip
-    /// out -o, -c, -S, and input files, then add our own mode flags.
-    ///
     /// TODO: Remove this once i686 code size optimizations bring boot code under 32KB.
+    #[cfg(feature = "gcc_m16")]
     pub(super) fn compile_with_gcc_m16(
         &self,
         input_file: &str,
         output_path: &str,
         mode: GccM16Mode,
     ) -> Result<Option<String>, String> {
+        // Warn prominently about using GCC for -m16 compilation
+        static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+        WARN_ONCE.call_once(|| {
+            eprintln!("WARNING: *** Using GCC for -m16 compilation (boot code) ***");
+            eprintln!("WARNING: *** This delegates the ENTIRE compilation to GCC ***");
+            eprintln!("WARNING: *** The gcc_m16 feature flag is enabled ***");
+        });
+
         let mut cmd = std::process::Command::new("gcc");
 
         // Forward raw args, skipping -o <path>, -c, -S flags (we set those ourselves)
@@ -96,43 +105,46 @@ impl Driver {
         }
     }
 
-    /// Assemble a .s or .S file to an object file using the target assembler.
-    /// For .S files, gcc handles preprocessing (macros, #include, etc.).
+    /// Assemble a .s or .S file to an object file.
     ///
-    /// If the `MY_ASM` environment variable is set to "builtin", uses the
-    /// built-in assembler by reading the file and passing its contents to
-    /// `Target::assemble_with_extra`. For .S files, the built-in C preprocessor
-    /// is run first to expand macros and includes.
-    ///
-    /// If `MY_ASM` is set to any other value, it is used as a custom assembler
-    /// command. If unset, the target's default assembler (gcc) is used.
+    /// When the `gcc_assembler` Cargo feature is enabled, uses GCC for
+    /// assembling (with a warning). When disabled (default), uses the
+    /// built-in assembler with built-in C preprocessor for .S files.
     pub(super) fn assemble_source_file(&self, input_file: &str, output_path: &str) -> Result<(), String> {
-        let config = self.target.assembler_config();
-        // Check MY_ASM env var to allow overriding the assembler command.
-        let custom_asm = std::env::var("MY_ASM").ok();
+        // When gcc_assembler feature is enabled, use GCC for assembling
+        #[cfg(feature = "gcc_assembler")]
+        {
+            return self.assemble_source_file_gcc(input_file, output_path, None);
+        }
 
-        // Handle MY_ASM=builtin: read the file and use the built-in assembler
-        if custom_asm.as_deref() == Some("builtin") {
-            // When -Wa,--version is passed, print a GNU-compatible version string.
-            // The Linux kernel's scripts/as-version.sh probes the assembler version
-            // this way and expects "GNU assembler ... <version>" on stdout.
+        // Default (gcc_assembler disabled): use built-in assembler
+        #[cfg(not(feature = "gcc_assembler"))]
+        {
+            // Handle -Wa,--version: print GNU-compatible version string
             if self.assembler_extra_args.iter().any(|a| a == "--version") {
                 println!("GNU assembler (CCC built-in) 2.42");
                 return Ok(());
             }
-            return self.assemble_source_file_builtin(input_file, output_path);
+            self.assemble_source_file_builtin(input_file, output_path)
         }
+    }
 
-        // Warn loudly when falling back to GCC-backed assembler for .s/.S files
-        if custom_asm.is_none() {
+    /// Assemble a source file using an external GCC-backed assembler.
+    ///
+    /// Only compiled when the `gcc_assembler` feature is enabled.
+    #[cfg(feature = "gcc_assembler")]
+    fn assemble_source_file_gcc(&self, input_file: &str, output_path: &str, custom_command: Option<&str>) -> Result<(), String> {
+        let config = self.target.assembler_config();
+        let asm_command = custom_command.unwrap_or(config.command);
+
+        // Warn when using GCC-backed assembler (custom path is OK)
+        if custom_command.is_none() {
             warn_gcc_source_assembler(config.command);
         }
-        let asm_command = custom_asm.as_deref().unwrap_or(config.command);
+
         let mut cmd = std::process::Command::new(asm_command);
         cmd.args(config.extra_args);
 
-        // Pass through RISC-V ABI/arch overrides (must come after config defaults
-        // so GCC uses last-wins semantics for -mabi= and -march=).
         let extra_asm_args = self.build_asm_extra_args();
         cmd.args(&extra_asm_args);
 
@@ -156,8 +168,6 @@ impl Driver {
                 cmd.arg(format!("-D{}={}", def.name, def.value));
             }
         }
-        // Pass through force-include files (-include), -nostdinc, and -U flags
-        // for .S preprocessing (needed by kernel for kconfig.h, etc.)
         for inc in &self.force_includes {
             cmd.arg("-include").arg(inc);
         }
@@ -168,21 +178,16 @@ impl Driver {
             cmd.arg(format!("-U{}", undef));
         }
 
-        // Pass through -Wa, assembler flags
         for flag in &self.assembler_extra_args {
             cmd.arg(format!("-Wa,{}", flag));
         }
 
-        // When explicit language is set (from -x flag), tell gcc too
         if let Some(ref lang) = self.explicit_language {
             cmd.arg("-x").arg(lang);
         }
 
         cmd.args(["-c", "-o", output_path, input_file]);
 
-        // If assembler extra args are present (e.g., -Wa,--version), inherit
-        // stdout so the assembler's output flows through to the caller.
-        // This is needed by kernel's as-version.sh which captures the output.
         if !self.assembler_extra_args.is_empty() {
             cmd.stdout(std::process::Stdio::inherit());
         }
@@ -206,6 +211,7 @@ impl Driver {
     ///
     /// For .s files (pure assembly), reads the file directly and passes it
     /// to the builtin assembler.
+    #[allow(dead_code)]
     fn assemble_source_file_builtin(&self, input_file: &str, output_path: &str) -> Result<(), String> {
         let asm_text = if input_file.ends_with(".S") {
             // .S files need C preprocessing before assembly

@@ -19,8 +19,7 @@ use elf_writer::ElfWriter;
 
 /// Assemble AArch64 assembly text into an ELF object file.
 ///
-/// This is the main entry point, called when MY_ASM is set to use the
-/// built-in assembler instead of the external `aarch64-linux-gnu-gcc`.
+/// This is the default assembler (used when the `gcc_assembler` feature is disabled).
 pub fn assemble(asm_text: &str, output_path: &str) -> Result<(), String> {
     let statements = parse_asm(asm_text)?;
     let statements = resolve_numeric_labels(&statements);

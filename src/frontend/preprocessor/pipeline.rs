@@ -563,6 +563,7 @@ impl Preprocessor {
     /// Enable assembly preprocessing mode. In this mode, '$' is not treated
     /// as an identifier character during macro expansion, so that AT&T assembly
     /// immediates like `$MACRO_NAME` correctly expand the macro.
+    #[allow(dead_code)]
     pub fn set_asm_mode(&mut self, asm_mode: bool) {
         self.macros.asm_mode = asm_mode;
     }

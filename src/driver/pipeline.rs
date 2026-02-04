@@ -425,8 +425,61 @@ impl Driver {
         Ok(())
     }
 
-    /// Preprocess an assembly file by delegating to gcc -E.
+    /// Preprocess an assembly file.
+    ///
+    /// Uses the built-in C preprocessor by default. When the `gcc_assembler`
+    /// feature is enabled, falls back to GCC for preprocessing.
     fn preprocess_assembly(&self, input_file: &str) -> Result<(), String> {
+        // When gcc_assembler is enabled, delegate to GCC for assembly preprocessing.
+        // GCC handles certain assembly-specific preprocessing behaviors that our
+        // built-in preprocessor may not fully support in all edge cases.
+        #[cfg(feature = "gcc_assembler")]
+        {
+            return self.preprocess_assembly_gcc(input_file);
+        }
+
+        // Default: use built-in preprocessor
+        #[cfg(not(feature = "gcc_assembler"))]
+        {
+            let source = std::fs::read_to_string(input_file)
+                .map_err(|e| format!("Cannot read {}: {}", input_file, e))?;
+            let mut preprocessor = Preprocessor::new();
+            self.configure_preprocessor(&mut preprocessor);
+            preprocessor.define_macro("__ASSEMBLER__", "1");
+            preprocessor.define_macro("_CET_H_INCLUDED", "1");
+            if self.target == crate::backend::Target::X86_64 {
+                preprocessor.define_macro("_CET_ENDBR", "endbr64");
+            } else {
+                preprocessor.define_macro("_CET_ENDBR", "endbr32");
+            }
+            preprocessor.define_macro("_CET_NOTRACK", "notrack");
+            preprocessor.set_asm_mode(true);
+            preprocessor.set_filename(input_file);
+            self.process_force_includes(&mut preprocessor)
+                .map_err(|e| format!("Preprocessing {} failed: {}", input_file, e))?;
+            let preprocessed = preprocessor.preprocess(&source);
+            let output = if self.suppress_line_markers {
+                Self::strip_line_markers(&preprocessed)
+            } else {
+                preprocessed
+            };
+
+            if self.output_path_set {
+                std::fs::write(&self.output_path, &output)
+                    .map_err(|e| format!("Cannot write {}: {}", self.output_path, e))?;
+                self.write_dep_file(input_file, &self.output_path);
+            } else {
+                print!("{}", output);
+            }
+            Ok(())
+        }
+    }
+
+    /// Preprocess an assembly file by delegating to gcc -E.
+    ///
+    /// Only compiled when the `gcc_assembler` feature is enabled.
+    #[cfg(feature = "gcc_assembler")]
+    fn preprocess_assembly_gcc(&self, input_file: &str) -> Result<(), String> {
         let config = self.target.assembler_config();
         let mut cmd = std::process::Command::new(config.command);
         cmd.args(config.extra_args);
@@ -449,26 +502,18 @@ impl Driver {
                 cmd.arg(format!("-D{}={}", def.name, def.value));
             }
         }
-        // Pass through force-include files (-include). Critical for the
-        // Linux kernel where kconfig.h defines CONFIG_* macros needed
-        // when preprocessing linker scripts (.lds.S -> .lds).
         for inc in &self.force_includes {
             cmd.arg("-include").arg(inc);
         }
-        // Pass through -nostdinc to prevent system headers from interfering
         if self.nostdinc {
             cmd.arg("-nostdinc");
         }
-        // Pass through -U (undefine) flags (e.g., -Uriscv for kernel scripts)
         for undef in &self.undef_macros {
             cmd.arg(format!("-U{}", undef));
         }
-        // Pass through -undef to suppress predefined macros (used for DTS preprocessing)
         if self.undef_all {
             cmd.arg("-undef");
         }
-        // Pass through -x language override so gcc knows how to handle
-        // non-standard file extensions (e.g., .dts files in kernel builds)
         if let Some(ref lang) = self.explicit_language {
             cmd.arg("-x").arg(lang);
         }
@@ -476,8 +521,6 @@ impl Driver {
         if self.suppress_line_markers {
             cmd.arg("-P");
         }
-        // Pass through dependency file generation so that build systems
-        // like the Linux kernel's fixdep can track header dependencies.
         if let Some(ref dep_path) = self.dep_file {
             if !dep_path.is_empty() {
                 cmd.arg(format!("-Wp,-MMD,{}", dep_path));
@@ -502,8 +545,9 @@ impl Driver {
     fn run_assembly_only(&self) -> Result<(), String> {
         for input_file in &self.input_files {
             let out_path = self.output_for_input(input_file);
+            // When gcc_m16 feature is enabled, delegate -m16 C compilation to GCC
+            #[cfg(feature = "gcc_m16")]
             if self.code16gcc && Self::is_c_source(input_file) {
-                // Delegate -m16 C compilation to GCC (boot code size hack)
                 use super::external_tools::GccM16Mode;
                 self.compile_with_gcc_m16(input_file, &out_path, GccM16Mode::Assembly)?;
                 self.write_dep_file(input_file, &out_path);
@@ -512,6 +556,7 @@ impl Driver {
                 }
                 continue;
             }
+            // Default path: compile with internal codegen (handles .code16gcc prepend)
             let asm = self.compile_to_assembly(input_file)?;
             std::fs::write(&out_path, &asm)
                 .map_err(|e| format!("Cannot write {}: {}", out_path, e))?;
@@ -527,16 +572,21 @@ impl Driver {
         for input_file in &self.input_files {
             let out_path = self.output_for_input(input_file);
             if Self::is_assembly_source(input_file) || self.is_explicit_assembly() {
-                // .s/.S files (or -x assembler): pass directly to the assembler (gcc)
+                // .s/.S files (or -x assembler): pass directly to the assembler
                 self.assemble_source_file(input_file, &out_path)?;
-            } else if self.code16gcc {
-                // Delegate -m16 C compilation to GCC (boot code size hack)
-                use super::external_tools::GccM16Mode;
-                self.compile_with_gcc_m16(input_file, &out_path, GccM16Mode::Object)?;
-                if self.verbose {
-                    eprintln!("Object output (GCC -m16): {}", out_path);
-                }
             } else {
+                // When gcc_m16 feature is enabled, delegate -m16 C compilation to GCC
+                #[cfg(feature = "gcc_m16")]
+                if self.code16gcc {
+                    use super::external_tools::GccM16Mode;
+                    self.compile_with_gcc_m16(input_file, &out_path, GccM16Mode::Object)?;
+                    self.write_dep_file(input_file, &out_path);
+                    if self.verbose {
+                        eprintln!("Object output (GCC -m16): {}", out_path);
+                    }
+                    continue;
+                }
+                // Default path: compile with internal codegen
                 let asm = self.compile_to_assembly(input_file)?;
                 let extra = self.build_asm_extra_args();
                 self.target.assemble_with_extra(&asm, &out_path, &extra)?;
@@ -574,18 +624,21 @@ impl Driver {
                 // treat as object file. These weren't caught by is_object_or_archive
                 // at parse time, so add them to the extra passthrough list.
                 extra_passthrough.push(input_file.clone());
-            } else if self.code16gcc {
-                // Delegate -m16 C compilation to GCC (boot code size hack)
-                use super::external_tools::GccM16Mode;
-                let tmp = TempFile::new("ccc", Self::input_stem(input_file), "o");
-                self.compile_with_gcc_m16(input_file, tmp.to_str(), GccM16Mode::Object)?;
-                if self.verbose {
-                    eprintln!("Compiled (GCC -m16): {}", input_file);
-                }
-                self.write_dep_file(input_file, &self.output_path);
-                temp_guards.push(tmp);
             } else {
-                // Compile .c files to .o
+                // When gcc_m16 feature is enabled, delegate -m16 C compilation to GCC
+                #[cfg(feature = "gcc_m16")]
+                if self.code16gcc {
+                    use super::external_tools::GccM16Mode;
+                    let tmp = TempFile::new("ccc", Self::input_stem(input_file), "o");
+                    self.compile_with_gcc_m16(input_file, tmp.to_str(), GccM16Mode::Object)?;
+                    if self.verbose {
+                        eprintln!("Compiled (GCC -m16): {}", input_file);
+                    }
+                    self.write_dep_file(input_file, &self.output_path);
+                    temp_guards.push(tmp);
+                    continue;
+                }
+                // Compile .c files to .o (handles .code16gcc prepend via internal codegen)
                 let asm = self.compile_to_assembly(input_file)?;
 
                 let tmp = TempFile::new("ccc", Self::input_stem(input_file), "o");

@@ -20,8 +20,7 @@ use elf_writer::ElfWriter;
 
 /// Assemble AT&T syntax i686 assembly text into a 32-bit ELF object file.
 ///
-/// This is the main entry point, called when MY_ASM is set to use the
-/// built-in assembler instead of an external tool for the i686 target.
+/// This is the default assembler (used when the `gcc_assembler` feature is disabled).
 pub fn assemble(asm_text: &str, output_path: &str) -> Result<(), String> {
     let items = parse_asm(asm_text)?;
     let obj = ElfWriter::new();

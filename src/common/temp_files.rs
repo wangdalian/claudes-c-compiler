@@ -54,17 +54,20 @@ impl TempFile {
 
     /// Create a TempFile with a specific path (for cases where the caller
     /// controls the path but wants RAII cleanup).
+    #[allow(dead_code)]
     pub fn with_path(path: PathBuf) -> Self {
         Self { path, keep: false }
     }
 
     /// Mark this temp file to be kept (not deleted on drop).
     /// Useful for debugging with CCC_KEEP_ASM etc.
+    #[allow(dead_code)]
     pub fn set_keep(&mut self, keep: bool) {
         self.keep = keep;
     }
 
     /// Get the path as a Path reference.
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }

@@ -4,7 +4,7 @@
 //! applies RISC-V relocations, generates PLT/GOT for dynamic symbols, and
 //! emits a dynamically-linked ELF executable.
 //!
-//! Used when MY_LD=builtin is set for the RISC-V backend.
+//! This is the default linker (used when the `gcc_linker` feature is disabled).
 //!
 //! CRT object discovery and library path resolution are handled by
 //! common.rs's `resolve_builtin_link_setup`.

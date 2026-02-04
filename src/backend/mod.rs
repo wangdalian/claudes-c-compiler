@@ -145,6 +145,8 @@ impl Target {
     }
 
     /// Get the assembler config for this target.
+    /// Only used when the `gcc_assembler` feature is enabled for GCC fallback.
+    #[allow(dead_code)]
     pub(crate) fn assembler_config(&self) -> common::AssemblerConfig {
         match self {
             Target::X86_64 => common::AssemblerConfig {
@@ -256,36 +258,32 @@ impl Target {
     /// Assemble text to object file with dynamic extra arguments.
     /// Used to pass through -mabi= and -march= flags from the CLI.
     ///
-    /// When `MY_ASM=builtin` is set and the target has a native assembler
-    /// implementation, uses the built-in assembler instead of shelling out
-    /// to an external tool.
+    /// When the `gcc_assembler` Cargo feature is enabled, uses GCC for assembling
+    /// (with a warning). When disabled (default), uses the built-in assembler.
     pub(crate) fn assemble_with_extra(&self, asm_text: &str, output_path: &str, extra_args: &[String]) -> Result<(), String> {
-        // Check if we should use the built-in assembler
-        if let Ok(ref val) = std::env::var("MY_ASM") {
-            if val == "builtin" {
-                // Handle -Wa,--version: print GNU-compatible version string for
-                // kernel build system's as-version.sh probe.
-                if extra_args.iter().any(|a| a == "--version") {
-                    println!("GNU assembler (CCC built-in) 2.42");
-                    return Ok(());
-                }
-                match self {
-                    Target::Aarch64 => {
-                        return arm::assembler::assemble(asm_text, output_path);
-                    }
-                    Target::X86_64 => {
-                        return x86::assembler::assemble(asm_text, output_path);
-                    }
-                    Target::Riscv64 => {
-                        return riscv::assembler::assemble(asm_text, output_path);
-                    }
-                    Target::I686 => {
-                        return i686::assembler::assemble(asm_text, output_path);
-                    }
-                }
+        // When gcc_assembler feature is enabled, use GCC for assembling
+        #[cfg(feature = "gcc_assembler")]
+        {
+            return common::assemble_with_extra(&self.assembler_config(), asm_text, output_path, extra_args);
+        }
+
+        // Default (gcc_assembler disabled): use the built-in assembler
+        #[cfg(not(feature = "gcc_assembler"))]
+        {
+            // Handle -Wa,--version: print GNU-compatible version string for
+            // kernel build system's as-version.sh probe.
+            if extra_args.iter().any(|a| a == "--version") {
+                println!("GNU assembler (CCC built-in) 2.42");
+                return Ok(());
+            }
+
+            match self {
+                Target::Aarch64 => arm::assembler::assemble(asm_text, output_path),
+                Target::X86_64 => x86::assembler::assemble(asm_text, output_path),
+                Target::Riscv64 => riscv::assembler::assemble(asm_text, output_path),
+                Target::I686 => i686::assembler::assemble(asm_text, output_path),
             }
         }
-        common::assemble_with_extra(&self.assembler_config(), asm_text, output_path, extra_args)
     }
 
     /// Link object files into executable.
@@ -295,14 +293,10 @@ impl Target {
 
     /// Link object files with additional user-provided linker args.
     ///
-    /// When `MY_LD` is set (to "builtin", "1", "true", "yes", "on", or a path)
-    /// and the target has a native linker implementation, uses the built-in
-    /// linker instead of shelling out to an external tool.
-    ///
-    /// All four architectures (x86-64, i686, AArch64, RISC-V) use the same
-    /// dispatch pattern: CRT/library discovery happens in common.rs via
-    /// `DirectLdArchConfig`, then delegates to the architecture-specific
-    /// native linker.
+    /// By default, uses the built-in native linker for all architectures.
+    /// When the `gcc_linker` Cargo feature is enabled, GCC can be used as a
+    /// fallback for operations the built-in linker doesn't support (e.g.,
+    /// -shared, -r).
     pub(crate) fn link_with_args(&self, object_files: &[&str], output_path: &str, user_args: &[String]) -> Result<(), String> {
         common::link_with_args(&self.linker_config(), object_files, output_path, user_args)
     }

@@ -93,6 +93,22 @@ impl Driver {
                     println!("GCC is maintained by the Free Software Foundation, Inc.");
                     println!("This program was written by Claude Opus 4.6;");
                     println!("It is not intended for production use.");
+                    // Show which GCC fallback features are enabled (if any)
+                    let mut features = Vec::new();
+                    if cfg!(feature = "gcc_linker") {
+                        features.push("gcc_linker");
+                    }
+                    if cfg!(feature = "gcc_assembler") {
+                        features.push("gcc_assembler");
+                    }
+                    if cfg!(feature = "gcc_m16") {
+                        features.push("gcc_m16");
+                    }
+                    if features.is_empty() {
+                        println!("Backend: standalone");
+                    } else {
+                        println!("Backend: {}", features.join(", "));
+                    }
                     return Ok(true);
                 }
                 "-v" if args.len() == 2 => {
@@ -625,16 +641,29 @@ impl Driver {
     }
 
     /// Handle -Wl,--version when no input files are given (Meson linker detection).
+    ///
+    /// When the `gcc_linker` feature is enabled, delegates to GCC for version info.
+    /// When disabled, prints built-in linker version info.
     fn run_linker_version_query(target: &Target, linker_items: &[String]) {
-        let config = target.linker_config();
-        let mut cmd = std::process::Command::new(config.command);
-        cmd.args(config.extra_args);
-        for item in linker_items {
-            cmd.arg(item);
+        #[cfg(feature = "gcc_linker")]
+        {
+            let config = target.linker_config();
+            let mut cmd = std::process::Command::new(config.command);
+            cmd.args(config.extra_args);
+            for item in linker_items {
+                cmd.arg(item);
+            }
+            cmd.stdout(std::process::Stdio::inherit());
+            cmd.stderr(std::process::Stdio::inherit());
+            let _ = cmd.status();
+            return;
         }
-        cmd.stdout(std::process::Stdio::inherit());
-        cmd.stderr(std::process::Stdio::inherit());
-        let _ = cmd.status();
+        #[cfg(not(feature = "gcc_linker"))]
+        {
+            let _ = (target, linker_items);
+            // Print GNU ld-compatible version info for build system detection
+            println!("GNU ld (CCC built-in) 2.42");
+        }
     }
 
     /// Add a -D define from command line.
