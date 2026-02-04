@@ -1010,32 +1010,68 @@ vminvq_u32(uint32x4_t __a)
 /* ================================================================== */
 /*                       AES INTRINSICS                                */
 /* ================================================================== */
-/* These are stubs for parsing. The kernel uses inline asm for AES. */
+/* ARM Crypto Extension AES intrinsics using inline assembly.          */
 
 static __inline__ uint8x16_t __attribute__((__always_inline__))
 vaeseq_u8(uint8x16_t __a, uint8x16_t __b)
 {
-    (void)__b;
-    return __a;
+    uint8x16_t __ret;
+    __asm__ __volatile__(
+        "ldr q0, [%[a]]\n\t"
+        "ldr q1, [%[b]]\n\t"
+        "aese v0.16b, v1.16b\n\t"
+        "str q0, [%[ret]]\n\t"
+        :
+        : [a] "r" (&__a), [b] "r" (&__b), [ret] "r" (&__ret)
+        : "v0", "v1", "memory"
+    );
+    return __ret;
 }
 
 static __inline__ uint8x16_t __attribute__((__always_inline__))
 vaesmcq_u8(uint8x16_t __a)
 {
-    return __a;
+    uint8x16_t __ret;
+    __asm__ __volatile__(
+        "ldr q0, [%[a]]\n\t"
+        "aesmc v0.16b, v0.16b\n\t"
+        "str q0, [%[ret]]\n\t"
+        :
+        : [a] "r" (&__a), [ret] "r" (&__ret)
+        : "v0", "memory"
+    );
+    return __ret;
 }
 
 static __inline__ uint8x16_t __attribute__((__always_inline__))
 vaesdq_u8(uint8x16_t __a, uint8x16_t __b)
 {
-    (void)__b;
-    return __a;
+    uint8x16_t __ret;
+    __asm__ __volatile__(
+        "ldr q0, [%[a]]\n\t"
+        "ldr q1, [%[b]]\n\t"
+        "aesd v0.16b, v1.16b\n\t"
+        "str q0, [%[ret]]\n\t"
+        :
+        : [a] "r" (&__a), [b] "r" (&__b), [ret] "r" (&__ret)
+        : "v0", "v1", "memory"
+    );
+    return __ret;
 }
 
 static __inline__ uint8x16_t __attribute__((__always_inline__))
 vaesimcq_u8(uint8x16_t __a)
 {
-    return __a;
+    uint8x16_t __ret;
+    __asm__ __volatile__(
+        "ldr q0, [%[a]]\n\t"
+        "aesimc v0.16b, v0.16b\n\t"
+        "str q0, [%[ret]]\n\t"
+        :
+        : [a] "r" (&__a), [ret] "r" (&__ret)
+        : "v0", "memory"
+    );
+    return __ret;
 }
 
 /* ================================================================== */

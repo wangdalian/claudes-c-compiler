@@ -153,7 +153,7 @@ impl Target {
             },
             Target::Aarch64 => common::AssemblerConfig {
                 command: "aarch64-linux-gnu-gcc",
-                extra_args: &["-march=armv8-a+crc"],
+                extra_args: &["-march=armv8-a+crc+crypto"],
             },
             Target::Riscv64 => common::AssemblerConfig {
                 command: "riscv64-linux-gnu-gcc",

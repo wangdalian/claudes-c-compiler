@@ -402,6 +402,14 @@ fn parse_single_operand(s: &str) -> Result<Operand, String> {
         return Ok(Operand::Reg(s.to_string()));
     }
 
+    // Bare integer (without # prefix) - some inline asm constraints emit these
+    // e.g., "eor w9, w10, 255" or "ccmp x10, x13, 0, eq"
+    if s.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+        if let Ok(val) = parse_int_literal(s) {
+            return Ok(Operand::Imm(val));
+        }
+    }
+
     // Label/symbol reference (for branches, adrp, etc.)
     // Could be: .LBB42, func_name, symbol+offset
     if let Some(plus_pos) = s.find('+') {

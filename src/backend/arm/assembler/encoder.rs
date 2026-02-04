@@ -287,8 +287,16 @@ pub fn encode_instruction(mnemonic: &str, operands: &[Operand], raw_operands: &s
         "fabs" => encode_fabs(operands),
         "fsqrt" => encode_fsqrt(operands),
         "fcmp" => encode_fcmp(operands),
-        "fcvtzs" => encode_fcvt(operands, true),
-        "fcvtzu" => encode_fcvt(operands, false),
+        "fcvtzs" => encode_fcvt_rounding(operands, 0b11, 0b000), // toward zero, signed
+        "fcvtzu" => encode_fcvt_rounding(operands, 0b11, 0b001), // toward zero, unsigned
+        "fcvtas" => encode_fcvt_rounding(operands, 0b00, 0b100), // tie-away, signed
+        "fcvtau" => encode_fcvt_rounding(operands, 0b00, 0b101), // tie-away, unsigned
+        "fcvtns" => encode_fcvt_rounding(operands, 0b00, 0b000), // nearest even, signed
+        "fcvtnu" => encode_fcvt_rounding(operands, 0b00, 0b001), // nearest even, unsigned
+        "fcvtms" => encode_fcvt_rounding(operands, 0b10, 0b000), // toward -inf, signed
+        "fcvtmu" => encode_fcvt_rounding(operands, 0b10, 0b001), // toward -inf, unsigned
+        "fcvtps" => encode_fcvt_rounding(operands, 0b01, 0b000), // toward +inf, signed
+        "fcvtpu" => encode_fcvt_rounding(operands, 0b01, 0b001), // toward +inf, unsigned
         "ucvtf" => encode_ucvtf(operands),
         "scvtf" => encode_scvtf(operands),
         "fcvt" => encode_fcvt_precision(operands),
@@ -694,6 +702,17 @@ fn encode_add_sub(operands: &[Operand], is_sub: bool, set_flags: bool) -> Result
                 },
             });
         }
+        if kind == "tprel_hi12" {
+            let word = (sf << 31) | (op << 30) | (s_bit << 29) | (0b10001 << 24) | (0 << 22) | (0 << 10) | (rn << 5) | rd;
+            return Ok(EncodeResult::WordWithReloc {
+                word,
+                reloc: Relocation {
+                    reloc_type: RelocType::TlsLeAddTprelHi12,
+                    symbol: symbol.clone(),
+                    addend: 0,
+                },
+            });
+        }
     }
     if let Some(Operand::ModifierOffset { kind, symbol, offset }) = operands.get(2) {
         if kind == "lo12" {
@@ -730,6 +749,24 @@ fn encode_add_sub(operands: &[Operand], is_sub: bool, set_flags: bool) -> Result
             // Extended register form: sf op S 01011 00 1 Rm option imm3 Rn Rd
             let word = (sf << 31) | (op << 30) | (s_bit << 29) | (0b01011 << 24)
                 | (0b00 << 22) | (1 << 21) | (rm << 16) | (option << 13) | (imm3 << 10) | (rn << 5) | rd;
+            return Ok(EncodeResult::Word(word));
+        }
+
+        // When Rn or Rd is SP (register 31), the shifted register form encodes
+        // register 31 as XZR, not SP. We must use the extended register form
+        // with UXTX (option=0b011) to get SP semantics.
+        let rn_is_sp = matches!(&operands[1], Operand::Reg(name) if {
+            let n = name.to_lowercase(); n == "sp" || n == "wsp"
+        });
+        let rd_is_sp = matches!(&operands[0], Operand::Reg(name) if {
+            let n = name.to_lowercase(); n == "sp" || n == "wsp"
+        });
+
+        if (rn_is_sp || rd_is_sp) && operands.len() <= 3 {
+            // Extended register form with UXTX #0: sf op S 01011 00 1 Rm 011 000 Rn Rd
+            let option = if is_64 { 0b011u32 } else { 0b010u32 }; // UXTX for 64-bit, UXTW for 32-bit
+            let word = (sf << 31) | (op << 30) | (s_bit << 29) | (0b01011 << 24)
+                | (0b00 << 22) | (1 << 21) | (rm << 16) | (option << 13) | (0 << 10) | (rn << 5) | rd;
             return Ok(EncodeResult::Word(word));
         }
 
@@ -1813,6 +1850,10 @@ fn encode_adrp(operands: &[Operand]) -> Result<EncodeResult, String> {
         }
         Some(Operand::SymbolOffset(s, off)) => (s.clone(), *off),
         Some(Operand::Label(s)) => (s.clone(), 0i64),
+        // Parser may misidentify symbol names like "s1", "d1", "v0" as registers
+        // since those are also valid FP/SIMD register names. In adrp context, the
+        // second operand is always a symbol.
+        Some(Operand::Reg(name)) => (name.clone(), 0i64),
         _ => return Err(format!("adrp needs symbol operand, got {:?}", operands.get(1))),
     };
 
@@ -1972,29 +2013,27 @@ fn encode_fcmp(operands: &[Operand]) -> Result<EncodeResult, String> {
     Ok(EncodeResult::Word(word))
 }
 
-fn encode_fcvt(operands: &[Operand], is_signed: bool) -> Result<EncodeResult, String> {
-    // FCVTZS/FCVTZU: float-to-integer conversion (round toward zero)
-    // Encoding: sf 00 11110 ftype 1 11 opcode 000000 Rn Rd
+fn encode_fcvt_rounding(operands: &[Operand], rmode: u32, opcode: u32) -> Result<EncodeResult, String> {
+    // Float-to-integer conversion with specified rounding mode
+    // Encoding: sf 00 11110 ftype 1 rmode opcode 000000 Rn Rd
     // sf: 0=W dest, 1=X dest
     // ftype: 00=S source, 01=D source
-    // rmode: 11 (toward zero)
-    // opcode: 000=signed (FCVTZS), 001=unsigned (FCVTZU)
+    // rmode+opcode: determines rounding mode and signedness
     if operands.len() < 2 {
-        return Err("fcvtzs/fcvtzu requires 2 operands".to_string());
+        return Err("fcvt* requires 2 operands".to_string());
     }
     let (rd, rd_is_64) = get_reg(operands, 0)?;
     let (rn, _) = get_reg(operands, 1)?;
 
     let src_name = match &operands[1] {
         Operand::Reg(name) => name.to_lowercase(),
-        _ => return Err("fcvtzs/fcvtzu: expected register source".to_string()),
+        _ => return Err("fcvt*: expected register source".to_string()),
     };
     let ftype: u32 = if src_name.starts_with('d') { 0b01 } else { 0b00 };
     let sf: u32 = if rd_is_64 { 1 } else { 0 };
-    let opcode: u32 = if is_signed { 0b000 } else { 0b001 };
 
     let word = (sf << 31) | (0b00 << 29) | (0b11110 << 24) | (ftype << 22)
-        | (1 << 21) | (0b11 << 19) | (opcode << 16) | (0b000000 << 10) | (rn << 5) | rd;
+        | (1 << 21) | (rmode << 19) | (opcode << 16) | (0b000000 << 10) | (rn << 5) | rd;
     Ok(EncodeResult::Word(word))
 }
 
