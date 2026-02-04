@@ -1,5 +1,0 @@
-Fix RISC-V builtin linker -static flag handling OVERRIDE.
-When -static is passed, omit PT_INTERP, .interp, .dynamic, .dynsym, .dynstr,
-.gnu.hash, .plt, .got.plt, .rela.plt, .rela.dyn sections from the output binary.
-Also use crtbeginT.o instead of crtbegin.o, and libgcc_eh instead of libgcc_s.
-This is needed for TCC and all other cross-compiled RISC-V binaries to work under qemu.

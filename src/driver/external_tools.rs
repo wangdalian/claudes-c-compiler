@@ -105,6 +105,12 @@ impl Driver {
         let config = self.target.assembler_config();
         // Check MY_ASM env var to allow overriding the assembler command.
         let custom_asm = std::env::var("MY_ASM").ok();
+
+        // Route to built-in assembler when MY_ASM=builtin
+        if custom_asm.as_deref() == Some("builtin") {
+            return self.assemble_source_file_builtin(input_file, output_path);
+        }
+
         // Warn loudly when falling back to GCC-backed assembler for .s/.S files
         if custom_asm.is_none() {
             warn_gcc_source_assembler(config.command);
@@ -178,6 +184,68 @@ impl Driver {
         }
 
         Ok(())
+    }
+
+    /// Assemble a .s/.S source file using the built-in assembler.
+    /// For .S files (uppercase), preprocesses with gcc -E first.
+    fn assemble_source_file_builtin(&self, input_file: &str, output_path: &str) -> Result<(), String> {
+        let asm_text = if input_file.ends_with(".S") {
+            // .S files need C preprocessing first
+            self.preprocess_asm_file(input_file)?
+        } else {
+            std::fs::read_to_string(input_file)
+                .map_err(|e| format!("Failed to read {}: {}", input_file, e))?
+        };
+        self.target.assemble_with_extra(&asm_text, output_path, &[])
+    }
+
+    /// Preprocess a .S assembly file using gcc -E.
+    fn preprocess_asm_file(&self, input_file: &str) -> Result<String, String> {
+        let config = self.target.assembler_config();
+        let mut cmd = std::process::Command::new(config.command);
+        cmd.args(["-E", "-x", "assembler-with-cpp"]);
+        cmd.args(config.extra_args);
+
+        for path in &self.include_paths {
+            cmd.arg("-I").arg(path);
+        }
+        for path in &self.quote_include_paths {
+            cmd.arg("-iquote").arg(path);
+        }
+        for path in &self.isystem_include_paths {
+            cmd.arg("-isystem").arg(path);
+        }
+        for path in &self.after_include_paths {
+            cmd.arg("-idirafter").arg(path);
+        }
+        for def in &self.defines {
+            if def.value == "1" {
+                cmd.arg(format!("-D{}", def.name));
+            } else {
+                cmd.arg(format!("-D{}={}", def.name, def.value));
+            }
+        }
+        for inc in &self.force_includes {
+            cmd.arg("-include").arg(inc);
+        }
+        if self.nostdinc {
+            cmd.arg("-nostdinc");
+        }
+        for undef in &self.undef_macros {
+            cmd.arg(format!("-U{}", undef));
+        }
+        cmd.arg(input_file);
+
+        let result = cmd.output()
+            .map_err(|e| format!("Failed to preprocess {}: {}", input_file, e))?;
+
+        if !result.status.success() {
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            return Err(format!("Preprocessing of {} failed: {}", input_file, stderr));
+        }
+
+        String::from_utf8(result.stdout)
+            .map_err(|e| format!("Non-UTF8 output from preprocessing {}: {}", input_file, e))
     }
 
     /// Build extra assembler arguments for RISC-V ABI/arch overrides.

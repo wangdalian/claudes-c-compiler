@@ -146,20 +146,22 @@ fn mnemonic_size_suffix(mnemonic: &str) -> Option<u8> {
 }
 
 /// Infer operand size from register operands (for suffix-less instructions).
-fn infer_size_from_ops(ops: &[Operand]) -> u8 {
-    for op in ops {
+/// Searches in reverse order because in AT&T syntax, the destination (last operand)
+/// is the most reliable indicator of the intended operation size.
+/// Returns None when no register operands are present.
+fn infer_size_from_ops(ops: &[Operand]) -> Option<u8> {
+    for op in ops.iter().rev() {
         match op {
             Operand::Register(r) => {
-                if is_reg64(&r.name) { return 8; }
-                if is_reg32(&r.name) { return 4; }
-                if is_reg16(&r.name) { return 2; }
-                if is_reg8(&r.name) { return 1; }
+                if is_reg64(&r.name) { return Some(8); }
+                if is_reg32(&r.name) { return Some(4); }
+                if is_reg16(&r.name) { return Some(2); }
+                if is_reg8(&r.name) { return Some(1); }
             }
             _ => {}
         }
     }
-    // Default to 64-bit for x86-64
-    8
+    None
 }
 
 /// Is this a YMM register (AVX 256-bit)?
@@ -265,8 +267,11 @@ impl InstructionEncoder {
             "movsbq" => self.encode_movsx(ops, 1, 8),
             "movswq" => self.encode_movsx(ops, 2, 8),
             "movsbl" => self.encode_movsx(ops, 1, 4),
+            "movsbw" => self.encode_movsx(ops, 1, 2),
             "movswl" => self.encode_movsx(ops, 2, 4),
+            "movsww" => self.encode_movsx(ops, 2, 2),
             "movzbq" | "movzbl" => self.encode_movzx(ops, 1, if mnemonic == "movzbq" { 8 } else { 4 }),
+            "movzbw" => self.encode_movzx(ops, 1, 2),
             "movzwq" | "movzwl" => self.encode_movzx(ops, 2, if mnemonic == "movzwq" { 8 } else { 4 }),
 
             // LEA
@@ -1062,44 +1067,45 @@ impl InstructionEncoder {
             "pblendvb" => self.encode_pblendvb(ops),
 
             // Suffix-less instructions (infer size from register operands)
-            // These appear in inline assembly without AT&T suffixes
-            "mov" => { let s = infer_size_from_ops(ops); self.encode_mov(ops, s) }
-            "add" => { let s = infer_size_from_ops(ops); let m = format!("add{}", size_suffix(s)); self.encode_alu(ops, &m, 0) }
-            "sub" => { let s = infer_size_from_ops(ops); let m = format!("sub{}", size_suffix(s)); self.encode_alu(ops, &m, 5) }
-            "cmp" => { let s = infer_size_from_ops(ops); let m = format!("cmp{}", size_suffix(s)); self.encode_alu(ops, &m, 7) }
-            "and" => { let s = infer_size_from_ops(ops); let m = format!("and{}", size_suffix(s)); self.encode_alu(ops, &m, 4) }
-            "or" => { let s = infer_size_from_ops(ops); let m = format!("or{}", size_suffix(s)); self.encode_alu(ops, &m, 1) }
-            "xor" => { let s = infer_size_from_ops(ops); let m = format!("xor{}", size_suffix(s)); self.encode_alu(ops, &m, 6) }
-            "test" => { let s = infer_size_from_ops(ops); let m = format!("test{}", size_suffix(s)); self.encode_test(ops, &m) }
-            "adc" => { let s = infer_size_from_ops(ops); let m = format!("adc{}", size_suffix(s)); self.encode_alu(ops, &m, 2) }
-            "sbb" => { let s = infer_size_from_ops(ops); let m = format!("sbb{}", size_suffix(s)); self.encode_alu(ops, &m, 3) }
-            "neg" => { let s = infer_size_from_ops(ops); self.encode_unary_rm(ops, 3, s) }
-            "not" => { let s = infer_size_from_ops(ops); self.encode_unary_rm(ops, 2, s) }
-            "inc" => { let s = infer_size_from_ops(ops); self.encode_unary_rm(ops, 0, s) }
-            "dec" => { let s = infer_size_from_ops(ops); self.encode_unary_rm(ops, 1, s) }
-            "mul" => { let s = infer_size_from_ops(ops); self.encode_unary_rm(ops, 4, s) }
-            "div" => { let s = infer_size_from_ops(ops); self.encode_unary_rm(ops, 6, s) }
-            "idiv" => { let s = infer_size_from_ops(ops); self.encode_unary_rm(ops, 7, s) }
-            "imul" => { let s = infer_size_from_ops(ops); self.encode_imul(ops, s) }
-            "shl" | "sal" => { let s = infer_size_from_ops(ops); self.encode_shift_infer(ops, 4, s) }
-            "shr" => { let s = infer_size_from_ops(ops); self.encode_shift_infer(ops, 5, s) }
-            "sar" => { let s = infer_size_from_ops(ops); self.encode_shift_infer(ops, 7, s) }
-            "rol" => { let s = infer_size_from_ops(ops); self.encode_shift_infer(ops, 0, s) }
-            "ror" => { let s = infer_size_from_ops(ops); self.encode_shift_infer(ops, 1, s) }
-            "rcl" => { let s = infer_size_from_ops(ops); self.encode_shift_infer(ops, 2, s) }
-            "rcr" => { let s = infer_size_from_ops(ops); self.encode_shift_infer(ops, 3, s) }
-            "lea" => { let s = infer_size_from_ops(ops); self.encode_lea(ops, s) }
+            // These appear in inline assembly without AT&T suffixes.
+            // Guard: only match when register operands are present so size can be inferred.
+            "mov" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_mov(ops, s) }
+            "add" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); let m = format!("add{}", size_suffix(s)); self.encode_alu(ops, &m, 0) }
+            "sub" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); let m = format!("sub{}", size_suffix(s)); self.encode_alu(ops, &m, 5) }
+            "cmp" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); let m = format!("cmp{}", size_suffix(s)); self.encode_alu(ops, &m, 7) }
+            "and" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); let m = format!("and{}", size_suffix(s)); self.encode_alu(ops, &m, 4) }
+            "or" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); let m = format!("or{}", size_suffix(s)); self.encode_alu(ops, &m, 1) }
+            "xor" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); let m = format!("xor{}", size_suffix(s)); self.encode_alu(ops, &m, 6) }
+            "test" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); let m = format!("test{}", size_suffix(s)); self.encode_test(ops, &m) }
+            "adc" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); let m = format!("adc{}", size_suffix(s)); self.encode_alu(ops, &m, 2) }
+            "sbb" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); let m = format!("sbb{}", size_suffix(s)); self.encode_alu(ops, &m, 3) }
+            "neg" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_unary_rm(ops, 3, s) }
+            "not" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_unary_rm(ops, 2, s) }
+            "inc" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_unary_rm(ops, 0, s) }
+            "dec" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_unary_rm(ops, 1, s) }
+            "mul" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_unary_rm(ops, 4, s) }
+            "div" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_unary_rm(ops, 6, s) }
+            "idiv" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_unary_rm(ops, 7, s) }
+            "imul" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_imul(ops, s) }
+            "shl" | "sal" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_shift_infer(ops, 4, s) }
+            "shr" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_shift_infer(ops, 5, s) }
+            "sar" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_shift_infer(ops, 7, s) }
+            "rol" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_shift_infer(ops, 0, s) }
+            "ror" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_shift_infer(ops, 1, s) }
+            "rcl" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_shift_infer(ops, 2, s) }
+            "rcr" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_shift_infer(ops, 3, s) }
+            "lea" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_lea(ops, s) }
             "push" => self.encode_push(ops),
             "pop" => self.encode_pop(ops),
-            "xchg" => { let s = infer_size_from_ops(ops); self.encode_xchg(ops, &format!("xchg{}", size_suffix(s))) }
-            "bsf" => { let s = infer_size_from_ops(ops); self.encode_bitscan(ops, &[0x0F, 0xBC], s) }
-            "bsr" => { let s = infer_size_from_ops(ops); self.encode_bitscan(ops, &[0x0F, 0xBD], s) }
-            "bt" => { let s = infer_size_from_ops(ops); self.encode_bt(ops, 0, s) }
-            "bts" => { let s = infer_size_from_ops(ops); self.encode_bt(ops, 5, s) }
-            "btr" => { let s = infer_size_from_ops(ops); self.encode_bt(ops, 6, s) }
-            "btc" => { let s = infer_size_from_ops(ops); self.encode_bt(ops, 7, s) }
-            "shld" => { let s = infer_size_from_ops(ops); self.encode_double_shift(ops, 0xA4, s) }
-            "shrd" => { let s = infer_size_from_ops(ops); self.encode_double_shift(ops, 0xAC, s) }
+            "xchg" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_xchg(ops, &format!("xchg{}", size_suffix(s))) }
+            "bsf" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_bitscan(ops, &[0x0F, 0xBC], s) }
+            "bsr" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_bitscan(ops, &[0x0F, 0xBD], s) }
+            "bt" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_bt(ops, 0, s) }
+            "bts" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_bt(ops, 5, s) }
+            "btr" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_bt(ops, 6, s) }
+            "btc" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_bt(ops, 7, s) }
+            "shld" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_double_shift(ops, 0xA4, s) }
+            "shrd" if infer_size_from_ops(ops).is_some() => { let s = infer_size_from_ops(ops).unwrap(); self.encode_double_shift(ops, 0xAC, s) }
 
             // Suffix-less conditional moves (from inline asm)
             "cmovz" | "cmove" | "cmovnz" | "cmovne"
@@ -1107,9 +1113,8 @@ impl InstructionEncoder {
             | "cmovb" | "cmovbe" | "cmova" | "cmovae"
             | "cmovc" | "cmovnc" | "cmovs" | "cmovns"
             | "cmovo" | "cmovno" | "cmovp" | "cmovnp"
-            | "cmovnae" | "cmovna" => {
-                // Infer size from operands, create suffixed mnemonic for dispatch
-                let size = infer_size_from_ops(ops);
+            | "cmovnae" | "cmovna" if infer_size_from_ops(ops).is_some() => {
+                let size = infer_size_from_ops(ops).unwrap();
                 let suffix = size_suffix(size);
                 let suffixed = format!("{}{}", mnemonic, suffix);
                 self.encode_cmovcc(ops, &suffixed)
@@ -1596,8 +1601,8 @@ impl InstructionEncoder {
         }
 
         let opcode = match (src_size, dst_size) {
-            (1, _) => vec![0x0F, 0xBE],   // movsbq/movsbl
-            (2, _) => vec![0x0F, 0xBF],   // movswq/movswl
+            (1, _) => vec![0x0F, 0xBE],   // movsbq/movsbl/movsbw
+            (2, _) => vec![0x0F, 0xBF],   // movswq/movswl/movsww
             (4, 8) => vec![0x63],          // movslq (movsxd)
             _ => return Err(format!("unsupported movsx combination: {} -> {}", src_size, dst_size)),
         };
@@ -1606,12 +1611,14 @@ impl InstructionEncoder {
             (Operand::Register(src), Operand::Register(dst)) => {
                 let src_num = reg_num(&src.name).ok_or("bad src register")?;
                 let dst_num = reg_num(&dst.name).ok_or("bad dst register")?;
+                if dst_size == 2 { self.bytes.push(0x66); }
                 self.emit_rex_rr(dst_size, &dst.name, &src.name);
                 self.bytes.extend_from_slice(&opcode);
                 self.bytes.push(self.modrm(3, dst_num, src_num));
             }
             (Operand::Memory(mem), Operand::Register(dst)) => {
                 let dst_num = reg_num(&dst.name).ok_or("bad dst register")?;
+                if dst_size == 2 { self.bytes.push(0x66); }
                 self.emit_rex_rm(dst_size, &dst.name, mem);
                 self.bytes.extend_from_slice(&opcode);
                 self.encode_modrm_mem(dst_num, mem)?;
@@ -1621,25 +1628,26 @@ impl InstructionEncoder {
         Ok(())
     }
 
-    fn encode_movzx(&mut self, ops: &[Operand], src_size: u8, _dst_size: u8) -> Result<(), String> {
+    fn encode_movzx(&mut self, ops: &[Operand], src_size: u8, dst_size: u8) -> Result<(), String> {
         if ops.len() != 2 {
             return Err("movzx requires 2 operands".to_string());
         }
 
         let opcode = match src_size {
-            1 => vec![0x0F, 0xB6],  // movzbl/movzbq
+            1 => vec![0x0F, 0xB6],  // movzbl/movzbq/movzbw
             2 => vec![0x0F, 0xB7],  // movzwl/movzwq
             _ => return Err(format!("unsupported movzx src size: {}", src_size)),
         };
 
         // Note: movzbl zero-extends to 64 bits implicitly (32-bit op clears upper 32)
         // So we use size=4 for REX calculation unless dst is an extended register needing REX.B
-        let rex_size = if _dst_size == 8 { 8 } else { 4 };
+        let rex_size = if dst_size == 8 { 8 } else if dst_size == 2 { 2 } else { 4 };
 
         match (&ops[0], &ops[1]) {
             (Operand::Register(src), Operand::Register(dst)) => {
                 let src_num = reg_num(&src.name).ok_or("bad src register")?;
                 let dst_num = reg_num(&dst.name).ok_or("bad dst register")?;
+                if dst_size == 2 { self.bytes.push(0x66); }
                 // movzbl uses 32-bit destination but we need REX if either operand is extended
                 self.emit_rex_rr(rex_size, &dst.name, &src.name);
                 self.bytes.extend_from_slice(&opcode);
@@ -1647,6 +1655,7 @@ impl InstructionEncoder {
             }
             (Operand::Memory(mem), Operand::Register(dst)) => {
                 let dst_num = reg_num(&dst.name).ok_or("bad dst register")?;
+                if dst_size == 2 { self.bytes.push(0x66); }
                 self.emit_rex_rm(rex_size, &dst.name, mem);
                 self.bytes.extend_from_slice(&opcode);
                 self.encode_modrm_mem(dst_num, mem)?;
@@ -3000,7 +3009,7 @@ impl InstructionEncoder {
     // ---- Bswap without suffix ----
 
     fn encode_bswap_infer(&mut self, ops: &[Operand]) -> Result<(), String> {
-        let size = infer_size_from_ops(ops);
+        let size = infer_size_from_ops(ops).unwrap_or(8);
         self.encode_bswap(ops, size)
     }
 
@@ -4369,7 +4378,7 @@ impl InstructionEncoder {
         match &ops[0] {
             Operand::Register(reg) => {
                 let reg_n = reg_num(&reg.name).ok_or("bad register")?;
-                let size = if mnemonic == "rdrandq" { 8 } else if mnemonic == "rdrandl" { 4 } else { infer_size_from_ops(ops) };
+                let size = if mnemonic == "rdrandq" { 8 } else if mnemonic == "rdrandl" { 4 } else { infer_size_from_ops(ops).unwrap_or(8) };
                 if size == 2 { self.bytes.push(0x66); }
                 if size == 8 {
                     self.bytes.push(0x48 | if needs_rex_ext(&reg.name) { 1 } else { 0 });
@@ -4489,7 +4498,7 @@ impl InstructionEncoder {
             (Operand::Immediate(ImmediateValue::Integer(imm)), Operand::Register(src), Operand::Register(dst)) => {
                 let src_num = reg_num(&src.name).ok_or("bad register")?;
                 let dst_num = reg_num(&dst.name).ok_or("bad register")?;
-                let is_64 = mnemonic == "rorxq" || (mnemonic == "rorx" && infer_size_from_ops(&ops[1..]) == 8);
+                let is_64 = mnemonic == "rorxq" || (mnemonic == "rorx" && infer_size_from_ops(&ops[1..]) == Some(8));
                 let r = !needs_rex_ext(&dst.name);
                 let b = !needs_rex_ext(&src.name);
                 // VEX.LZ.F2.0F3A.W{0,1} F0 /r ib
@@ -4516,7 +4525,7 @@ impl InstructionEncoder {
                 let src1_num = reg_num(&src1.name).ok_or("bad register")?;
                 let src2_num = reg_num(&src2.name).ok_or("bad register")?;
                 let dst_num = reg_num(&dst.name).ok_or("bad register")?;
-                let is_64 = mnemonic == "andnq" || (mnemonic == "andn" && infer_size_from_ops(ops) == 8);
+                let is_64 = mnemonic == "andnq" || (mnemonic == "andn" && infer_size_from_ops(ops) == Some(8));
                 let r = !needs_rex_ext(&dst.name);
                 let b = !needs_rex_ext(&src1.name);
                 let vvvv = src2_num | if needs_rex_ext(&src2.name) { 8 } else { 0 };

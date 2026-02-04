@@ -1,5 +1,0 @@
-Fix RISC-V builtin linker to properly handle -static flag.
-Currently the linker always emits dynamic linking infrastructure (PT_INTERP, .dynamic,
-.dynsym, .dynstr, .gnu.hash, .plt, .got.plt, etc.) even when -static is passed.
-This causes cross-compiled static binaries to fail with "Could not open ld-linux-riscv64-lp64d.so.1".
-Need to conditionally omit all dynamic sections when is_static is true.
