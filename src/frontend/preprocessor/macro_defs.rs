@@ -758,7 +758,30 @@ impl MacroTable {
         expanding.insert(mac.name.clone());
         let result = self.expand_text(&body, expanding);
         expanding.remove(&mac.name);
-        (result, body_ends_with_func_ident)
+
+        // Also check the post-rescan result: token pasting through indirection
+        // (e.g., CONCATENATE -> CONCAT2 -> a##b) can produce a function-like macro
+        // name that wasn't visible in the pre-rescan body. For example:
+        //   #define CONCATENATE(a, b) __CONCAT(a, b)
+        //   #define __CONCAT(a, b) a ## b
+        //   CONCATENATE(FOO_, COUNT_ARGS(x))(args)
+        // After prescan + paste + rescan, result = "FOO_5" which is function-like.
+        // We must detect this so expand_trailing_func_macros connects it with "(args)".
+        let result_ends_with_func_ident = if !body_ends_with_func_ident {
+            if let Some(trailing) = extract_trailing_ident(&result) {
+                if let Some(tmac) = self.macros.get(trailing.as_str()) {
+                    tmac.is_function_like
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            true
+        };
+
+        (result, result_ends_with_func_ident)
     }
 
     /// Handle # (stringify) and ## (token paste) operators.

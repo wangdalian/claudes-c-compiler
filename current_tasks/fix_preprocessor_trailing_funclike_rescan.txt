@@ -1,8 +1,0 @@
-Fix preprocessor macro expansion: after rescanning a function-like macro body,
-check if the post-rescan result ends with a function-like macro identifier.
-This fixes cases like CONCATENATE(GEN_BINARY_RMWcc_, COUNT_ARGS(X))(X) where
-token pasting through indirection (CONCAT2) produces a function-like macro name
-that wasn't visible in the pre-rescan body.
-
-This is needed to compile the Linux kernel which uses GEN_BINARY_RMWcc in
-arch/x86/include/asm/rmwcc.h.
