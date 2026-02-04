@@ -1,0 +1,9 @@
+Implementing a native i686 (32-bit x86) ELF linker in Rust.
+
+When MY_LD=builtin is set and the target is i686, the compiler will use this
+built-in linker instead of calling the system ld. The linker reads 32-bit ELF
+.o files and .a archives, resolves symbols against system shared libraries
+(libc.so.6), handles i386 relocations (R_386_32, R_386_PC32, R_386_PLT32, etc.),
+and emits a dynamically-linked 32-bit ELF executable.
+
+Must pass most verify_compiler.py test cases when MY_LD=builtin is set.
