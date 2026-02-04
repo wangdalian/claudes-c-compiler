@@ -300,9 +300,9 @@ impl ElfWriter {
             AsmItem::Quad(vals) => {
                 self.emit_data_values(vals, 8)?;
             }
-            AsmItem::Zero(n, fill) => {
+            AsmItem::Zero(n) => {
                 let section = self.current_section_mut()?;
-                section.data.extend(std::iter::repeat(*fill).take(*n as usize));
+                section.data.extend(std::iter::repeat(0u8).take(*n as usize));
             }
             AsmItem::Asciz(bytes) | AsmItem::Ascii(bytes) => {
                 let section = self.current_section_mut()?;
@@ -737,6 +737,13 @@ impl ElfWriter {
         // Internal assembler labels (.L*) are always local
         if name.starts_with('.') {
             return true;
+        }
+        // Numeric labels (e.g., "1f", "1b", "2f", "2b") are always local
+        if name.len() >= 2 {
+            let last = name.as_bytes()[name.len() - 1];
+            if (last == b'f' || last == b'b') && name[..name.len()-1].chars().all(|c| c.is_ascii_digit()) {
+                return true;
+            }
         }
         // Check the symbol table for binding
         if let Some(&sym_idx) = self.symbol_map.get(name) {

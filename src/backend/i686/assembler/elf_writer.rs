@@ -260,9 +260,9 @@ impl ElfWriter {
                 // 64-bit data values (used rarely on i686, but needed for debug info etc.)
                 self.emit_data_values_64(vals)?;
             }
-            AsmItem::Zero(n, fill) => {
+            AsmItem::Zero(n) => {
                 let section = self.current_section_mut()?;
-                section.data.extend(std::iter::repeat(*fill).take(*n as usize));
+                section.data.extend(std::iter::repeat(0u8).take(*n as usize));
             }
             AsmItem::Asciz(bytes) | AsmItem::Ascii(bytes) => {
                 let section = self.current_section_mut()?;
