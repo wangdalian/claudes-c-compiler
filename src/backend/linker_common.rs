@@ -26,7 +26,8 @@ use std::path::Path;
 use crate::backend::elf::{
     ELF_MAGIC, ELFCLASS64, ELFDATA2LSB,
     ET_REL, ET_DYN,
-    SHT_SYMTAB, SHT_RELA, SHT_DYNAMIC, SHT_NOBITS, SHT_DYNSYM, SHT_GNU_VERSYM,
+    SHT_SYMTAB, SHT_RELA, SHT_DYNAMIC, SHT_NOBITS, SHT_DYNSYM,
+    SHT_GNU_VERSYM, SHT_GNU_VERDEF,
     STB_LOCAL, STB_GLOBAL, STB_WEAK,
     STT_SECTION, STT_FILE,
     SHN_UNDEF,
@@ -110,6 +111,10 @@ pub struct DynSymbol {
     pub info: u8,
     pub value: u64,
     pub size: u64,
+    /// GLIBC version string for this symbol (e.g. "GLIBC_2.3"), if any.
+    pub version: Option<String>,
+    /// Whether this is the default version (@@GLIBC_x.y vs @GLIBC_x.y).
+    pub is_default_ver: bool,
 }
 
 #[allow(dead_code)]
@@ -323,14 +328,52 @@ pub fn parse_shared_library_symbols(data: &[u8], lib_name: &str) -> Result<Vec<D
             ));
         }
 
-        // Find .gnu.version (SHT_GNU_VERSYM) section for filtering hidden symbols
-        let mut versym_off: usize = 0;
-        let mut versym_size: usize = 0;
-        for &(sh_type, offset, size, _link) in &sections {
+        // Locate .gnu.version (SHT_GNU_VERSYM) and .gnu.verdef (SHT_GNU_VERDEF) sections
+        let mut versym_shdr: Option<(usize, usize)> = None;  // (offset, size)
+        let mut verdef_shdr: Option<(usize, usize, usize)> = None; // (offset, size, link)
+        for &(sh_type, offset, size, link) in &sections {
             if sh_type == SHT_GNU_VERSYM {
-                versym_off = offset as usize;
-                versym_size = size as usize;
-                break;
+                versym_shdr = Some((offset as usize, size as usize));
+            } else if sh_type == SHT_GNU_VERDEF {
+                verdef_shdr = Some((offset as usize, size as usize, link as usize));
+            }
+        }
+
+        // Parse version definitions to build index -> version string mapping
+        let mut ver_names: std::collections::HashMap<u16, String> = std::collections::HashMap::new();
+        if let Some((vd_off, vd_size, vd_link)) = verdef_shdr {
+            // Get the string table for verdef (typically the dynstr)
+            let vd_strtab = if vd_link < sections.len() {
+                let (_, s_off, s_sz, _) = sections[vd_link];
+                let s_off = s_off as usize;
+                let s_sz = s_sz as usize;
+                if s_off + s_sz <= data.len() { &data[s_off..s_off + s_sz] } else { &[] as &[u8] }
+            } else {
+                &[] as &[u8]
+            };
+
+            let mut pos = vd_off;
+            let end = vd_off + vd_size;
+            while pos < end && pos + 20 <= data.len() {
+                let vd_ndx = read_u16(data, pos + 4);
+                let vd_cnt = read_u16(data, pos + 6);
+                let vd_aux = read_u32(data, pos + 12) as usize;
+                let vd_next = read_u32(data, pos + 16) as usize;
+
+                // First verdaux entry has the version name
+                if vd_cnt > 0 {
+                    let aux_pos = pos + vd_aux;
+                    if aux_pos + 8 <= data.len() {
+                        let vda_name = read_u32(data, aux_pos) as usize;
+                        if vda_name < vd_strtab.len() {
+                            let name = read_cstr(vd_strtab, vda_name);
+                            ver_names.insert(vd_ndx, name);
+                        }
+                    }
+                }
+
+                if vd_next == 0 { break; }
+                pos += vd_next;
             }
         }
 
@@ -352,10 +395,6 @@ pub fn parse_shared_library_symbols(data: &[u8], lib_name: &str) -> Result<Vec<D
                 let sym_data = &data[sym_off..sym_off + sym_size];
                 let sym_count = sym_data.len() / 24;
 
-                // Read versym data if available
-                let have_versym = versym_off != 0 && versym_size >= sym_count * 2
-                    && versym_off + versym_size <= data.len();
-
                 let mut symbols = Vec::new();
                 for j in 1..sym_count {
                     let off = j * 24;
@@ -372,22 +411,41 @@ pub fn parse_shared_library_symbols(data: &[u8], lib_name: &str) -> Result<Vec<D
                     // the version index is >= 2, this is a non-default version
                     // (symbol@VERSION, not symbol@@VERSION). Such symbols should
                     // not be available for linking, matching GNU ld behavior.
-                    if have_versym {
-                        let ver_entry = versym_off + j * 2;
-                        let raw_ver = read_u16(data, ver_entry);
-                        let hidden = raw_ver & 0x8000 != 0;
-                        let ver_idx = raw_ver & 0x7fff;
-                        // ver_idx 0 = local, 1 = global (unversioned), >= 2 = versioned
-                        // Hidden + versioned means non-default version: skip it
-                        if hidden && ver_idx >= 2 {
-                            continue;
+                    if let Some((vs_off, vs_size)) = versym_shdr {
+                        if vs_size >= sym_count * 2 && vs_off + vs_size <= data.len() {
+                            let ver_entry = vs_off + j * 2;
+                            let raw_ver = read_u16(data, ver_entry);
+                            let hidden = raw_ver & 0x8000 != 0;
+                            let ver_idx = raw_ver & 0x7fff;
+                            if hidden && ver_idx >= 2 {
+                                continue;
+                            }
                         }
                     }
 
                     let name = read_cstr(strtab, name_idx);
                     if name.is_empty() { continue; }
 
-                    symbols.push(DynSymbol { name, info, value, size });
+                    // Look up version for this symbol from .gnu.version table
+                    let (version, is_default_ver) = if let Some((vs_off, _vs_size)) = versym_shdr {
+                        let vs_entry = vs_off + j * 2;
+                        if vs_entry + 2 <= data.len() {
+                            let raw_ver = read_u16(data, vs_entry);
+                            let hidden = raw_ver & 0x8000 != 0;
+                            let ver_idx = raw_ver & 0x7fff;
+                            if ver_idx >= 2 {
+                                (ver_names.get(&ver_idx).cloned(), !hidden)
+                            } else {
+                                (None, !hidden)
+                            }
+                        } else {
+                            (None, true)
+                        }
+                    } else {
+                        (None, true)
+                    };
+
+                    symbols.push(DynSymbol { name, info, value, size, version, is_default_ver });
                 }
                 return Ok(symbols);
             }
@@ -530,7 +588,7 @@ fn parse_shared_library_symbols_from_phdrs(data: &[u8], lib_name: &str) -> Resul
         let name = read_cstr(strtab, name_idx);
         if name.is_empty() { continue; }
 
-        symbols.push(DynSymbol { name, info, value, size });
+        symbols.push(DynSymbol { name, info, value, size, version: None, is_default_ver: true });
     }
 
     Ok(symbols)

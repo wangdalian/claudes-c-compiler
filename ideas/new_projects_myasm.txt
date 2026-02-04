@@ -220,3 +220,8 @@ Tracking project build/test results with MY_ASM=builtin MY_LD=builtin
 | Icon    | PASS | TODO | TODO | TODO | Fixed x86: added section headers to linker executables (needed for strip command) |
 | libmpg123 | PASS | TODO | TODO | TODO | Fixed x86 asm: added SSE/AVX cmp pseudo-ops (cmpnleps/vcmpnleps), vmovlhps, vmovddup, vmulss, vmovss, vpermilps, vextractf128, vcvtps2dq; fixed parser for constant+symbol displacement (32+maxmin_avx) |
 | open62541 | PASS | TODO | TODO | TODO | Fixed x86: decimal literal type promotion (C11 6.4.4.1) + bitfield static initializer compound path overlap |
+| Janet   | PASS | TODO | TODO | TODO | Fixed x86 linker: emit .gnu.version/.gnu.version_r sections for GNU symbol versioning (realpath@@GLIBC_2.3 resolved to old GLIBC_2.2.5 without version info) |
+| MuJS    | PASS | TODO | TODO | TODO | Passes x86 |
+| Gravity | PASS | TODO | TODO | TODO | Passes x86 |
+| whitedb | PASS | TODO | TODO | TODO | Passes x86 |
+| STREAM  | PASS | TODO | TODO | TODO | Passes x86 |

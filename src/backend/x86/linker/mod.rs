@@ -7,7 +7,7 @@
 #[allow(dead_code)]
 pub mod elf;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeSet};
 use std::path::Path;
 
 use elf::*;
@@ -57,6 +57,8 @@ struct GlobalSymbol {
     /// in the shared library. Used to identify aliases (multiple names at the
     /// same address, e.g., `environ` and `__environ` in libc).
     lib_sym_value: u64,
+    /// GLIBC version string (e.g. "GLIBC_2.3") for dynamic symbols.
+    version: Option<String>,
 }
 
 use crate::backend::linker_common;
@@ -504,7 +506,7 @@ fn emit_shared_library(
             globals.insert(name.clone(), GlobalSymbol {
                 value: 0, size: 0, info: (STB_GLOBAL << 4) | STT_FUNC,
                 defined_in: None, from_lib: None, section_idx: SHN_UNDEF,
-                is_dynamic: true, copy_reloc: false, lib_sym_value: 0,
+                is_dynamic: true, copy_reloc: false, lib_sym_value: 0, version: None,
                 plt_idx: None, got_idx: None,
             });
         }
@@ -544,7 +546,7 @@ fn emit_shared_library(
             globals.insert(name.clone(), GlobalSymbol {
                 value: 0, size: 0, info: (STB_GLOBAL << 4) | STT_FUNC,
                 defined_in: None, from_lib: None, section_idx: SHN_UNDEF,
-                is_dynamic: true, copy_reloc: false, lib_sym_value: 0,
+                is_dynamic: true, copy_reloc: false, lib_sym_value: 0, version: None,
                 plt_idx: None, got_idx: None,
             });
         }
@@ -974,7 +976,7 @@ fn emit_shared_library(
         let entry = globals.entry(sym.name.to_string()).or_insert(GlobalSymbol {
             value: 0, size: 0, info: (sym.binding << 4),
             defined_in: None, from_lib: None, plt_idx: None, got_idx: None,
-            section_idx: SHN_ABS, is_dynamic: false, copy_reloc: false, lib_sym_value: 0,
+            section_idx: SHN_ABS, is_dynamic: false, copy_reloc: false, lib_sym_value: 0, version: None,
         });
         if entry.defined_in.is_none() && !entry.is_dynamic {
             entry.value = sym.value;
@@ -1514,7 +1516,7 @@ fn register_symbols(obj_idx: usize, obj: &ElfObject, globals: &mut HashMap<Strin
                     value: sym.value, size: sym.size, info: sym.info,
                     defined_in: Some(obj_idx), from_lib: None,
                     plt_idx: None, got_idx: None,
-                    section_idx: sym.shndx, is_dynamic: false, copy_reloc: false, lib_sym_value: 0,
+                    section_idx: sym.shndx, is_dynamic: false, copy_reloc: false, lib_sym_value: 0, version: None,
                 });
             }
         } else if sym.shndx == SHN_COMMON {
@@ -1523,7 +1525,7 @@ fn register_symbols(obj_idx: usize, obj: &ElfObject, globals: &mut HashMap<Strin
                     value: sym.value, size: sym.size, info: sym.info,
                     defined_in: Some(obj_idx), from_lib: None,
                     plt_idx: None, got_idx: None,
-                    section_idx: SHN_COMMON, is_dynamic: false, copy_reloc: false, lib_sym_value: 0,
+                    section_idx: SHN_COMMON, is_dynamic: false, copy_reloc: false, lib_sym_value: 0, version: None,
                 });
             }
         } else if !globals.contains_key(&sym.name) {
@@ -1531,7 +1533,7 @@ fn register_symbols(obj_idx: usize, obj: &ElfObject, globals: &mut HashMap<Strin
                 value: 0, size: 0, info: sym.info,
                 defined_in: None, from_lib: None,
                 plt_idx: None, got_idx: None,
-                section_idx: SHN_UNDEF, is_dynamic: false, copy_reloc: false, lib_sym_value: 0,
+                section_idx: SHN_UNDEF, is_dynamic: false, copy_reloc: false, lib_sym_value: 0, version: None,
             });
         }
     }
@@ -1592,7 +1594,7 @@ fn load_shared_library(
                     value: 0, size: dsym.size, info: dsym.info,
                     defined_in: None, from_lib: Some(soname.clone()),
                     plt_idx: None, got_idx: None,
-                    section_idx: SHN_UNDEF, is_dynamic: true, copy_reloc: false, lib_sym_value: dsym.value,
+                    section_idx: SHN_UNDEF, is_dynamic: true, copy_reloc: false, lib_sym_value: dsym.value, version: dsym.version.clone(),
                 });
                 // If this is a WEAK STT_OBJECT, we need to also register any GLOBAL
                 // aliases at the same address. This ensures COPY relocations work
@@ -1620,7 +1622,7 @@ fn load_shared_library(
                     value: 0, size: dsym.size, info: dsym.info,
                     defined_in: None, from_lib: Some(soname.clone()),
                     plt_idx: None, got_idx: None,
-                    section_idx: SHN_UNDEF, is_dynamic: true, copy_reloc: false, lib_sym_value: dsym.value,
+                    section_idx: SHN_UNDEF, is_dynamic: true, copy_reloc: false, lib_sym_value: dsym.value, version: dsym.version.clone(),
                 });
             }
         }
@@ -1683,7 +1685,7 @@ fn resolve_dynamic_symbols(
                         value: 0, size: dsym.size, info: dsym.info,
                         defined_in: None, from_lib: Some(soname.clone()),
                         plt_idx: None, got_idx: None,
-                        section_idx: SHN_UNDEF, is_dynamic: true, copy_reloc: false, lib_sym_value: dsym.value,
+                        section_idx: SHN_UNDEF, is_dynamic: true, copy_reloc: false, lib_sym_value: dsym.value, version: dsym.version.clone(),
                     });
                     // Track WEAK STT_OBJECT matches for alias registration
                     let bind = dsym.info >> 4;
@@ -1708,7 +1710,7 @@ fn resolve_dynamic_symbols(
                         value: 0, size: dsym.size, info: dsym.info,
                         defined_in: None, from_lib: Some(soname.clone()),
                         plt_idx: None, got_idx: None,
-                        section_idx: SHN_UNDEF, is_dynamic: true, copy_reloc: false, lib_sym_value: dsym.value,
+                        section_idx: SHN_UNDEF, is_dynamic: true, copy_reloc: false, lib_sym_value: dsym.value, version: dsym.version.clone(),
                     });
                 }
             }
@@ -2021,6 +2023,84 @@ fn emit_executable(
 
     for name in &dyn_sym_names { dynstr.add(name); }
 
+    // ── Build .gnu.version (versym) and .gnu.version_r (verneed) data ──
+    //
+    // Collect version requirements from dynamic symbols, grouped by library.
+    let mut lib_versions: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for name in &dyn_sym_names {
+        if let Some(gs) = globals.get(name) {
+            if gs.is_dynamic {
+                if let Some(ref ver) = gs.version {
+                    if let Some(ref lib) = gs.from_lib {
+                        lib_versions.entry(lib.clone())
+                            .or_default()
+                            .insert(ver.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Build version index mapping: (library, version_string) -> version index (starting at 2)
+    let mut ver_index_map: HashMap<(String, String), u16> = HashMap::new();
+    let mut ver_idx: u16 = 2;
+    let mut lib_ver_list: Vec<(String, Vec<String>)> = Vec::new();
+    let mut sorted_libs: Vec<String> = lib_versions.keys().cloned().collect();
+    sorted_libs.sort();
+    for lib in &sorted_libs {
+        let vers: Vec<String> = lib_versions[lib].iter().cloned().collect();
+        for v in &vers {
+            ver_index_map.insert((lib.clone(), v.clone()), ver_idx);
+            ver_idx += 1;
+            // Add version string to dynstr
+            dynstr.add(v);
+        }
+        lib_ver_list.push((lib.clone(), vers));
+    }
+
+    // Build .gnu.version_r (verneed) section
+    let mut verneed_data: Vec<u8> = Vec::new();
+    let mut verneed_count: u32 = 0;
+    // Only include libraries that are in our needed list
+    let lib_ver_needed: Vec<(String, Vec<String>)> = lib_ver_list.iter()
+        .filter(|(lib, _)| needed_sonames.contains(lib))
+        .cloned()
+        .collect();
+    for (lib_i, (lib, vers)) in lib_ver_needed.iter().enumerate() {
+        let lib_name_off = dynstr.get_offset(lib);
+        let is_last_lib = lib_i == lib_ver_needed.len() - 1;
+
+        // Verneed entry header (16 bytes)
+        verneed_data.extend_from_slice(&1u16.to_le_bytes()); // vn_version = 1
+        verneed_data.extend_from_slice(&(vers.len() as u16).to_le_bytes()); // vn_cnt
+        verneed_data.extend_from_slice(&(lib_name_off as u32).to_le_bytes()); // vn_file
+        verneed_data.extend_from_slice(&16u32.to_le_bytes()); // vn_aux (right after header)
+        let next_off = if is_last_lib {
+            0u32
+        } else {
+            16 + vers.len() as u32 * 16
+        };
+        verneed_data.extend_from_slice(&next_off.to_le_bytes()); // vn_next
+        verneed_count += 1;
+
+        // Vernaux entries for each version (16 bytes each)
+        for (v_i, ver) in vers.iter().enumerate() {
+            let ver_name_off = dynstr.get_offset(ver);
+            let vidx = ver_index_map[&(lib.clone(), ver.clone())];
+            let is_last_ver = v_i == vers.len() - 1;
+
+            let vna_hash = linker_common::sysv_hash(ver.as_bytes());
+            verneed_data.extend_from_slice(&vna_hash.to_le_bytes()); // vna_hash
+            verneed_data.extend_from_slice(&0u16.to_le_bytes()); // vna_flags
+            verneed_data.extend_from_slice(&vidx.to_le_bytes()); // vna_other
+            verneed_data.extend_from_slice(&(ver_name_off as u32).to_le_bytes()); // vna_name
+            let vna_next: u32 = if is_last_ver { 0 } else { 16 };
+            verneed_data.extend_from_slice(&vna_next.to_le_bytes()); // vna_next
+        }
+    }
+
+    let verneed_size = verneed_data.len() as u64;
+
     let dynsym_count = 1 + dyn_sym_names.len();
     let dynsym_size = dynsym_count as u64 * 24;
     let dynstr_size = dynstr.as_bytes().len() as u64;
@@ -2068,6 +2148,38 @@ fn emit_executable(
         }
     }
 
+    // Build .gnu.version (versym) - one u16 per dynsym entry
+    // Must be built AFTER gnu_hash bucket sort so versym indices match final dynsym order
+    let mut versym_data: Vec<u8> = Vec::new();
+    // Entry 0: VER_NDX_LOCAL for the null symbol
+    versym_data.extend_from_slice(&0u16.to_le_bytes());
+    for name in &dyn_sym_names {
+        if let Some(gs) = globals.get(name) {
+            if gs.is_dynamic {
+                if let Some(ref ver) = gs.version {
+                    if let Some(ref lib) = gs.from_lib {
+                        let idx = ver_index_map.get(&(lib.clone(), ver.clone()))
+                            .copied().unwrap_or(1);
+                        versym_data.extend_from_slice(&idx.to_le_bytes());
+                    } else {
+                        versym_data.extend_from_slice(&1u16.to_le_bytes()); // VER_NDX_GLOBAL
+                    }
+                } else {
+                    versym_data.extend_from_slice(&1u16.to_le_bytes()); // VER_NDX_GLOBAL
+                }
+            } else if gs.section_idx != SHN_UNDEF && gs.value != 0 {
+                // Defined/exported symbol: VER_NDX_GLOBAL
+                versym_data.extend_from_slice(&1u16.to_le_bytes());
+            } else {
+                versym_data.extend_from_slice(&0u16.to_le_bytes()); // VER_NDX_LOCAL
+            }
+        } else {
+            versym_data.extend_from_slice(&0u16.to_le_bytes());
+        }
+    }
+
+    let versym_size = versym_data.len() as u64;
+
     // Recompute hashes after sorting
     let hashed_sym_hashes: Vec<u32> = dyn_sym_names[gnu_hash_symoffset - 1..]
         .iter()
@@ -2112,6 +2224,7 @@ fn emit_executable(
     if has_init_array { dyn_count += 2; }
     if has_fini_array { dyn_count += 2; }
     if rpath_string.is_some() { dyn_count += 1; }
+    if verneed_size > 0 { dyn_count += 3; } // DT_VERSYM + DT_VERNEED + DT_VERNEEDNUM
     let dynamic_size = dyn_count * 16;
 
     let has_tls_sections = output_sections.iter().any(|s| s.flags & SHF_TLS != 0 && s.flags & SHF_ALLOC != 0);
@@ -2129,6 +2242,14 @@ fn emit_executable(
     offset = (offset + 7) & !7;
     let dynsym_offset = offset; let dynsym_addr = BASE_ADDR + offset; offset += dynsym_size;
     let dynstr_offset = offset; let dynstr_addr = BASE_ADDR + offset; offset += dynstr_size;
+    // .gnu.version (versym) - right after dynstr, aligned to 2
+    offset = (offset + 1) & !1;
+    let versym_offset = offset; let versym_addr = BASE_ADDR + offset;
+    if versym_size > 0 { offset += versym_size; }
+    // .gnu.version_r (verneed) - aligned to 4
+    offset = (offset + 3) & !3;
+    let verneed_offset = offset; let verneed_addr = BASE_ADDR + offset;
+    if verneed_size > 0 { offset += verneed_size; }
     offset = (offset + 7) & !7;
     let rela_dyn_offset = offset; let rela_dyn_addr = BASE_ADDR + offset; offset += rela_dyn_size;
     offset = (offset + 7) & !7;
@@ -2343,7 +2464,7 @@ fn emit_executable(
         let entry = globals.entry(sym.name.to_string()).or_insert(GlobalSymbol {
             value: 0, size: 0, info: (sym.binding << 4),
             defined_in: None, from_lib: None, plt_idx: None, got_idx: None,
-            section_idx: SHN_ABS, is_dynamic: false, copy_reloc: false, lib_sym_value: 0,
+            section_idx: SHN_ABS, is_dynamic: false, copy_reloc: false, lib_sym_value: 0, version: None,
         });
         if entry.defined_in.is_none() && !entry.is_dynamic {
             entry.value = sym.value;
@@ -2445,6 +2566,16 @@ fn emit_executable(
     // .dynstr
     write_bytes(&mut out, dynstr_offset as usize, dynstr.as_bytes());
 
+    // .gnu.version (versym)
+    if !versym_data.is_empty() {
+        write_bytes(&mut out, versym_offset as usize, &versym_data);
+    }
+
+    // .gnu.version_r (verneed)
+    if !verneed_data.is_empty() {
+        write_bytes(&mut out, verneed_offset as usize, &verneed_data);
+    }
+
     // .rela.dyn (GLOB_DAT for dynamic GOT symbols, R_X86_64_COPY for copy relocs)
     let mut rd = rela_dyn_offset as usize;
     let mut gd_a = got_addr;
@@ -2531,6 +2662,11 @@ fn emit_executable(
         let rp_off = dynstr.get_offset(rp) as u64;
         let tag = if use_runpath { DT_RUNPATH } else { DT_RPATH };
         w64(&mut out, dd, tag as u64); w64(&mut out, dd+8, rp_off); dd += 16;
+    }
+    if verneed_size > 0 {
+        w64(&mut out, dd, DT_VERSYM as u64); w64(&mut out, dd+8, versym_addr); dd += 16;
+        w64(&mut out, dd, DT_VERNEED as u64); w64(&mut out, dd+8, verneed_addr); dd += 16;
+        w64(&mut out, dd, DT_VERNEEDNUM as u64); w64(&mut out, dd+8, verneed_count as u64); dd += 16;
     }
     w64(&mut out, dd, DT_NULL as u64); w64(&mut out, dd+8, 0);
 
