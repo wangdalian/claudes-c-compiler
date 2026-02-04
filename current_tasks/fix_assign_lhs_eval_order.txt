@@ -1,0 +1,10 @@
+Fix assignment LHS evaluation order: evaluate LHS lvalue address before RHS side effects.
+
+Bug: In `a[i] = i++`, the compiler evaluated the RHS (i++) first, then used
+the post-incremented i for the array index. This caused out-of-bounds writes
+that corrupted the stack frame pointer (rbp), leading to segfaults.
+
+Fix: In lower_assign(), compute the LHS lvalue before evaluating the RHS
+expression. This matches GCC -O0 behavior.
+
+Started 2026-02-04.
