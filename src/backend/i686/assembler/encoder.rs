@@ -279,6 +279,10 @@ impl InstructionEncoder {
             | "cmovbl" | "cmovbel" | "cmoval" | "cmovael"
             | "cmovsl" | "cmovnsl" | "cmovzl" | "cmovnzl" | "cmovpl" | "cmovnpl"
             | "cmovol" | "cmovnol" | "cmovcl" | "cmovncl"
+            | "cmovew" | "cmovnew" | "cmovlw" | "cmovlew" | "cmovgw" | "cmovgew"
+            | "cmovbw" | "cmovbew" | "cmovaw" | "cmovaew"
+            | "cmovsw" | "cmovnsw" | "cmovzw" | "cmovnzw" | "cmovpw" | "cmovnpw"
+            | "cmovow" | "cmovnow" | "cmovcw" | "cmovncw"
             | "cmove" | "cmovne" | "cmovl" | "cmovle" | "cmovg" | "cmovge"
             | "cmovb" | "cmovbe" | "cmova" | "cmovae"
             | "cmovs" | "cmovns" | "cmovz" | "cmovnz" | "cmovp" | "cmovnp"
@@ -2038,14 +2042,19 @@ impl InstructionEncoder {
         }
 
         let without_prefix = &mnemonic[4..];
-        // Strip 'l' suffix if present, otherwise use as-is (unsuffixed form)
-        let cc_str = if without_prefix.ends_with('l')
+        // Strip size suffix if present, otherwise use as-is (unsuffixed = 32-bit default)
+        let (cc_str, is_16bit) = if without_prefix.ends_with('w')
+            && without_prefix != "w"
+            && cc_from_mnemonic(&without_prefix[..without_prefix.len()-1]).is_ok()
+        {
+            (&without_prefix[..without_prefix.len()-1], true)
+        } else if without_prefix.ends_with('l')
             && without_prefix != "l"
             && cc_from_mnemonic(&without_prefix[..without_prefix.len()-1]).is_ok()
         {
-            &without_prefix[..without_prefix.len()-1]
+            (&without_prefix[..without_prefix.len()-1], false)
         } else {
-            without_prefix
+            (without_prefix, false)
         };
         let cc = cc_from_mnemonic(cc_str)?;
 
@@ -2053,12 +2062,14 @@ impl InstructionEncoder {
             (Operand::Register(src), Operand::Register(dst)) => {
                 let src_num = reg_num(&src.name).ok_or("bad register")?;
                 let dst_num = reg_num(&dst.name).ok_or("bad register")?;
+                if is_16bit { self.bytes.push(0x66); }
                 self.bytes.extend_from_slice(&[0x0F, 0x40 + cc]);
                 self.bytes.push(self.modrm(3, dst_num, src_num));
                 Ok(())
             }
             (Operand::Memory(mem), Operand::Register(dst)) => {
                 let dst_num = reg_num(&dst.name).ok_or("bad register")?;
+                if is_16bit { self.bytes.push(0x66); }
                 self.bytes.extend_from_slice(&[0x0F, 0x40 + cc]);
                 self.encode_modrm_mem(dst_num, mem)
             }

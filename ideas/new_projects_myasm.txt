@@ -225,3 +225,5 @@ Tracking project build/test results with MY_ASM=builtin MY_LD=builtin
 | Gravity | PASS | TODO | TODO | TODO | Passes x86 |
 | whitedb | PASS | TODO | TODO | TODO | Passes x86 |
 | STREAM  | PASS | TODO | TODO | TODO | Passes x86 |
+| JerryScript | PASS | TODO | TODO | TODO | Fixed x86: peephole frame_compact NOP'd struct param stores (range-based overlap check) |
+| openssh | PASS | PASS | N/A | N/A | Fixed x86/i686 asm: added 16-bit (w-suffix) cmov instructions (cmovnew etc.) with 0x66 operand-size prefix |

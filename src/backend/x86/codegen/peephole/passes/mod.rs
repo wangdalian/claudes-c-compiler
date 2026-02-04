@@ -1074,5 +1074,47 @@ mod regression_tests {
                 (result.contains("movq %r15, -64(%rbp)") || result.contains("movq -64(%rbp), %r15")),
             "dead store to -64 must be eliminated or -64 used only for callee save: {}", result);
     }
+
+    /// Regression test: a struct stored with movq at -8(%rbp) that is read
+    /// field-by-field via movl at -4(%rbp) must NOT be NOP'd by frame_compact.
+    /// The store covers bytes [-8, 0) and the read at -4 falls within that range.
+    #[test]
+    fn test_frame_compact_struct_suboffset_read() {
+        let asm = [
+            "release_entry:",
+            "    pushq %rbp",
+            "    .cfi_def_cfa_offset 16",
+            "    .cfi_offset %rbp, -16",
+            "    movq %rsp, %rbp",
+            "    .cfi_def_cfa_register %rbp",
+            "    subq $48, %rsp",
+            "    movq %rbx, -48(%rbp)",
+            "    movq %r12, -40(%rbp)",
+            "    movq %r13, -32(%rbp)",
+            "    movq %r14, -24(%rbp)",
+            "    movq %r15, -16(%rbp)",
+            // Struct param stored as a whole at -8(%rbp)
+            "    movq %rdi, %r14",
+            "    movq %rsi, -8(%rbp)",
+            // Read individual field at sub-offset -4 within the struct
+            "    movl -4(%rbp), %eax",
+            "    movq %rax, %rsi",
+            "    call printf",
+            // Epilogue
+            "    movq -48(%rbp), %rbx",
+            "    movq -40(%rbp), %r12",
+            "    movq -32(%rbp), %r13",
+            "    movq -24(%rbp), %r14",
+            "    movq -16(%rbp), %r15",
+            "    movq %rbp, %rsp",
+            "    popq %rbp",
+            "    ret",
+            ".size release_entry, .-release_entry",
+        ].join("\n") + "\n";
+        let result = peephole_optimize(asm);
+        // The struct store at -8(%rbp) must be preserved because -4(%rbp) is read
+        assert!(result.contains("movq %rsi, -8(%rbp)"),
+            "struct param store at -8(%rbp) must NOT be NOP'd when -4(%rbp) is read: {}", result);
+    }
 }
 

@@ -434,7 +434,9 @@ impl InstructionEncoder {
             "cmoveq" | "cmovneq" | "cmovlq" | "cmovleq" | "cmovgq" | "cmovgeq"
             | "cmovbq" | "cmovbeq" | "cmovaq" | "cmovaeq"
             | "cmovel" | "cmovnel" | "cmovll" | "cmovlel" | "cmovgl" | "cmovgel"
-            | "cmovbl" | "cmovbel" | "cmoval" | "cmovael" => self.encode_cmovcc(ops, mnemonic),
+            | "cmovbl" | "cmovbel" | "cmoval" | "cmovael"
+            | "cmovew" | "cmovnew" | "cmovlw" | "cmovlew" | "cmovgw" | "cmovgew"
+            | "cmovbw" | "cmovbew" | "cmovaw" | "cmovaew" => self.encode_cmovcc(ops, mnemonic),
 
             // Jumps (jmpq is a common AT&T alias for jmp on x86-64)
             "jmp" | "jmpq" => self.encode_jmp(ops),
@@ -1270,6 +1272,7 @@ impl InstructionEncoder {
             "bsr" => self.encode_bit_scan(ops, "bsrq", 0xBD),
             "cmovzq" | "cmovnzq" | "cmovsq" | "cmovnsq" | "cmovpq" | "cmovnpq" => self.encode_cmovcc(ops, mnemonic),
             "cmovzl" | "cmovnzl" | "cmovsl" | "cmovnsl" | "cmovpl" | "cmovnpl" => self.encode_cmovcc(ops, mnemonic),
+            "cmovzw" | "cmovnzw" | "cmovsw" | "cmovnsw" | "cmovpw" | "cmovnpw" => self.encode_cmovcc(ops, mnemonic),
 
             // Suffix-less cmov (infer from operand size)
             "cmovz" | "cmovnz" | "cmovs" | "cmovns" | "cmovp" | "cmovnp"
@@ -1280,7 +1283,12 @@ impl InstructionEncoder {
             | "cmovnle" | "cmovnl" | "cmovpe" | "cmovpo" | "cmovnae" => {
                 if ops.len() == 2 {
                     let size = infer_operand_size_from_pair(&ops[0], &ops[1]);
-                    let suffix = if size == 8 { "q" } else { "l" };
+                    let suffix = match size {
+                        8 => "q",
+                        4 => "l",
+                        2 => "w",
+                        _ => "l",
+                    };
                     let new_mnemonic = format!("{}{}", mnemonic, suffix);
                     self.encode_cmovcc(ops, &new_mnemonic)
                 } else {
@@ -1291,8 +1299,13 @@ impl InstructionEncoder {
             // Additional cmov variants with size suffix
             "cmovcq" | "cmovncq" | "cmovnaq" | "cmovnbeq"
             | "cmovngeq" | "cmovngq" | "cmovnleq" | "cmovnlq"
+            | "cmovnoq" | "cmovnaeq" | "cmovnbq" | "cmovoq" | "cmovpeq" | "cmovpoq"
             | "cmovcl" | "cmovncl" | "cmovnal" | "cmovnbel"
-            | "cmovngel" | "cmovngl" | "cmovnlel" | "cmovnll" => self.encode_cmovcc(ops, mnemonic),
+            | "cmovngel" | "cmovngl" | "cmovnlel" | "cmovnll"
+            | "cmovnol" | "cmovnael" | "cmovnbl" | "cmovol" | "cmovpel" | "cmovpol"
+            | "cmovcw" | "cmovncw" | "cmovnaw" | "cmovnbew"
+            | "cmovngew" | "cmovngw" | "cmovnlew" | "cmovnlw"
+            | "cmovnow" | "cmovnaew" | "cmovnbw" | "cmovow" | "cmovpew" | "cmovpow" => self.encode_cmovcc(ops, mnemonic),
 
             // Additional set instructions
             "setcc" => self.encode_setcc(ops, "setc"),
@@ -2731,6 +2744,8 @@ impl InstructionEncoder {
             (stripped, 8u8)
         } else if let Some(stripped) = without_prefix.strip_suffix('l') {
             (stripped, 4u8)
+        } else if let Some(stripped) = without_prefix.strip_suffix('w') {
+            (stripped, 2u8)
         } else {
             (without_prefix, 8u8) // default to 64-bit
         };
@@ -2740,6 +2755,7 @@ impl InstructionEncoder {
             (Operand::Register(src), Operand::Register(dst)) => {
                 let src_num = reg_num(&src.name).ok_or("bad register")?;
                 let dst_num = reg_num(&dst.name).ok_or("bad register")?;
+                if size == 2 { self.bytes.push(0x66); }
                 self.emit_rex_rr(size, &dst.name, &src.name);
                 self.bytes.extend_from_slice(&[0x0F, 0x40 + cc]);
                 self.bytes.push(self.modrm(3, dst_num, src_num));
@@ -2747,6 +2763,7 @@ impl InstructionEncoder {
             }
             (Operand::Memory(mem), Operand::Register(dst)) => {
                 let dst_num = reg_num(&dst.name).ok_or("bad register")?;
+                if size == 2 { self.bytes.push(0x66); }
                 self.emit_rex_rm(size, &dst.name, mem);
                 self.bytes.extend_from_slice(&[0x0F, 0x40 + cc]);
                 self.encode_modrm_mem(dst_num, mem)
