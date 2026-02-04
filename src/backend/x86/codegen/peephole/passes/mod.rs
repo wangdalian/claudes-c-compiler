@@ -962,6 +962,58 @@ mod regression_tests {
         );
     }
 
+    /// Regression test: frame_compact must not NOP a store when a read overlaps
+    /// it at a different offset. Example: a struct param stored as
+    /// `movq %rsi, -8(%rbp)` (8 bytes at [-8, 0)) has a field read via
+    /// `movl -4(%rbp), %eax` (4 bytes at [-4, 0)). The store and read overlap
+    /// but have different offsets, so exact-offset matching would miss the
+    /// dependency and incorrectly NOP the store.
+    #[test]
+    fn test_frame_compact_overlapping_store_read() {
+        let asm = [
+            "func:",
+            "    pushq %rbp",
+            "    .cfi_def_cfa_offset 16",
+            "    .cfi_offset %rbp, -16",
+            "    movq %rsp, %rbp",
+            "    .cfi_def_cfa_register %rbp",
+            "    subq $48, %rsp",
+            "    movq %rbx, -48(%rbp)",
+            "    movq %r12, -40(%rbp)",
+            "    movq %r13, -32(%rbp)",
+            "    movq %r14, -24(%rbp)",
+            "    movq %r15, -16(%rbp)",
+            // Store 8-byte struct param at -8(%rbp) covering bytes [-8, 0)
+            "    movq %rsi, -8(%rbp)",
+            // Read a 4-byte field at -4(%rbp) covering bytes [-4, 0)
+            "    movl -4(%rbp), %eax",
+            "    movq %rax, %r14",
+            "    movq %rdi, %rdi",
+            "    call some_func",
+            // Epilogue
+            "    movq %r14, %rax",
+            "    movq -48(%rbp), %rbx",
+            "    movq -40(%rbp), %r12",
+            "    movq -32(%rbp), %r13",
+            "    movq -24(%rbp), %r14",
+            "    movq -16(%rbp), %r15",
+            "    movq %rbp, %rsp",
+            "    popq %rbp",
+            "    ret",
+            ".size func, .-func",
+        ].join("\n") + "\n";
+        let result = peephole_optimize(asm);
+        // The store to -8(%rbp) must survive because the read at -4(%rbp) overlaps it.
+        // The load must also survive.
+        let lines: Vec<&str> = result.lines().map(|l| l.trim()).collect();
+        let has_store = lines.iter().any(|l| l.contains("%rsi") && l.contains("(%rbp)"));
+        let has_load = lines.iter().any(|l| l.starts_with("movl") && l.contains("(%rbp)") && l.contains("%eax"));
+        assert!(has_store,
+            "store of struct param must survive frame compaction (overlapping read exists): {}", result);
+        assert!(has_load,
+            "load of struct field must survive: {}", result);
+    }
+
     /// Regression test: frame compaction must NOP out dead stores that conflict
     /// with relocated callee-save offsets. Without this fix, a dead store like
     /// `movq %rax, -64(%rbp)` can clobber a callee-saved register that was

@@ -140,8 +140,8 @@ pub(super) fn compact_frame(store: &mut LineStore, infos: &mut [LineInfo]) {
         // the callee-save values. We track store-only offsets so we can NOP them.
         let callee_save_offsets: Vec<i32> = saves.iter().map(|s| s.offset).collect();
         let mut read_offsets: Vec<i32> = Vec::new();
-        // Track store-only offsets: (offset, line_idx) for stores that aren't read
-        let mut store_only_lines: Vec<(i32, usize)> = Vec::new();
+        // Track store-only: (offset, size_bytes, line_idx) for stores that aren't read
+        let mut store_only_lines: Vec<(i32, i32, usize)> = Vec::new();
         let mut bail = false;
 
         for k in body_start..func_end {
@@ -150,11 +150,11 @@ pub(super) fn compact_frame(store: &mut LineStore, infos: &mut [LineInfo]) {
             }
 
             match infos[k].kind {
-                LineKind::StoreRbp { offset, .. } => {
-                    // Track store offset and line for potential NOP-out later.
+                LineKind::StoreRbp { offset, size, .. } => {
+                    // Track store offset, size and line for potential NOP-out later.
                     // Only track negative offsets not in callee-save area.
                     if offset < 0 && !callee_save_offsets.contains(&offset) {
-                        store_only_lines.push((offset, k));
+                        store_only_lines.push((offset, size.byte_size(), k));
                     }
                 }
                 LineKind::LoadRbp { offset, .. } => {
@@ -190,9 +190,15 @@ pub(super) fn compact_frame(store: &mut LineStore, infos: &mut [LineInfo]) {
             }
         }
 
-        // Remove store_only_lines entries whose offsets are actually read
-        // (they're not truly dead stores — they're stores to live slots).
-        store_only_lines.retain(|&(off, _)| !read_offsets.contains(&off));
+        // Remove store_only_lines entries whose byte ranges overlap with any read.
+        // A store at offset X with size S covers bytes [X, X+S). Since we only
+        // track read offsets (not sizes), conservatively assume each read is 8
+        // bytes (the maximum movq size) to avoid missing overlaps.
+        store_only_lines.retain(|&(off, sz, _)| {
+            !read_offsets.iter().any(|&r_off| {
+                ranges_overlap(off, sz, r_off, 8)
+            })
+        });
 
         if bail {
             i = func_end;
@@ -243,13 +249,16 @@ pub(super) fn compact_frame(store: &mut LineStore, infos: &mut [LineInfo]) {
             }
         }
 
-        // NOP out dead stores whose offsets are below the body read area.
+        // NOP out dead stores whose byte ranges are entirely below the body read area.
         // After frame compaction, these offsets may fall:
         // (a) in the relocated callee-save region, clobbering saved registers, or
         // (b) below the stack pointer entirely, causing memory corruption.
         // Since they're never read, NOP-ing them is always safe.
-        for &(off, line_idx) in &store_only_lines {
-            if off < min_body_offset {
+        for &(off, sz, line_idx) in &store_only_lines {
+            // The store covers [off, off+sz). It's safe to NOP only if
+            // the entire store range is below the body read area.
+            let store_top = off + sz;
+            if store_top <= min_body_offset {
                 mark_nop(&mut infos[line_idx]);
             }
         }

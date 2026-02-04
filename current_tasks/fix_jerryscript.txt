@@ -1,2 +1,0 @@
-Fixing JerryScript project to compile and pass tests with ccc-x86.
-Diagnosing build/test failures and fixing compiler bugs as needed.
