@@ -1615,17 +1615,14 @@ impl InstructionEncoder {
             (Operand::Register(src), Operand::Register(dst)) if is_xmm(&src.name) && is_xmm(&dst.name) => {
                 let src_num = reg_num(&src.name).ok_or("bad register")?;
                 let dst_num = reg_num(&dst.name).ok_or("bad register")?;
-                // Emit prefix bytes (before REX)
-                for &b in &load_opcode[..load_opcode.len()-1] {
-                    if b == 0x0F || b >= 0x38 {
-                        // Part of opcode, not prefix
-                        break;
-                    }
+                // Emit mandatory prefix bytes (e.g. 0x66, 0xF2, 0xF3) before REX.
+                // The prefix ends where the 0x0F escape byte begins.
+                let prefix_len = load_opcode.iter().position(|&b| b == 0x0F).unwrap_or(0);
+                for &b in &load_opcode[..prefix_len] {
                     self.bytes.push(b);
                 }
                 self.emit_rex_rr(0, &dst.name, &src.name);
-                // Emit remaining opcode bytes
-                let prefix_len = load_opcode.iter().position(|&b| b == 0x0F).unwrap_or(0);
+                // Emit remaining opcode bytes (0x0F + opcode byte)
                 self.bytes.extend_from_slice(&load_opcode[prefix_len..]);
                 self.bytes.push(self.modrm(3, dst_num, src_num));
                 Ok(())

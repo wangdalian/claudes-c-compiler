@@ -300,13 +300,9 @@ impl Target {
                     Target::Riscv64 => {
                         return riscv::linker::link_to_executable(object_files, output_path, user_args);
                     }
-                    // TODO: add builtin linker for other targets
-                    _ => {
-                        return Err(format!(
-                            "MY_LD=builtin: no built-in linker for {} yet",
-                            self.triple()
-                        ));
-                    }
+                    // Other targets: fall through to common::link_with_args which
+                    // handles MY_LD=builtin by invoking ld directly with CRT setup.
+                    _ => {}
                 }
             }
         }
