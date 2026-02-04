@@ -1,0 +1,3 @@
+Rename "CCC -- The Claude C Compiler" to just "CCC" throughout the project.
+Remove the "Claude" branding from the README title and anywhere else it appears.
+Review docs for accuracy while making the change.
