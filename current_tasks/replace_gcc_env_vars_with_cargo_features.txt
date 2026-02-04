@@ -1,8 +1,0 @@
-Replace MY_ASM/MY_LD environment variables with three Cargo feature flags:
-- gcc_assembler: allows GCC as assembler fallback
-- gcc_linker: allows GCC as linker fallback
-- gcc_m16: allows GCC passthrough for -m16 mode
-
-Default: all flags OFF (standalone mode, no GCC).
-When ON: GCC path available with warnings.
---version shows which flags are enabled.

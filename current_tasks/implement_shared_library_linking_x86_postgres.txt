@@ -1,6 +1,0 @@
-Implement -shared (shared library) linking in the x86-64 built-in linker.
-This is needed for PostgreSQL (which builds .so plugins for conversion procs)
-and many other real-world projects.
-
-Building on the existing task lock (add_shared_library_linking_x86.txt),
-this implements the actual ET_DYN output support.

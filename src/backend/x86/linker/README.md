@@ -3,19 +3,21 @@
 ## Overview
 
 This module is a native x86-64 ELF linker that combines relocatable object
-files (`.o`) and static archives (`.a`) into a dynamically-linked ELF
-executable.  It resolves symbols across object files, generates PLT/GOT
-entries for dynamic function calls, applies relocations, and produces a
-ready-to-run executable binary.
+files (`.o`) and static archives (`.a`) into either a dynamically-linked ELF
+executable or a shared library (`.so`).  It resolves symbols across object
+files, generates PLT/GOT entries for dynamic function calls, applies
+relocations, and produces a ready-to-run binary.
 
 The linker is invoked as an alternative to calling the system `ld` or `gcc`
 for the final link step.  It handles the typical output of C compilation:
 multiple object files, CRT startup objects (`crt1.o`, `crti.o`, `crtn.o`),
 static archives (`libc_nonshared.a`), and shared library dependencies
-(`libc.so.6`, `libm.so.6`).
+(`libc.so.6`, `libm.so.6`).  It also supports producing shared libraries
+with full PLT/GOT, RELRO, GLOB_DAT, rpath/runpath, and SONAME support.
 
-### Entry Point
+### Entry Points
 
+**Executable linking:**
 ```rust
 pub fn link_builtin(
     object_files:       &[&str],
@@ -25,6 +27,17 @@ pub fn link_builtin(
     needed_libs:        &[&str],
     crt_objects_before: &[&str],
     crt_objects_after:  &[&str],
+) -> Result<(), String>
+```
+
+**Shared library linking:**
+```rust
+pub fn link_shared(
+    object_files: &[&str],
+    output_path:  &str,
+    user_args:    &[String],
+    lib_paths:    &[&str],
+    needed_libs:  &[&str],
 ) -> Result<(), String>
 ```
 
@@ -93,7 +106,7 @@ pub fn link_builtin(
     +----------------------------------------------------------------+
                               |
                               v
-                     ELF Executable Binary
+                ELF Executable or Shared Library
 ```
 
 
@@ -101,8 +114,8 @@ pub fn link_builtin(
 
 | File | Lines | Role |
 |------|-------|------|
-| `mod.rs` | ~1400 | Linker orchestration: loading, symbol resolution, section merging, PLT/GOT creation, layout, relocation application, output emission |
-| `elf.rs` | ~75 | x86-64 relocation constants; type aliases and thin wrappers delegating to `linker_common` for ELF64 parsing, shared library symbols, and SONAME extraction |
+| `mod.rs` | ~2600 | Linker orchestration for both executables and shared libraries: loading, symbol resolution, section merging, PLT/GOT creation, layout, relocation application, output emission |
+| `elf.rs` | ~71 | x86-64 relocation constants; type aliases and thin wrappers delegating to `linker_common` for ELF64 parsing, shared library symbols, and SONAME extraction |
 
 
 ## Key Data Structures
@@ -541,6 +554,9 @@ dynamic linker (`ld-linux-x86-64.so.2`) reads at program startup:
 | `DT_INIT_ARRAYSZ` | Size of `.init_array` (if present) |
 | `DT_FINI_ARRAY` | Address of `.fini_array` (if present) |
 | `DT_FINI_ARRAYSZ` | Size of `.fini_array` (if present) |
+| `DT_SONAME` | Shared library name (shared libraries only) |
+| `DT_RPATH` / `DT_RUNPATH` | Runtime library search path (if `-rpath` specified) |
+| `DT_RELACOUNT` | Number of R_X86_64_RELATIVE entries (shared libraries) |
 | `DT_NULL` | Terminator |
 
 ### .rela.dyn Entries
@@ -566,6 +582,80 @@ When code references a global data object defined in a shared library (e.g.,
 
 This is detected when a `R_X86_64_PC32`/`R_X86_64_PLT32` relocation targets
 a dynamic symbol with `STT_OBJECT` type.
+
+
+## Shared Library Output (`link_shared` / `emit_shared_library`)
+
+The linker can produce ELF shared libraries (`ET_DYN`) via `link_shared`.
+This is used when the compiler is invoked with `-shared` (e.g., for building
+PostgreSQL extension modules like `plpgsql.so` and `libpq.so`).
+
+### Shared Library Layout
+
+```
++-----------------------------------------------------------------------+
+| Segment 1: Read-only (PT_LOAD, PF_R)                                 |
+|   ELF header + program headers                                       |
+|   .gnu.hash                                                          |
+|   .dynsym                                                            |
+|   .dynstr                                                            |
+|   .rela.dyn  (R_X86_64_RELATIVE + R_X86_64_GLOB_DAT)                |
+|   .rela.plt  (R_X86_64_JUMP_SLOT)                                   |
++-----------------------------------------------------------------------+
+| Segment 2: Executable (PT_LOAD, PF_R | PF_X)         [page-aligned]  |
+|   .text  (merged code sections)                                       |
+|   .plt   (PLT stubs for external function calls)                      |
++-----------------------------------------------------------------------+
+| Segment 3: Read-only data (PT_LOAD, PF_R)            [page-aligned]  |
+|   .rodata  (merged read-only data sections)                           |
++-----------------------------------------------------------------------+
+| Segment 4: Read-write (PT_LOAD, PF_R | PF_W)         [page-aligned]  |
+|   RELRO region:                                                       |
+|     .data.rel.ro  (relocated read-only data)                          |
+|     .init_array / .fini_array                                         |
+|     .dynamic                                                          |
+|     .got  (RELATIVE + GLOB_DAT entries)                               |
+|   --- PT_GNU_RELRO boundary (page-aligned) ---                        |
+|   .got.plt  (writable for lazy PLT binding)                           |
+|   .data / .bss                                                        |
++-----------------------------------------------------------------------+
+```
+
+### Key Shared Library Features
+
+- **PLT/GOT for external symbols**: Shared libraries can call functions from
+  other shared libraries (e.g., libc) through PLT stubs with lazy binding.
+  R_X86_64_JUMP_SLOT relocations in `.rela.plt` enable runtime resolution.
+
+- **GLOB_DAT relocations**: GOT entries for external data symbols (accessed
+  via GOTPCREL) are filled at load time using R_X86_64_GLOB_DAT entries in
+  `.rela.dyn`, separate from R_X86_64_RELATIVE entries.
+
+- **PT_GNU_RELRO**: The `.got`, `.dynamic`, `.init_array`, `.fini_array`, and
+  `.data.rel.ro` sections are placed in the RELRO region, which the dynamic
+  linker marks read-only after relocations are applied.  The `.got.plt` is
+  deliberately placed *after* the RELRO boundary so it remains writable for
+  lazy PLT binding.
+
+- **SONAME**: Set via `-Wl,-soname,<name>`.  Emitted as a DT_SONAME entry in
+  the `.dynamic` section.
+
+- **Rpath/Runpath**: Set via `-Wl,-rpath,<path>`.  `--enable-new-dtags` uses
+  DT_RUNPATH (searched after LD_LIBRARY_PATH); `--disable-new-dtags` uses
+  DT_RPATH (searched before).
+
+- **.gnu.hash layout**: Undefined symbols (imports) are placed before the
+  `symoffset` boundary in `.dynsym`; defined (exported) symbols are placed
+  after and included in the hash table.
+
+### Shared Library Symbol Extraction (PT_DYNAMIC Fallback)
+
+When parsing input shared libraries that lack section headers (e.g., our own
+emitted `.so` files), `parse_shared_library_symbols` in `linker_common.rs`
+falls back to using `PT_DYNAMIC` program headers.  It walks the dynamic
+entries to find `DT_SYMTAB`, `DT_STRTAB`, `DT_STRSZ`, `DT_SYMENT`, and
+`DT_GNU_HASH` (for symbol count), then translates virtual addresses to file
+offsets using `PT_LOAD` segments.  The same fallback is used by `parse_soname`.
 
 
 ## Supported Relocation Types
@@ -644,20 +734,21 @@ The parser:
 
 ## Key Design Decisions and Trade-offs
 
-### 1. Non-PIE Executable Output
+### 1. Non-PIE Executable Output / PIC Shared Library Output
 
-The linker produces a non-position-independent executable (`ET_EXEC`) with a
-fixed base address of `0x400000`.  This is the simplest model and avoids the
-need for `R_X86_64_RELATIVE` relocations in `.rela.dyn`.  PIE support would
-require changing the base address, adding relative relocations, and using
-`ET_DYN` as the ELF type.
+For executables, the linker produces a non-position-independent executable
+(`ET_EXEC`) with a fixed base address of `0x400000`.  For shared libraries,
+it produces a position-independent shared object (`ET_DYN`) with a base
+address of `0x0` and `R_X86_64_RELATIVE` relocations for internal absolute
+addresses.  PIE executable support is not yet implemented.
 
 ### 2. Fixed Four-Segment Layout
 
-The executable always uses four `PT_LOAD` segments (RO metadata, executable
-code, read-only data, read-write data) plus a `PT_TLS` segment when TLS is
-used.  This is straightforward but slightly less flexible than what `ld` or
-`lld` produce (which may use `PT_GNU_RELRO` for `.got` and `.dynamic`).
+For executables, four `PT_LOAD` segments are used (RO metadata, executable
+code, read-only data, read-write data) plus `PT_TLS` when TLS is present.
+For shared libraries, four `PT_LOAD` segments are also used, plus
+`PT_GNU_RELRO` to protect `.got`, `.dynamic`, and `.data.rel.ro` after
+load-time relocations are applied.
 
 ### 3. Lazy PLT Binding
 

@@ -1,6 +1,0 @@
-Fix PostgreSQL build by:
-1. Adding section headers to emitted .so files so they can be consumed by our own linker
-2. Adding PT_DYNAMIC fallback in parse_shared_library_symbols for .so files without section headers
-3. Handle -Wl,-rpath and --enable-new-dtags flags needed by PostgreSQL
-4. Fix any other issues preventing postgres from building and passing tests
-Started 2026-02-04.

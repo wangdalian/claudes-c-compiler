@@ -1,4 +1,0 @@
-Fix PostgreSQL build by making the linker properly handle shared libraries:
-1. Fix parse_shared_library_symbols to use PT_DYNAMIC/DT_SYMTAB when section headers are absent
-2. Add section headers to emitted shared libraries for compatibility
-3. Handle additional linker flags needed by postgres (-Wl,-rpath, --enable-new-dtags, etc.)

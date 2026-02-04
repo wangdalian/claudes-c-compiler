@@ -30,6 +30,9 @@ use crate::backend::elf::{
     STB_LOCAL, STB_GLOBAL, STB_WEAK,
     STT_SECTION, STT_FILE,
     SHN_UNDEF,
+    PT_DYNAMIC,
+    DT_NULL, DT_SONAME, DT_SYMTAB, DT_STRTAB, DT_STRSZ,
+    DT_GNU_HASH,
     read_u16, read_u32, read_u64, read_i64, read_cstr,
     parse_archive_members,
 };
@@ -304,109 +307,342 @@ pub fn parse_shared_library_symbols(data: &[u8], lib_name: &str) -> Result<Vec<D
     let e_shentsize = read_u16(data, 58) as usize;
     let e_shnum = read_u16(data, 60) as usize;
 
-    if e_shoff == 0 || e_shnum == 0 {
-        return Err(format!("{}: no section headers", lib_name));
-    }
-
-    // Parse section headers (minimal: just type/offset/size/link)
-    let mut sections = Vec::with_capacity(e_shnum);
-    for i in 0..e_shnum {
-        let off = e_shoff + i * e_shentsize;
-        if off + e_shentsize > data.len() {
-            break;
-        }
-        sections.push((
-            read_u32(data, off + 4),  // sh_type
-            read_u64(data, off + 24), // offset
-            read_u64(data, off + 32), // size
-            read_u32(data, off + 40), // link
-        ));
-    }
-
-    // Find .dynsym and its string table
-    let mut symbols = Vec::new();
-    for i in 0..sections.len() {
-        let (sh_type, offset, size, link) = sections[i];
-        if sh_type == SHT_DYNSYM {
-            let strtab_idx = link as usize;
-            if strtab_idx >= sections.len() { continue; }
-            let (_, str_off, str_size, _) = sections[strtab_idx];
-            let str_off = str_off as usize;
-            let str_size = str_size as usize;
-            if str_off + str_size > data.len() { continue; }
-            let strtab = &data[str_off..str_off + str_size];
-
-            let sym_off = offset as usize;
-            let sym_size = size as usize;
-            if sym_off + sym_size > data.len() { continue; }
-            let sym_data = &data[sym_off..sym_off + sym_size];
-            let sym_count = sym_data.len() / 24;
-
-            for j in 1..sym_count { // skip null symbol at index 0
-                let off = j * 24;
-                if off + 24 > sym_data.len() { break; }
-                let name_idx = read_u32(sym_data, off) as usize;
-                let info = sym_data[off + 4];
-                let shndx = read_u16(sym_data, off + 6);
-                let value = read_u64(sym_data, off + 8);
-                let size = read_u64(sym_data, off + 16);
-
-                if shndx == SHN_UNDEF { continue; }
-
-                let name = read_cstr(strtab, name_idx);
-                if name.is_empty() { continue; }
-
-                symbols.push(DynSymbol { name, info, value, size });
+    // Try section headers first (the standard approach)
+    if e_shoff != 0 && e_shnum != 0 {
+        let mut sections = Vec::with_capacity(e_shnum);
+        for i in 0..e_shnum {
+            let off = e_shoff + i * e_shentsize;
+            if off + e_shentsize > data.len() {
+                break;
             }
+            sections.push((
+                read_u32(data, off + 4),  // sh_type
+                read_u64(data, off + 24), // offset
+                read_u64(data, off + 32), // size
+                read_u32(data, off + 40), // link
+            ));
+        }
+
+        // Find .dynsym and its string table
+        for i in 0..sections.len() {
+            let (sh_type, offset, size, link) = sections[i];
+            if sh_type == SHT_DYNSYM {
+                let strtab_idx = link as usize;
+                if strtab_idx >= sections.len() { continue; }
+                let (_, str_off, str_size, _) = sections[strtab_idx];
+                let str_off = str_off as usize;
+                let str_size = str_size as usize;
+                if str_off + str_size > data.len() { continue; }
+                let strtab = &data[str_off..str_off + str_size];
+
+                let sym_off = offset as usize;
+                let sym_size = size as usize;
+                if sym_off + sym_size > data.len() { continue; }
+                let sym_data = &data[sym_off..sym_off + sym_size];
+                let sym_count = sym_data.len() / 24;
+
+                let mut symbols = Vec::new();
+                for j in 1..sym_count {
+                    let off = j * 24;
+                    if off + 24 > sym_data.len() { break; }
+                    let name_idx = read_u32(sym_data, off) as usize;
+                    let info = sym_data[off + 4];
+                    let shndx = read_u16(sym_data, off + 6);
+                    let value = read_u64(sym_data, off + 8);
+                    let size = read_u64(sym_data, off + 16);
+
+                    if shndx == SHN_UNDEF { continue; }
+
+                    let name = read_cstr(strtab, name_idx);
+                    if name.is_empty() { continue; }
+
+                    symbols.push(DynSymbol { name, info, value, size });
+                }
+                return Ok(symbols);
+            }
+        }
+    }
+
+    // Fallback: use PT_DYNAMIC program header to find DT_SYMTAB/DT_STRTAB.
+    // This handles shared libraries without section headers (e.g., our own
+    // emitted .so files, or stripped libraries).
+    parse_shared_library_symbols_from_phdrs(data, lib_name)
+}
+
+/// Parse dynamic symbols using program headers (PT_DYNAMIC) instead of section headers.
+///
+/// When a shared library has no section headers (e_shoff == 0), we can still find
+/// the dynamic symbol table by:
+/// 1. Locating PT_DYNAMIC in the program header table
+/// 2. Reading DT_SYMTAB, DT_STRTAB, DT_STRSZ from the dynamic section
+/// 3. Determining symtab size from DT_GNU_HASH (number of symbols) or by
+///    scanning until we hit the strtab address
+fn parse_shared_library_symbols_from_phdrs(data: &[u8], lib_name: &str) -> Result<Vec<DynSymbol>, String> {
+    let e_phoff = read_u64(data, 32) as usize;
+    let e_phentsize = read_u16(data, 54) as usize;
+    let e_phnum = read_u16(data, 56) as usize;
+
+    if e_phoff == 0 || e_phnum == 0 {
+        return Err(format!("{}: no program headers and no section headers", lib_name));
+    }
+
+    // Find PT_DYNAMIC
+    let mut dyn_offset = 0usize;
+    let mut dyn_size = 0usize;
+    for i in 0..e_phnum {
+        let ph = e_phoff + i * e_phentsize;
+        if ph + e_phentsize > data.len() { break; }
+        let p_type = read_u32(data, ph);
+        if p_type == PT_DYNAMIC {
+            dyn_offset = read_u64(data, ph + 8) as usize;
+            dyn_size = read_u64(data, ph + 32) as usize;
             break;
         }
+    }
+
+    if dyn_offset == 0 {
+        return Err(format!("{}: no PT_DYNAMIC segment found", lib_name));
+    }
+
+    // Read dynamic entries to find DT_SYMTAB, DT_STRTAB, DT_STRSZ, DT_GNU_HASH
+    let mut symtab_addr: u64 = 0;
+    let mut strtab_addr: u64 = 0;
+    let mut strsz: u64 = 0;
+    let mut gnu_hash_addr: u64 = 0;
+
+    let mut pos = dyn_offset;
+    let dyn_end = dyn_offset + dyn_size;
+    while pos + 16 <= dyn_end && pos + 16 <= data.len() {
+        let tag = read_i64(data, pos);
+        let val = read_u64(data, pos + 8);
+        match tag {
+            x if x == DT_NULL => break,
+            x if x == DT_SYMTAB => symtab_addr = val,
+            x if x == DT_STRTAB => strtab_addr = val,
+            x if x == DT_STRSZ => strsz = val,
+            x if x == DT_GNU_HASH => gnu_hash_addr = val,
+            _ => {}
+        }
+        pos += 16;
+    }
+
+    if symtab_addr == 0 || strtab_addr == 0 {
+        return Err(format!("{}: missing DT_SYMTAB or DT_STRTAB in dynamic section", lib_name));
+    }
+
+    // For shared libraries with base address 0 (PIC), the DT_ values are
+    // virtual addresses. We need to convert them to file offsets.
+    // For our emitted .so files, vaddr == file offset (base_addr = 0 and
+    // segments are identity-mapped). For system .so files loaded at higher
+    // addresses, we'd need to use the PT_LOAD mappings. Since we primarily
+    // need this for our own .so output, use identity mapping and also try
+    // PT_LOAD-based translation.
+    let symtab_file_offset = vaddr_to_file_offset(data, e_phoff, e_phentsize, e_phnum, symtab_addr);
+    let strtab_file_offset = vaddr_to_file_offset(data, e_phoff, e_phentsize, e_phnum, strtab_addr);
+
+    if strtab_file_offset + strsz as usize > data.len() {
+        return Err(format!("{}: strtab extends beyond file", lib_name));
+    }
+    let strtab = &data[strtab_file_offset..strtab_file_offset + strsz as usize];
+
+    // Determine number of dynamic symbols. We can get this from .gnu.hash
+    // (the symoffset + number of hashed symbols), or by scanning symbols
+    // until we reach the strtab address.
+    let sym_count = if gnu_hash_addr != 0 {
+        let gnu_hash_file_offset = vaddr_to_file_offset(data, e_phoff, e_phentsize, e_phnum, gnu_hash_addr);
+        count_dynsyms_from_gnu_hash(data, gnu_hash_file_offset)
+    } else {
+        // Fallback: symtab ends where strtab begins (they're typically adjacent)
+        let sym_size = if strtab_file_offset > symtab_file_offset {
+            strtab_file_offset - symtab_file_offset
+        } else {
+            // Can't determine size; try a reasonable max
+            1024 * 24
+        };
+        sym_size / 24
+    };
+
+    let mut symbols = Vec::new();
+    for j in 1..sym_count {
+        let off = symtab_file_offset + j * 24;
+        if off + 24 > data.len() { break; }
+        let name_idx = read_u32(data, off) as usize;
+        let info = data[off + 4];
+        let shndx = read_u16(data, off + 6);
+        let value = read_u64(data, off + 8);
+        let size = read_u64(data, off + 16);
+
+        if shndx == SHN_UNDEF { continue; }
+
+        let name = read_cstr(strtab, name_idx);
+        if name.is_empty() { continue; }
+
+        symbols.push(DynSymbol { name, info, value, size });
     }
 
     Ok(symbols)
 }
 
+/// Convert a virtual address to a file offset using PT_LOAD program headers.
+fn vaddr_to_file_offset(
+    data: &[u8], e_phoff: usize, e_phentsize: usize, e_phnum: usize, vaddr: u64,
+) -> usize {
+    use crate::backend::elf::PT_LOAD;
+    for i in 0..e_phnum {
+        let ph = e_phoff + i * e_phentsize;
+        if ph + e_phentsize > data.len() { break; }
+        let p_type = read_u32(data, ph);
+        if p_type != PT_LOAD { continue; }
+        let p_offset = read_u64(data, ph + 8);
+        let p_vaddr = read_u64(data, ph + 16);
+        let p_filesz = read_u64(data, ph + 32);
+        if vaddr >= p_vaddr && vaddr < p_vaddr + p_filesz {
+            return (p_offset + (vaddr - p_vaddr)) as usize;
+        }
+    }
+    // If no PT_LOAD matches, assume identity mapping (vaddr == file offset)
+    vaddr as usize
+}
+
+/// Count the total number of dynamic symbols from a .gnu.hash section.
+///
+/// The .gnu.hash header contains symoffset (first hashed symbol index).
+/// We scan the hash chains to find the highest symbol index, then add 1.
+fn count_dynsyms_from_gnu_hash(data: &[u8], offset: usize) -> usize {
+    if offset + 16 > data.len() { return 0; }
+    let nbuckets = read_u32(data, offset) as usize;
+    let symoffset = read_u32(data, offset + 4) as usize;
+    let bloom_size = read_u32(data, offset + 8) as usize;
+
+    let buckets_off = offset + 16 + bloom_size * 8;
+    let chains_off = buckets_off + nbuckets * 4;
+
+    if buckets_off + nbuckets * 4 > data.len() { return symoffset; }
+
+    // Find the maximum bucket value (highest starting symbol index)
+    let mut max_sym = symoffset;
+    for i in 0..nbuckets {
+        let bucket_val = read_u32(data, buckets_off + i * 4) as usize;
+        if bucket_val >= max_sym {
+            // Walk the chain from this bucket to find the last symbol
+            let mut idx = bucket_val;
+            loop {
+                let chain_pos = chains_off + (idx - symoffset) * 4;
+                if chain_pos + 4 > data.len() { break; }
+                let chain_val = read_u32(data, chain_pos);
+                if idx + 1 > max_sym { max_sym = idx + 1; }
+                if chain_val & 1 != 0 { break; } // end of chain
+                idx += 1;
+            }
+        }
+    }
+
+    max_sym
+}
+
 /// Get the SONAME from a shared library's .dynamic section.
+///
+/// Tries section headers first, then falls back to program headers (PT_DYNAMIC)
+/// for shared libraries that lack section headers (e.g., our own emitted .so files).
 pub fn parse_soname(data: &[u8]) -> Option<String> {
     if data.len() < 64 || data[0..4] != ELF_MAGIC {
         return None;
     }
 
+
     let e_shoff = read_u64(data, 40) as usize;
     let e_shentsize = read_u16(data, 58) as usize;
     let e_shnum = read_u16(data, 60) as usize;
 
-    const DT_NULL: i64 = 0;
-    const DT_SONAME: i64 = 14;
+    // Try section headers first
+    if e_shoff != 0 && e_shnum != 0 {
+        for i in 0..e_shnum {
+            let off = e_shoff + i * e_shentsize;
+            if off + 64 > data.len() { break; }
+            let sh_type = read_u32(data, off + 4);
+            if sh_type == SHT_DYNAMIC {
+                let dyn_off = read_u64(data, off + 24) as usize;
+                let dyn_size = read_u64(data, off + 32) as usize;
+                let link = read_u32(data, off + 40) as usize;
 
-    for i in 0..e_shnum {
-        let off = e_shoff + i * e_shentsize;
-        if off + 64 > data.len() { break; }
-        let sh_type = read_u32(data, off + 4);
-        if sh_type == SHT_DYNAMIC {
-            let dyn_off = read_u64(data, off + 24) as usize;
-            let dyn_size = read_u64(data, off + 32) as usize;
-            let link = read_u32(data, off + 40) as usize;
+                let str_sec_off = e_shoff + link * e_shentsize;
+                if str_sec_off + 64 > data.len() { return None; }
+                let str_off = read_u64(data, str_sec_off + 24) as usize;
+                let str_size = read_u64(data, str_sec_off + 32) as usize;
+                if str_off + str_size > data.len() { return None; }
+                let strtab = &data[str_off..str_off + str_size];
 
-            let str_sec_off = e_shoff + link * e_shentsize;
-            if str_sec_off + 64 > data.len() { return None; }
-            let str_off = read_u64(data, str_sec_off + 24) as usize;
-            let str_size = read_u64(data, str_sec_off + 32) as usize;
-            if str_off + str_size > data.len() { return None; }
-            let strtab = &data[str_off..str_off + str_size];
-
-            let mut pos = dyn_off;
-            while pos + 16 <= dyn_off + dyn_size && pos + 16 <= data.len() {
-                let tag = read_i64(data, pos);
-                let val = read_u64(data, pos + 8);
-                if tag == DT_NULL { break; }
-                if tag == DT_SONAME {
-                    return Some(read_cstr(strtab, val as usize));
+                let mut pos = dyn_off;
+                while pos + 16 <= dyn_off + dyn_size && pos + 16 <= data.len() {
+                    let tag = read_i64(data, pos);
+                    let val = read_u64(data, pos + 8);
+                    if tag == DT_NULL { break; }
+                    if tag == DT_SONAME {
+                        return Some(read_cstr(strtab, val as usize));
+                    }
+                    pos += 16;
                 }
-                pos += 16;
+                return None;
             }
         }
+        return None;
     }
-    None
+
+    // Fallback: use program headers (PT_DYNAMIC) to find the dynamic section
+    let e_phoff = read_u64(data, 32) as usize;
+    let e_phentsize = read_u16(data, 54) as usize;
+    let e_phnum = read_u16(data, 56) as usize;
+
+    if e_phoff == 0 || e_phnum == 0 { return None; }
+
+    // Find PT_DYNAMIC
+    let mut dyn_file_offset = 0usize;
+    let mut dyn_filesz = 0usize;
+    for i in 0..e_phnum {
+        let ph = e_phoff + i * e_phentsize;
+        if ph + e_phentsize > data.len() { break; }
+        let p_type = read_u32(data, ph);
+        if p_type == PT_DYNAMIC {
+            dyn_file_offset = read_u64(data, ph + 8) as usize;
+            dyn_filesz = read_u64(data, ph + 32) as usize;
+            break;
+        }
+    }
+
+    if dyn_file_offset == 0 { return None; }
+
+    // First pass: find DT_STRTAB and DT_SONAME offset
+    let mut strtab_addr: u64 = 0;
+    let mut strsz: u64 = 0;
+    let mut soname_offset: Option<u64> = None;
+
+    let mut pos = dyn_file_offset;
+    let dyn_end = dyn_file_offset + dyn_filesz;
+    while pos + 16 <= dyn_end && pos + 16 <= data.len() {
+        let tag = read_i64(data, pos);
+        let val = read_u64(data, pos + 8);
+        match tag {
+            x if x == DT_NULL => break,
+            x if x == DT_STRTAB => strtab_addr = val,
+            x if x == DT_STRSZ => strsz = val,
+            x if x == DT_SONAME => soname_offset = Some(val),
+            _ => {}
+        }
+        pos += 16;
+    }
+
+    if strtab_addr == 0 || soname_offset.is_none() { return None; }
+
+    let strtab_file_off = vaddr_to_file_offset(data, e_phoff, e_phentsize, e_phnum, strtab_addr);
+    let name_off = soname_offset.unwrap() as usize;
+    if strtab_file_off + name_off >= data.len() { return None; }
+    if strsz > 0 && strtab_file_off + strsz as usize <= data.len() {
+        let strtab = &data[strtab_file_off..strtab_file_off + strsz as usize];
+        Some(read_cstr(strtab, name_off))
+    } else {
+        // Best effort: read from strtab_file_off + name_off
+        Some(read_cstr(&data[strtab_file_off..], name_off))
+    }
 }
 
 // ── Section name mapping ─────────────────────────────────────────────────

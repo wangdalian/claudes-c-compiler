@@ -11,7 +11,7 @@ pub use crate::backend::elf::{
     STB_GLOBAL, STB_WEAK,
     STT_OBJECT, STT_FUNC, STT_SECTION, STT_FILE, STT_TLS,
     SHN_UNDEF, SHN_ABS, SHN_COMMON,
-    PT_LOAD, PT_DYNAMIC, PT_INTERP, PT_PHDR, PT_TLS, PT_GNU_STACK,
+    PT_LOAD, PT_DYNAMIC, PT_INTERP, PT_PHDR, PT_TLS, PT_GNU_STACK, PT_GNU_RELRO,
     PF_X, PF_W, PF_R,
     DT_NULL, DT_NEEDED, DT_PLTRELSZ, DT_PLTGOT, DT_STRTAB,
     DT_SYMTAB, DT_RELA, DT_RELASZ, DT_RELAENT, DT_STRSZ, DT_SYMENT,
@@ -41,11 +41,9 @@ pub const R_X86_64_REX_GOTPCRELX: u32 = 42;
 pub use crate::backend::elf::{
     DT_DEBUG, DT_INIT_ARRAY, DT_FINI_ARRAY,
     DT_INIT_ARRAYSZ, DT_FINI_ARRAYSZ,
+    DT_SONAME, DT_RPATH, DT_RUNPATH, DT_RELACOUNT,
 };
 
-// x86-64 specific DT_* constants not (yet) in shared module
-pub const DT_SONAME: i64 = 14;
-pub const DT_RELACOUNT: i64 = 0x6ffffff9;
 pub const DF_BIND_NOW: i64 = 0x8;
 
 // ── Type aliases ─────────────────────────────────────────────────────────
