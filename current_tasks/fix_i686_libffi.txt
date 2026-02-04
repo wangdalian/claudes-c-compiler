@@ -1,6 +1,0 @@
-Fix i686 libffi verification: two test failures
-1. call_double: ffi_call with double return type produces garbage (should be 7.0)
-2. call_void: segfault when calling void function via ffi_call with NULL ret pointer
-
-These are likely codegen bugs in the i686 backend related to floating-point
-return values and/or null pointer handling in generated code.
