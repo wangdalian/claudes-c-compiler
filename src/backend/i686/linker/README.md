@@ -452,12 +452,19 @@ headers matter) and reduces file size.
 
 ## File Inventory
 
-| File         | Lines | Role                                                        |
-|--------------|-------|-------------------------------------------------------------|
-| `mod.rs`     | ~38   | Module root; `link_builtin()` entry point; delegates to     |
-|              |       | `elf::link_builtin()`                                       |
-| `elf.rs`     | ~2733 | Complete ELF32 linker implementation: input parsing,        |
-|              |       | archive extraction, shared library symbol scanning,         |
-|              |       | section merging, symbol resolution, PLT/GOT construction,   |
-|              |       | layout, relocation application, version tables, output      |
-|              |       | emission, GNU hash table builder, string table builder      |
+| File         | Role                                                        |
+|--------------|-------------------------------------------------------------|
+| `mod.rs`     | Main orchestration: `link_builtin()` entry point, 10-phase  |
+|              | pipeline, section merging, symbol resolution, PLT/GOT      |
+|              | construction, layout, address assignment, ELF emission      |
+| `types.rs`   | ELF32-specific constants (relocation types, dynamic tags,   |
+|              | section flags), struct definitions (`InputObject`,          |
+|              | `LinkerSymbol`, `OutputSection`, etc.), helper functions    |
+| `parse.rs`   | ELF32 object file parsing (`parse_elf32`), regular and      |
+|              | thin archive extraction                                     |
+| `dynsym.rs`  | Dynamic symbol reading from ELF32 shared libraries,         |
+|              | GNU version info parsing, linker script resolution          |
+| `reloc.rs`   | i386 relocation application: all R_386_* types including    |
+|              | GOT32X relaxation and TLS relocations                       |
+| `gnu_hash.rs`| GNU hash table (.gnu.hash) builder for ELF32 with 32-bit   |
+|              | bloom filter words                                          |
