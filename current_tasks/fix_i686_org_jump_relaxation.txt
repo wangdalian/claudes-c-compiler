@@ -1,0 +1,9 @@
+Fix .org + jump relaxation interaction bug in i686 (and x86-64) assembler.
+
+When .org directives pad to absolute positions and then jump relaxation
+shortens jumps before those .org regions, the padding is not adjusted,
+causing misaligned jump tables (e.g., libffi sysv.S store_table).
+
+This causes libffi test failures:
+- call_double: wrong table entry (garbage double)
+- call_void: segfault from wrong table entry (stores to NULL ecx)
