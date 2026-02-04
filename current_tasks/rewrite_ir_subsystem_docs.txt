@@ -1,8 +1,0 @@
-Task: Rewrite IR subsystem documentation (ir/, ir/lowering/, ir/mem2reg/ READMEs)
-
-Audited all three IR READMEs against actual code. Found several inaccuracies:
-- IR README: intrinsic names missing 128 suffix, missing Psubsb128, IrFunction fields incomplete
-- Lowering README: Pass structure wrong (no "Pass 0" - sema handles typedefs), FunctionInfo in wrong module (sema::analysis not sema::sema), compound path helper locations wrong, expr_ctype vs get_expr_ctype naming
-- Mem2reg README: minor step count discrepancy (6 steps in code, 5 in docs)
-
-Will fix all inaccuracies and improve completeness.

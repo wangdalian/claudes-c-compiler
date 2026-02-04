@@ -27,7 +27,7 @@ inserting phi nodes. Phi elimination later converts the SSA phi nodes back into 
 
 The implementation follows the classic textbook algorithm from Cytron et al., using the
 Cooper-Harvey-Kennedy dominator algorithm as a modern, efficient foundation. The pass is
-structured as five steps applied to each function independently.
+structured as six steps applied to each function independently.
 
 ### Step 1: Identify Promotable Allocas
 
@@ -61,15 +61,20 @@ in the entry block. After inlining, however, the inlined function's entry block 
 its own allocas) becomes a non-entry block in the caller. The pass scans all blocks for
 allocas so that inlined locals are also promoted.
 
-### Step 2: Build CFG and Compute Dominator Tree
+### Step 2: Build CFG
 
-The function's control-flow graph is constructed from block terminators, producing predecessor
-and successor adjacency lists. The immediate dominator of every block is then computed using
-the Cooper-Harvey-Kennedy algorithm ("A Simple, Fast Dominance Algorithm", 2001). This
-iterative dataflow algorithm processes blocks in reverse postorder, converging in two passes
-for reducible CFGs and gracefully handling irreducible ones.
+The function's control-flow graph is constructed from block terminators and `InlineAsm`
+goto edges, producing predecessor and successor adjacency lists. These adjacency lists are
+the foundation for dominator computation and phi placement in the subsequent steps.
 
-### Step 3: Compute Dominance Frontiers
+### Step 3: Compute Dominator Tree
+
+The immediate dominator of every block is computed using the Cooper-Harvey-Kennedy algorithm
+("A Simple, Fast Dominance Algorithm", 2001). This iterative dataflow algorithm processes
+blocks in reverse postorder, converging in two passes for reducible CFGs and gracefully
+handling irreducible ones.
+
+### Step 4: Compute Dominance Frontiers
 
 For each block *b*, the dominance frontier DF(*b*) is the set of blocks where *b*'s dominance
 "ends" -- join points reachable from *b* where another path exists that *b* does not dominate.
@@ -77,7 +82,7 @@ These are exactly the points where phi nodes may be needed. The implementation w
 predecessors of each join point upward through the dominator tree until reaching the join
 point's immediate dominator, accumulating frontier entries along the way.
 
-### Step 4: Insert Phi Nodes at Iterated Dominance Frontiers
+### Step 5: Insert Phi Nodes with Cost Limiting
 
 For each promotable alloca, the pass computes the **iterated dominance frontier** of its
 defining blocks (blocks containing stores to the alloca). Starting from the set of defining
@@ -92,7 +97,7 @@ O(cases x allocas) copies. The pass estimates the total copy cost and, if it exc
 leaving them as stack variables. This keeps the generated code within reasonable bounds
 (roughly 400 KB of copy instructions at 8 bytes per slot).
 
-### Step 5: Rename Variables via Dominator-Tree DFS
+### Step 6: Rename Variables via Dominator-Tree DFS
 
 The final step rewrites the IR in a single depth-first traversal of the dominator tree. Each
 alloca maintains a **definition stack** -- a stack of SSA `Operand` values representing the
