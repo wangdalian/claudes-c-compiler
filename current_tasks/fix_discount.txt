@@ -1,0 +1,4 @@
+Testing and fixing the discount Markdown processor project.
+Started 2026-02-04.
+GCC passes all tests. ccc-x86 builds but segfaults at runtime (markdown binary crashes).
+Investigating codegen bug.
