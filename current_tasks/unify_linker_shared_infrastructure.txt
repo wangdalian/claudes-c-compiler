@@ -1,0 +1,8 @@
+Extract shared linker infrastructure from all 4 backends into a common module.
+
+Key work:
+- Unify ELF64 object parser (x86, arm, riscv have nearly identical parse_object)
+- Extract common linker types (OutputSection, GlobalSymbol, DynStrTab)
+- Extract shared utilities (map_section_name, align_up, load_file, load_archive, merge_sections)
+- Remove duplicated ELF constants from i686 linker
+- Standardize naming across backends
