@@ -73,11 +73,15 @@ downstream lexer uses these markers to maintain accurate source locations.
 | `add_quote_include_path(path)` | Append to the `-iquote` search list. |
 | `add_system_include_path(path)` | Append to the `-isystem` search list. |
 | `add_after_include_path(path)` | Append to the `-idirafter` search list. |
-| `set_target(target)` | Switch architecture (`"aarch64"`, `"riscv64"`, etc.), updating predefined macros and include paths. |
+| `set_target(target)` | Switch architecture (`"aarch64"`, `"riscv64"`, `"i686"`, `"i386"`), updating predefined macros and include paths. |
 | `set_pic(enabled)` | Define or undefine `__PIC__`/`__pic__`. |
 | `set_optimize(opt, size)` | Define `__OPTIMIZE__` and `__OPTIMIZE_SIZE__`. |
 | `set_gnu89_inline(gnu89)` | Toggle between GNU89 and C99 inline semantics macros. |
 | `set_sse_macros(no_sse)` | Control `__SSE__`/`__SSE2__`/`__MMX__` definitions. |
+| `set_extended_simd_macros(...)` | Define `__SSE3__`, `__SSSE3__`, `__SSE4_1__`, `__SSE4_2__`, `__AVX__`, `__AVX2__` based on flags. |
+| `set_asm_mode(asm_mode)` | Enable assembly preprocessing mode where `$` is not treated as an identifier character (for AT&T assembly `$MACRO_NAME` expansion). |
+| `set_riscv_abi(abi)` | Override RISC-V float ABI macros (`lp64` = soft-float, `lp64f` = single, `lp64d` = double). |
+| `set_riscv_march(march)` | Override RISC-V extension macros based on `-march=` (removes F/D macros when extensions not present). |
 
 ### Output Inspection
 
@@ -96,8 +100,11 @@ downstream lexer uses these markers to maintain accurate source locations.
 
 ### Macro Definitions (`MacroDef`)
 
-Every macro is stored in a `MacroTable` (a `FxHashMap<String, MacroDef>`) and
-carries these fields:
+Every macro is stored in a `MacroTable` (a `FxHashMap<String, MacroDef>`)
+which also carries an `asm_mode` flag. When `asm_mode` is true, `$` is not
+treated as an identifier character during macro expansion, so that AT&T
+assembly immediates like `$MACRO_NAME` correctly trigger expansion of
+`MACRO_NAME`. Each macro definition carries these fields:
 
 ```rust
 pub struct MacroDef {
@@ -269,7 +276,7 @@ line numbering. Nested `#if` blocks within inactive branches are tracked
 The expression evaluator (`eval_const_expr`) is a recursive-descent parser
 supporting:
 
-- Integer literals (decimal, hex `0x`, octal `0`, binary `0b`) with
+- Integer literals (decimal, hex `0x`, octal `0`) with
   `U`/`L`/`LL`/`ULL` suffixes.
 - Character literals with escape sequences.
 - `defined(X)` / `defined X`.
@@ -365,6 +372,21 @@ regardless of whether the real system header is found. For example, including
 expanding to `__builtin_*` forms, and injects a `typedef __builtin_va_list
 va_list;` declaration.
 
+### Fallback Declarations
+
+When a standard header file cannot be found on disk (no system headers
+installed or cross-compiling without a sysroot), the preprocessor injects
+minimal fallback declarations so that compilation can proceed. These are
+only injected when the real header is absent -- when a project provides its
+own headers (e.g., musl, dietlibc), the fallbacks are not used and cannot
+cause conflicts.
+
+| Header | Fallback Declarations |
+|--------|-----------------------|
+| `stdio.h` | `typedef struct _IO_FILE FILE;` and `extern FILE *stdin, *stdout, *stderr;` |
+| `errno.h` | `extern int errno;` |
+| `complex.h` | `creal`, `crealf`, `creall`, `cimag`, `cimagf`, `cimagl`, `conj`, `conjf`, `conjl`, `cabs`, `cabsf`, `carg`, `cargf` function declarations |
+
 ---
 
 ## Pragma Handling
@@ -453,6 +475,20 @@ defines essential macros that would normally come from standard headers:
 | `<float.h>` | `FLT_MAX`, `DBL_EPSILON`, `LDBL_DIG`, `FLT_EVAL_METHOD`, etc. |
 | `<inttypes.h>` | `PRId8` .. `PRIx64`, `PRIuMAX`, `PRIuPTR`, etc. |
 
+Additionally, `define_type_traits_macros` provides macros that supplement
+the standard headers or serve as fallbacks when system headers are unavailable:
+
+| Category | Macros Provided |
+|----------|-----------------|
+| **Type widths** (GCC extension) | `__CHAR_WIDTH__` (8), `__SHRT_WIDTH__` (16), `__INT_WIDTH__` (32), `__LONG_WIDTH__` (64), `__LONG_LONG_WIDTH__` (64), `__PTRDIFF_WIDTH__`, `__SIZE_WIDTH__`, `__WCHAR_WIDTH__`, `__WINT_WIDTH__`, `__SIZEOF_WCHAR_T__` |
+| **Byte order** | `__BYTE_ORDER__` (1234), `__ORDER_LITTLE_ENDIAN__` (1234), `__ORDER_BIG_ENDIAN__` (4321), `__ORDER_PDP_ENDIAN__` (3412) |
+| **C11/C17 feature test** | `__STDC_UTF_16__`, `__STDC_UTF_32__`, `__STDC_NO_ATOMICS__`, `__STDC_NO_VLA__` |
+| **`<stdlib.h>`** | `EXIT_SUCCESS` (0), `EXIT_FAILURE` (1), `RAND_MAX` |
+| **`<stdio.h>`** | `EOF` (-1), `BUFSIZ` (8192), `SEEK_SET` (0), `SEEK_CUR` (1), `SEEK_END` (2) |
+| **`<errno.h>`** | `ENOENT`, `EINTR`, `EIO`, `ENOMEM`, `EACCES`, `EEXIST`, `ENOTDIR`, `EISDIR`, `EINVAL`, `ENFILE`, `EMFILE`, `ENOSPC`, `EPIPE`, `ERANGE`, `ENOSYS` |
+| **`<signal.h>`** | `SIGABRT`, `SIGFPE`, `SIGILL`, `SIGINT`, `SIGSEGV`, `SIGTERM`, `SIG_DFL`, `SIG_IGN`, `SIG_ERR` |
+| **GCC version** | `__GNUC_PATCHLEVEL__` (0) |
+
 The integer constant macros (`INT64_C`, `UINT32_C`, etc.) are function-like
 macros that use `##` for suffix pasting (e.g., `INT64_C(x)` expands to
 `x ## LL`).
@@ -497,10 +533,10 @@ enabling GCC-compatible `file:line:col: error:` / `warning:` output formatting.
 | `conditionals.rs` | `ConditionalStack` (push/pop state machine for `#if` nesting). `evaluate_condition` and `expand_condition_macros` for `#if` expression preprocessing. `eval_const_expr` recursive-descent expression evaluator and tokenizer. |
 | `expr_eval.rs` | `resolve_defined_in_expr` (replaces `defined()`, `__has_builtin()`, `__has_attribute()`, `__has_include()`, etc. with `0`/`1`). `replace_remaining_idents_with_zero` (C standard: undefined identifiers in `#if` are `0`). |
 | `includes.rs` | `#include` / `#include_next` handling. Include path resolution with GCC-compatible search order. Include guard detection (`detect_include_guard`). Path caching, symlink-preserving absolute path construction, computed include normalization, recursive inclusion depth limiting, and builtin header injection. |
-| `predefined_macros.rs` | Static tables of predefined macros (standard C, platform, GCC compat, sizeof, type limits, float characteristics). `set_target` for architecture switching. `set_pic`, `set_optimize`, `set_gnu89_inline`, `set_sse_macros` configuration methods. `bundled_include_dir` and `default_system_include_paths`. |
+| `predefined_macros.rs` | Static tables of predefined macros (standard C, platform, GCC compat, sizeof, type limits, float characteristics). `set_target` for architecture switching (`"aarch64"`, `"riscv64"`, `"i686"`, `"i386"`). `set_pic`, `set_optimize`, `set_gnu89_inline`, `set_sse_macros`, `set_extended_simd_macros`, `set_riscv_abi`, `set_riscv_march` configuration methods. `bundled_include_dir` and `default_system_include_paths`. |
 | `pragmas.rs` | `handle_pragma` dispatcher. Handlers for `once`, `pack`, `push_macro`/`pop_macro`, `weak`, `redefine_extname`, and `GCC visibility push`/`pop`. Synthetic token emission for pack and visibility pragmas. |
 | `builtin_macros.rs` | Macro definitions substituting for `<limits.h>`, `<stdint.h>`, `<stddef.h>`, `<stdbool.h>`, `<stdatomic.h>`, `<float.h>`, and `<inttypes.h>`. Includes both object-like and function-like (suffix-pasting) macros. |
-| `text_processing.rs` | Low-level text transformations: `strip_block_comments` (with `LineMap` for line number remapping), `join_continued_lines`, `has_unbalanced_parens`. |
+| `text_processing.rs` | Low-level text transformations: `strip_block_comments` (with `LineMap` for line number remapping), `join_continued_lines`, `has_unbalanced_parens`, `strip_line_comment` (strips `//` comments outside string literals, returns `Cow<str>`), and `split_first_word` (splits directive keyword from arguments, treating `(` as a word boundary). |
 | `utils.rs` | Shared character/byte classification (`is_ident_start`, `is_ident_cont`, byte variants), `bytes_to_str` (unsafe zero-copy `&[u8]` to `&str` for ASCII identifiers), string/char literal skipping and copying helpers. |
 
 ---
@@ -549,7 +585,8 @@ block comments).
 The preprocessor claims `__GNUC__ 14`, `__GNUC_MINOR__ 2` to satisfy version
 checks in the Linux kernel, glibc, QEMU, and other major projects. The
 predefined macro set is tuned for an LP64 Linux/ELF/x86-64 target by
-default, with `set_target` providing overrides for aarch64 and riscv64.
+default, with `set_target` providing overrides for aarch64, riscv64,
+i686, and i386.
 
 ---
 
