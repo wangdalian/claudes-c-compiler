@@ -1,0 +1,4 @@
+Fix RISC-V postgres verification: zic tool segfaults during make check.
+The postgres build succeeds but make check fails because ./zic crashes with
+a segfault when run via qemu-riscv64 binfmt_misc.
+Need to debug the RISC-V codegen/linker issue causing the crash.
