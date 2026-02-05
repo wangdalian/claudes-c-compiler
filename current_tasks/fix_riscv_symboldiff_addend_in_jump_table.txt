@@ -1,9 +1,0 @@
-Fix RISC-V SymbolDiff relocation: decompose sym_a with embedded addend
-
-Problem: When inline asm produces expressions like `cgroup_bpf_enabled_key+144 - .`
-for __jump_table entries, the RISC-V assembler creates relocations with the symbol name
-"cgroup_bpf_enabled_key+144" instead of symbol "cgroup_bpf_enabled_key" with addend 144.
-This causes undefined reference linker errors during kernel defconfig builds.
-
-Fix: In the RISC-V SymbolDiff emission path, decompose sym_a into base symbol + offset
-and add that offset to the relocation addend.

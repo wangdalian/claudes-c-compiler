@@ -249,6 +249,40 @@ fn rewrite_symbol_name(
     }
 }
 
+/// Decompose a symbol name that may contain an embedded addend.
+///
+/// For example, `"cgroup_bpf_enabled_key+144"` -> `("cgroup_bpf_enabled_key", 144)`.
+/// If there is no embedded addend, returns `(name, 0)`.
+///
+/// This is needed because inline asm operand substitution can produce symbol
+/// references like `sym+offset` as a single string, but ELF relocations must
+/// reference the base symbol with a numeric addend in the RELA entry.
+fn decompose_symbol_addend(name: &str) -> (String, i64) {
+    // Split on the last `+` or `-` if the suffix is a plain integer.
+    // Names without arithmetic (e.g. `.Ldot_2`, `my_func`) pass through as-is.
+    if let Some(plus_pos) = name.rfind('+') {
+        let base = &name[..plus_pos];
+        let offset_str = name[plus_pos + 1..].trim();
+        if !base.is_empty() && !offset_str.is_empty() {
+            if let Ok(offset) = offset_str.parse::<i64>() {
+                return (base.to_string(), offset);
+            }
+        }
+    } else if let Some(minus_pos) = name.rfind('-') {
+        // Only if it's not the first character (not a negative number)
+        if minus_pos > 0 {
+            let base = &name[..minus_pos];
+            let offset_str = &name[minus_pos..]; // includes the '-'
+            if !base.is_empty() {
+                if let Ok(offset) = offset_str.parse::<i64>() {
+                    return (base.to_string(), offset);
+                }
+            }
+        }
+    }
+    (name.to_string(), 0)
+}
+
 /// Rewrite numeric label refs and `.` in a DataValue.
 fn rewrite_data_value(
     dv: &DataValue,
@@ -708,6 +742,11 @@ impl ElfWriter {
     }
 
     /// Emit a typed data value for .long (size=4) or .quad (size=8).
+    ///
+    /// Note: `SymbolDiff` sym_a/sym_b may contain embedded addends (e.g.
+    /// `"cgroup_bpf_enabled_key+144"`) from inline asm operand substitution.
+    /// These are decomposed via [`decompose_symbol_addend`] so the ELF
+    /// relocation references the base symbol with a proper addend.
     fn emit_data_value(&mut self, dv: &DataValue, size: usize) -> Result<(), String> {
         match dv {
             DataValue::SymbolDiff { sym_a, sym_b, addend } => {
@@ -716,8 +755,14 @@ impl ElfWriter {
                 } else {
                     (RelocType::Add64.elf_type(), RelocType::Sub64.elf_type())
                 };
-                self.base.add_reloc(add_type, sym_a.clone(), *addend);
-                self.base.add_reloc(sub_type, sym_b.clone(), 0);
+                // Decompose sym_a if it contains an embedded addend (e.g.
+                // "cgroup_bpf_enabled_key+144") so the relocation references
+                // the base symbol with a numeric addend rather than creating a
+                // bogus symbol named "symbol+offset".
+                let (base_a, extra_a) = decompose_symbol_addend(sym_a);
+                let (base_b, extra_b) = decompose_symbol_addend(sym_b);
+                self.base.add_reloc(add_type, base_a, *addend + extra_a);
+                self.base.add_reloc(sub_type, base_b, extra_b);
                 self.base.emit_placeholder(size);
             }
             DataValue::Symbol { name, addend } => {
