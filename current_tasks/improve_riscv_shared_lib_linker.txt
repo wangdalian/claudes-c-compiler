@@ -1,0 +1,8 @@
+Improve RISC-V shared library linker: add R_RISCV_GLOB_DAT dynamic relocations
+for external GOT symbols, fix hardcoded section index in .dynsym, and add
+PT_GNU_RELRO segment to shared library output.
+
+These fixes make the shared library linker more correct and robust for complex
+shared libraries that reference external symbols.
+
+Started: 2026-02-05
