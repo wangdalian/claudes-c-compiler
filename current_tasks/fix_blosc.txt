@@ -1,7 +1,0 @@
-Fix blosc: x86 assembler jmp/jcc @PLT suffix handling
-
-The x86 assembler's encode_jmp and encode_jcc don't strip @PLT from labels
-or use R_X86_64_PLT32 relocations. This causes shared library builds to have
-@PLT baked into symbol names, causing runtime "undefined symbol" errors.
-
-Also checking if the same issue exists for i686, ARM, and RISC-V backends.

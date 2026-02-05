@@ -2948,7 +2948,13 @@ impl InstructionEncoder {
             Operand::Label(label) => {
                 // Near jump with 32-bit displacement (will be resolved by linker/relocator)
                 self.bytes.push(0xE9);
-                self.add_relocation(label, R_X86_64_PC32, -4);
+                // Strip @PLT suffix and use PLT32 relocation (same as call)
+                let (sym, reloc_type) = if label.ends_with("@PLT") {
+                    (label.trim_end_matches("@PLT"), R_X86_64_PLT32)
+                } else {
+                    (label.as_str(), R_X86_64_PC32)
+                };
+                self.add_relocation(sym, reloc_type, -4);
                 self.bytes.extend_from_slice(&[0, 0, 0, 0]);
                 Ok(())
             }
@@ -2986,7 +2992,13 @@ impl InstructionEncoder {
             Operand::Label(label) => {
                 // Near jcc with 32-bit displacement
                 self.bytes.extend_from_slice(&[0x0F, 0x80 + cc]);
-                self.add_relocation(label, R_X86_64_PC32, -4);
+                // Strip @PLT suffix and use PLT32 relocation (same as call)
+                let (sym, reloc_type) = if label.ends_with("@PLT") {
+                    (label.trim_end_matches("@PLT"), R_X86_64_PLT32)
+                } else {
+                    (label.as_str(), R_X86_64_PC32)
+                };
+                self.add_relocation(sym, reloc_type, -4);
                 self.bytes.extend_from_slice(&[0, 0, 0, 0]);
                 Ok(())
             }

@@ -1065,13 +1065,16 @@ pub fn parse_asm(text: &str) -> Result<Vec<AsmStatement>, String> {
     Ok(statements)
 }
 
-/// Split a line on ';' characters, respecting strings.
+/// Split a line on ';' characters, respecting strings and comments.
 /// In GAS syntax, ';' separates multiple statements on the same line.
+/// Stops splitting once a `//` or `@` line comment is encountered (outside strings),
+/// so semicolons inside comments are not treated as statement separators.
 fn split_on_semicolons(line: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut in_string = false;
     let mut escape = false;
     let mut start = 0;
+    let bytes = line.as_bytes();
     for (i, c) in line.char_indices() {
         if escape {
             escape = false;
@@ -1085,9 +1088,28 @@ fn split_on_semicolons(line: &str) -> Vec<&str> {
             in_string = !in_string;
             continue;
         }
-        if c == ';' && !in_string {
-            parts.push(&line[start..i]);
-            start = i + 1;
+        if !in_string {
+            // Stop splitting at // comment start
+            if c == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                break;
+            }
+            // Stop splitting at @ comment start (but not @function, @object, etc.)
+            if c == '@' {
+                let after = &line[i + 1..];
+                if !after.starts_with("object")
+                    && !after.starts_with("function")
+                    && !after.starts_with("progbits")
+                    && !after.starts_with("nobits")
+                    && !after.starts_with("tls_object")
+                    && !after.starts_with("note")
+                {
+                    break;
+                }
+            }
+            if c == ';' {
+                parts.push(&line[start..i]);
+                start = i + 1;
+            }
         }
     }
     parts.push(&line[start..]);
