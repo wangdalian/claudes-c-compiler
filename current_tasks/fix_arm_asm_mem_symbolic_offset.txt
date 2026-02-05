@@ -1,0 +1,22 @@
+Fix ARM assembler: memory operands with symbolic offset expressions
+
+The ARM assembler fails to parse instructions with memory operands that
+have symbolic offset expressions like `#(1b - .Lvector_start1110)`.
+
+Example failing instruction from Linux kernel entry.S:
+  prfm  plil1strm, [x30, #(1b - .Lvector_start1110)]
+
+Root cause: parse_memory_operand() calls parse_int_literal() for #expr,
+which calls asm_expr::parse_integer_expr(). This only handles pure numeric
+expressions, failing on symbol names and numeric label refs (1b, 1f).
+
+Fix: When parse_int_literal fails for a #expr in a memory operand, fall
+back to storing it as a MemExpr { base, expr } variant. The expression
+gets numeric labels resolved during the resolve_numeric_labels pass, then
+the full expression is evaluated in the ELF writer after all labels have
+known positions.
+
+This also fixes the `add x30, x30, #(1b - \vector_start + 4)` pattern
+in the same tramp_ventry macro.
+
+Started: 2026-02-05
