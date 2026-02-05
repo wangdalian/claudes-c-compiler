@@ -86,6 +86,25 @@ fn control_reg_num(name: &str) -> Option<u8> {
     }
 }
 
+fn is_debug_reg(name: &str) -> bool {
+    matches!(name, "db0" | "db1" | "db2" | "db3" | "db4" | "db5" | "db6" | "db7"
+                  | "dr0" | "dr1" | "dr2" | "dr3" | "dr4" | "dr5" | "dr6" | "dr7")
+}
+
+fn debug_reg_num(name: &str) -> Option<u8> {
+    match name {
+        "db0" | "dr0" => Some(0),
+        "db1" | "dr1" => Some(1),
+        "db2" | "dr2" => Some(2),
+        "db3" | "dr3" => Some(3),
+        "db4" | "dr4" => Some(4),
+        "db5" | "dr5" => Some(5),
+        "db6" | "dr6" => Some(6),
+        "db7" | "dr7" => Some(7),
+        _ => None,
+    }
+}
+
 /// Is this a YMM register?
 fn is_ymm(name: &str) -> bool {
     name.starts_with("ymm")
@@ -313,6 +332,7 @@ impl InstructionEncoder {
                 let has_mmx = ops.iter().any(|op| matches!(op, Operand::Register(r) if is_mmx(&r.name)));
                 let has_seg = ops.iter().any(|op| matches!(op, Operand::Register(r) if is_segment_reg(&r.name)));
                 let has_cr = ops.iter().any(|op| matches!(op, Operand::Register(r) if is_control_reg(&r.name)));
+                let has_dr = ops.iter().any(|op| matches!(op, Operand::Register(r) if is_debug_reg(&r.name)));
                 if has_xmm {
                     self.encode_movq_xmm(ops)
                 } else if has_mmx {
@@ -321,6 +341,8 @@ impl InstructionEncoder {
                     self.encode_mov_seg(ops)
                 } else if has_cr {
                     self.encode_mov_cr(ops)
+                } else if has_dr {
+                    self.encode_mov_dr(ops)
                 } else {
                     self.encode_mov(ops, 8)
                 }
@@ -330,6 +352,8 @@ impl InstructionEncoder {
                     self.encode_mov_seg(ops)
                 } else if ops.iter().any(|op| matches!(op, Operand::Register(r) if is_control_reg(&r.name))) {
                     self.encode_mov_cr(ops)
+                } else if ops.iter().any(|op| matches!(op, Operand::Register(r) if is_debug_reg(&r.name))) {
+                    self.encode_mov_dr(ops)
                 } else {
                     self.encode_mov(ops, 4)
                 }
@@ -440,6 +464,7 @@ impl InstructionEncoder {
 
             // Jumps (jmpq is a common AT&T alias for jmp on x86-64)
             "jmp" | "jmpq" => self.encode_jmp(ops),
+            "ljmpl" | "ljmpq" | "ljmp" | "ljmpw" => self.encode_ljmp(ops, mnemonic),
             "je" | "jz" | "jne" | "jnz" | "jl" | "jle" | "jg" | "jge"
             | "jb" | "jbe" | "ja" | "jae" | "js" | "jns" | "jo" | "jno" | "jp" | "jnp"
             | "jc" | "jnc" => {
@@ -469,7 +494,38 @@ impl InstructionEncoder {
 
             // System instructions
             "syscall" => { self.bytes.extend_from_slice(&[0x0F, 0x05]); Ok(()) }
+            "sysretq" | "sysret" => { self.bytes.extend_from_slice(&[0x48, 0x0F, 0x07]); Ok(()) }
+            "sysretl" => { self.bytes.extend_from_slice(&[0x0F, 0x07]); Ok(()) }
             "sysenter" => { self.bytes.extend_from_slice(&[0x0F, 0x34]); Ok(()) }
+            "sysexitq" => { self.bytes.extend_from_slice(&[0x48, 0x0F, 0x35]); Ok(()) }
+            "sysexit" => { self.bytes.extend_from_slice(&[0x0F, 0x35]); Ok(()) }
+            "iretq" | "iretl" => {
+                if mnemonic == "iretq" {
+                    self.bytes.extend_from_slice(&[0x48, 0xCF]); // REX.W + IRET
+                } else {
+                    self.bytes.push(0xCF); // IRET (32-bit)
+                }
+                Ok(())
+            }
+            "lretq" | "lret" | "lretl" => {
+                let is_64 = mnemonic == "lretq";
+                if ops.is_empty() {
+                    if is_64 {
+                        self.bytes.extend_from_slice(&[0x48, 0xCB]); // REX.W + RETF
+                    } else {
+                        self.bytes.push(0xCB); // RETF
+                    }
+                } else if let Some(Operand::Immediate(ImmediateValue::Integer(val))) = ops.first() {
+                    if is_64 {
+                        self.bytes.push(0x48); // REX.W
+                    }
+                    self.bytes.push(0xCA); // RETF imm16
+                    self.bytes.extend_from_slice(&(*val as u16).to_le_bytes());
+                } else {
+                    return Err("unsupported lret operand".to_string());
+                }
+                Ok(())
+            }
             "cpuid" => { self.bytes.extend_from_slice(&[0x0F, 0xA2]); Ok(()) }
             "rdtsc" => { self.bytes.extend_from_slice(&[0x0F, 0x31]); Ok(()) }
             "rdtscp" => { self.bytes.extend_from_slice(&[0x0F, 0x01, 0xF9]); Ok(()) }
@@ -1651,11 +1707,26 @@ impl InstructionEncoder {
             "xgetbv" => { self.bytes.extend_from_slice(&[0x0F, 0x01, 0xD0]); Ok(()) }
             "xsetbv" => { self.bytes.extend_from_slice(&[0x0F, 0x01, 0xD1]); Ok(()) }
             "rdpmc" => { self.bytes.extend_from_slice(&[0x0F, 0x33]); Ok(()) }
+            "swapgs" => { self.bytes.extend_from_slice(&[0x0F, 0x01, 0xF8]); Ok(()) }
+            "clts" => { self.bytes.extend_from_slice(&[0x0F, 0x06]); Ok(()) }
             "verw" => self.encode_verw(ops),
             "lsl" => self.encode_lsl(ops),
+            "lar" => self.encode_lar(ops),
+            "lldt" => self.encode_system_reg(ops, &[0x0F, 0x00], 2),  // 0F 00 /2
+            "ltr" => self.encode_system_reg(ops, &[0x0F, 0x00], 3),   // 0F 00 /3
+            "str" => self.encode_system_reg(ops, &[0x0F, 0x00], 1),   // 0F 00 /1
+            "invlpg" => self.encode_mem_only(ops, &[0x0F, 0x01], 7),  // 0F 01 /7
+            "invpcid" => self.encode_invpcid(ops),
+            "rdgsbase" | "wrgsbase" | "rdfsbase" | "wrfsbase" => self.encode_fsgsbase(ops, mnemonic),
+            "fxsave" => self.encode_mem_only(ops, &[0x0F, 0xAE], 0),   // 0F AE /0
+            "fxrstor" => self.encode_mem_only(ops, &[0x0F, 0xAE], 1), // 0F AE /1
+            "fxsaveq" | "fxsave64" => self.encode_fxsaveq(ops),   // REX.W + 0F AE /0
+            "fxrstorq" | "fxrstor64" => self.encode_fxrstorq(ops),  // REX.W + 0F AE /1
 
             // System table instructions
-            "sgdt" | "sidt" | "lgdt" | "lidt" => self.encode_system_table(ops, mnemonic),
+            "sgdt" | "sidt" | "lgdt" | "lidt"
+            | "sgdtl" | "sidtl" | "lgdtl" | "lidtl"
+            | "sgdtq" | "sidtq" | "lgdtq" | "lidtq" => self.encode_system_table(ops, mnemonic),
 
             _ if mnemonic.starts_with("set") => {
                 // Handle setXXb forms (e.g., setcb = setc with byte suffix)
@@ -1935,7 +2006,29 @@ impl InstructionEncoder {
             (Operand::Immediate(imm), Operand::Memory(mem)) => {
                 self.encode_mov_imm_mem(imm, mem, size)
             }
-            _ => Err("unsupported mov operand combination".to_string()),
+            // mov label, %reg (label as memory reference)
+            (Operand::Label(label), Operand::Register(dst)) => {
+                let mem = MemoryOperand {
+                    segment: None,
+                    displacement: Displacement::Symbol(label.clone()),
+                    base: None,
+                    index: None,
+                    scale: None,
+                };
+                self.encode_mov_mem_reg(&mem, dst, size)
+            }
+            // mov %reg, label (store to label address)
+            (Operand::Register(src), Operand::Label(label)) => {
+                let mem = MemoryOperand {
+                    segment: None,
+                    displacement: Displacement::Symbol(label.clone()),
+                    base: None,
+                    index: None,
+                    scale: None,
+                };
+                self.encode_mov_reg_mem(src, &mem, size)
+            }
+            _ => Err(format!("unsupported mov operand combination: {:?}", ops)),
         }
     }
 
@@ -2221,6 +2314,13 @@ impl InstructionEncoder {
                 }
                 Ok(())
             }
+            Operand::Immediate(ImmediateValue::Symbol(sym)) => {
+                // pushq $symbol - emit 32-bit immediate with relocation
+                self.bytes.push(0x68);
+                self.add_relocation(sym, R_X86_64_32S, 0);
+                self.bytes.extend_from_slice(&[0, 0, 0, 0]);
+                Ok(())
+            }
             Operand::Memory(mem) => {
                 self.emit_rex_rm(0, "", mem);
                 self.bytes.push(0xFF);
@@ -2315,6 +2415,18 @@ impl InstructionEncoder {
                 self.bytes.push(if size == 1 { 0x02 } else { 0x03 } + alu_op * 8);
                 self.encode_modrm_mem(dst_num, mem)
             }
+            (Operand::Label(label), Operand::Register(dst)) => {
+                let dst_num = reg_num(&dst.name).ok_or("bad dst register")?;
+                let mem = MemoryOperand {
+                    segment: None,
+                    displacement: Displacement::Symbol(label.clone()),
+                    base: None, index: None, scale: None,
+                };
+                if size == 2 { self.bytes.push(0x66); }
+                self.emit_rex_rm(size, &dst.name, &mem);
+                self.bytes.push(if size == 1 { 0x02 } else { 0x03 } + alu_op * 8);
+                self.encode_modrm_mem(dst_num, &mem)
+            }
             (Operand::Register(src), Operand::Memory(mem)) => {
                 let src_num = reg_num(&src.name).ok_or("bad src register")?;
                 self.emit_segment_prefix(mem)?;
@@ -2322,6 +2434,18 @@ impl InstructionEncoder {
                 self.emit_rex_rm(size, &src.name, mem);
                 self.bytes.push(if size == 1 { 0x00 } else { 0x01 } + alu_op * 8);
                 self.encode_modrm_mem(src_num, mem)
+            }
+            (Operand::Register(src), Operand::Label(label)) => {
+                let src_num = reg_num(&src.name).ok_or("bad src register")?;
+                let mem = MemoryOperand {
+                    segment: None,
+                    displacement: Displacement::Symbol(label.clone()),
+                    base: None, index: None, scale: None,
+                };
+                if size == 2 { self.bytes.push(0x66); }
+                self.emit_rex_rm(size, &src.name, &mem);
+                self.bytes.push(if size == 1 { 0x00 } else { 0x01 } + alu_op * 8);
+                self.encode_modrm_mem(src_num, &mem)
             }
             (Operand::Immediate(ImmediateValue::Integer(val)), Operand::Memory(mem)) => {
                 let val = *val;
@@ -2346,6 +2470,39 @@ impl InstructionEncoder {
                         self.bytes.extend_from_slice(&(val as i32).to_le_bytes());
                     }
                 }
+                Ok(())
+            }
+            (Operand::Immediate(ImmediateValue::Symbol(sym)), Operand::Memory(mem)) => {
+                self.emit_segment_prefix(mem)?;
+                if size == 2 { self.bytes.push(0x66); }
+                self.emit_rex_rm(size, "", mem);
+                self.bytes.push(0x81);
+                self.encode_modrm_mem(alu_op, mem)?;
+                // Emit 4-byte relocation for the symbol immediate
+                let offset = self.bytes.len() as u64 + self.offset;
+                self.relocations.push(Relocation {
+                    offset,
+                    symbol: sym.clone(),
+                    reloc_type: R_X86_64_32S,
+                    addend: 0,
+                });
+                self.bytes.extend_from_slice(&[0; 4]);
+                Ok(())
+            }
+            (Operand::Immediate(ImmediateValue::Symbol(sym)), Operand::Register(dst)) => {
+                let dst_num = reg_num(&dst.name).ok_or("bad register")?;
+                if size == 2 { self.bytes.push(0x66); }
+                self.emit_rex_unary(size, &dst.name);
+                self.bytes.push(0x81);
+                self.bytes.push(self.modrm(3, alu_op, dst_num));
+                let offset = self.bytes.len() as u64 + self.offset;
+                self.relocations.push(Relocation {
+                    offset,
+                    symbol: sym.clone(),
+                    reloc_type: R_X86_64_32S,
+                    addend: 0,
+                });
+                self.bytes.extend_from_slice(&[0; 4]);
                 Ok(())
             }
             _ => Err(format!("unsupported {} operands", mnemonic)),
@@ -3082,12 +3239,47 @@ impl InstructionEncoder {
         }
     }
 
+    /// Encode MOV to/from debug register: 0F 21 /r (read) or 0F 23 /r (write)
+    fn encode_mov_dr(&mut self, ops: &[Operand]) -> Result<(), String> {
+        if ops.len() != 2 {
+            return Err("mov dr requires 2 operands".to_string());
+        }
+        match (&ops[0], &ops[1]) {
+            (Operand::Register(dr), Operand::Register(gp)) if is_debug_reg(&dr.name) => {
+                // movq %drN, %rax  =>  0F 21 ModR/M
+                let dr_num = debug_reg_num(&dr.name).ok_or("bad debug register")?;
+                let gp_num = reg_num(&gp.name).ok_or("bad register")?;
+                let mut rex = 0u8;
+                if needs_rex_ext(&gp.name) { rex |= 0x41; } // REX.B
+                if rex != 0 { self.bytes.push(rex); }
+                self.bytes.extend_from_slice(&[0x0F, 0x21]);
+                self.bytes.push(self.modrm(3, dr_num, gp_num));
+                Ok(())
+            }
+            (Operand::Register(gp), Operand::Register(dr)) if is_debug_reg(&dr.name) => {
+                // movq %rax, %drN  =>  0F 23 ModR/M
+                let dr_num = debug_reg_num(&dr.name).ok_or("bad debug register")?;
+                let gp_num = reg_num(&gp.name).ok_or("bad register")?;
+                let mut rex = 0u8;
+                if needs_rex_ext(&gp.name) { rex |= 0x41; } // REX.B
+                if rex != 0 { self.bytes.push(rex); }
+                self.bytes.extend_from_slice(&[0x0F, 0x23]);
+                self.bytes.push(self.modrm(3, dr_num, gp_num));
+                Ok(())
+            }
+            _ => Err("unsupported mov dr operands".to_string()),
+        }
+    }
+
     /// Encode SGDT/SIDT/LGDT/LIDT: 0F 01 /N (memory operand)
+    /// Handles suffixed forms (sgdtl, lgdtq, etc.) and label operands.
     fn encode_system_table(&mut self, ops: &[Operand], mnemonic: &str) -> Result<(), String> {
         if ops.len() != 1 {
             return Err(format!("{} requires 1 operand", mnemonic));
         }
-        let reg_ext = match mnemonic {
+        // Strip size suffix (l/q) to get base mnemonic
+        let base = mnemonic.trim_end_matches(|c| c == 'l' || c == 'q');
+        let reg_ext = match base {
             "sgdt" => 0,
             "sidt" => 1,
             "lgdt" => 2,
@@ -3100,7 +3292,219 @@ impl InstructionEncoder {
                 self.bytes.extend_from_slice(&[0x0F, 0x01]);
                 self.encode_modrm_mem(reg_ext, mem)
             }
+            // Label operand: treat as RIP-relative memory reference
+            Operand::Label(name) => {
+                let mem = MemoryOperand {
+                    segment: None,
+                    displacement: Displacement::Symbol(name.clone()),
+                    base: None,
+                    index: None,
+                    scale: None,
+                };
+                self.bytes.extend_from_slice(&[0x0F, 0x01]);
+                self.encode_modrm_mem(reg_ext, &mem)
+            }
             _ => Err(format!("{} requires memory operand", mnemonic)),
+        }
+    }
+
+    /// Encode system register instructions (LLDT, LTR, STR, SLDT): opcode /ext
+    /// These take a 16-bit register or memory operand.
+    fn encode_system_reg(&mut self, ops: &[Operand], opcode: &[u8], ext: u8) -> Result<(), String> {
+        if ops.len() != 1 {
+            return Err("system register instruction requires 1 operand".to_string());
+        }
+        match &ops[0] {
+            Operand::Register(reg) => {
+                let reg_num = reg_num(&reg.name).ok_or("bad register")?;
+                // No REX.W for 16-bit system register instructions
+                if needs_rex_ext(&reg.name) {
+                    self.bytes.push(self.rex(false, false, false, true));
+                }
+                self.bytes.extend_from_slice(opcode);
+                self.bytes.push(self.modrm(3, ext, reg_num));
+                Ok(())
+            }
+            Operand::Memory(mem) => {
+                self.emit_rex_rm(0, "", mem);
+                self.bytes.extend_from_slice(opcode);
+                self.encode_modrm_mem(ext, mem)
+            }
+            _ => Err("system register instruction requires register or memory operand".to_string()),
+        }
+    }
+
+    /// Encode memory-only instructions (INVLPG, FXSAVE, FXRSTOR, etc.): opcode /ext
+    fn encode_mem_only(&mut self, ops: &[Operand], opcode: &[u8], ext: u8) -> Result<(), String> {
+        if ops.len() != 1 {
+            return Err("instruction requires 1 memory operand".to_string());
+        }
+        match &ops[0] {
+            Operand::Memory(mem) => {
+                self.emit_rex_rm(0, "", mem);
+                self.bytes.extend_from_slice(opcode);
+                self.encode_modrm_mem(ext, mem)
+            }
+            _ => Err("instruction requires memory operand".to_string()),
+        }
+    }
+
+    /// Encode FXSAVEQ: REX.W + 0F AE /0 (64-bit fxsave)
+    fn encode_fxsaveq(&mut self, ops: &[Operand]) -> Result<(), String> {
+        if ops.len() != 1 {
+            return Err("fxsaveq requires 1 memory operand".to_string());
+        }
+        match &ops[0] {
+            Operand::Memory(mem) => {
+                // Force REX.W prefix
+                let rex_b = mem.base.as_ref().map_or(false, |r| needs_rex_ext(&r.name));
+                let rex_x = mem.index.as_ref().map_or(false, |r| needs_rex_ext(&r.name));
+                self.bytes.push(self.rex(true, false, rex_x, rex_b));
+                self.bytes.extend_from_slice(&[0x0F, 0xAE]);
+                self.encode_modrm_mem(0, mem)
+            }
+            _ => Err("fxsaveq requires memory operand".to_string()),
+        }
+    }
+
+    /// Encode FXRSTORQ: REX.W + 0F AE /1 (64-bit fxrstor)
+    fn encode_fxrstorq(&mut self, ops: &[Operand]) -> Result<(), String> {
+        if ops.len() != 1 {
+            return Err("fxrstorq requires 1 memory operand".to_string());
+        }
+        match &ops[0] {
+            Operand::Memory(mem) => {
+                // Force REX.W prefix
+                let rex_b = mem.base.as_ref().map_or(false, |r| needs_rex_ext(&r.name));
+                let rex_x = mem.index.as_ref().map_or(false, |r| needs_rex_ext(&r.name));
+                self.bytes.push(self.rex(true, false, rex_x, rex_b));
+                self.bytes.extend_from_slice(&[0x0F, 0xAE]);
+                self.encode_modrm_mem(1, mem)
+            }
+            _ => Err("fxrstorq requires memory operand".to_string()),
+        }
+    }
+
+    /// Encode INVPCID: 66 0F 38 82 /r
+    fn encode_invpcid(&mut self, ops: &[Operand]) -> Result<(), String> {
+        if ops.len() != 2 {
+            return Err("invpcid requires 2 operands".to_string());
+        }
+        match (&ops[0], &ops[1]) {
+            (Operand::Memory(mem), Operand::Register(reg)) => {
+                let reg_num = reg_num(&reg.name).ok_or("bad register")?;
+                self.bytes.push(0x66);
+                self.emit_rex_rm(0, &reg.name, mem);
+                self.bytes.extend_from_slice(&[0x0F, 0x38, 0x82]);
+                self.encode_modrm_mem(reg_num, mem)
+            }
+            _ => Err("invpcid requires memory and register operands".to_string()),
+        }
+    }
+
+    /// Encode RDFSBASE/RDGSBASE/WRFSBASE/WRGSBASE: F3 0F AE /N
+    fn encode_fsgsbase(&mut self, ops: &[Operand], mnemonic: &str) -> Result<(), String> {
+        if ops.len() != 1 {
+            return Err(format!("{} requires 1 register operand", mnemonic));
+        }
+        let ext = match mnemonic {
+            "rdfsbase" => 0,
+            "rdgsbase" => 1,
+            "wrfsbase" => 2,
+            "wrgsbase" => 3,
+            _ => return Err(format!("unknown fsgsbase variant: {}", mnemonic)),
+        };
+        match &ops[0] {
+            Operand::Register(reg) => {
+                let num = reg_num(&reg.name).ok_or("bad register")?;
+                self.bytes.push(0xF3);
+                // Need REX.W for 64-bit register, REX.B for extended register
+                let is_64 = is_reg64(&reg.name);
+                let ext_reg = needs_rex_ext(&reg.name);
+                if is_64 || ext_reg {
+                    self.bytes.push(self.rex(is_64, false, false, ext_reg));
+                }
+                self.bytes.extend_from_slice(&[0x0F, 0xAE]);
+                self.bytes.push(self.modrm(3, ext, num));
+                Ok(())
+            }
+            _ => Err(format!("{} requires register operand", mnemonic)),
+        }
+    }
+
+    /// Encode LJMP (far jump): EA cp (direct) or FF /5 (indirect memory)
+    fn encode_ljmp(&mut self, ops: &[Operand], _mnemonic: &str) -> Result<(), String> {
+        match ops.len() {
+            // ljmpl *mem - indirect far jump through memory
+            1 => {
+                match &ops[0] {
+                    Operand::Indirect(inner) => {
+                        match inner.as_ref() {
+                            Operand::Memory(mem) => {
+                                self.emit_rex_rm(0, "", mem);
+                                self.bytes.push(0xFF);
+                                self.encode_modrm_mem(5, mem)
+                            }
+                            _ => Err("ljmp indirect requires memory operand".to_string()),
+                        }
+                    }
+                    Operand::Memory(mem) => {
+                        // ljmp *mem (without explicit indirect prefix)
+                        self.emit_rex_rm(0, "", mem);
+                        self.bytes.push(0xFF);
+                        self.encode_modrm_mem(5, mem)
+                    }
+                    _ => Err("ljmp requires indirect memory or segment:offset operands".to_string()),
+                }
+            }
+            // ljmpl $segment, $offset - direct far jump (opcode 0xEA, valid in 32-bit/16-bit mode only;
+            // used by kernel realmode trampoline code compiled with gcc_m16)
+            2 => {
+                match (&ops[0], &ops[1]) {
+                    (Operand::Immediate(ImmediateValue::Integer(seg)), Operand::Immediate(ImmediateValue::Integer(off))) => {
+                        self.bytes.push(0xEA);
+                        self.bytes.extend_from_slice(&(*off as u32).to_le_bytes());
+                        self.bytes.extend_from_slice(&(*seg as u16).to_le_bytes());
+                        Ok(())
+                    }
+                    (Operand::Immediate(ImmediateValue::Integer(seg)), Operand::Immediate(ImmediateValue::Symbol(sym))) => {
+                        self.bytes.push(0xEA);
+                        self.add_relocation(sym, R_X86_64_32, 0);
+                        self.bytes.extend_from_slice(&[0, 0, 0, 0]);
+                        self.bytes.extend_from_slice(&(*seg as u16).to_le_bytes());
+                        Ok(())
+                    }
+                    _ => Err("ljmp requires $segment, $offset operands".to_string()),
+                }
+            }
+            _ => Err("ljmp requires 1 or 2 operands".to_string()),
+        }
+    }
+
+    /// Encode LAR (Load Access Rights): 0F 02 /r
+    fn encode_lar(&mut self, ops: &[Operand]) -> Result<(), String> {
+        if ops.len() != 2 {
+            return Err("lar requires 2 operands".to_string());
+        }
+        match (&ops[0], &ops[1]) {
+            (Operand::Register(src), Operand::Register(dst)) => {
+                let src_num = reg_num(&src.name).ok_or("bad src register")?;
+                let dst_num = reg_num(&dst.name).ok_or("bad dst register")?;
+                // Infer size from destination register
+                let size = infer_reg_size(&dst.name);
+                self.emit_rex_rr(size, &dst.name, &src.name);
+                self.bytes.extend_from_slice(&[0x0F, 0x02]);
+                self.bytes.push(self.modrm(3, dst_num, src_num));
+                Ok(())
+            }
+            (Operand::Memory(mem), Operand::Register(dst)) => {
+                let dst_num = reg_num(&dst.name).ok_or("bad dst register")?;
+                let size = infer_reg_size(&dst.name);
+                self.emit_rex_rm(size, &dst.name, mem);
+                self.bytes.extend_from_slice(&[0x0F, 0x02]);
+                self.encode_modrm_mem(dst_num, mem)
+            }
+            _ => Err("unsupported lar operands".to_string()),
         }
     }
 
@@ -3821,6 +4225,21 @@ impl InstructionEncoder {
                 self.bytes.extend_from_slice(&[0x0F, reg_opcode]);
                 self.encode_modrm_mem(src_num, mem)
             }
+            // bt $imm, label (treat label as RIP-relative memory)
+            (Operand::Immediate(ImmediateValue::Integer(imm)), Operand::Label(name)) => {
+                let mem = MemoryOperand {
+                    segment: None,
+                    displacement: Displacement::Symbol(name.clone()),
+                    base: None,
+                    index: None,
+                    scale: None,
+                };
+                self.emit_rex_rm(size, "", &mem);
+                self.bytes.extend_from_slice(&[0x0F, 0xBA]);
+                self.encode_modrm_mem(imm_ext, &mem)?;
+                self.bytes.push(*imm as u8);
+                Ok(())
+            }
             _ => Err(format!("unsupported {} operands", mnemonic)),
         }
     }
@@ -4070,6 +4489,14 @@ impl InstructionEncoder {
         // Check for segment registers
         if ops.iter().any(|op| matches!(op, Operand::Register(r) if is_segment_reg(&r.name))) {
             return self.encode_mov_seg(ops);
+        }
+        // Check for control registers
+        if ops.iter().any(|op| matches!(op, Operand::Register(r) if is_control_reg(&r.name))) {
+            return self.encode_mov_cr(ops);
+        }
+        // Check for debug registers
+        if ops.iter().any(|op| matches!(op, Operand::Register(r) if is_debug_reg(&r.name))) {
+            return self.encode_mov_dr(ops);
         }
         let size = infer_operand_size_from_pair(&ops[0], &ops[1]);
         self.encode_mov(ops, size)

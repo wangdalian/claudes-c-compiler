@@ -268,8 +268,8 @@ pub struct ElfWriterCore<A: X86Arch> {
     section_stack: Vec<Option<usize>>,
     /// Deferred `.skip` expressions: (section_index, offset, expression, fill_byte).
     deferred_skips: Vec<(usize, usize, String, u8)>,
-    /// Deferred byte-sized symbol diffs: (section_index, offset, sym_a, sym_b, size).
-    deferred_byte_diffs: Vec<(usize, usize, String, String, usize)>,
+    /// Deferred byte-sized symbol diffs: (section_index, offset, sym_a, sym_b, size, addend).
+    deferred_byte_diffs: Vec<(usize, usize, String, String, usize, i64)>,
     _arch: std::marker::PhantomData<A>,
 }
 
@@ -668,14 +668,17 @@ impl<A: X86Arch> ElfWriterCore<A> {
                     section.data.extend(std::iter::repeat_n(0, size));
                 }
                 DataValue::SymbolDiff(a, b) => {
-                    self.emit_symbol_diff(sec_idx, a, b, size)?;
+                    self.emit_symbol_diff(sec_idx, a, b, size, 0)?;
+                }
+                DataValue::SymbolDiffAddend(a, b, addend) => {
+                    self.emit_symbol_diff(sec_idx, a, b, size, *addend)?;
                 }
             }
         }
         Ok(())
     }
 
-    fn emit_symbol_diff(&mut self, sec_idx: usize, a: &str, b: &str, size: usize) -> Result<(), String> {
+    fn emit_symbol_diff(&mut self, sec_idx: usize, a: &str, b: &str, size: usize, addend: i64) -> Result<(), String> {
         let offset = self.sections[sec_idx].data.len() as u64;
         let a_resolved = self.aliases.get(a).cloned().unwrap_or_else(|| a.to_string());
         let b_resolved = self.aliases.get(b).cloned().unwrap_or_else(|| b.to_string());
@@ -686,7 +689,7 @@ impl<A: X86Arch> ElfWriterCore<A> {
                 offset,
                 symbol: a_resolved,
                 reloc_type: A::reloc_pc32(),
-                addend: 0,
+                addend,
                 diff_symbol: None,
                 patch_size: size as u8,
             });
@@ -696,7 +699,7 @@ impl<A: X86Arch> ElfWriterCore<A> {
             // For byte/short-sized diffs, defer resolution until after
             // deferred skips are inserted (skip insertion shifts offsets).
             let offset_usize = self.sections[sec_idx].data.len();
-            self.deferred_byte_diffs.push((sec_idx, offset_usize, a_resolved, b_resolved, size));
+            self.deferred_byte_diffs.push((sec_idx, offset_usize, a_resolved, b_resolved, size, addend));
             let section = &mut self.sections[sec_idx];
             section.data.extend(std::iter::repeat_n(0, size));
         } else {
@@ -704,7 +707,7 @@ impl<A: X86Arch> ElfWriterCore<A> {
                 offset,
                 symbol: a_resolved,
                 reloc_type: if size == 4 { A::reloc_pc32() } else { A::reloc_abs64() },
-                addend: 0,
+                addend,
                 diff_symbol: Some(b_resolved),
                 patch_size: size as u8,
             });
@@ -815,7 +818,7 @@ impl<A: X86Arch> ElfWriterCore<A> {
                     jump.offset += count;
                 }
             }
-            for (bsec, boff, _, _, _) in self.deferred_byte_diffs.iter_mut() {
+            for (bsec, boff, _, _, _, _) in self.deferred_byte_diffs.iter_mut() {
                 if *bsec == *sec_idx && *boff >= *offset {
                     *boff += count;
                 }
@@ -826,7 +829,7 @@ impl<A: X86Arch> ElfWriterCore<A> {
 
     fn resolve_deferred_byte_diffs(&mut self) -> Result<(), String> {
         let diffs = std::mem::take(&mut self.deferred_byte_diffs);
-        for (sec_idx, offset, sym_a, sym_b, size) in &diffs {
+        for (sec_idx, offset, sym_a, sym_b, size, addend) in &diffs {
             let pos_a = self.label_positions.get(sym_a)
                 .ok_or_else(|| format!("undefined label in .byte diff: {}", sym_a))?;
             let pos_b = self.label_positions.get(sym_b)
@@ -836,7 +839,7 @@ impl<A: X86Arch> ElfWriterCore<A> {
                 return Err(format!("cross-section .byte diff: {} - {}", sym_a, sym_b));
             }
 
-            let diff = (pos_a.1 as i64) - (pos_b.1 as i64);
+            let diff = (pos_a.1 as i64) - (pos_b.1 as i64) + addend;
             match size {
                 1 => {
                     self.sections[*sec_idx].data[*offset] = diff as u8;

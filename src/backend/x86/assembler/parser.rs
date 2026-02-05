@@ -123,8 +123,10 @@ pub enum DataValue {
     Symbol(String),
     /// symbol + offset (e.g., `.quad GD_struct+128`)
     SymbolOffset(String, i64),
-    /// symbol - symbol (e.g., `.long .LBB3 - .Ljt_0`)
+    /// symbol - symbol + addend (e.g., `.long .LBB3 - .Ljt_0`, `.short tr_gdt_end - tr_gdt - 1`)
     SymbolDiff(String, String),
+    /// symbol - symbol with constant addend
+    SymbolDiffAddend(String, String, i64),
 }
 
 /// CFI directives (call frame information).
@@ -349,6 +351,36 @@ fn parse_line_items(line: &str) -> Result<Vec<AsmItem>, String> {
         return Ok(items);
     }
 
+    // Check for GAS symbol assignment: symbol = expr (e.g., L4_PAGE_OFFSET = 42)
+    // This is equivalent to .set symbol, expr
+    if let Some(eq_pos) = rest.find('=') {
+        let before = rest[..eq_pos].trim();
+        // Make sure it looks like a symbol name (no spaces, not a register, not starting with special chars)
+        if !before.is_empty()
+            && !before.contains(' ')
+            && !before.contains('\t')
+            && !before.starts_with('$')
+            && !before.starts_with('%')
+            && (before.as_bytes()[0].is_ascii_alphabetic() || before.starts_with('_'))
+        {
+            let expr = rest[eq_pos + 1..].trim();
+            items.push(AsmItem::Set(before.to_string(), expr.to_string()));
+            return Ok(items);
+        }
+    }
+
+    // Handle multiple labels on same line (e.g. "771: 999: .pushsection ...")
+    let mut rest = rest;
+    while let Some((label, remaining)) = try_parse_label(rest) {
+        items.push(AsmItem::Label(label));
+        rest = remaining;
+    }
+
+    // If there's nothing after the labels, we're done
+    if rest.is_empty() {
+        return Ok(items);
+    }
+
     // Parse the remaining content as a directive or instruction
     if rest.starts_with('.') {
         items.push(parse_directive(rest)?);
@@ -372,7 +404,7 @@ fn parse_line_items(line: &str) -> Result<Vec<AsmItem>, String> {
 fn try_parse_label(line: &str) -> Option<(String, &str)> {
     let trimmed = line.trim();
     if let Some(colon_pos) = trimmed.find(':') {
-        let candidate = &trimmed[..colon_pos];
+        let candidate = trimmed[..colon_pos].trim();
         // Verify it's a valid label (no spaces, starts with letter/dot/digit)
         if !candidate.is_empty()
             && !candidate.contains(' ')
@@ -1126,11 +1158,32 @@ fn parse_data_values(s: &str) -> Result<Vec<DataValue>, String> {
             continue;
         }
 
-        // Check for symbol difference: .LBB3 - .Ljt_0
+        // Check for symbol difference: .LBB3 - .Ljt_0, or with addend: tr_gdt_end - tr_gdt - 1
         if let Some(minus_pos) = trimmed.find(" - ") {
             let lhs = trimmed[..minus_pos].trim().to_string();
-            let rhs = trimmed[minus_pos + 3..].trim().to_string();
-            vals.push(DataValue::SymbolDiff(lhs, rhs));
+            let rhs_full = trimmed[minus_pos + 3..].trim();
+            // Check if rhs has an addend: "sym - N" or "sym + N"
+            if let Some(rhs_minus) = rhs_full.rfind(" - ") {
+                let rhs_sym = rhs_full[..rhs_minus].trim();
+                let rhs_add = rhs_full[rhs_minus + 3..].trim();
+                if is_label_like(rhs_sym) {
+                    if let Ok(addend) = parse_integer_expr(rhs_add) {
+                        vals.push(DataValue::SymbolDiffAddend(lhs, rhs_sym.to_string(), -addend));
+                        continue;
+                    }
+                }
+            }
+            if let Some(rhs_plus) = rhs_full.rfind(" + ") {
+                let rhs_sym = rhs_full[..rhs_plus].trim();
+                let rhs_add = rhs_full[rhs_plus + 3..].trim();
+                if is_label_like(rhs_sym) {
+                    if let Ok(addend) = parse_integer_expr(rhs_add) {
+                        vals.push(DataValue::SymbolDiffAddend(lhs, rhs_sym.to_string(), addend));
+                        continue;
+                    }
+                }
+            }
+            vals.push(DataValue::SymbolDiff(lhs, rhs_full.to_string()));
             continue;
         }
 
@@ -1413,27 +1466,42 @@ fn expand_gas_macros_with_state(
             return Err(format!("assembler error: {}", trimmed[".error".len()..].trim()));
         }
 
-        // Check if line is a macro invocation
-        let first_word = trimmed.split_whitespace().next().unwrap_or("");
+        // Check if line is a macro invocation.
+        // First, split on semicolons to handle "macrocall args; other_stuff" patterns.
+        // GAS treats ';' as a statement separator, so a macro invocation may be
+        // followed by other statements on the same line.
+        let semi_parts = crate::backend::asm_preprocess::split_on_semicolons(&trimmed);
+        let first_part = semi_parts[0].trim();
+        let first_word = first_part.split_whitespace().next().unwrap_or("");
         // Strip label prefix if present (e.g., "label: macroname args")
-        let macro_name = if first_word.ends_with(':') {
+        let macro_name_candidate = if first_word.ends_with(':') {
             // There might be a macro after the label
-            trimmed[first_word.len()..].split_whitespace().next().unwrap_or("")
+            first_part[first_word.len()..].split_whitespace().next().unwrap_or("")
         } else {
             first_word
+        };
+        // Also check for C-preprocessor-style invocations: MACRO_NAME(args)
+        // In GAS, "MACRO_NAME(arg)" is treated as macro invocation with "(arg)" as arg text
+        let macro_name = if macros.contains_key(macro_name_candidate) {
+            macro_name_candidate
+        } else if let Some(paren_pos) = macro_name_candidate.find('(') {
+            let candidate = &macro_name_candidate[..paren_pos];
+            if macros.contains_key(candidate) { candidate } else { macro_name_candidate }
+        } else {
+            macro_name_candidate
         };
 
         if macros.contains_key(macro_name) {
             let mac = macros[macro_name].clone();
             let args_str = if first_word.ends_with(':') {
                 // Label before macro
-                let after_label = trimmed[first_word.len()..].trim();
+                let after_label = first_part[first_word.len()..].trim();
                 let after_name = after_label[macro_name.len()..].trim();
                 // Emit label first
                 result.push(first_word.to_string());
                 after_name
             } else {
-                trimmed[macro_name.len()..].trim()
+                first_part[macro_name.len()..].trim()
             };
             let args = parse_macro_args(args_str, &mac.params)?;
             // Substitute parameters in body
@@ -1447,6 +1515,13 @@ fn expand_gas_macros_with_state(
             // Recursively expand the body (handles nested .irp, .set, .if, etc.)
             expanded_body = expand_gas_macros_with_state(&expanded_body, macros, symbols)?;
             result.extend(expanded_body);
+            // Emit remaining semicolon-separated parts as separate lines
+            for sp in &semi_parts[1..] {
+                let sp = sp.trim();
+                if !sp.is_empty() {
+                    result.push(sp.to_string());
+                }
+            }
             i += 1;
             continue;
         }
@@ -1504,9 +1579,6 @@ fn parse_macro_args(args_str: &str, params: &[(String, Option<String>)]) -> Resu
     // Split on commas (respecting parentheses)
     let arg_parts = split_macro_args(args_str);
 
-    // Check if arguments are named (contain '=') or positional
-    let named = arg_parts.iter().any(|a| a.contains('='));
-
     // Helper: strip surrounding quotes from GAS macro arguments
     // In GAS, "" means empty string, "foo bar" means foo bar
     let strip_quotes = |s: &str| -> String {
@@ -1518,33 +1590,39 @@ fn parse_macro_args(args_str: &str, params: &[(String, Option<String>)]) -> Resu
         }
     };
 
-    if named {
-        // Named arguments: param=value
-        let mut arg_map = std::collections::HashMap::new();
-        for part in &arg_parts {
-            let part = part.trim();
-            if let Some(eq_pos) = part.find('=') {
-                let key = part[..eq_pos].trim().to_string();
+    // GAS supports mixed positional and named arguments.
+    // Positional args fill params left-to-right, named args (key=val) override by name.
+    // Example: "0 asm_foo exc_foo has_error_code=0" with params (vector, asmsym, cfunc, has_error_code)
+    // → positional: vector=0, asmsym=asm_foo, cfunc=exc_foo; named: has_error_code=0
+    let mut positional_idx = 0;
+    let mut arg_map = std::collections::HashMap::new();
+    let mut positional_vals: Vec<(usize, String)> = Vec::new();
+
+    for part in &arg_parts {
+        let part = part.trim();
+        if let Some(eq_pos) = part.find('=') {
+            let key = part[..eq_pos].trim();
+            // Only treat as named if the key matches a known parameter name
+            if params.iter().any(|(pname, _)| pname == key) {
                 let val = strip_quotes(part[eq_pos+1..].trim());
-                arg_map.insert(key, val);
+                arg_map.insert(key.to_string(), val);
+                continue;
             }
         }
-        for (name, default) in params {
-            let val = arg_map.get(name)
-                .cloned()
-                .or_else(|| default.clone())
-                .unwrap_or_default();
+        // Positional argument
+        positional_vals.push((positional_idx, strip_quotes(part)));
+        positional_idx += 1;
+    }
+
+    // Build result: start with positional, then override with named
+    let mut pos_iter = positional_vals.into_iter();
+    for (name, default) in params {
+        if let Some(val) = arg_map.get(name) {
+            result.push((name.clone(), val.clone()));
+        } else if let Some((_, val)) = pos_iter.next() {
             result.push((name.clone(), val));
-        }
-    } else {
-        // Positional arguments
-        for (idx, (name, default)) in params.iter().enumerate() {
-            let val = if idx < arg_parts.len() {
-                strip_quotes(&arg_parts[idx])
-            } else {
-                default.clone().unwrap_or_default()
-            };
-            result.push((name.clone(), val));
+        } else {
+            result.push((name.clone(), default.clone().unwrap_or_default()));
         }
     }
 
@@ -1559,15 +1637,20 @@ fn parse_macro_args(args_str: &str, params: &[(String, Option<String>)]) -> Resu
 fn split_macro_args(s: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut depth = 0;
+    let mut in_quotes = false;
     let mut current = String::new();
     let bytes = s.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         let ch = bytes[i] as char;
         match ch {
-            '(' => { depth += 1; current.push(ch); }
-            ')' => { depth -= 1; current.push(ch); }
-            ',' if depth == 0 => {
+            '"' => {
+                in_quotes = !in_quotes;
+                current.push(ch);
+            }
+            '(' if !in_quotes => { depth += 1; current.push(ch); }
+            ')' if !in_quotes => { depth -= 1; current.push(ch); }
+            ',' if depth == 0 && !in_quotes => {
                 let trimmed = current.trim().to_string();
                 if !trimmed.is_empty() {
                     parts.push(trimmed);
@@ -1578,7 +1661,7 @@ fn split_macro_args(s: &str) -> Vec<String> {
                     i += 1;
                 }
             }
-            ' ' | '\t' if depth == 0 => {
+            ' ' | '\t' if depth == 0 && !in_quotes => {
                 let trimmed = current.trim().to_string();
                 if !trimmed.is_empty() {
                     parts.push(trimmed);
