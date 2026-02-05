@@ -1,0 +1,21 @@
+Fix assembler: pending branch relocs lost during subsection merge
+
+Bug: When assembly code uses .subsection (as in the kernel ALTERNATIVE
+macros), branches from subsection code to labels in the parent section
+are collected in pending_branch_relocs with the subsection name as their
+section (e.g., ".text.__subsection.1"). After merge_subsections() runs,
+these subsections are removed, but pending_branch_relocs entries still
+reference them. resolve_local_branches() sees a section mismatch (label
+was moved to ".text" but reloc says ".text.__subsection.1"), tries to
+emit a cross-section reloc to the now-deleted section, and silently
+fails — leaving the branch instruction with offset 0 (b . = infinite loop).
+
+This breaks the ARM tinyconfig kernel boot: the vector table alternative
+replacement code has branches to .L labels that become infinite loops.
+
+Fix: merge_subsections() now returns a remap of subsection names to
+(parent, offset_adjustment). The ARM and RISC-V assemblers use this to
+fix up pending_branch_relocs, pending_sym_diffs, pending_exprs, and
+deferred_exprs before resolution.
+
+Started: 2026-02-05
