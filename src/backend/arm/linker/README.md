@@ -14,7 +14,7 @@ archive member extraction, symbol resolution, section merging, virtual address
 layout, GOT/PLT construction, TLS handling, IFUNC support, relocation
 application, dynamic section emission, and final ELF output.
 
-The implementation spans roughly 3,800 lines of Rust across three files, plus shared
+The implementation spans roughly 4,000 lines of Rust across three files, plus shared
 infrastructure in `linker_common` (`GlobalSymbolOps` trait, `OutputSection` /
 `InputSection` types, section merging, symbol registration, common symbol
 allocation, archive loading, library resolution, section name mapping,
@@ -36,7 +36,7 @@ allocation, archive loading, library resolution, section name mapping,
                |  Vec<ElfObject>, HashMap<String, GlobalSymbol>
                v
   +------------------------------------------+
-  |           mod.rs  (~3,500 lines)         |
+  |           mod.rs  (~3,350 lines)         |
   |   Orchestrator: file loading, layout,    |
   |   GOT/PLT/IPLT, dynamic/shared emission |
   +------------------------------------------+
@@ -45,7 +45,7 @@ allocation, archive loading, library resolution, section name mapping,
                v
   +------------------------------------------+
   |           reloc.rs  (~540 lines)         |
-  |   Relocation Application: 30+ reloc     |
+  |   Relocation Application: 40+ reloc     |
   |   types, TLS relaxation, GOT refs       |
   +------------------------------------------+
                |
@@ -177,11 +177,16 @@ link_builtin(object_files, output_path, user_args, lib_paths,
   4. DEFSYM APPLICATION
      Apply --defsym=ALIAS=TARGET definitions (symbol aliasing).
 
-  5. UNRESOLVED SYMBOL CHECK
+  5. GARBAGE COLLECTION (if --gc-sections)
+     BFS reachability from entry points (_start, main, __libc_csu_init,
+     __libc_csu_fini) and init/fini arrays; unreachable sections are
+     excluded from the link.
+
+  6. UNRESOLVED SYMBOL CHECK
      Error on undefined non-weak symbols, excluding linker-defined
      names recognized by linker_common::is_linker_defined_symbol().
 
-  6. SECTION MERGING (linker_common::merge_sections_elf64)
+  7. SECTION MERGING (linker_common::merge_sections_elf64)
      Delegates to shared implementation that:
      a. Maps input section names to output names via map_section_name()
      b. For each allocatable input section, appends to matching output section
@@ -189,10 +194,10 @@ link_builtin(object_files, output_path, user_args, lib_paths,
      d. Sorts output sections: RO -> Exec -> RW(progbits) -> RW(nobits)
      e. Builds section_map: (obj_idx, sec_idx) -> (out_idx, offset)
 
-  7. COMMON SYMBOL ALLOCATION (linker_common::allocate_common_symbols_elf64)
+  8. COMMON SYMBOL ALLOCATION (linker_common::allocate_common_symbols_elf64)
      Allocate SHN_COMMON symbols into .bss with proper alignment.
 
-  8. EMIT
+  9. EMIT
      If dynamic symbols present and !is_static:
        create_plt_got() then emit_dynamic_executable()
      Otherwise:
@@ -352,7 +357,7 @@ resolve_sym(obj_idx, sym, globals, section_map, output_sections):
 
 ### Supported Relocation Types
 
-The linker handles 30+ AArch64 relocation types, organized by category:
+The linker handles 40+ AArch64 relocation types, organized by category:
 
 #### Absolute Relocations
 
@@ -596,7 +601,7 @@ resolution, section layout, GOT allocation, and final addresses.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `mod.rs` | ~3,200 | Public API (`link_builtin`, `link_shared`), file loading/dispatch, address layout, GOT/PLT/IPLT construction, static/dynamic executable emission, shared library emission. Symbol registration, section merging, common allocation, and archive loading delegate to `linker_common`. |
-| `elf.rs` | ~75 | AArch64 relocation constants (28 types); type aliases delegating to `linker_common` for ELF64 parsing |
-| `reloc.rs` | ~540 | Relocation application (30+ types), TLS relaxation, GOT/TLS-IE references, instruction field patching helpers |
-| **Total** | **~3,800** | (plus shared infrastructure in `linker_common`) |
+| `mod.rs` | ~3,350 | Public API (`link_builtin`, `link_shared`), file loading/dispatch, address layout, GOT/PLT/IPLT construction, static/dynamic executable emission, shared library emission. Symbol registration, section merging, common allocation, and archive loading delegate to `linker_common`. |
+| `elf.rs` | ~75 | AArch64 relocation constants (26 types); type aliases delegating to `linker_common` for ELF64 parsing |
+| `reloc.rs` | ~540 | Relocation application (40+ types), TLS relaxation, GOT/TLS-IE references, instruction field patching helpers |
+| **Total** | **~4,000** | (plus shared infrastructure in `linker_common`) |
