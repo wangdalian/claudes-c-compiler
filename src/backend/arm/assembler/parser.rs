@@ -1149,8 +1149,9 @@ fn strip_comment(line: &str) -> &str {
         if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
             return &line[..i];
         }
-        // Check for @ comment (GAS ARM comment character)
-        if bytes[i] == b'@' {
+        // Check for @ comment (GAS ARM comment character).
+        // Skip \@ which is the GAS macro invocation counter, not a comment.
+        if bytes[i] == b'@' && !(i > 0 && bytes[i - 1] == b'\\') {
             let after = &line[i + 1..];
             if !after.starts_with("object")
                 && !after.starts_with("function")
