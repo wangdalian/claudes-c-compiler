@@ -1,0 +1,10 @@
+Fix tail call optimization clobbering alloca'd memory.
+
+When a function uses __builtin_alloca (DynAlloca), the alloca'd buffer is
+on the stack below rsp. The tail call optimization restores rsp from rbp
+before the jmp, which means the tail-called function's stack frame may
+overlap with and clobber the alloca'd buffer. This causes non-deterministic
+behavior (the callee may or may not overwrite the data before it's used).
+
+Fix: Detect subq %reg, %rsp (the DynAlloca pattern) and disable tail call
+optimization for functions containing it, just like we do for lea-of-local.
