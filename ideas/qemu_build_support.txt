@@ -50,12 +50,21 @@ Known Issues Fixed:
      tracking to strip_c_comments().
  11. Serial console output fixed (was previously reported as missing) - FIXED
      Serial output from guest Linux kernel now works correctly with -nographic.
+ 12. Enum pointer subtraction rejected (6 files failed to compile) - FIXED
+     QEMU's VMSTATE_UINT32 macro does (uint32_t*)0 - (typeof(field)*)0 as a
+     compile-time type assertion. When the field is an enum type, this was
+     rejected because pointee_types_compatible() didn't treat enums as
+     compatible with integer types. Fixed by adding enum-to-integer
+     compatibility check in sema/analysis.rs.
+ 13. Standalone linker: shared libraries not in group resolution loop - FIXED
+     Bare .so files from command-line args were loaded before the archive
+     group loop, so symbols introduced by archive member extraction
+     (e.g., libqemuutil.a members needing libglib-2.0.so) were not resolved.
+     Fixed by deferring .so files into the group resolution loop alongside
+     .a archives.
 
 Remaining Issues:
-  1. Two test binaries fail to link (test-qmp-event, fp-test):
-     Missing symbols (qmp_event_build_dict, add128, etc.) - likely build
-     system issues with archive search order, not compiler bugs.
-  2. ARM aarch64-softmmu target: 1915 undeclared helper symbols in
+  1. ARM aarch64-softmmu target: 1915 undeclared helper symbols in
      translate-sve.c. These are gen_helper_sme2_* and gen_helper_sve2p1_*
      functions generated from DEF_HELPER macros in helper-sme.h.
      Root cause needs investigation (likely a preprocessor or macro

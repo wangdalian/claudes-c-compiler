@@ -455,6 +455,38 @@ impl ElfWriter {
     /// R_RISCV_RELAX ELF relocation type
     const R_RISCV_RELAX: u32 = 51;
 
+    /// R_RISCV_ALIGN ELF relocation type - marks alignment padding that the
+    /// linker may need to adjust during relaxation.
+    const R_RISCV_ALIGN: u32 = 43;
+
+    /// Emit alignment padding with an R_RISCV_ALIGN relocation in executable
+    /// sections (when relaxation is enabled). The linker needs these to know
+    /// where alignment padding exists so it can re-align after relaxation
+    /// changes code sizes.
+    fn emit_align_with_reloc(&mut self, align_bytes: u64) {
+        if align_bytes <= 1 {
+            return;
+        }
+        let offset_before = self.base.current_offset();
+        self.base.align_to(align_bytes);
+        let offset_after = self.base.current_offset();
+        let padding = offset_after - offset_before;
+        if padding > 0 && !self.no_relax {
+            // Only emit R_RISCV_ALIGN in executable sections where linker
+            // relaxation may change code sizes and require re-alignment.
+            if let Some(s) = self.base.sections.get_mut(&self.base.current_section) {
+                if (s.sh_flags & SHF_EXECINSTR) != 0 {
+                    s.relocs.push(ObjReloc {
+                        offset: offset_before,
+                        reloc_type: Self::R_RISCV_ALIGN,
+                        symbol_name: String::new(),
+                        addend: padding as i64,
+                    });
+                }
+            }
+        }
+    }
+
     /// Process all parsed assembly statements.
     pub fn process_statements(&mut self, statements: &[AsmStatement]) -> Result<(), String> {
         let statements = resolve_numeric_label_refs(statements);

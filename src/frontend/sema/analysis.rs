@@ -1708,6 +1708,13 @@ impl SemanticAnalyzer {
                 // Simplification: treat all function pointers as compatible
                 true
             }
+            // Enum types are integer types in C (C11 6.7.2.2p4), so enum pointers
+            // are compatible with integer pointers of the same size for pointer
+            // arithmetic. This is needed for QEMU's VMSTATE_UINT32 macro pattern:
+            // (uint32_t*)0 - (typeof(enum_field)*)0
+            (CType::Enum(e), other) | (other, CType::Enum(e)) if other.is_integer() => {
+                e.packed_size() == other.size()
+            }
             // For basic types, use equality (ignoring qualifiers)
             _ => a == b,
         }

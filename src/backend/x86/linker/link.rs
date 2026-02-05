@@ -53,13 +53,15 @@ pub fn link_builtin(
     let defsym_defs = parsed_args.defsym_defs;
     let gc_sections = parsed_args.gc_sections;
 
-    // Load extra object files (.o) immediately; archive files (.a) are deferred
-    // to the group resolution loop so they participate in iterative re-scanning
-    // (handles --start-group/--end-group and circular archive dependencies).
-    let mut extra_archives: Vec<String> = Vec::new();
+    // Load extra .o files immediately; archives (.a) and shared libraries (.so)
+    // are deferred to the group resolution loop. Archives need iterative re-scanning
+    // for circular dependencies, and shared libraries must be processed after
+    // archive members are extracted so they can resolve symbols introduced by
+    // those members (e.g., QEMU's libqemuutil.a members reference libglib-2.0.so).
+    let mut deferred_libs: Vec<String> = Vec::new();
     for path in &extra_object_files {
-        if path.ends_with(".a") {
-            extra_archives.push(path.clone());
+        if path.ends_with(".a") || path.ends_with(".so") || path.contains(".so.") {
+            deferred_libs.push(path.clone());
         } else {
             load_file(path, &mut objects, &mut globals, &mut needed_sonames, &lib_path_strings, false)?;
         }
@@ -76,19 +78,18 @@ pub fn link_builtin(
     }
 
     // Load needed libraries using group resolution (like ld's --start-group/--end-group).
-    // This iterates all archives until no new objects are pulled in, handling circular
-    // dependencies between archives (e.g., libc.a needing symbols from libgcc.a and vice versa).
-    // Direct .a files from user args are included in this loop so that circular
-    // dependencies between directly-passed archives are resolved correctly.
+    // This iterates all archives and shared libraries until no new objects are pulled
+    // in, handling circular dependencies between archives and ensuring shared libraries
+    // can resolve symbols introduced by archive member extraction.
     {
         let mut all_lib_names: Vec<String> = needed_libs.iter().map(|s| s.to_string()).collect();
         all_lib_names.extend(libs_to_load.iter().cloned());
 
         let mut lib_paths_resolved: Vec<String> = Vec::new();
-        // Include direct .a files first (they appear before -l libraries on the command line)
-        for archive_path in &extra_archives {
-            if !lib_paths_resolved.contains(archive_path) {
-                lib_paths_resolved.push(archive_path.clone());
+        // Include deferred .a and .so files first (preserving command-line order)
+        for lib_path in &deferred_libs {
+            if !lib_paths_resolved.contains(lib_path) {
+                lib_paths_resolved.push(lib_path.clone());
             }
         }
         let needed_lib_count = needed_libs.len();
@@ -103,15 +104,19 @@ pub fn link_builtin(
             }
         }
 
-        // Group loading: iterate all archives until stable
+        // Group loading: iterate until stable. Track both object count changes
+        // (from archive member extraction) and dynamic symbol count changes
+        // (from shared library resolution) since either can introduce work for
+        // the other on the next iteration.
         let mut changed = true;
         while changed {
             changed = false;
-            let prev_count = objects.len();
+            let prev_obj_count = objects.len();
+            let prev_dyn_count = needed_sonames.len();
             for lib_path in &lib_paths_resolved {
                 load_file(lib_path, &mut objects, &mut globals, &mut needed_sonames, &all_lib_paths, false)?;
             }
-            if objects.len() != prev_count {
+            if objects.len() != prev_obj_count || needed_sonames.len() != prev_dyn_count {
                 changed = true;
             }
         }
