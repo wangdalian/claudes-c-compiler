@@ -619,7 +619,7 @@ fn parse_section_directive(args: &str) -> Result<AsmItem, String> {
     let parts = split_section_args(args);
 
     let name = parts.first()
-        .map(|s| s.trim().to_string())
+        .map(|s| s.trim().trim_matches('"').to_string())
         .unwrap_or_else(|| ".text".to_string());
 
     let flags = parts.get(1).map(|s| s.trim().trim_matches('"').to_string());

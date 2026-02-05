@@ -1,3 +1,0 @@
-Fix segfault in standalone x86 assembler when compiling arch/x86/kernel/tsc.o
-The compiler segfaults when building the kernel in standalone mode (no gcc_assembler).
-Need to find the exact assembler instruction causing the crash and fix it.
