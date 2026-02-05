@@ -14,8 +14,8 @@ The assembler is structured as a three-stage pipeline:
         |
         v
   +------------------+
-  |   Parser          |  (reused from the x86-64 backend)
-  |   parser.rs       |  Produces Vec<AsmItem>
+  |   Parser          |  Reused from the x86-64 backend
+  |   (x86/parser.rs) |  Produces Vec<AsmItem>
   +------------------+
         |
         v
@@ -25,10 +25,11 @@ The assembler is structured as a three-stage pipeline:
   +------------------+
         |
         v
-  +------------------+
-  |   ELF Writer      |  Produces ELFCLASS32 / EM_386 / Elf32_Rel object files
-  |   elf_writer.rs   |  Handles jump relaxation, symbol tables, sections
-  +------------------+
+  +---------------------+
+  |   ELF Writer         |  elf_writer.rs (i686 adapter) +
+  |   + ElfWriterCore    |  elf_writer_common.rs (shared logic)
+  |                      |  Produces ELFCLASS32 / EM_386 / Elf32_Rel .o files
+  +---------------------+
         |
         v
    .o file on disk
@@ -40,12 +41,20 @@ stages together: parse, build, write.
 
 ## Relationship to the x86-64 Assembler
 
-The i686 and x86-64 backends share the same AT&T syntax parser
-(`crate::backend::x86::assembler::parser`).  The parsed representation
-(`AsmItem`, `Instruction`, `Operand`, etc.) is architecture-neutral -- the
-parser does not make assumptions about register width or operand-size defaults.
+The i686 and x86-64 backends share two major components:
 
-Everything downstream of parsing is i686-specific:
+1. **AT&T syntax parser** (`crate::backend::x86::assembler::parser`).  The parsed
+   representation (`AsmItem`, `Instruction`, `Operand`, etc.) is
+   architecture-neutral -- the parser does not make assumptions about register
+   width or operand-size defaults.
+
+2. **ELF writer core** (`crate::backend::elf_writer_common::ElfWriterCore`).
+   Section management, symbol tables, jump relaxation, numeric label resolution,
+   and internal relocation resolution are all generic over an `X86Arch` trait.
+   The i686 adapter (`elf_writer.rs`) plugs in i686-specific constants and
+   the instruction encoder; the shared core handles everything else.
+
+Everything else is i686-specific:
 
 | Concern                 | x86-64                        | i686                          |
 |-------------------------|-------------------------------|-------------------------------|
@@ -82,24 +91,35 @@ Everything downstream of parsing is i686-specific:
 | Type                   | Role                                                       |
 |------------------------|------------------------------------------------------------|
 | `InstructionEncoder`   | Stateful encoder; accumulates bytes and relocations         |
-| `Relocation`           | Offset + symbol + R_386 type + addend                      |
+| `Relocation`           | Offset + symbol + R_386 type + addend + optional diff_symbol|
 
 The encoder's `bytes: Vec<u8>` collects the raw machine code for one
 instruction.  The `offset: u64` field tracks the current position within the
 section so that relocation offsets are computed correctly.
 
-### ELF writer types (`elf_writer.rs`)
+### ELF writer types
 
-| Type                | Role                                                        |
-|---------------------|-------------------------------------------------------------|
-| `ElfWriter`         | Top-level builder: sections, symbols, label positions       |
-| `Section`           | In-progress section: name, type, flags, data, relocations   |
-| `ElfRelocation`     | Section-local relocation (offset, symbol, type, addend)     |
-| `SymbolInfo`        | Binding, type, visibility, section, value, size             |
-| `JumpInfo`          | Tracks a jump for short-form relaxation                     |
-| `Elf32ByteWriter`   | Low-level serializer for the final ELF32 binary             |
-| `Sym32Entry`        | One Elf32_Sym ready for serialization                       |
-| `StringTable`       | Builds NUL-terminated string tables (.strtab, .shstrtab)    |
+The i686 `elf_writer.rs` is a thin adapter (see `I686Arch`) that plugs into the
+shared `ElfWriterCore<A: X86Arch>` from `elf_writer_common.rs`.  The shared
+core defines the types that drive ELF emission:
+
+| Type (in `elf_writer_common`) | Role                                                |
+|-------------------------------|-----------------------------------------------------|
+| `ElfWriterCore<A>`            | Top-level builder: sections, symbols, label positions|
+| `Section`                     | In-progress section: name, type, flags, data, relocs|
+| `ElfRelocation`               | Section-local relocation (offset, symbol, type, addend)|
+| `SymbolInfo`                  | Binding, type, visibility, section, value, size      |
+| `JumpInfo`                    | Tracks a jump for short-form relaxation              |
+
+The i686 adapter (`elf_writer.rs`) defines:
+
+| Type                | Role                                                         |
+|---------------------|--------------------------------------------------------------|
+| `I686Arch`          | Implements `X86Arch`: encoder dispatch, ELF constants, REL format|
+| `ElfWriter`         | Type alias for `ElfWriterCore<I686Arch>`                     |
+
+String tables (`StringTable`) live in `backend::elf` and are used during final
+serialization.
 
 
 ## Processing Algorithm
@@ -124,9 +144,9 @@ both comment stripping and semicolon splitting.
 
 ### Numeric Label Resolution (pre-pass)
 
-Before encoding begins, the ELF writer runs a numeric label resolution pre-pass
-(`resolve_numeric_labels`).  GNU assembler numeric labels (`1:`, `2:`, etc.) can
-be defined multiple times; forward references (`1f`) refer to the next
+Before encoding begins, the ELF writer core runs a numeric label resolution
+pre-pass (`resolve_numeric_labels`).  GNU assembler numeric labels (`1:`, `2:`,
+etc.) can be defined multiple times; forward references (`1f`) refer to the next
 definition, and backward references (`1b`) refer to the most recent.
 
 The pre-pass renames each numeric label definition to a unique internal name
@@ -148,18 +168,21 @@ The main dispatch function `encode_mnemonic()` is a large `match` that covers:
 - **ALU**: `add`, `sub`, `and`, `or`, `xor`, `cmp`, `test` (8 ALU group ops)
 - **Multiply/divide**: `imul` (1/2/3 operand), `mul`, `div`, `idiv`
 - **Unary**: `neg`, `not`, `inc`, `dec`
-- **Shifts**: `shl`/`shr`/`sar`/`rol`/`ror`, `shld`/`shrd`
+- **Shifts**: `shl`/`shr`/`sar`/`rol`/`ror`/`rcl`/`rcr`, `shld`/`shrd`
 - **Bit operations**: `bt`/`bts`/`btr`/`btc`, `bsf`/`bsr`, `lzcnt`/`tzcnt`/`popcnt`
 - **Sign extension**: `cdq`, `cwde`, `cbw`, `cwd`
 - **Conditional**: `setcc`, `cmovcc`
-- **Control flow**: `jmp`, `jcc`, `call`, `ret`
+- **Control flow**: `jmp`, `jcc`, `jecxz`, `loop`, `call`, `ret`
 - **Atomics**: `cmpxchg`, `xadd`, `cmpxchg8b`
 - **String ops**: `movsb`/`movsl`, `stosb`/`stosl`, `cmpsb`/`cmpsl`, etc.
+- **I/O**: `inb`/`outb`, `insb`/`outsb`, etc.
 - **SSE/SSE2**: Scalar and packed float/integer ops, shuffles, conversions,
   comparisons, non-temporal stores
+- **SSE3/SSSE3/SSE4**: Horizontal ops, blends, rounds, dot products, `ptest`
+- **AES-NI**: `aesenc`, `aesdec`, `aeskeygenassist`, `pclmulqdq`
 - **x87 FPU**: Load/store, arithmetic, transcendentals, control word, `fcomip`
 - **System**: `int`, `cpuid`, `rdtsc`, `syscall`, `sysenter`, `hlt`, `mfence`,
-  `rdmsr`/`wrmsr`, `bswap`, `ud2`
+  `rdmsr`/`wrmsr`, `bswap`, `ud2`, `endbr32`
 - **Prefixes**: `lock`, `rep`/`repe`/`repnz` (both as prefixes and standalone)
 
 #### ModR/M and SIB encoding
@@ -207,14 +230,14 @@ byte.  This is essential for the REL format where the addend is embedded inline.
   override prefixes (`0x64` for `%fs`, `0x65` for `%gs`) are emitted for
   segment-prefixed memory operands.
 
-#### TLS relocation mapping
+#### TLS and GOT relocation mapping
 
-The encoder maps AT&T `@MODIFIER` syntax to i386 TLS relocation types:
+The encoder maps AT&T `@MODIFIER` syntax to i386 relocation types:
 
 | AT&T modifier    | Relocation constant  | Usage                              |
 |------------------|----------------------|------------------------------------|
 | `@NTPOFF`        | `R_386_TLS_LE_32`    | Negative TP offset (Local Exec)    |
-| `@TPOFF`         | `R_386_32S`          | Positive TP offset (Local Exec)    |
+| `@TPOFF`         | `R_386_32S`          | TP offset (Local Exec)             |
 | `@TLSGD`         | `R_386_TLS_GD`       | General Dynamic TLS                |
 | `@TLSLDM`        | `R_386_TLS_LDM`      | Local Dynamic TLS                  |
 | `@DTPOFF`        | `R_386_TLS_LDO_32`   | DTP-relative offset                |
@@ -223,11 +246,13 @@ The encoder maps AT&T `@MODIFIER` syntax to i386 TLS relocation types:
 | `@PLT`           | `R_386_PLT32`        | PLT-relative call                  |
 | `@GOTPC`         | `R_386_GOTPC`        | PC-relative to GOT base            |
 | `@GOTNTPOFF`     | `R_386_TLS_IE`       | IE model via GOT                   |
+| `@INDNTPOFF`     | `R_386_TLS_IE`       | IE model via GOT (alias)           |
 
 ### Stage 3: ELF Object File Emission
 
-The `ElfWriter` processes all `AsmItem`s in order, building up sections,
-symbols, and relocations, then serializes them into an ELF32 relocatable object.
+The `ElfWriterCore` (parameterized with `I686Arch`) processes all `AsmItem`s in
+order, building up sections, symbols, and relocations, then serializes them into
+an ELF32 relocatable object.
 
 #### Item processing
 
@@ -358,39 +383,43 @@ format).
    requires the assembler to embed addends in the instruction stream, and the
    ELF writer to patch them during serialization.  The x86-64 backend uses RELA
    (explicit addends in the relocation entry), which is simpler to implement.
-   The REL approach here adds complexity in the `write_object()` method but
-   produces standard-conforming i386 objects that work with any ELF linker.
+   The REL approach here adds complexity but produces standard-conforming i386
+   objects that work with any ELF linker.
 
-3. **Eager long encoding + relaxation**.  Instructions are initially encoded in
+3. **Shared ELF writer infrastructure**.  The `ElfWriterCore` is generic over an
+   `X86Arch` trait, so the i686 and x86-64 backends share all section/symbol
+   management, jump relaxation, and ELF serialization logic.  The i686 adapter
+   (`elf_writer.rs`) only needs to provide architecture-specific constants and
+   wire up the instruction encoder.
+
+4. **Eager long encoding + relaxation**.  Instructions are initially encoded in
    their longest form.  A post-encoding relaxation pass shortens jumps that can
    reach their targets with 8-bit displacements.  This avoids the complexity of
    multi-pass encoding (where shortening one jump might allow others to shorten)
    while still producing reasonably compact code.
 
-4. **Inline resolution of local relocations**.  Same-section PC-relative
+5. **Inline resolution of local relocations**.  Same-section PC-relative
    relocations to local symbols are resolved by the assembler, not deferred to
    the linker.  This reduces the number of relocations in the output and avoids
    unnecessary linker work.  Only global/weak symbols retain relocations.
 
-5. **No `.eh_frame` / DWARF generation**.  The assembler ignores CFI directives
+6. **No `.eh_frame` / DWARF generation**.  The assembler ignores CFI directives
    and debug metadata.  This simplifies the implementation at the cost of no
    stack unwinding or debug info in the output.  The linker can still link
    objects that contain `.eh_frame` from other sources (e.g., CRT objects).
 
-6. **Compact `inc`/`dec` encoding**.  The i686 backend uses the single-byte
+7. **Compact `inc`/`dec` encoding**.  The i686 backend uses the single-byte
    `0x40+r` / `0x48+r` forms for 32-bit `inc`/`dec`, which are unavailable on
    x86-64 (where those bytes are REX prefixes).  This produces smaller code.
 
 
 ## File Inventory
 
-| File             | Lines | Role                                                   |
-|------------------|-------|--------------------------------------------------------|
-| `mod.rs`         | ~33   | Module root; `assemble()` entry point; re-exports parser|
-| `encoder.rs`     | ~2370 | Instruction-to-bytes encoder; ModR/M/SIB encoding;     |
-|                  |       | relocation generation; full i686 ISA coverage           |
-| `elf_writer.rs`  | ~1233 | Section/symbol/relocation management; jump relaxation;  |
-|                  |       | internal reloc resolution; ELF32 binary serialization   |
-| *(shared)*       |       |                                                        |
-| `x86/assembler/` | ~1100 | AT&T syntax parser; `AsmItem`/`Instruction`/`Operand`  |
-| `parser.rs`      |       | data types; directive parsing; operand parsing          |
+| File                        | Lines  | Role                                            |
+|-----------------------------|--------|-------------------------------------------------|
+| `mod.rs`                    | ~30    | Module root; `assemble()` entry point           |
+| `encoder.rs`                | ~3280  | i686 instruction encoder; ModR/M/SIB; relocs    |
+| `elf_writer.rs`             | ~95    | `I686Arch` adapter for `ElfWriterCore`           |
+| *(shared with x86-64)*      |        |                                                 |
+| `x86/assembler/parser.rs`   | ~1710  | AT&T syntax parser; data types; directives       |
+| `elf_writer_common.rs`      | ~1565  | Section/symbol/jump relax/ELF32 serialization    |
