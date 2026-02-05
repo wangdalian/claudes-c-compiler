@@ -1,0 +1,12 @@
+Fix RISC-V assembler .option push/pop not saving/restoring relax state.
+
+The .option push and .option pop directives are silently ignored in the
+RISC-V assembler's elf_writer.rs. When kernel code uses:
+  .option push
+  .option norelax
+  nop
+  .option pop
+the norelax state persists for the rest of the file, causing missing
+R_RISCV_RELAX relocations on all subsequent CALL_PLT, PCREL_HI20, and
+PCREL_LO12 instruction pairs. This causes the Linux kernel to hang
+during boot on RISC-V.

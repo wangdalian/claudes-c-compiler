@@ -57,6 +57,8 @@ pub struct ElfWriter {
     elf_class: u8,
     /// When true, don't emit R_RISCV_RELAX relocations (set by `.option norelax`).
     no_relax: bool,
+    /// Stack for `.option push`/`.option pop` to save/restore the `no_relax` state.
+    option_stack: Vec<bool>,
 }
 
 /// A data expression that couldn't be evaluated immediately (e.g., forward label reference)
@@ -431,6 +433,7 @@ impl ElfWriter {
             elf_flags: EF_RISCV_FLOAT_ABI_DOUBLE | EF_RISCV_RVC,
             elf_class: ELFCLASS64,
             no_relax: false,
+            option_stack: Vec::new(),
         }
     }
 
@@ -451,6 +454,78 @@ impl ElfWriter {
 
     /// R_RISCV_RELAX ELF relocation type
     const R_RISCV_RELAX: u32 = 51;
+    /// R_RISCV_ALIGN ELF relocation type
+    const R_RISCV_ALIGN: u32 = 43;
+
+    /// Emit alignment padding with R_RISCV_ALIGN relocation when appropriate.
+    ///
+    /// In executable sections with relaxation enabled, the linker may shrink
+    /// instructions (via R_RISCV_RELAX), which changes code offsets and can
+    /// break alignment. R_RISCV_ALIGN tells the linker to adjust padding.
+    ///
+    /// Following GAS behavior:
+    /// - Always inserts `alignment - min_nop_size` bytes of NOP padding
+    ///   (the maximum that could be needed after relaxation)
+    /// - Emits R_RISCV_ALIGN at the start of padding with addend = padding size
+    /// - The linker strips excess padding during relaxation
+    /// - If alignment <= min_nop_size, no R_RISCV_ALIGN is needed
+    /// - If `.option norelax` is active, no R_RISCV_ALIGN is emitted
+    /// - Non-executable sections just get normal alignment (no relocation)
+    fn emit_align_with_reloc(&mut self, align_bytes: u64) {
+        if align_bytes <= 1 {
+            return;
+        }
+
+        // Check if current section is executable and relaxation is enabled
+        let is_exec = self.base.sections.get(&self.base.current_section)
+            .map(|s| (s.sh_flags & SHF_EXECINSTR) != 0)
+            .unwrap_or(false);
+
+        if !is_exec || self.no_relax {
+            // Non-executable section or relaxation disabled: just align normally
+            self.base.align_to(align_bytes);
+            return;
+        }
+
+        // Minimum NOP size: 2 bytes if RVC is enabled (EF_RISCV_RVC), 4 otherwise
+        let min_nop = if (self.elf_flags & EF_RISCV_RVC) != 0 { 2u64 } else { 4u64 };
+
+        if align_bytes <= min_nop {
+            // Alignment is guaranteed by minimum instruction size; no padding needed
+            self.base.align_to(align_bytes);
+            return;
+        }
+
+        let max_padding = align_bytes - min_nop;
+
+        // Emit R_RISCV_ALIGN relocation at the start of the padding area
+        self.base.add_reloc(Self::R_RISCV_ALIGN, String::new(), max_padding as i64);
+
+        // Insert max_padding bytes of NOP padding.
+        // Use 4-byte NOPs (addi x0,x0,0) and 2-byte c.nop for any remainder.
+        // The padding must be valid NOP instructions in case the linker doesn't
+        // remove them (e.g., when no relaxation actually occurs).
+        if let Some(section) = self.base.sections.get_mut(&self.base.current_section) {
+            let mut remaining = max_padding;
+            while remaining >= 4 {
+                section.data.extend_from_slice(&RISCV_NOP);
+                remaining -= 4;
+            }
+            if remaining >= 2 {
+                // c.nop = 0x0001 in little-endian
+                section.data.extend_from_slice(&[0x01, 0x00]);
+                remaining -= 2;
+            }
+            // Any leftover byte (shouldn't happen with valid alignment) gets zero-filled
+            if remaining > 0 {
+                section.data.extend(std::iter::repeat_n(0u8, remaining as usize));
+            }
+            // Update section alignment
+            if align_bytes > section.sh_addralign {
+                section.sh_addralign = align_bytes;
+            }
+        }
+    }
 
     /// R_RISCV_ALIGN ELF relocation type — marks alignment padding so the
     /// linker can adjust it after relaxation shrinks preceding instructions.
@@ -811,8 +886,14 @@ impl ElfWriter {
                     self.no_relax = true;
                 } else if opt == "relax" {
                     self.no_relax = false;
+                } else if opt == "push" {
+                    self.option_stack.push(self.no_relax);
+                } else if opt == "pop" {
+                    if let Some(saved) = self.option_stack.pop() {
+                        self.no_relax = saved;
+                    }
                 }
-                // TODO: implement .option rvc/norvc/push/pop for compression control
+                // rvc/norvc are silently accepted (compression not yet supported)
                 Ok(())
             }
 
