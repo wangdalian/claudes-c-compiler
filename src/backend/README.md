@@ -53,6 +53,8 @@ as a fallback.
                      |  - Local passes (x8)    |
                      |  - Global passes (x1)   |
                      |  - Local cleanup (x4)   |
+                     |  - Tail call, callee-   |
+                     |    save, frame compact   |
                      +------------+-----------+
                                   |
                      +------------v-----------+
@@ -98,7 +100,7 @@ The pipeline is driven from `Target::generate_assembly_with_opts_and_debug` in
 
 ## Directory Layout
 
-The backend is split into 16 shared modules at the top level and 4
+The backend is split into 18 shared modules at the top level and 4
 architecture-specific subdirectories:
 
 ```
@@ -108,7 +110,8 @@ src/backend/
   linker_common.rs    Shared linker infrastructure: ELF64 parser, types, DynStrTab, hash, lib resolution
   asm_expr.rs         Shared integer expression evaluator (all 4 assembler parsers)
   asm_preprocess.rs   Shared GAS preprocessing: comments, macros, .rept, .if/.elseif/.else/.endif
-  traits.rs           ArchCodegen trait (~185 methods, ~50 default impls)
+  elf_writer_common.rs Shared generic ELF object writer for x86-64 and i686 assemblers
+  traits.rs           ArchCodegen trait (~185 methods, ~64 default impls)
   generation.rs       Module/function/instruction dispatch (arch-independent)
   state.rs            CodegenState, StackSlot, SlotAddr, RegCache
   stack_layout.rs     Three-tier stack slot allocation
@@ -122,24 +125,24 @@ src/backend/
   x86_common.rs       Shared x86/i686 register names, condition codes
 
   x86/                x86-64 backend (SysV AMD64 ABI)
-    codegen/          Code generation (~16 files) + peephole optimizer
+    codegen/          Code generation (18 files) + peephole optimizer subdirectory
     assembler/        Builtin assembler (parser, encoder, ELF writer)
     linker/           Builtin linker (dynamic linking, PLT/GOT, TLS)
   i686/               i686 backend (cdecl, ILP32)
-    codegen/          Code generation (~17 files) + peephole optimizer
+    codegen/          Code generation (18 files) + peephole optimizer
     assembler/        Builtin assembler (reuses x86 parser, 32-bit encoder)
     linker/           Builtin linker (32-bit ELF, R_386 relocations)
   arm/                AArch64 backend (AAPCS64)
-    codegen/          Code generation (~18 files) + peephole optimizer
+    codegen/          Code generation (19 files) + peephole optimizer
     assembler/        Builtin assembler (parser, encoder, ELF writer)
-    linker/           Builtin linker (static linking, IFUNC/TLS)
+    linker/           Builtin linker (dynamic linking, IFUNC/TLS)
   riscv/              RISC-V 64 backend (LP64D)
-    codegen/          Code generation (~18 files) + peephole optimizer
+    codegen/          Code generation (19 files) + peephole optimizer
     assembler/        Builtin assembler (parser, encoder, RV64C compress)
     linker/           Builtin linker (dynamic linking)
 ```
 
-Each architecture subdirectory contains approximately 18-19 codegen files
+Each architecture subdirectory contains 18-19 codegen files
 (including `mod.rs`) that implement the `ArchCodegen` trait methods. The
 x86 backend's peephole optimizer is a subdirectory (`peephole/`) rather
 than a single file, containing its own module structure for the multi-stage
@@ -151,7 +154,7 @@ pass pipeline:
 | `alu.rs` | Integer arithmetic and bitwise operations |
 | `atomics.rs` | Atomic load/store/RMW/cmpxchg |
 | `calls.rs` | Function call emission, argument marshalling |
-| `cast_ops.rs` | Type casts (int widening/narrowing, int-float conversions) |
+| `cast_ops.rs` (`casts.rs` on i686) | Type casts (int widening/narrowing, int-float conversions) |
 | `comparison.rs` | Comparison and fused compare-and-branch |
 | `f128.rs` | F128 (long double) operations |
 | `float_ops.rs` | Floating-point arithmetic |
@@ -196,12 +199,12 @@ several categories:
   `emit_load_with_const_offset`, `emit_store_with_const_offset`,
   `emit_seg_load`, `emit_seg_store`, `emit_global_load_rip_rel`,
   `emit_global_store_rip_rel`.
-- **Arithmetic and logic**: `emit_binop`, `emit_unary_op`,
+- **Arithmetic and logic**: `emit_binop`, `emit_unaryop`,
   `emit_float_binop`.
 - **Comparisons**: `emit_cmp`, `emit_fused_cmp_branch_blocks`.
-- **Casts**: `emit_cast`, `emit_float_to_int`, `emit_int_to_float`.
-- **Control flow**: `emit_jump`, `emit_cond_branch`, `emit_switch`,
-  `build_jump_table`.
+- **Casts**: `emit_cast`, `emit_cast_instrs`.
+- **Control flow**: `emit_branch`, `emit_cond_branch_blocks`, `emit_switch`,
+  `emit_indirect_branch`.
 - **Function calls**: `emit_call` (handles both direct and indirect calls
   via `direct_name: Option<&str>` and `func_ptr: Option<&Operand>`), plus
   the 8-phase hook methods (`emit_call_compute_stack_space`,
@@ -210,13 +213,15 @@ several categories:
   `emit_call_instruction`, `emit_call_cleanup`, `emit_call_store_result`).
 - **Atomics**: `emit_atomic_load`, `emit_atomic_store`, `emit_atomic_rmw`,
   `emit_atomic_cmpxchg`.
-- **128-bit**: `emit_i128_binop`, `emit_i128_store`, `emit_i128_load`.
+- **128-bit**: `emit_i128_binop`, `emit_i128_cmp`,
+  `emit_i128_store_result`, `emit_store_acc_pair`,
+  `emit_load_acc_pair`.
 - **Register allocation**: `get_phys_reg_for_value`, `emit_reg_to_reg_move`,
   `emit_acc_to_phys_reg`.
 
 ### Default Implementations and Primitive Composition
 
-Approximately 50 methods have default implementations that capture shared
+Approximately 64 methods have default implementations that capture shared
 codegen patterns. These defaults are built from small "primitive" methods that
 each backend overrides with 1--4 line architecture-specific implementations.
 The design lets the shared framework express an algorithm once while backends
@@ -320,15 +325,16 @@ points are:
    prologue.
 6. Emits parameter stores from argument registers to stack slots.
 7. Builds several pre-scan maps used during instruction dispatch:
+   - **Value use counts**: for compare-branch fusion eligibility and GEP
+     fold analysis.
    - **GEP fold map**: identifies GEPs with constant offsets foldable into
-     Load/Store.
-   - **Value use counts**: for compare-branch fusion eligibility.
+     Load/Store (uses value use counts to verify single-use).
    - **Global address map**: maps GlobalAddr values to symbol names for
      RIP-relative folding.
    - **Global address pointer set**: distinguishes pointer vs. integer uses
      of GlobalAddr in kernel code model.
-   - **Dead GlobalAddr set**: GlobalAddr values whose lea can be skipped
-     entirely.
+   - **Foldable GlobalAddr set**: GlobalAddr values whose `leaq` can be
+     skipped entirely (all uses are foldable Load/Store pointers).
 8. Iterates over basic blocks. At each block boundary, invalidates the
    register cache. For each instruction, calls `generate_instruction`; for
    the terminator, either emits a fused compare-and-branch or calls
@@ -663,13 +669,13 @@ simultaneously. This handles cascading opportunities where one optimization
 (e.g., removing a redundant load) exposes another (e.g., making a store
 dead).
 
-### x86-64 Pass Structure (Three Stages)
+### x86-64 Pass Structure (Seven Phases)
 
 The x86-64 peephole (in `x86/codegen/peephole/`) is the most
-comprehensive, organized into three stages:
+comprehensive, organized into seven phases:
 
-**Stage 1 -- Local passes** (iterative, up to 8 rounds):
-`combined_local_pass` merges five single-scan patterns into one:
+**Phase 1 -- Local passes** (iterative, up to 8 rounds):
+`combined_local_pass` merges several single-scan patterns into one:
 
 1. **Adjacent store/load elimination**: `movq %rax, -8(%rbp)` followed by
    `movq -8(%rbp), %rax` -- the load is redundant since the value is
@@ -685,7 +691,7 @@ comprehensive, organized into three stages:
 Additionally: push/pop elimination and binary-op push/pop rewriting
 (replacing push-op-pop sequences with direct register operations).
 
-**Stage 2 -- Global passes** (single execution):
+**Phase 2 -- Global passes** (single execution):
 
 - **Global store forwarding** across fallthrough labels.
 - **Register copy propagation**.
@@ -695,25 +701,40 @@ Additionally: push/pop elimination and binary-op push/pop rewriting
 - **Compare-and-branch fusion** at the assembly level.
 - **Memory operand folding** (combining separate load + operation into a
   single memory-operand instruction).
-- **Unused callee-save elimination** (removing prologue push/epilogue pop
-  for callee-saved registers that are never actually referenced in the
-  function body).
 
-**Stage 3 -- Local cleanup** (up to 4 rounds):
+**Phase 3 -- Post-global local cleanup** (up to 4 rounds):
 Re-runs local passes to clean up new opportunities exposed by global
 passes (e.g., a global pass may make a store dead, which makes a preceding
 load dead).
 
+**Phase 4 -- Loop trampoline elimination**: Removes unnecessary jump
+trampolines created during code generation, followed by additional local
+cleanup if changes were made.
+
+**Phase 5 -- Tail call optimization**: Converts `call` + `ret` sequences
+into `jmp` (tail calls), plus a final never-read store elimination pass.
+
+**Phase 6 -- Unused callee-save elimination**: Removes prologue
+push/epilogue pop pairs for callee-saved registers that are never actually
+referenced in the function body.
+
+**Phase 7 -- Frame compaction**: Reassigns stack slot offsets to eliminate
+gaps left by eliminated stores, reducing total frame size.
+
 ### Other Architectures
 
-- **AArch64**: Local passes (up to 8 rounds) covering store/load
-  elimination on `[sp, #off]` pairs, self-move elimination (64-bit
-  `mov xN, xN` only -- 32-bit `mov wN, wN` zeros upper bits and is not
-  safe to eliminate), move chain optimization (`mov A, B; mov C, A` becomes
-  `mov C, B`), branch-over-branch fusion (`b.cc .Lskip; b .target; .Lskip:`
-  becomes `b.!cc .target`), and move-immediate chain optimization.
-- **i686** and **RISC-V**: Follow similar patterns adapted to their
-  respective instruction sets.
+- **AArch64**: Three-phase structure (8 rounds local, global passes once,
+  4 rounds cleanup). Local passes cover store/load elimination on
+  `[sp, #off]` pairs, redundant branch elimination, self-move elimination
+  (64-bit `mov xN, xN` only -- 32-bit `mov wN, wN` zeros upper bits and
+  is not safe to eliminate), move chain optimization (`mov A, B; mov C, A`
+  becomes `mov C, B`), branch-over-branch fusion (`b.cc .Lskip; b .target;
+  .Lskip:` becomes `b.!cc .target`), and move-immediate chain optimization.
+  Global passes include register copy propagation and dead store
+  elimination.
+- **i686** and **RISC-V**: Follow the same three-phase structure (8/1/4
+  rounds) adapted to their respective instruction sets. The i686 peephole
+  additionally includes never-read store elimination as a final phase.
 
 ---
 
@@ -862,16 +883,31 @@ library function, and storing the result -- is identical between the two
 architectures; only the register names, instruction mnemonics, and F128
 register representation differ.
 
-The `F128SoftFloat` trait captures approximately 15 architecture-specific
-primitive methods (each 1--5 instructions):
+The `F128SoftFloat` trait captures approximately 45 architecture-specific
+primitive methods (each 1--5 instructions), organized into categories:
 
 - **State access**: `f128_get_slot`, `f128_get_source`,
-  `f128_resolve_slot_addr`.
+  `f128_resolve_slot_addr`, `f128_is_alloca`, `f128_track_self`,
+  `f128_set_acc_cache`, `f128_set_dyn_alloca`.
 - **Loading constants**: `f128_load_const_to_arg1`.
 - **Loading from memory**: `f128_load_16b_from_addr_reg_to_arg1`,
-  `f128_load_from_frame_offset_to_arg1`.
+  `f128_load_from_frame_offset_to_arg1`, `f128_load_operand_and_extend`,
+  `f128_load_operand_to_acc`, `f128_load_indirect_ptr_to_addr_reg`,
+  `f128_load_from_addr_reg_to_acc`, `f128_load_from_direct_slot_to_acc`.
 - **Address computation**: `f128_load_ptr_to_addr_reg`,
-  `f128_add_offset_to_addr_reg`.
+  `f128_add_offset_to_addr_reg`, `f128_alloca_aligned_addr`,
+  `f128_move_callee_reg_to_addr_reg`, `f128_move_aligned_to_addr_reg`.
+- **Storing**: `f128_store_const_halves_to_slot`, `f128_store_arg1_to_slot`,
+  `f128_copy_slot_to_slot`, `f128_copy_addr_reg_to_slot`,
+  `f128_store_const_halves_to_addr`, `f128_store_acc_to_dest`,
+  `f128_store_result_and_truncate`.
+- **Argument marshalling**: `f128_move_arg1_to_arg2`,
+  `f128_save_arg1_to_sp`, `f128_reload_arg1_from_sp`,
+  `f128_move_acc_to_arg0`, `f128_move_arg0_to_acc`.
+- **Conversions and comparison**: `f128_truncate_result_to_acc`,
+  `f128_cmp_result_to_bool`, `f128_sign_extend_acc`,
+  `f128_zero_extend_acc`, `f128_narrow_acc`,
+  `f128_extend_float_to_f128`, `f128_truncate_to_float_acc`.
 
 Shared orchestration functions build on these primitives:
 
@@ -957,6 +993,7 @@ that affect code generation. These are propagated to the backends via
 | `code16gcc` | `-m16` | Prepend `.code16gcc` for 16-bit real mode (Linux boot) |
 | `regparm` | `-mregparm=N` | Integer args in registers (i686, 0--3) |
 | `omit_frame_pointer` | `-fomit-frame-pointer` | Free EBP as general register (i686) |
+| `emit_cfi` | `-f[no-]asynchronous-unwind-tables` | Emit `.cfi_*` directives for `.eh_frame` unwind tables (default: on) |
 
 ---
 
@@ -1093,15 +1130,16 @@ All four linker implementations handle:
 
 ### Linker Files
 
-Each backend's `linker/` directory contains:
+Each backend's `linker/` directory has different structure:
 
-| File | Purpose |
-|------|---------|
-| `mod.rs` | Entry point and/or main linker implementation |
-| `elf.rs` | ELF parsing, constants, and helper types |
-| `reloc.rs` | Relocation application (AArch64 only; others inline) |
-| `link.rs` | Main linker implementation (RISC-V) |
-| `elf_read.rs` | ELF reading utilities (RISC-V) |
+- **x86-64**: `mod.rs` (main implementation), `elf.rs` (ELF helpers)
+- **i686**: `mod.rs` (entry point), `parse.rs` (ELF parsing), `types.rs`
+  (type definitions), `reloc.rs` (relocation application), `dynsym.rs`
+  (dynamic symbol table), `gnu_hash.rs` (GNU hash table for shared libs)
+- **AArch64**: `mod.rs` (main implementation), `elf.rs` (ELF helpers),
+  `reloc.rs` (relocation application)
+- **RISC-V**: `mod.rs` (entry point), `link.rs` (main implementation),
+  `elf_read.rs` (ELF reading), `relocations.rs` (relocation application)
 
 ---
 

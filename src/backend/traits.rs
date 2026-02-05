@@ -1,8 +1,8 @@
 //! ArchCodegen trait: the interface each backend implements.
 //!
-//! This trait defines ~100 methods that each architecture must implement to provide
+//! This trait defines ~185 methods that each architecture must implement to provide
 //! its specific register names, instruction mnemonics, and ABI details. The trait
-//! also provides ~20 default method implementations that capture shared codegen
+//! also provides ~64 default method implementations that capture shared codegen
 //! patterns (store/load dispatch, cast handling, i128 operations, control flow).
 //!
 //! The default implementations are built from small "primitive" methods that each
