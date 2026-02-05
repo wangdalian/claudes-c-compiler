@@ -140,7 +140,7 @@ impl ElfWriter {
 
             // Collect all label names, sorted longest first to avoid partial replacements
             let mut label_names: Vec<&String> = self.base.labels.keys().collect();
-            label_names.sort_by(|a, b| b.len().cmp(&a.len()));
+            label_names.sort_by_key(|name| std::cmp::Reverse(name.len()));
 
             let mut all_resolved = true;
             for label_name in &label_names {

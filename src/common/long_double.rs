@@ -1476,10 +1476,8 @@ fn x87_addsub_soft(a: &[u8; 16], b: &[u8; 16], negate_b: bool) -> [u8; 16] {
         }
         let total_shift = 64 + denorm_shift as i64;
         if total_shift >= 128 {
-            if total_shift == 128 {
-                if normalized > (1u128 << 127) {
-                    return x87_encode(result_sign, 0, 1);
-                }
+            if total_shift == 128 && normalized > (1u128 << 127) {
+                return x87_encode(result_sign, 0, 1);
             }
             return make_x87_zero(result_sign);
         }

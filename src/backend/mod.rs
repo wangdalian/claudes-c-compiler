@@ -4,6 +4,7 @@ pub(crate) mod common;
 #[allow(dead_code)]
 pub(crate) mod elf;
 pub(crate) mod elf_writer_common; // Shared x86/i686 assembler ELF writer
+#[cfg_attr(feature = "gcc_linker", allow(dead_code))]
 pub(crate) mod linker_common;
 
 // Shared codegen framework, split into focused modules:

@@ -3278,7 +3278,7 @@ impl InstructionEncoder {
             return Err(format!("{} requires 1 operand", mnemonic));
         }
         // Strip size suffix (l/q) to get base mnemonic
-        let base = mnemonic.trim_end_matches(|c| c == 'l' || c == 'q');
+        let base = mnemonic.trim_end_matches(['l', 'q']);
         let reg_ext = match base {
             "sgdt" => 0,
             "sidt" => 1,
@@ -3357,8 +3357,8 @@ impl InstructionEncoder {
         match &ops[0] {
             Operand::Memory(mem) => {
                 // Force REX.W prefix
-                let rex_b = mem.base.as_ref().map_or(false, |r| needs_rex_ext(&r.name));
-                let rex_x = mem.index.as_ref().map_or(false, |r| needs_rex_ext(&r.name));
+                let rex_b = mem.base.as_ref().is_some_and(|r| needs_rex_ext(&r.name));
+                let rex_x = mem.index.as_ref().is_some_and(|r| needs_rex_ext(&r.name));
                 self.bytes.push(self.rex(true, false, rex_x, rex_b));
                 self.bytes.extend_from_slice(&[0x0F, 0xAE]);
                 self.encode_modrm_mem(0, mem)
@@ -3375,8 +3375,8 @@ impl InstructionEncoder {
         match &ops[0] {
             Operand::Memory(mem) => {
                 // Force REX.W prefix
-                let rex_b = mem.base.as_ref().map_or(false, |r| needs_rex_ext(&r.name));
-                let rex_x = mem.index.as_ref().map_or(false, |r| needs_rex_ext(&r.name));
+                let rex_b = mem.base.as_ref().is_some_and(|r| needs_rex_ext(&r.name));
+                let rex_x = mem.index.as_ref().is_some_and(|r| needs_rex_ext(&r.name));
                 self.bytes.push(self.rex(true, false, rex_x, rex_b));
                 self.bytes.extend_from_slice(&[0x0F, 0xAE]);
                 self.encode_modrm_mem(1, mem)

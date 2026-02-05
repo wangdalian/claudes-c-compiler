@@ -2273,7 +2273,7 @@ impl ElfWriterBase {
 
         // For each parent, append subsections in order
         for (parent, subs) in &subsections {
-            for (_num, sub_name) in subs {
+            for sub_name in subs.values() {
                 let sub_data;
                 let sub_relocs;
                 {

@@ -23,6 +23,7 @@
 //! 7. Apply relocations
 //! 8. Emit the ELF32 executable
 
+#[allow(dead_code)] // ELF constants defined for completeness; not all used yet
 mod types;
 mod parse;
 mod dynsym;
@@ -265,12 +266,11 @@ fn resolve_dynamic_symbols_for_shared(
     for obj in inputs.iter() {
         for sym in &obj.symbols {
             if sym.binding == STB_LOCAL { continue; }
-            if sym.section_index == SHN_UNDEF && !sym.name.is_empty() {
-                if !global_symbols.get(&sym.name).map(|gs| gs.is_defined).unwrap_or(false) {
-                    if !undefined.contains(&sym.name) {
-                        undefined.push(sym.name.clone());
-                    }
-                }
+            if sym.section_index == SHN_UNDEF && !sym.name.is_empty()
+                && !global_symbols.get(&sym.name).map(|gs| gs.is_defined).unwrap_or(false)
+                && !undefined.contains(&sym.name)
+            {
+                undefined.push(sym.name.clone());
             }
         }
     }
@@ -419,7 +419,7 @@ fn emit_shared_library_32(
             gs.got_index = num_plt + i;
         }
     }
-    let num_got = num_plt + got_names.len();
+    let _num_got = num_plt + got_names.len();
 
     // ── Collect all exported symbols ──────────────────────────────────────
     let mut exported_names: Vec<String> = Vec::new();
@@ -520,7 +520,7 @@ fn emit_shared_library_32(
                     if si >= obj.symbols.len() { continue; }
                     let sym = &obj.symbols[si];
                     if sym.sym_type == STT_SECTION {
-                        if let Some(_) = section_map.get(&(obj_idx, sym.section_index as usize)) {
+                        if section_map.get(&(obj_idx, sym.section_index as usize)).is_some() {
                             num_relative += 1;
                         }
                     } else if !sym.name.is_empty() {

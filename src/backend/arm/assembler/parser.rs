@@ -420,7 +420,7 @@ struct MacroDef {
 /// Handles GAS syntax: `.macro name param1, param2=default, param3`
 fn parse_macro_directive(trimmed: &str) -> (String, Vec<String>, Vec<Option<String>>, bool) {
     let rest = trimmed[".macro".len()..].trim();
-    let (name, params_str) = match rest.find(|c: char| c == ' ' || c == '\t' || c == ',') {
+    let (name, params_str) = match rest.find([' ', '\t', ',']) {
         Some(pos) => (rest[..pos].trim(), rest[pos..].trim().trim_start_matches(',')),
         None => (rest, ""),
     };
@@ -428,7 +428,7 @@ fn parse_macro_directive(trimmed: &str) -> (String, Vec<String>, Vec<Option<Stri
     let mut defaults = Vec::new();
     let mut has_vararg = false;
     if !params_str.is_empty() {
-        for raw in params_str.split(|c: char| c == ',' || c == ' ' || c == '\t') {
+        for raw in params_str.split([',', ' ', '\t']) {
             let s = raw.trim();
             if s.is_empty() {
                 continue;
@@ -575,15 +575,15 @@ fn expand_macros_impl(
             continue;
         } else if !trimmed.is_empty() && !trimmed.starts_with('.') && !trimmed.starts_with('#') {
             // Could be a macro invocation
-            let first_word = trimmed.split(|c: char| c == ' ' || c == '\t').next().unwrap_or("");
+            let first_word = trimmed.split([' ', '\t']).next().unwrap_or("");
             let potential_name = first_word.trim_end_matches(':');
             if potential_name != first_word {
                 // It's a label (has trailing colon) — check if followed by a macro invocation
                 let rest_after_label = trimmed[first_word.len()..].trim();
-                let rest_first_word = rest_after_label.split(|c: char| c == ' ' || c == '\t').next().unwrap_or("");
+                let rest_first_word = rest_after_label.split([' ', '\t']).next().unwrap_or("");
                 if !rest_first_word.is_empty() && macros.contains_key(rest_first_word) {
                     // Label followed by macro invocation: emit label, then expand macro
-                    result.push(format!("{}", first_word));
+                    result.push(first_word.to_string());
                     let mac_params = macros[rest_first_word].params.clone();
                     let mac_defaults = macros[rest_first_word].defaults.clone();
                     let mac_body = macros[rest_first_word].body.clone();
@@ -1023,7 +1023,7 @@ pub fn parse_asm(text: &str) -> Result<Vec<AsmStatement>, String> {
             continue;
         }
         // If we're inside a false .if block, skip this line
-        if if_stack.last().map(|&(a, _)| a).unwrap_or(true) == false {
+        if !if_stack.last().map(|&(a, _)| a).unwrap_or(true) {
             continue;
         }
 
@@ -1815,7 +1815,7 @@ fn parse_memory_operand(s: &str) -> Result<Operand, String> {
 
     // Handle bare immediate without # prefix (e.g., [sp, -16]! or [x0, 8])
     // Check if the second operand starts with a digit or minus sign followed by a digit
-    if second.starts_with('-') || second.starts_with('+') || second.bytes().next().map_or(false, |b| b.is_ascii_digit()) {
+    if second.starts_with('-') || second.starts_with('+') || second.bytes().next().is_some_and(|b| b.is_ascii_digit()) {
         if let Ok(offset) = parse_int_literal(second) {
             if has_writeback {
                 return Ok(Operand::MemPreIndex { base, offset });

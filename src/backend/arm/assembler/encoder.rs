@@ -2435,7 +2435,7 @@ fn encode_ldrsw(operands: &[Operand]) -> Result<EncodeResult, String> {
                 _ => return Err(format!("unsupported ldrsw extend/shift: {:?}/{:?}", extend, shift)),
             };
             // LDRSW reg: 10 111 0 00 10 1 Rm option S 10 Rn Rt
-            let word = (0b10 << 30) | (0b111 << 27) | (0b00 << 24) | (0b10 << 22) | (1 << 21)
+            let word = (0b10 << 30) | (0b111 << 27) | (0b10 << 22) | (1 << 21)
                 | (rm << 16) | (option << 13) | (s_bit << 12) | (0b10 << 10) | (rn << 5) | rt;
             return Ok(EncodeResult::Word(word));
         }
@@ -3370,7 +3370,7 @@ fn encode_smc(operands: &[Operand]) -> Result<EncodeResult, String> {
     Ok(EncodeResult::Word(word))
 }
 
-fn encode_at(operands: &[Operand], raw_operands: &str) -> Result<EncodeResult, String> {
+fn encode_at(_operands: &[Operand], raw_operands: &str) -> Result<EncodeResult, String> {
     let parts: Vec<&str> = raw_operands.splitn(2, ',').collect();
     let op_name = parts[0].trim().to_lowercase();
     let rt = if parts.len() > 1 {
@@ -3421,7 +3421,7 @@ fn encode_brk(operands: &[Operand]) -> Result<EncodeResult, String> {
     Ok(EncodeResult::Word(word))
 }
 
-fn encode_tlbi(operands: &[Operand], raw_operands: &str) -> Result<EncodeResult, String> {
+fn encode_tlbi(_operands: &[Operand], raw_operands: &str) -> Result<EncodeResult, String> {
     let parts: Vec<&str> = raw_operands.splitn(2, ',').collect();
     let op_name = parts[0].trim().to_lowercase();
     let rt = if parts.len() > 1 {
@@ -3833,7 +3833,7 @@ fn encode_prfm(operands: &[Operand]) -> Result<EncodeResult, String> {
                 None => if is_w_index { (0b010u32, 0u32) } else { (0b011u32, 0u32) },
                 _ => (0b011u32, 0u32),
             };
-            let word = (0b11 << 30) | (0b111 << 27) | (0b00 << 25) | (0b10 << 23) | (1 << 21)
+            let word = (0b11 << 30) | (0b111 << 27) | (0b10 << 23) | (1 << 21)
                 | (rm << 16) | (option << 13) | (s_bit << 12) | (0b10 << 10) | (rn << 5) | prfop;
             Ok(EncodeResult::Word(word))
         }
@@ -3938,7 +3938,7 @@ fn encode_neon_three_diff(operands: &[Operand], u_bit: u32, opcode: u32, is_high
 
     // 0 Q U 01110 size 1 Rm opcode 00 Rn Rd
     let word = (q << 30) | (u_bit << 29) | (0b01110 << 24) | (size << 22)
-        | (1 << 21) | (rm << 16) | (opcode << 12) | (0b00 << 10) | (rn << 5) | rd;
+        | (1 << 21) | (rm << 16) | (opcode << 12) | (rn << 5) | rd;
     Ok(EncodeResult::Word(word))
 }
 
@@ -4117,7 +4117,7 @@ fn encode_neon_elem_long(operands: &[Operand], u_bit: u32, opcode: u32, is_high:
     // 0 Q U 01111 size L M Rm opcode H 0 Rn Rd
     let word = (q << 30) | (u_bit << 29) | (0b01111 << 24) | (size << 22)
         | (l << 21) | (m << 20) | (rm_enc << 16) | (opcode << 12)
-        | (h << 11) | (0 << 10) | (rn << 5) | rd;
+        | (h << 11) | (rn << 5) | rd;
     Ok(EncodeResult::Word(word))
 }
 

@@ -337,14 +337,14 @@ fn find_hi20_value_core(
                 // Executable path: check global_syms first (for got_offset or PLT),
                 // then fall back to got_symbols list.
                 // Shared lib path: check got_symbols first, then global_syms.
-                let got_entry_vaddr = if got_plt_vaddr.is_some() {
+                let got_entry_vaddr = if let Some(gpv) = got_plt_vaddr {
                     // Executable path
                     if let Some(gs) = global_syms.get(&sym.name) {
                         if let Some(got_off) = gs.got_offset {
                             got_vaddr + got_off
                         } else {
                             // PLT symbol: use GOT.PLT
-                            got_plt_vaddr.unwrap() + (2 + gs.plt_idx) as u64 * 8
+                            gpv + (2 + gs.plt_idx) as u64 * 8
                         }
                     } else if let Some(idx) = got_symbols.iter().position(|n| n == &sym_name) {
                         got_vaddr + idx as u64 * 8
@@ -552,10 +552,10 @@ pub fn find_versioned_soname(dir: &str, libname: &str) -> Option<String> {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy().into_owned();
-            if name_str.starts_with(&pattern) {
-                if best.is_none() || name_str.len() < best.as_ref().unwrap().len() {
-                    best = Some(name_str);
-                }
+            if name_str.starts_with(&pattern)
+                && (best.is_none() || name_str.len() < best.as_ref().unwrap().len())
+            {
+                best = Some(name_str);
             }
         }
     }

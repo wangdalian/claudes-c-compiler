@@ -22,7 +22,6 @@
 //! by checking whether the function contains any `leaq offset(%rbp), %reg`
 //! instructions, which take the address of a stack slot.
 
-use super::helpers::*;
 use super::super::types::*;
 
 /// Scan the assembly for tail call opportunities and convert them.
@@ -76,10 +75,10 @@ pub(super) fn optimize_tail_calls(store: &mut LineStore, infos: &mut [LineInfo])
             if let LineKind::Other { .. } = infos[i].kind {
                 let line = store.get(i);
                 let trimmed = &line[infos[i].trim_start as usize..];
-                if trimmed.starts_with("leaq ") || trimmed.starts_with("leal ") || trimmed.starts_with("lea ") {
-                    if trimmed.contains("(%rbp)") || trimmed.contains("(%rsp)") {
-                        func_has_lea_local = true;
-                    }
+                if (trimmed.starts_with("leaq ") || trimmed.starts_with("leal ") || trimmed.starts_with("lea "))
+                    && (trimmed.contains("(%rbp)") || trimmed.contains("(%rsp)"))
+                {
+                    func_has_lea_local = true;
                 }
             }
         }
@@ -211,10 +210,10 @@ fn is_tail_call_candidate(
 fn convert_call_to_jmp(trimmed_call: &str) -> Option<String> {
     // Direct call: "call foo" or "call foo@PLT" or "callq foo"
     // Indirect call: "call *%r10" or "callq *%r10"
-    let rest = if trimmed_call.starts_with("callq ") {
-        &trimmed_call[6..]
-    } else if trimmed_call.starts_with("call ") {
-        &trimmed_call[5..]
+    let rest = if let Some(r) = trimmed_call.strip_prefix("callq ") {
+        r
+    } else if let Some(r) = trimmed_call.strip_prefix("call ") {
+        r
     } else {
         return None;
     };

@@ -674,7 +674,7 @@ fn emit_shared_library(
     // Each 64-bit bloom word can effectively track ~32 symbols (2 bits each).
     // Use next power of two for the number of words needed, minimum 1.
     let gnu_hash_bloom_size: u32 = if num_hashed <= 32 { 1 }
-        else { ((num_hashed + 31) / 32).next_power_of_two() as u32 };
+        else { num_hashed.div_ceil(32).next_power_of_two() as u32 };
     let gnu_hash_bloom_shift: u32 = 6;
 
     let hashed_sym_hashes: Vec<u32> = defined_syms.iter()
@@ -1495,12 +1495,12 @@ fn emit_shared_library(
     sh_count += 1;
 
     // Align and append .shstrtab data
-    while out.len() % 8 != 0 { out.push(0); }
+    while !out.len().is_multiple_of(8) { out.push(0); }
     let shstrtab_data_offset = out.len() as u64;
     out.extend_from_slice(&shstrtab);
 
     // Align section header table to 8 bytes
-    while out.len() % 8 != 0 { out.push(0); }
+    while !out.len().is_multiple_of(8) { out.push(0); }
     let shdr_offset = out.len() as u64;
 
     // Write section headers

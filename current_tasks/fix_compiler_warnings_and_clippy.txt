@@ -1,7 +1,0 @@
-Fix all compiler warnings and clippy warnings across the codebase.
-
-- Remove dead code in riscv/linker/relocations.rs (entire module is duplicate of link.rs local code)
-- Fix unused imports, unused variables
-- Fix collapsible if statements
-- Fix clippy lints: strip_prefix, div_ceil, is_multiple_of, map_or, char comparisons, format!, sort_by_key, etc.
-- Ensure no warnings with or without gcc feature flags
