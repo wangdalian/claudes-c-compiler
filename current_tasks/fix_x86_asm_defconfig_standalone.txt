@@ -1,0 +1,7 @@
+Task: Fix x86 assembler error for kernel defconfig in standalone mode
+
+Find and fix exactly one x86 assembler error that causes kernel defconfig
+to fail in standalone assembler mode but pass with gcc_assembler.
+
+Approach: Compare assembly output between gcc and standalone assembler,
+identify byte-level differences, and fix the root cause.
