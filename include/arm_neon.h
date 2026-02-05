@@ -2,7 +2,9 @@
 #ifndef _ARM_NEON_H_INCLUDED
 #define _ARM_NEON_H_INCLUDED
 
-/* ===== Scalar polynomial types ===== */
+/* ===== Scalar types (ACLE) ===== */
+typedef float float32_t;
+typedef double float64_t;
 typedef unsigned long long poly64_t;
 typedef __uint128_t poly128_t;
 
@@ -2228,6 +2230,189 @@ vmaxq_s16(int16x8_t __a, int16x8_t __b)
     for (int __i = 0; __i < 8; __i++)
         __ret.__val[__i] = __a.__val[__i] > __b.__val[__i] ? __a.__val[__i] : __b.__val[__i];
     return __ret;
+}
+
+/* ===== Float32 NEON intrinsics ===== */
+
+/* vld1q_f32: load 4 floats into float32x4_t */
+static __inline__ float32x4_t __attribute__((__always_inline__))
+vld1q_f32(const float *__p)
+{
+    float32x4_t __ret;
+    __ret.__val[0] = __p[0];
+    __ret.__val[1] = __p[1];
+    __ret.__val[2] = __p[2];
+    __ret.__val[3] = __p[3];
+    return __ret;
+}
+
+/* vst1q_f32: store float32x4_t to memory */
+static __inline__ void __attribute__((__always_inline__))
+vst1q_f32(float *__p, float32x4_t __a)
+{
+    __p[0] = __a.__val[0];
+    __p[1] = __a.__val[1];
+    __p[2] = __a.__val[2];
+    __p[3] = __a.__val[3];
+}
+
+/* vst1_f32: store float32x2_t (64-bit) to memory */
+static __inline__ void __attribute__((__always_inline__))
+vst1_f32(float *__p, float32x2_t __a)
+{
+    __p[0] = __a.__val[0];
+    __p[1] = __a.__val[1];
+}
+
+/* vaddq_f32: add float32x4_t element-wise */
+static __inline__ float32x4_t __attribute__((__always_inline__))
+vaddq_f32(float32x4_t __a, float32x4_t __b)
+{
+    float32x4_t __ret;
+    __ret.__val[0] = __a.__val[0] + __b.__val[0];
+    __ret.__val[1] = __a.__val[1] + __b.__val[1];
+    __ret.__val[2] = __a.__val[2] + __b.__val[2];
+    __ret.__val[3] = __a.__val[3] + __b.__val[3];
+    return __ret;
+}
+
+/* vsubq_f32: subtract float32x4_t element-wise */
+static __inline__ float32x4_t __attribute__((__always_inline__))
+vsubq_f32(float32x4_t __a, float32x4_t __b)
+{
+    float32x4_t __ret;
+    __ret.__val[0] = __a.__val[0] - __b.__val[0];
+    __ret.__val[1] = __a.__val[1] - __b.__val[1];
+    __ret.__val[2] = __a.__val[2] - __b.__val[2];
+    __ret.__val[3] = __a.__val[3] - __b.__val[3];
+    return __ret;
+}
+
+/* vmulq_f32: multiply float32x4_t element-wise */
+static __inline__ float32x4_t __attribute__((__always_inline__))
+vmulq_f32(float32x4_t __a, float32x4_t __b)
+{
+    float32x4_t __ret;
+    __ret.__val[0] = __a.__val[0] * __b.__val[0];
+    __ret.__val[1] = __a.__val[1] * __b.__val[1];
+    __ret.__val[2] = __a.__val[2] * __b.__val[2];
+    __ret.__val[3] = __a.__val[3] * __b.__val[3];
+    return __ret;
+}
+
+/* vmovq_n_f32: broadcast a float to all lanes of float32x4_t */
+static __inline__ float32x4_t __attribute__((__always_inline__))
+vmovq_n_f32(float __a)
+{
+    float32x4_t __ret;
+    __ret.__val[0] = __a;
+    __ret.__val[1] = __a;
+    __ret.__val[2] = __a;
+    __ret.__val[3] = __a;
+    return __ret;
+}
+
+/* vget_low_f32: get low 64-bit half of float32x4_t as float32x2_t */
+static __inline__ float32x2_t __attribute__((__always_inline__))
+vget_low_f32(float32x4_t __a)
+{
+    float32x2_t __ret;
+    __ret.__val[0] = __a.__val[0];
+    __ret.__val[1] = __a.__val[1];
+    return __ret;
+}
+
+/* vget_high_f32: get high 64-bit half of float32x4_t as float32x2_t */
+static __inline__ float32x2_t __attribute__((__always_inline__))
+vget_high_f32(float32x4_t __a)
+{
+    float32x2_t __ret;
+    __ret.__val[0] = __a.__val[2];
+    __ret.__val[1] = __a.__val[3];
+    return __ret;
+}
+
+/* vcombine_f32: combine two float32x2_t into float32x4_t */
+static __inline__ float32x4_t __attribute__((__always_inline__))
+vcombine_f32(float32x2_t __lo, float32x2_t __hi)
+{
+    float32x4_t __ret;
+    __ret.__val[0] = __lo.__val[0];
+    __ret.__val[1] = __lo.__val[1];
+    __ret.__val[2] = __hi.__val[0];
+    __ret.__val[3] = __hi.__val[1];
+    return __ret;
+}
+
+/* vrev64q_f32: reverse floats within each 64-bit lane */
+static __inline__ float32x4_t __attribute__((__always_inline__))
+vrev64q_f32(float32x4_t __a)
+{
+    float32x4_t __ret;
+    __ret.__val[0] = __a.__val[1];
+    __ret.__val[1] = __a.__val[0];
+    __ret.__val[2] = __a.__val[3];
+    __ret.__val[3] = __a.__val[2];
+    return __ret;
+}
+
+/* vcltq_f32: compare less-than, returns uint32x4_t mask */
+static __inline__ uint32x4_t __attribute__((__always_inline__))
+vcltq_f32(float32x4_t __a, float32x4_t __b)
+{
+    uint32x4_t __ret;
+    __ret.__val[0] = __a.__val[0] < __b.__val[0] ? 0xFFFFFFFFu : 0;
+    __ret.__val[1] = __a.__val[1] < __b.__val[1] ? 0xFFFFFFFFu : 0;
+    __ret.__val[2] = __a.__val[2] < __b.__val[2] ? 0xFFFFFFFFu : 0;
+    __ret.__val[3] = __a.__val[3] < __b.__val[3] ? 0xFFFFFFFFu : 0;
+    return __ret;
+}
+
+/* vcvtq_s32_f32: convert float32x4_t to int32x4_t (round toward zero) */
+static __inline__ int32x4_t __attribute__((__always_inline__))
+vcvtq_s32_f32(float32x4_t __a)
+{
+    int32x4_t __ret;
+    __ret.__val[0] = (int)__a.__val[0];
+    __ret.__val[1] = (int)__a.__val[1];
+    __ret.__val[2] = (int)__a.__val[2];
+    __ret.__val[3] = (int)__a.__val[3];
+    return __ret;
+}
+
+/* vqaddq_s32: saturating add int32x4_t */
+static __inline__ int32x4_t __attribute__((__always_inline__))
+vqaddq_s32(int32x4_t __a, int32x4_t __b)
+{
+    int32x4_t __ret;
+    for (int __i = 0; __i < 4; __i++) {
+        long long __sum = (long long)__a.__val[__i] + (long long)__b.__val[__i];
+        if (__sum > 2147483647LL) __sum = 2147483647LL;
+        if (__sum < -2147483648LL) __sum = -2147483648LL;
+        __ret.__val[__i] = (int)__sum;
+    }
+    return __ret;
+}
+
+/* vqmovn_s32: saturating narrow int32x4_t to int16x4_t */
+static __inline__ int16x4_t __attribute__((__always_inline__))
+vqmovn_s32(int32x4_t __a)
+{
+    int16x4_t __ret;
+    for (int __i = 0; __i < 4; __i++) {
+        int __v = __a.__val[__i];
+        if (__v > 32767) __v = 32767;
+        if (__v < -32768) __v = -32768;
+        __ret.__val[__i] = (short)__v;
+    }
+    return __ret;
+}
+
+/* vst1_lane_s16: store one lane from int16x4_t */
+static __inline__ void __attribute__((__always_inline__))
+vst1_lane_s16(short *__p, int16x4_t __a, int __lane)
+{
+    *__p = __a.__val[__lane];
 }
 
 

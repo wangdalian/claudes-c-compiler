@@ -208,7 +208,7 @@ Tracking project build/test results with MY_ASM=builtin MY_LD=builtin
 | stc     | PASS | PASS | PASS | PASS | All architectures pass |
 | libflac | PASS | PASS | FAIL (arm) | PASS | ARM fails (separate issue) |
 | jbigkit | PASS | PASS | PASS | PASS | All architectures pass |
-| minimp3 | PASS | PASS | FAIL (arm) | PASS | ARM fails (separate issue) |
+| minimp3 | PASS | PASS | PASS | PASS | Fixed ARM: added float32_t typedef + 16 float32 NEON intrinsics to arm_neon.h |
 | libfastcdc | PASS | PASS | PASS | PASS | All architectures pass |
 | sod     | PASS | PASS | PASS | PASS | All architectures pass |
 | stretchy_buffer | PASS | PASS | PASS | PASS | All architectures pass |
