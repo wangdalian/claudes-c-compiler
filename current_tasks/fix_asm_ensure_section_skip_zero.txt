@@ -1,0 +1,12 @@
+Fix: assembler SkipExpr and Zero directives should auto-create .text section
+
+Problem: When assembly files have .skip or .zero directives before any explicit
+.section directive, the assembler errors with "no active section for .skip".
+GAS implicitly creates a .text section in this case.
+
+This breaks the x86 defconfig kernel build on arch/x86/lib/clear_page_64.S
+where SYM_FUNC_START expands to `.balign 16, 0x90;; .skip 16, 0x90;` before
+any section directive.
+
+Fix: Add self.ensure_section()? calls to the SkipExpr and Zero handlers in
+elf_writer_common.rs, matching what's already done for Label.
