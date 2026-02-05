@@ -93,6 +93,8 @@ impl X86Arch for I686Arch {
     fn reloc_plt32() -> u32 { R_386_PLT32 }
 
     fn uses_rel_format() -> bool { true }
+    fn supports_deferred_skips() -> bool { true }
+    fn resolve_set_aliases_in_data() -> bool { true }
 
     fn default_code_mode() -> u8 { 32 }
 

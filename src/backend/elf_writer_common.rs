@@ -11,10 +11,10 @@
 //! - Instruction encoding dispatch
 //! - REL vs RELA format handling
 //!
-//! x86-64 additionally supports deferred `.skip` expressions and deferred
+//! Both x86-64 and i686 support deferred `.skip` expressions and deferred
 //! byte-sized symbol diffs (needed by the Linux kernel's alternatives
-//! framework). These are handled as optional extensions that i686 leaves
-//! as no-ops.
+//! framework). These are handled as optional extensions controlled by
+//! the `supports_deferred_skips()` trait method.
 
 use std::collections::HashMap;
 use crate::backend::x86::assembler::parser::*;
@@ -73,12 +73,12 @@ pub trait X86Arch {
     fn reloc_abs32_for_internal() -> Option<u32> { None }
 
     /// Whether `.skip` expressions with label arithmetic are supported.
-    /// x86-64 needs this for the kernel; i686 does not.
+    /// Both x86-64 and i686 enable this for the Linux kernel's ALTERNATIVES macros.
     fn supports_deferred_skips() -> bool { false }
 
     /// Whether `.set` alias resolution for label-difference expressions
-    /// should be done during data value emission. x86-64 does this to
-    /// handle DWARF debug info `.set .Lset0, .LECIE-.LSCIE` patterns.
+    /// should be done during data value emission. Both x86-64 and i686
+    /// enable this for DWARF debug info `.set .Lset0, .LECIE-.LSCIE` patterns.
     fn resolve_set_aliases_in_data() -> bool { false }
 
     /// Default code mode for this architecture (64 for x86-64, 32 for i686).
@@ -676,7 +676,7 @@ impl<A: X86Arch> ElfWriterCore<A> {
                     }
                 }
                 DataValue::Symbol(sym) => {
-                    // Resolve .set aliases for label-difference expressions (x86-64 DWARF)
+                    // Resolve .set aliases for label-difference expressions (DWARF debug info)
                     if A::resolve_set_aliases_in_data() {
                         if let Some(target) = self.aliases.get(sym).cloned() {
                             if let Some(pos) = target.find('-') {
@@ -843,7 +843,7 @@ impl<A: X86Arch> ElfWriterCore<A> {
         }
     }
 
-    // ─── Deferred skip resolution (x86-64 only) ──────────────────────
+    // ─── Deferred skip resolution (x86-64 and i686) ──────────────────
 
     fn resolve_deferred_skips(&mut self) -> Result<(), String> {
         let mut skips = std::mem::take(&mut self.deferred_skips);
@@ -1111,7 +1111,7 @@ impl<A: X86Arch> ElfWriterCore<A> {
         // Relax long jumps to short form where possible.
         self.relax_jumps();
 
-        // Resolve deferred .skip expressions (x86-64 only)
+        // Resolve deferred .skip expressions (x86-64 and i686)
         if A::supports_deferred_skips() {
             self.resolve_deferred_skips()?;
             self.resolve_deferred_byte_diffs()?;
