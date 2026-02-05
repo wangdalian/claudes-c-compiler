@@ -1,0 +1,13 @@
+Fix ARM64 long double spill/reload codegen bug
+
+Problem: When compiling code with multiple long double variables in nested loops,
+the ARM64 codegen incorrectly treats spilled long double values as memory addresses.
+Specifically, after storing a 128-bit long double result (from __addtf3) to a stack slot,
+the code later loads 8 bytes from that same slot as a pointer (x17) and dereferences it,
+causing a segfault.
+
+Reproducer: /clean_tests/compiler_suite_0182_0018 and compiler_suite_0182_0019
+
+Root cause: The codegen's long double expression evaluation on ARM64 confuses
+stack-spilled Q-register values with memory operand addresses when register
+pressure is high.
