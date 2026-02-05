@@ -12,7 +12,6 @@ use crate::backend::linker_common;
 use linker_common::{DynStrTab, OutputSection};
 
 /// Emit a shared library (.so) ELF file for AArch64.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn emit_shared_library(
     objects: &[ElfObject], globals: &mut HashMap<String, GlobalSymbol>,
     output_sections: &mut [OutputSection],

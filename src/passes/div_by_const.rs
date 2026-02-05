@@ -1837,7 +1837,7 @@ mod tests {
             } else {
                 let hi = ((x as u128 * magic) >> 64) as u64;
                 let diff = x - hi;
-                ((diff >> 1).wrapping_add(hi) >> (shift - 1)) as u64
+                (diff >> 1).wrapping_add(hi) >> (shift - 1)
             };
             assert_eq!(result, x / 10, "Failed for x={}", x);
         }
@@ -1858,7 +1858,7 @@ mod tests {
                 } else {
                     let hi = ((x as u128 * magic) >> 64) as u64;
                     let diff = x - hi;
-                    ((diff >> 1).wrapping_add(hi) >> (shift - 1)) as u64
+                    (diff >> 1).wrapping_add(hi) >> (shift - 1)
                 };
                 assert_eq!(result, x / d, "Failed for x={} d={}", x, d);
             }
@@ -1884,7 +1884,7 @@ mod tests {
                     } else {
                         let hi = ((x as u128 * magic) >> 64) as u64;
                         let diff = x - hi;
-                        ((diff >> 1).wrapping_add(hi) >> (shift - 1)) as u64
+                        (diff >> 1).wrapping_add(hi) >> (shift - 1)
                     };
                     assert_eq!(result, x / d, "Failed for x={} d={}", x, d);
                 }

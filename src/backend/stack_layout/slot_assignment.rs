@@ -61,7 +61,6 @@ pub(super) fn coalescable_group(
 
 /// Walk all instructions and classify each into Tier 1 (permanent alloca slots),
 /// Tier 2 (multi-block, liveness-packed), or Tier 3 (block-local, greedy reuse).
-#[allow(clippy::too_many_arguments)]
 pub(super) fn classify_instructions(
     state: &mut crate::backend::state::CodegenState,
     func: &IrFunction,
@@ -481,7 +480,6 @@ fn classify_value(
 /// value is last used, we can reuse its stack slot for later values. This is
 /// critical for functions like blake2s_compress_generic where macro expansion
 /// creates thousands of short-lived intermediates in a single loop body block.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn assign_tier3_block_local_slots(
     func: &IrFunction,
     ctx: &StackLayoutContext,

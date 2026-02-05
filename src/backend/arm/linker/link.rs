@@ -24,7 +24,6 @@ use linker_common::OutputSection;
 /// Supports both static and dynamic linking. When `is_static` is false, shared
 /// libraries are loaded and PLT/GOT/.dynamic sections are generated for dynamic
 /// symbol references.
-#[allow(clippy::too_many_arguments)]
 pub fn link_builtin(
     object_files: &[&str],
     output_path: &str,

@@ -51,7 +51,6 @@ const INTERP: &[u8] = b"/lib/ld-linux-riscv64-lp64d.so.1\0";
 /// `actual_needed_libs`: NEEDED sonames for .dynamic
 /// `is_static`: true for static linking (no PLT/GOT/.dynamic)
 /// `output_path`: output file path
-#[allow(clippy::too_many_arguments)]
 pub fn emit_executable(
     input_objs: &[(String, ElfObject)],
     merged_sections: &mut Vec<MergedSection>,

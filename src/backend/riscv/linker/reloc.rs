@@ -176,7 +176,6 @@ fn lookup_got_entry(
 }
 
 /// Apply a single relocation to the merged section data.
-#[allow(clippy::too_many_arguments)]
 fn apply_one_reloc(
     rela_type: u32,
     data: &mut [u8],

@@ -1,7 +1,0 @@
-Remove crate-wide clippy silences from lib.rs and fix the underlying lints.
-
-- Remove #![allow(clippy::too_many_arguments)] from lib.rs, add per-function allows where needed
-- Remove #![allow(clippy::type_complexity)] from lib.rs (keep if truly needed per-item)
-- Remove #![allow(clippy::needless_range_loop)] from lib.rs (keep if truly needed per-item)
-- Fix or keep per-item allows for: enum_variant_names, unusual_byte_groupings, upper_case_acronyms
-- Ensure clean clippy and build

@@ -15,7 +15,6 @@ use linker_common::{DynStrTab, OutputSection};
 // ── Dynamic executable emission ─────────────────────────────────────────
 
 /// Emit a dynamically-linked AArch64 ELF executable with PLT/GOT/.dynamic support.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn emit_dynamic_executable(
     objects: &[ElfObject], globals: &mut HashMap<String, GlobalSymbol>,
     output_sections: &mut [OutputSection],

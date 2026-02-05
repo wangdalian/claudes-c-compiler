@@ -28,7 +28,6 @@ use crate::backend::linker_common;
 /// `needed_libs`: pre-resolved default libraries (e.g., ["gcc", "gcc_s", "c", "m"])
 /// `crt_objects_before`: CRT objects to link before user objects (e.g., crt1.o, crti.o, crtbegin.o)
 /// `crt_objects_after`: CRT objects to link after user objects (e.g., crtend.o, crtn.o)
-#[allow(clippy::too_many_arguments)]
 pub fn link_builtin(
     object_files: &[&str],
     output_path: &str,

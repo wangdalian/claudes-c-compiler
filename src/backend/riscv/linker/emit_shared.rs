@@ -45,7 +45,6 @@ const ELFDATA2LSB: u8 = 1;
 ///
 /// `input_objs`, `merged_sections`, `sec_mapping`, `global_syms` etc.
 /// have been prepared by the orchestration in `link.rs::link_shared`.
-#[allow(clippy::too_many_arguments)]
 pub fn emit_shared_library(
     input_objs: &[(String, ElfObject)],
     merged_sections: &mut [MergedSection],

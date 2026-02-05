@@ -1404,7 +1404,7 @@ fn try_expand_ldr_literal(line: &str) -> Option<Result<Vec<AsmStatement>, String
         // Only treat as symbol-offset if there's a valid symbol before the minus
         let sym = expr[..minus_pos].trim();
         let off_str = expr[minus_pos + 1..].trim();
-        if !sym.is_empty() && !sym.ends_with(|c: char| c == '+' || c == '-') {
+        if !sym.is_empty() && !sym.ends_with(['+', '-']) {
             if let Ok(off) = if off_str.starts_with("0x") || off_str.starts_with("0X") {
                 i64::from_str_radix(&off_str[2..], 16)
             } else {

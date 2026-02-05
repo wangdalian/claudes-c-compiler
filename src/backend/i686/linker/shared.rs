@@ -84,7 +84,6 @@ pub(super) fn resolve_dynamic_symbols_for_shared(
 /// - No PT_INTERP segment
 /// - All defined global symbols exported to .dynsym
 /// - R_386_RELATIVE relocations for internal absolute addresses
-#[allow(clippy::too_many_arguments)]
 pub(super) fn emit_shared_library_32(
     inputs: &[InputObject],
     global_symbols: &mut HashMap<String, LinkerSymbol>,
