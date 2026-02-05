@@ -1412,6 +1412,187 @@ fn emit_shared_library(
     }
     w64(&mut out, dd, DT_NULL as u64); w64(&mut out, dd+8, 0);
 
+    // === Append section headers ===
+    // Build .shstrtab string table
+    let mut shstrtab = vec![0u8]; // null byte at offset 0
+    let mut shstr_offsets: HashMap<String, u32> = HashMap::new();
+    let known_names = [
+        ".gnu.hash", ".dynsym", ".dynstr",
+        ".rela.dyn", ".rela.plt", ".plt", ".dynamic",
+        ".got", ".got.plt", ".init_array", ".fini_array",
+        ".tdata", ".tbss", ".bss", ".shstrtab",
+    ];
+    for name in &known_names {
+        let off = shstrtab.len() as u32;
+        shstr_offsets.insert(name.to_string(), off);
+        shstrtab.extend_from_slice(name.as_bytes());
+        shstrtab.push(0);
+    }
+    // Add merged section names not already in known list
+    for sec in output_sections.iter() {
+        if !sec.name.is_empty() && !shstr_offsets.contains_key(&sec.name) {
+            let off = shstrtab.len() as u32;
+            shstr_offsets.insert(sec.name.clone(), off);
+            shstrtab.extend_from_slice(sec.name.as_bytes());
+            shstrtab.push(0);
+        }
+    }
+
+    let get_shname = |n: &str| -> u32 { shstr_offsets.get(n).copied().unwrap_or(0) };
+
+    // Helper: write a 64-byte ELF64 section header
+    fn write_shdr_so(elf: &mut Vec<u8>, name: u32, sh_type: u32, flags: u64,
+                  addr: u64, file_offset: u64, size: u64, link: u32, info: u32,
+                  align: u64, entsize: u64) {
+        elf.extend_from_slice(&name.to_le_bytes());
+        elf.extend_from_slice(&sh_type.to_le_bytes());
+        elf.extend_from_slice(&flags.to_le_bytes());
+        elf.extend_from_slice(&addr.to_le_bytes());
+        elf.extend_from_slice(&file_offset.to_le_bytes());
+        elf.extend_from_slice(&size.to_le_bytes());
+        elf.extend_from_slice(&link.to_le_bytes());
+        elf.extend_from_slice(&info.to_le_bytes());
+        elf.extend_from_slice(&align.to_le_bytes());
+        elf.extend_from_slice(&entsize.to_le_bytes());
+    }
+
+    // Pre-count section indices for cross-references
+    let dynsym_shidx: u32 = 2; // NULL=0, .gnu.hash=1, .dynsym=2
+    let dynstr_shidx: u32 = 3; // .dynstr=3
+
+    // Count total sections to determine .shstrtab index
+    let mut sh_count: u16 = 4; // NULL + .gnu.hash + .dynsym + .dynstr
+    if rela_dyn_size > 0 { sh_count += 1; }
+    if rela_plt_size > 0 { sh_count += 1; }
+    if plt_size > 0 { sh_count += 1; }
+    // Merged output sections (non-BSS, non-TLS, non-init/fini)
+    for sec in output_sections.iter() {
+        if sec.flags & SHF_ALLOC != 0 && sec.sh_type != SHT_NOBITS && sec.flags & SHF_TLS == 0
+           && sec.name != ".init_array" && sec.name != ".fini_array" {
+            sh_count += 1;
+        }
+    }
+    // TLS data + TLS BSS
+    for sec in output_sections.iter() {
+        if sec.flags & SHF_TLS != 0 && sec.flags & SHF_ALLOC != 0 && sec.sh_type != SHT_NOBITS { sh_count += 1; }
+    }
+    for sec in output_sections.iter() {
+        if sec.flags & SHF_TLS != 0 && sec.sh_type == SHT_NOBITS { sh_count += 1; }
+    }
+    if has_init_array { sh_count += 1; }
+    if has_fini_array { sh_count += 1; }
+    sh_count += 1; // .dynamic
+    if got_plt_size > 0 { sh_count += 1; }
+    if got_size > 0 { sh_count += 1; }
+    // BSS sections (non-TLS)
+    for sec in output_sections.iter() {
+        if sec.sh_type == SHT_NOBITS && sec.flags & SHF_ALLOC != 0 && sec.flags & SHF_TLS == 0 { sh_count += 1; }
+    }
+    let shstrtab_shidx = sh_count; // .shstrtab is the last section
+    sh_count += 1;
+
+    // Align and append .shstrtab data
+    while out.len() % 8 != 0 { out.push(0); }
+    let shstrtab_data_offset = out.len() as u64;
+    out.extend_from_slice(&shstrtab);
+
+    // Align section header table to 8 bytes
+    while out.len() % 8 != 0 { out.push(0); }
+    let shdr_offset = out.len() as u64;
+
+    // Write section headers
+    // [0] NULL
+    write_shdr_so(&mut out, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    // .gnu.hash
+    write_shdr_so(&mut out, get_shname(".gnu.hash"), SHT_GNU_HASH, SHF_ALLOC,
+               gnu_hash_addr, gnu_hash_offset, gnu_hash_size, dynsym_shidx, 0, 8, 0);
+    // .dynsym
+    write_shdr_so(&mut out, get_shname(".dynsym"), SHT_DYNSYM, SHF_ALLOC,
+               dynsym_addr, dynsym_offset, dynsym_size, dynstr_shidx, 1, 8, 24);
+    // .dynstr
+    write_shdr_so(&mut out, get_shname(".dynstr"), SHT_STRTAB, SHF_ALLOC,
+               dynstr_addr, dynstr_offset, dynstr_size, 0, 0, 1, 0);
+    // .rela.dyn
+    if rela_dyn_size > 0 {
+        write_shdr_so(&mut out, get_shname(".rela.dyn"), SHT_RELA, SHF_ALLOC,
+                   rela_dyn_addr, rela_dyn_offset, rela_dyn_size, dynsym_shidx, 0, 8, 24);
+    }
+    // .rela.plt
+    if rela_plt_size > 0 {
+        write_shdr_so(&mut out, get_shname(".rela.plt"), SHT_RELA, SHF_ALLOC | 0x40,
+                   rela_plt_addr, rela_plt_offset, rela_plt_size, dynsym_shidx, 0, 8, 24);
+    }
+    // .plt
+    if plt_size > 0 {
+        write_shdr_so(&mut out, get_shname(".plt"), SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR,
+                   plt_addr, plt_offset, plt_size, 0, 0, 16, 16);
+    }
+    // Merged output sections (text/rodata/data, excluding BSS/TLS/init_array/fini_array)
+    for sec in output_sections.iter() {
+        if sec.flags & SHF_ALLOC != 0 && sec.sh_type != SHT_NOBITS && sec.flags & SHF_TLS == 0
+           && sec.name != ".init_array" && sec.name != ".fini_array" {
+            write_shdr_so(&mut out, get_shname(&sec.name), sec.sh_type, sec.flags,
+                       sec.addr, sec.file_offset, sec.mem_size, 0, 0, sec.alignment.max(1), 0);
+        }
+    }
+    // TLS data sections (.tdata)
+    for sec in output_sections.iter() {
+        if sec.flags & SHF_TLS != 0 && sec.flags & SHF_ALLOC != 0 && sec.sh_type != SHT_NOBITS {
+            write_shdr_so(&mut out, get_shname(&sec.name), sec.sh_type, sec.flags,
+                       sec.addr, sec.file_offset, sec.mem_size, 0, 0, sec.alignment.max(1), 0);
+        }
+    }
+    // TLS BSS sections (.tbss)
+    for sec in output_sections.iter() {
+        if sec.flags & SHF_TLS != 0 && sec.sh_type == SHT_NOBITS {
+            write_shdr_so(&mut out, get_shname(&sec.name), SHT_NOBITS, sec.flags,
+                       sec.addr, sec.file_offset, sec.mem_size, 0, 0, sec.alignment.max(1), 0);
+        }
+    }
+    // .init_array
+    if has_init_array {
+        if let Some(ia_sec) = output_sections.iter().find(|s| s.name == ".init_array") {
+            write_shdr_so(&mut out, get_shname(".init_array"), SHT_INIT_ARRAY, SHF_ALLOC | SHF_WRITE,
+                       init_array_addr, ia_sec.file_offset, init_array_size, 0, 0, 8, 8);
+        }
+    }
+    // .fini_array
+    if has_fini_array {
+        if let Some(fa_sec) = output_sections.iter().find(|s| s.name == ".fini_array") {
+            write_shdr_so(&mut out, get_shname(".fini_array"), SHT_FINI_ARRAY, SHF_ALLOC | SHF_WRITE,
+                       fini_array_addr, fa_sec.file_offset, fini_array_size, 0, 0, 8, 8);
+        }
+    }
+    // .dynamic
+    write_shdr_so(&mut out, get_shname(".dynamic"), SHT_DYNAMIC, SHF_ALLOC | SHF_WRITE,
+               dynamic_addr, dynamic_offset, dynamic_size, dynstr_shidx, 0, 8, 16);
+    // .got.plt
+    if got_plt_size > 0 {
+        write_shdr_so(&mut out, get_shname(".got.plt"), SHT_PROGBITS, SHF_ALLOC | SHF_WRITE,
+                   got_plt_addr, got_plt_offset, got_plt_size, 0, 0, 8, 8);
+    }
+    // .got
+    if got_size > 0 {
+        write_shdr_so(&mut out, get_shname(".got"), SHT_PROGBITS, SHF_ALLOC | SHF_WRITE,
+                   got_addr, got_offset, got_size, 0, 0, 8, 8);
+    }
+    // BSS sections (non-TLS)
+    for sec in output_sections.iter() {
+        if sec.sh_type == SHT_NOBITS && sec.flags & SHF_ALLOC != 0 && sec.flags & SHF_TLS == 0 {
+            write_shdr_so(&mut out, get_shname(&sec.name), SHT_NOBITS, sec.flags,
+                       sec.addr, sec.file_offset, sec.mem_size, 0, 0, sec.alignment.max(1), 0);
+        }
+    }
+    // .shstrtab (last section)
+    write_shdr_so(&mut out, get_shname(".shstrtab"), SHT_STRTAB, 0,
+               0, shstrtab_data_offset, shstrtab.len() as u64, 0, 0, 1, 0);
+
+    // Patch ELF header with section header info
+    out[40..48].copy_from_slice(&shdr_offset.to_le_bytes());     // e_shoff
+    out[58..60].copy_from_slice(&64u16.to_le_bytes());           // e_shentsize
+    out[60..62].copy_from_slice(&sh_count.to_le_bytes());        // e_shnum
+    out[62..64].copy_from_slice(&shstrtab_shidx.to_le_bytes()); // e_shstrndx
+
     std::fs::write(output_path, &out).map_err(|e| format!("failed to write '{}': {}", output_path, e))?;
     #[cfg(unix)]
     {
