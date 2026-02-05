@@ -131,10 +131,11 @@ A separate 5-phase pipeline (with sub-phases) produces `ET_DYN` shared objects:
 
 - **Phase 1**: Load input objects and resolve archives on demand
 - **Phase 2**: Merge sections (same grouping rules as executable linking)
-- **Phase 3/3b**: Build global symbol table and identify GOT entries
-- **Phase 4**: Layout sections into RX+RW segments; build PLT, GOT, `.dynamic`,
-  `.rela.dyn` (with `R_RISCV_RELATIVE` entries), dynsym/dynstr tables
-- **Phase 5**: Emit ELF with `ET_DYN`, SONAME, and all program/section headers
+- **Phase 3/3b/3c**: Build global symbol table, identify GOT entries and PLT entries
+- **Phase 4**: Layout sections into RX+RW segments; build PLT/GOT.PLT, GOT, `.dynamic`,
+  `.rela.dyn` (with `R_RISCV_RELATIVE` + `R_RISCV_GLOB_DAT` entries),
+  `.rela.plt` (with `R_RISCV_JUMP_SLOT` entries), dynsym/dynstr tables
+- **Phase 5**: Emit ELF with `ET_DYN`, SONAME, PLT stubs, `PT_GNU_RELRO`, and all program/section headers
 
 ## File Inventory
 
@@ -655,8 +656,8 @@ The `.got` section (for `GOT_HI20` references) is placed *inside* the RELRO
 region, so it becomes read-only after startup. The `.got.plt` section is placed
 *outside* RELRO because it must remain writable for lazy PLT resolution. This
 matches the standard RELRO layout used by GNU ld and provides hardening against
-GOT overwrite attacks without breaking lazy binding. Note: the `link_shared`
-path does not yet emit `PT_GNU_RELRO`.
+GOT overwrite attacks without breaking lazy binding. Both `link_builtin` and
+`link_shared` emit `PT_GNU_RELRO`.
 
 ### 8. Entry point discovery
 

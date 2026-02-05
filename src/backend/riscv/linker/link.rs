@@ -2402,6 +2402,8 @@ pub fn link_shared(
     use crate::backend::linker_common::{self, DynStrTab};
 
     const R_RISCV_RELATIVE: u64 = 3;
+    const R_RISCV_JUMP_SLOT: u64 = 5;
+    const R_RISCV_GLOB_DAT: u64 = 6;
     const DT_SONAME: u64 = 14;
     const DT_RELACOUNT: u64 = 0x6ffffff9;
     const SHT_DYNAMIC: u32 = 6;
@@ -2746,6 +2748,38 @@ pub fn link_shared(
         }
     }
 
+    // ── Phase 3c: Identify PLT entries needed for external function calls ──
+    let mut plt_symbols: Vec<String> = Vec::new();
+    {
+        let mut plt_set: HashSet<String> = HashSet::new();
+        for (_, obj) in input_objs.iter() {
+            for relocs in &obj.relocations {
+                for reloc in relocs {
+                    if reloc.rela_type == R_RISCV_CALL_PLT {
+                        let sym = &obj.symbols[reloc.sym_idx as usize];
+                        if !sym.name.is_empty() && sym.binding() != STB_LOCAL {
+                            if let Some(gsym) = global_syms.get(&sym.name) {
+                                if !gsym.defined && !plt_set.contains(&sym.name) {
+                                    plt_set.insert(sym.name.clone());
+                                    plt_symbols.push(sym.name.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let plt_header_size: u64 = if plt_symbols.is_empty() { 0 } else { 32 };
+    let plt_entry_size: u64 = 16;
+    let plt_size: u64 = if plt_symbols.is_empty() { 0 } else {
+        plt_header_size + plt_symbols.len() as u64 * plt_entry_size
+    };
+    // GOT.PLT: [0]=reserved(resolver), [1]=reserved(link_map), [2+]=per-PLT entries
+    let got_plt_entries: u64 = if plt_symbols.is_empty() { 0 } else { 2 + plt_symbols.len() as u64 };
+    let got_plt_size: u64 = got_plt_entries * 8;
+    let rela_plt_size: u64 = plt_symbols.len() as u64 * 24;
+
     // ── Phase 4: Layout sections ────────────────────────────────────
     // Sort sections by canonical order
     let mut sec_indices: Vec<usize> = (0..merged_sections.len()).collect();
@@ -2785,11 +2819,12 @@ pub fn link_shared(
     if soname.is_some() { dyn_count += 1; }
     if has_init_array { dyn_count += 2; }
     if has_fini_array { dyn_count += 2; }
+    if !plt_symbols.is_empty() { dyn_count += 4; } // DT_PLTGOT, DT_PLTRELSZ, DT_PLTREL, DT_JMPREL
     let dynamic_size = dyn_count * 16;
 
-    // phdrs: PHDR, LOAD(ro), LOAD(text), LOAD(rodata), LOAD(rw), DYNAMIC, GNU_STACK, [TLS], [RISCV_ATTR]
+    // phdrs: PHDR, LOAD(ro), LOAD(text), LOAD(rodata), LOAD(rw), DYNAMIC, GNU_RELRO, GNU_STACK, [TLS], [RISCV_ATTR]
     let has_riscv_attrs = merged_sections.iter().any(|ms| ms.name == ".riscv.attributes");
-    let mut phdr_count: u64 = 7; // PHDR, LOAD(ro), LOAD(text), LOAD(rodata), LOAD(rw), DYNAMIC, GNU_STACK
+    let mut phdr_count: u64 = 8; // PHDR, LOAD(ro), LOAD(text), LOAD(rodata), LOAD(rw), DYNAMIC, GNU_RELRO, GNU_STACK
     if has_tls { phdr_count += 1; }
     if has_riscv_attrs { phdr_count += 1; }
     let phdr_total_size = phdr_count * 56;
@@ -2806,9 +2841,7 @@ pub fn link_shared(
         .collect();
     exported.sort();
     for name in exported { dyn_sym_names.push(name); }
-    // Also add undefined dynamic symbols
-    // TODO: Emit R_RISCV_GLOB_DAT dynamic relocations for GOT entries of
-    // undefined symbols to enable proper runtime resolution by ld.so
+    // Also add undefined dynamic symbols (R_RISCV_GLOB_DAT will be emitted for their GOT entries)
     for (name, gsym) in global_syms.iter() {
         if !gsym.defined && !dyn_sym_names.contains(name) {
             dyn_sym_names.push(name.clone());
@@ -2894,6 +2927,14 @@ pub fn link_shared(
     let dynstr_offset = offset;
     let dynstr_addr = base_addr + offset;
     offset += dynstr_size;
+    // .rela.plt in the RO segment (after .dynstr)
+    let rela_plt_offset = if rela_plt_size > 0 {
+        offset = align_up(offset, 8);
+        let o = offset;
+        offset += rela_plt_size;
+        o
+    } else { 0 };
+    let rela_plt_addr = base_addr + rela_plt_offset;
     let ro_seg_end = offset;
 
     // Text segment (RX)
@@ -2910,6 +2951,14 @@ pub fn link_shared(
             offset += dlen;
         }
     }
+    // PLT stubs (in the text segment, after code sections)
+    let plt_offset = if plt_size > 0 {
+        offset = align_up(offset, 16);
+        let o = offset;
+        offset += plt_size;
+        o
+    } else { 0 };
+    let plt_vaddr = base_addr + plt_offset;
     let text_total_size = offset - text_page_offset;
 
     // Rodata segment (RO, non-exec)
@@ -2977,11 +3026,20 @@ pub fn link_shared(
     let dynamic_addr = base_addr + offset;
     offset += dynamic_size;
 
-    // GOT
+    // GOT (covered by RELRO)
     offset = align_up(offset, 8);
     let got_offset = offset;
     let got_vaddr = base_addr + offset;
     offset += got_size;
+
+    // GOT.PLT (NOT covered by RELRO — needs to stay writable for lazy binding)
+    let got_plt_offset = if got_plt_size > 0 {
+        offset = align_up(offset, 8);
+        let o = offset;
+        offset += got_plt_size;
+        o
+    } else { 0 };
+    let got_plt_vaddr = base_addr + got_plt_offset;
 
     // Writable data sections
     for &si in &sec_indices {
@@ -3150,7 +3208,31 @@ pub fn link_shared(
     write_phdr_at(&mut elf, ph, PT_DYNAMIC, PF_R | PF_W, dynamic_offset, dynamic_addr, dynamic_addr,
                   dynamic_size, dynamic_size, 8);
     ph += 56;
-    // TODO: Add PT_GNU_RELRO segment to mark .dynamic/.got as read-only after relocation
+    // PT_GNU_RELRO: covers init/fini arrays, .rela.dyn, .dynamic, .got — all read-only
+    // after relocation. The region ends BEFORE .got.plt so lazy PLT binding can write to it.
+    {
+        // Start at the RW segment start to cover init/fini arrays
+        let relro_start_offset = rw_page_offset;
+        let relro_start_addr = rw_page_addr;
+        // End at .got end (before .got.plt), page-aligned
+        let relro_end = if got_size > 0 {
+            align_up(got_vaddr + got_size, PAGE_SIZE)
+        } else {
+            align_up(dynamic_addr + dynamic_size, PAGE_SIZE)
+        };
+        // If .got.plt is on the same page as .got, don't page-align past it —
+        // the dynamic linker rounds DOWN to page boundaries, so .got.plt stays writable
+        let relro_end = if got_plt_size > 0 && relro_end > got_plt_vaddr {
+            got_vaddr + got_size
+        } else {
+            relro_end
+        };
+        let relro_filesz = relro_end - relro_start_addr;
+        let relro_memsz = relro_filesz;
+        write_phdr_at(&mut elf, ph, PT_GNU_RELRO, PF_R, relro_start_offset, relro_start_addr,
+                      relro_start_addr, relro_filesz, relro_memsz, 1);
+    }
+    ph += 56;
     // PT_GNU_STACK
     write_phdr_at(&mut elf, ph, PT_GNU_STACK, PF_R | PF_W, 0, 0, 0, 0, 0, 0x10);
     ph += 56;
@@ -3193,6 +3275,19 @@ pub fn link_shared(
     }
 
     // Write .dynsym
+    // Build mapping: merged_section index → ELF section header index
+    // Section headers: 0=null, 1=.gnu.hash, 2=.dynsym, 3=.dynstr, then merged sections
+    let mut merged_to_shdr: HashMap<usize, u16> = HashMap::new();
+    {
+        let mut shdr_idx = 4u16; // first merged section starts at index 4
+        for &si in &sec_indices {
+            let ms = &merged_sections[si];
+            if ms.name == ".riscv.attributes" { continue; }
+            if ms.sh_flags & SHF_ALLOC == 0 && ms.sh_type != SHT_RISCV_ATTRIBUTES { continue; }
+            merged_to_shdr.insert(si, shdr_idx);
+            shdr_idx += 1;
+        }
+    }
     {
         let mut ds = dynsym_offset as usize + 24; // skip null entry
         for name in &dyn_sym_names {
@@ -3203,8 +3298,11 @@ pub fn link_shared(
                     let info = (gsym.binding << 4) | gsym.sym_type;
                     elf[ds+4] = info;
                     elf[ds+5] = 0; // st_other
-                    // TODO: Compute actual section index instead of hardcoding 1
-                    elf[ds+6..ds+8].copy_from_slice(&1u16.to_le_bytes()); // shndx=1 (defined)
+                    // Look up the correct section header index from the merged section mapping
+                    let shndx = gsym.section_idx
+                        .and_then(|si| merged_to_shdr.get(&si).copied())
+                        .unwrap_or(1); // fallback to 1 if mapping not found
+                    elf[ds+6..ds+8].copy_from_slice(&shndx.to_le_bytes());
                     elf[ds+8..ds+16].copy_from_slice(&gsym.value.to_le_bytes());
                     elf[ds+16..ds+24].copy_from_slice(&gsym.size.to_le_bytes());
                 } else {
@@ -3254,22 +3352,99 @@ pub fn link_shared(
             if gsym.defined && entry_off + 8 <= elf.len() {
                 elf[entry_off..entry_off+8].copy_from_slice(&gsym.value.to_le_bytes());
             }
-        } else {
-            // Try to resolve from local_sym_vaddrs via got_sym_key mapping
-            // For local GOT symbols, we need to find the actual value
+        }
+    }
+
+    // Build PLT stubs and GOT.PLT for external function calls
+    let mut plt_sym_addrs: HashMap<String, u64> = HashMap::new();
+    if !plt_symbols.is_empty() {
+        // GOT.PLT: [0]=reserved(resolver), [1]=reserved(link_map), [2+]=PLT entries
+        // Initially all PLT GOT entries point to PLT[0] for lazy resolution
+        let plt0_addr = plt_vaddr;
+        for i in 0..plt_symbols.len() {
+            let off = got_plt_offset as usize + (2 + i) * 8;
+            if off + 8 <= elf.len() {
+                elf[off..off + 8].copy_from_slice(&plt0_addr.to_le_bytes());
+            }
+        }
+
+        // PLT[0] header: resolver stub
+        let got_plt_rel = got_plt_vaddr as i64 - plt0_addr as i64;
+        let hi = ((got_plt_rel + 0x800) >> 12) as u32;
+        let lo = (got_plt_rel & 0xFFF) as u32;
+        let po = plt_offset as usize;
+
+        // auipc t2, %pcrel_hi(.got.plt)
+        let insn0 = 0x00000397u32 | (hi << 12);
+        elf[po..po+4].copy_from_slice(&insn0.to_le_bytes());
+        // sub t1, t1, t3
+        let insn1 = 0x41c30333u32;
+        elf[po+4..po+8].copy_from_slice(&insn1.to_le_bytes());
+        // ld t3, lo(t2) — load resolver from got.plt[0]
+        let insn2 = 0x0003be03u32 | (lo << 20);
+        elf[po+8..po+12].copy_from_slice(&insn2.to_le_bytes());
+        // addi t1, t1, -(header_size + 12)
+        let neg_hdr = (-((plt_header_size as i32) + 12)) as u32;
+        let insn3 = 0x00030313u32 | ((neg_hdr & 0xFFF) << 20);
+        elf[po+12..po+16].copy_from_slice(&insn3.to_le_bytes());
+        // addi t0, t2, lo — got.plt base
+        let insn4 = 0x00038293u32 | (lo << 20);
+        elf[po+16..po+20].copy_from_slice(&insn4.to_le_bytes());
+        // srli t1, t1, 1
+        let insn5 = 0x00135313u32;
+        elf[po+20..po+24].copy_from_slice(&insn5.to_le_bytes());
+        // ld t0, 8(t0) — load link_map from got.plt[1]
+        let insn6 = 0x0082b283u32;
+        elf[po+24..po+28].copy_from_slice(&insn6.to_le_bytes());
+        // jr t3 — jump to resolver
+        let insn7 = 0x000e0067u32;
+        elf[po+28..po+32].copy_from_slice(&insn7.to_le_bytes());
+
+        // PLT entries
+        for (i, name) in plt_symbols.iter().enumerate() {
+            let entry_file_off = plt_offset as usize + plt_header_size as usize + i * plt_entry_size as usize;
+            let entry_addr = plt_vaddr + plt_header_size + i as u64 * plt_entry_size;
+            let got_entry_addr = got_plt_vaddr + (2 + i) as u64 * 8;
+
+            plt_sym_addrs.insert(name.clone(), entry_addr);
+
+            let rel = got_entry_addr as i64 - entry_addr as i64;
+            let hi = ((rel + 0x800) >> 12) as u32;
+            let lo = (rel & 0xFFF) as u32;
+
+            // auipc t3, hi
+            let insn0 = 0x00000e17u32 | (hi << 12);
+            elf[entry_file_off..entry_file_off+4].copy_from_slice(&insn0.to_le_bytes());
+            // ld t3, lo(t3)
+            let insn1 = 0x000e3e03u32 | (lo << 20);
+            elf[entry_file_off+4..entry_file_off+8].copy_from_slice(&insn1.to_le_bytes());
+            // jalr t1, t3
+            let insn2 = 0x000e0367u32;
+            elf[entry_file_off+8..entry_file_off+12].copy_from_slice(&insn2.to_le_bytes());
+            // nop
+            let insn3 = 0x00000013u32;
+            elf[entry_file_off+12..entry_file_off+16].copy_from_slice(&insn3.to_le_bytes());
         }
     }
 
     // ── Apply relocations and collect R_RISCV_RELATIVE entries ──────
     let mut rela_dyn_entries: Vec<(u64, u64)> = Vec::new(); // (offset, addend) for RELATIVE
+    let mut glob_dat_entries: Vec<(u64, String)> = Vec::new(); // (offset, sym_name) for GLOB_DAT
 
-    // Add RELATIVE for GOT entries pointing to local symbols
+    // Add RELATIVE for GOT entries pointing to local symbols,
+    // and GLOB_DAT for GOT entries pointing to external (undefined) symbols
     for (gi, name) in got_symbols.iter().enumerate() {
+        let gea = got_vaddr + gi as u64 * 8;
         if let Some(gsym) = global_syms.get(name) {
             if gsym.defined {
-                let gea = got_vaddr + gi as u64 * 8;
                 rela_dyn_entries.push((gea, gsym.value));
+            } else {
+                // External symbol — needs R_RISCV_GLOB_DAT so ld.so fills the GOT slot
+                glob_dat_entries.push((gea, name.clone()));
             }
+        } else {
+            // Unknown symbol — needs GLOB_DAT
+            glob_dat_entries.push((gea, name.clone()));
         }
     }
 
@@ -3367,7 +3542,10 @@ pub fn link_shared(
                     }
                     R_RISCV_CALL_PLT => {
                         let target = if !sym.name.is_empty() && sym.binding() != STB_LOCAL {
-                            if let Some(gs) = global_syms.get(&sym.name) {
+                            // For undefined symbols, redirect through PLT stub
+                            if let Some(&plt_addr) = plt_sym_addrs.get(&sym.name) {
+                                plt_addr as i64
+                            } else if let Some(gs) = global_syms.get(&sym.name) {
                                 gs.value as i64
                             } else { s as i64 }
                         } else { s as i64 };
@@ -3608,17 +3786,46 @@ pub fn link_shared(
         }
     }
 
-    // Write .rela.dyn entries (R_RISCV_RELATIVE)
-    let actual_rela_count = rela_dyn_entries.len();
+    // Write .rela.dyn entries: first R_RISCV_RELATIVE, then R_RISCV_GLOB_DAT
+    let relative_count = rela_dyn_entries.len();
+    let actual_rela_count = relative_count + glob_dat_entries.len();
     let rela_dyn_size = actual_rela_count as u64 * 24;
     {
         let mut rd = rela_dyn_offset as usize;
+        // R_RISCV_RELATIVE entries (type 3, sym 0)
         for &(rel_offset, rel_addend) in &rela_dyn_entries {
             if rd + 24 <= elf.len() {
                 elf[rd..rd+8].copy_from_slice(&rel_offset.to_le_bytes());
-                elf[rd+8..rd+16].copy_from_slice(&R_RISCV_RELATIVE.to_le_bytes()); // r_info = type 3, sym 0
+                elf[rd+8..rd+16].copy_from_slice(&R_RISCV_RELATIVE.to_le_bytes());
                 elf[rd+16..rd+24].copy_from_slice(&rel_addend.to_le_bytes());
                 rd += 24;
+            }
+        }
+        // R_RISCV_GLOB_DAT entries (type 6, with symbol index)
+        for (rel_offset, sym_name) in &glob_dat_entries {
+            let si = dyn_sym_names.iter().position(|n| n == sym_name).map(|j| j + 1).unwrap_or(0) as u64;
+            if rd + 24 <= elf.len() {
+                elf[rd..rd+8].copy_from_slice(&rel_offset.to_le_bytes());
+                elf[rd+8..rd+16].copy_from_slice(&((si << 32) | R_RISCV_GLOB_DAT).to_le_bytes());
+                elf[rd+16..rd+24].copy_from_slice(&0u64.to_le_bytes()); // addend = 0
+                rd += 24;
+            }
+        }
+    }
+
+    // Write .rela.plt entries (R_RISCV_JUMP_SLOT for PLT GOT entries)
+    if !plt_symbols.is_empty() {
+        let mut rp = rela_plt_offset as usize;
+        for (i, name) in plt_symbols.iter().enumerate() {
+            let got_entry_addr = got_plt_vaddr + (2 + i) as u64 * 8;
+            // Find dynsym index for this symbol
+            let si = dyn_sym_names.iter().position(|n| n == name).map(|j| j + 1).unwrap_or(0) as u64;
+            let r_info = (si << 32) | R_RISCV_JUMP_SLOT;
+            if rp + 24 <= elf.len() {
+                elf[rp..rp+8].copy_from_slice(&got_entry_addr.to_le_bytes());
+                elf[rp+8..rp+16].copy_from_slice(&r_info.to_le_bytes());
+                elf[rp+16..rp+24].copy_from_slice(&0i64.to_le_bytes()); // addend = 0
+                rp += 24;
             }
         }
     }
@@ -3646,7 +3853,7 @@ pub fn link_shared(
             (DT_RELA as u64, rela_dyn_addr),
             (DT_RELASZ as u64, rela_dyn_size),
             (DT_RELAENT as u64, 24),
-            (DT_RELACOUNT, actual_rela_count as u64),
+            (DT_RELACOUNT, relative_count as u64),
             (DT_GNU_HASH as u64, gnu_hash_addr),
         ];
         for (tag, val) in dyn_entries {
@@ -3669,6 +3876,24 @@ pub fn link_shared(
             elf[dd..dd+8].copy_from_slice(&(DT_FINI_ARRAYSZ as u64).to_le_bytes());
             elf[dd+8..dd+16].copy_from_slice(&fini_array_size.to_le_bytes());
             dd += 16;
+        }
+        // PLT-related dynamic entries
+        if !plt_symbols.is_empty() {
+            const DT_PLTGOT: u64 = 3;
+            const DT_PLTRELSZ: u64 = 2;
+            const DT_PLTREL: u64 = 20;
+            const DT_JMPREL: u64 = 23;
+            let plt_dyn_entries: Vec<(u64, u64)> = vec![
+                (DT_PLTGOT, got_plt_vaddr),
+                (DT_PLTRELSZ, rela_plt_size),
+                (DT_PLTREL, 7), // DT_RELA — PLT uses RELA-style relocations
+                (DT_JMPREL, rela_plt_addr),
+            ];
+            for (tag, val) in plt_dyn_entries {
+                elf[dd..dd+8].copy_from_slice(&tag.to_le_bytes());
+                elf[dd+8..dd+16].copy_from_slice(&val.to_le_bytes());
+                dd += 16;
+            }
         }
         // DT_NULL terminator
         elf[dd..dd+8].copy_from_slice(&(DT_NULL as u64).to_le_bytes());
@@ -3738,6 +3963,27 @@ pub fn link_shared(
         let _sh_name = add_shstrtab_name(".got", &mut shstrtab_data);
         section_headers.push((".got".into(), SHT_PROGBITS, SHF_ALLOC | SHF_WRITE,
             got_vaddr, got_offset, got_size, 0, 0, 8, 8));
+    }
+
+    // .got.plt
+    if got_plt_size > 0 {
+        let _sh_name = add_shstrtab_name(".got.plt", &mut shstrtab_data);
+        section_headers.push((".got.plt".into(), SHT_PROGBITS, SHF_ALLOC | SHF_WRITE,
+            got_plt_vaddr, got_plt_offset, got_plt_size, 0, 0, 8, 8));
+    }
+
+    // .plt
+    if plt_size > 0 {
+        let _sh_name = add_shstrtab_name(".plt", &mut shstrtab_data);
+        section_headers.push((".plt".into(), SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR,
+            plt_vaddr, plt_offset, plt_size, 0, 0, 16, plt_entry_size));
+    }
+
+    // .rela.plt
+    if rela_plt_size > 0 {
+        let _sh_name = add_shstrtab_name(".rela.plt", &mut shstrtab_data);
+        section_headers.push((".rela.plt".into(), SHT_RELA, SHF_ALLOC,
+            rela_plt_addr, rela_plt_offset, rela_plt_size, 2 /*dynsym*/, 0, 8, 24));
     }
 
     // .riscv.attributes (non-loadable)
