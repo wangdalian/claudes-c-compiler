@@ -1,5 +1,0 @@
-Fix x86 shared library linker: emit R_X86_64_64 dynamic relocations for named
-global symbols in data sections (function pointer tables, vtables, dispatch tables).
-Previously these were incorrectly emitted as R_X86_64_RELATIVE, causing NULL
-function pointer crashes at runtime. Also fix .gnu.hash bloom filter scaling
-for large symbol tables.

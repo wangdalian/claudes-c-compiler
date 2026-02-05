@@ -1,7 +1,0 @@
-Task: Fix i686 musl build
-
-Goal: Make verify_musl.py pass with ccc-i686
-
-Work items:
-- Add missing fucomp/fucom x87 instructions to i686 assembler
-- Fix any other build/test failures for musl with i686

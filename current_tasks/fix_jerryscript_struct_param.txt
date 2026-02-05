@@ -1,4 +1,0 @@
-Fix JerryScript: peephole frame_compact incorrectly NOP'd struct-by-value parameter stores.
-The frame compaction pass used exact-offset matching to determine if a store was "dead",
-but struct params store a whole struct at one offset and read fields at sub-offsets.
-Fix: use range-based overlap checking (store covers [offset, offset+size)).

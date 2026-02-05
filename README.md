@@ -195,7 +195,6 @@ src/                Compiler source code (Rust)
 include/            Bundled C headers (SSE/AVX/NEON intrinsic stubs)
 tests/              Compiler tests (each test is a directory with main.c and expected output)
 ideas/              Future work proposals and improvement notes
-scripts/            Helper scripts (assembly comparison, cross-compilation setup)
 ```
 
 Each `src/` subdirectory has its own `README.md` with detailed design
