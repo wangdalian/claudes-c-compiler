@@ -3,8 +3,9 @@
 The AArch64 backend targets ARM64 with the AAPCS64 calling convention. It
 covers the full pipeline from IR to ELF executable: code generation
 (instruction selection, register allocation, peephole optimization), a builtin
-assembler (ARM assembly syntax parser, fixed-width encoder, ELF object writer),
-and a builtin static linker (IFUNC/IPLT, TLS support).
+assembler (GNU assembly syntax parser, fixed-width encoder, ELF object writer),
+and a builtin linker (static and dynamic linking, shared library output,
+IFUNC/IPLT, TLS support).
 
 ## Directory Structure
 
@@ -12,7 +13,7 @@ and a builtin static linker (IFUNC/IPLT, TLS support).
 arm/
   codegen/            Code generation and peephole optimizer
   assembler/          Builtin AArch64 assembler (parser, encoder, ELF writer)
-  linker/             Builtin AArch64 linker (static linking, IFUNC/TLS)
+  linker/             Builtin AArch64 linker (static/dynamic linking, IFUNC/TLS)
 ```
 
 ## Sub-Module Documentation
@@ -35,5 +36,10 @@ arm/
 - **NEON intrinsics**: SSE-equivalent 128-bit vector operations via NEON
   instructions
 - **Atomics**: ARMv8 exclusive monitor (LDXR/STXR) loops
-- **Assembler**: ARM assembly syntax, fixed 32-bit encoding, imm12 auto-shift
-- **Linker**: Static linking with IFUNC/IPLT, IRELATIVE relocations, TLS
+- **Peephole optimizer**: 3-phase pipeline (iterative local, global copy
+  propagation + dead store elimination, local cleanup)
+- **Assembler**: GNU assembly syntax, fixed 32-bit encoding, macro/conditional
+  preprocessor, ~240 base mnemonics
+- **Linker**: Static and dynamic linking, shared library (`.so`) output,
+  IFUNC/IPLT with IRELATIVE relocations, TLS (LE, IE via GOT, TLSDESC and
+  GD relaxation to LE)
