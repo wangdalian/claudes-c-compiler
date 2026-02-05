@@ -1,6 +1,0 @@
-Fix preprocessor DEFER pattern: post-rescan trailing func-like macro check
-incorrectly connects deferred macro names with subsequent source `(`.
-
-When FOO EMPTY() expands to FOO (EMPTY() -> nothing), the post-rescan check
-sees FOO as function-like and connects it with trailing source (hello).
-Fix: check if the trailing ident was already in the pre-rescan body.
