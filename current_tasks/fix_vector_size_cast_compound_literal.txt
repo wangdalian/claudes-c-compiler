@@ -1,0 +1,19 @@
+Fix: vector_size attribute lost in cast/compound-literal/sizeof contexts
+
+Started: 2026-02-05
+
+Problem:
+When __attribute__((vector_size(N))) is used directly in a cast, compound literal,
+or sizeof expression (not via typedef), the vector_size information is lost because
+it's stored on Declaration but these expressions only use TypeSpecifier.
+
+Example:
+  #define vector(n, t) __attribute__((vector_size(n*sizeof(t)))) t
+  sizeof(vector(4, float))  // Returns 4 (wrong, should be 16)
+  (vector(4, float)){2., 2., 2., 2.}  // Crash: alloca too small, corrupts stack
+
+Fix: Consume parsing_vector_size after parse_type_specifier in parse_cast_expr
+and parse_sizeof_expr, wrapping the TypeSpecifier to carry vector info through
+to sizeof_type and type_spec_to_ctype.
+
+Affects all architectures (x86, ARM, RISC-V).
