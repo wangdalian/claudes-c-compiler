@@ -1,0 +1,8 @@
+Fix RISC-V assembler .balign hex parsing bug
+
+The .balign directive parser uses str::parse::<u64>() which does not handle
+hex literals like 0x1000. This causes .balign 0x1000 (used in Linux kernel's
+efi-header.S) to silently fall back to alignment=1, resulting in missing ~4KB
+of padding in the PE header area. Same issue affects .align/.p2align parsing.
+
+Fix: use parse_int_literal() instead, which handles hex/octal/binary.
