@@ -23,18 +23,6 @@ use super::inline_asm::{RvConstraintKind, classify_rv_constraint};
 const RISCV_GP_SCRATCH: &[&str] = &["t0", "t1", "t2", "t3", "t4", "t5", "t6", "a2", "a3", "a4", "a5", "a6", "a7", "a0", "a1"];
 const RISCV_FP_SCRATCH: &[&str] = &["ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "ft6", "ft7"];
 
-/// Find a GP scratch register for storing inline asm output values that doesn't
-/// conflict with any output register or the current output being stored.
-///
-/// Uses a candidate list (t0-t6, a0, a1) to find a register not in the output
-/// set. Since outputs are assigned from RISCV_GP_SCRATCH starting at t0, the
-/// first 8 outputs use t0-t6 and a2. a0/a1 are at the end of RISCV_GP_SCRATCH
-/// so they're unlikely to be output registers unless there are 14+ operands.
-///
-/// If no safe candidate is found, returns a fallback ("t0" or "t1"). The caller
-/// must check whether the returned register is in all_output_regs and use a
-/// stack-based spill if so.
-
 /// Select the correct RISC-V store instruction based on the operand's IR type.
 /// On RV64, GP registers are always 64-bit, but sub-64-bit types must use
 /// narrower store instructions (sb/sh/sw) to avoid corrupting adjacent memory.
@@ -48,6 +36,17 @@ fn gp_store_for_type(ty: IrType) -> &'static str {
     }
 }
 
+/// Find a GP scratch register for storing inline asm output values that doesn't
+/// conflict with any output register or the current output being stored.
+///
+/// Uses a candidate list (t0-t6, a0, a1) to find a register not in the output
+/// set. Since outputs are assigned from RISCV_GP_SCRATCH starting at t0, the
+/// first 8 outputs use t0-t6 and a2. a0/a1 are at the end of RISCV_GP_SCRATCH
+/// so they're unlikely to be output registers unless there are 14+ operands.
+///
+/// If no safe candidate is found, returns a fallback ("t0" or "t1"). The caller
+/// must check whether the returned register is in all_output_regs and use a
+/// stack-based spill if so.
 fn find_gp_scratch_for_output(current_output_reg: &str, all_output_regs: &[&str]) -> String {
     const CANDIDATES: &[&str] = &["t0", "t1", "t2", "t3", "t4", "t5", "t6", "a0", "a1"];
     for &c in CANDIDATES {
