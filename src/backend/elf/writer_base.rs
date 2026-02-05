@@ -284,7 +284,12 @@ impl ElfWriterBase {
     /// After all statements are processed, subsections like `.text.__subsection.1`
     /// are appended to their parent `.text` in numeric order. Labels and relocations
     /// are adjusted to account for the new offsets.
-    pub fn merge_subsections(&mut self) {
+    ///
+    /// Returns a map from subsection name to (parent name, offset adjustment)
+    /// so callers can update any external references (e.g. pending_branch_relocs).
+    pub fn merge_subsections(&mut self) -> std::collections::HashMap<String, (String, u64)> {
+        let mut merge_map: std::collections::HashMap<String, (String, u64)> = std::collections::HashMap::new();
+
         // Collect subsection names grouped by parent
         let mut subsections: std::collections::BTreeMap<String, std::collections::BTreeMap<u64, String>> =
             std::collections::BTreeMap::new();
@@ -298,7 +303,7 @@ impl ElfWriterBase {
         }
 
         if subsections.is_empty() {
-            return;
+            return merge_map;
         }
 
         // For each parent, append subsections in order
@@ -318,6 +323,9 @@ impl ElfWriterBase {
                 let parent_len = self.sections.get(parent)
                     .map(|s| s.data.len() as u64)
                     .unwrap_or(0);
+
+                // Record mapping: subsection -> (parent, offset_adjustment)
+                merge_map.insert(sub_name.clone(), (parent.clone(), parent_len));
 
                 // Append data
                 if let Some(parent_sec) = self.sections.get_mut(parent) {
@@ -358,6 +366,8 @@ impl ElfWriterBase {
                 self.previous_section = self.previous_section[..pos].to_string();
             }
         }
+
+        merge_map
     }
 
     /// Record .globl for a symbol.

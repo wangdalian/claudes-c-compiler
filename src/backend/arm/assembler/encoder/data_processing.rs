@@ -546,7 +546,7 @@ pub(crate) fn encode_bitmask_imm(val: u64, is_64: bool) -> Option<(u32, u32, u32
         let mut found_rotation = false;
         let mut rotation = 0u32;
         for r in 0..size {
-            let rot = ((elem >> r) | (elem << (size - r))) & mask;
+            let rot = if r == 0 { elem } else { ((elem >> r) | (elem << (size - r))) & mask };
             // Check if this is a contiguous run from bit 0
             let run = rot.trailing_ones();
             if run == ones {

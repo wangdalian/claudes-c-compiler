@@ -502,7 +502,14 @@ impl ElfWriter {
         // kernel ALTERNATIVE patterns (deferred exprs are in .alternative, not
         // in subsections), but would need fixing if forward-ref expressions
         // appear inside .subsection blocks.
-        self.base.merge_subsections();
+        let merge_map = self.base.merge_subsections();
+        // Update pending_branch_relocs that referenced merged subsections
+        for reloc in &mut self.pending_branch_relocs {
+            if let Some((parent, offset_adj)) = merge_map.get(&reloc.section) {
+                reloc.section = parent.clone();
+                reloc.offset += *offset_adj;
+            }
+        }
         self.resolve_deferred_exprs()?;
         // Compression is disabled: the linker handles relaxation via
         // R_RISCV_RELAX. Running our own compression would change code

@@ -1,0 +1,29 @@
+Fix ARM assembler: branches in .subsection not resolved after merge
+
+Status: done
+
+Problem:
+When ARM assembly code uses .subsection 1 (e.g. for kernel alternative instructions),
+branches within the subsection that target labels in the main section (.subsection 0)
+are stored in pending_branch_relocs with the subsection name (e.g. ".text.__subsection.1").
+
+After merge_subsections() merges the subsection data into the parent section and removes
+the subsection from the sections map, resolve_local_branches() cannot find the section
+data for these pending relocs (sections.get_mut returns None), so the branch instruction
+is silently left as 0x14000000 (branch-to-self = infinite loop).
+
+This causes the ARM standalone tinyconfig kernel to build successfully but hang at boot.
+
+Root cause:
+- pending_branch_relocs entries record section as self.base.current_section at emit time
+- When in .subsection 1, this is ".text.__subsection.1"
+- merge_subsections() updates labels and regular relocs but NOT pending_branch_relocs
+- resolve_local_branches() silently skips entries whose section no longer exists
+
+Fix:
+After calling merge_subsections(), update pending_branch_relocs entries whose section
+was a subsection: change the section name to the parent and adjust the offset by
+the parent's original length (same as is done for labels and regular relocs).
+
+Files affected:
+- src/backend/arm/assembler/elf_writer.rs (process_statements, add update logic)

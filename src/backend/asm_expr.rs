@@ -272,7 +272,7 @@ fn parse_single_integer(s: &str) -> Result<i64, String> {
         let uval = u64::from_str_radix(hex, 16)
             .map_err(|_| format!("bad hex: {}", s))?;
         if negative {
-            return Ok(-(uval as i64));
+            return Ok((uval as i64).wrapping_neg());
         }
         return Ok(uval as i64);
     } else if let Some(bin) = s.strip_prefix("0b").or_else(|| s.strip_prefix("0B")) {
@@ -292,14 +292,14 @@ fn parse_single_integer(s: &str) -> Result<i64, String> {
         }
         if let Ok(uval) = s.parse::<u64>() {
             if negative {
-                return Ok(-(uval as i64));
+                return Ok((uval as i64).wrapping_neg());
             }
             return Ok(uval as i64);
         }
         return Err(format!("bad integer: {}", s));
     };
 
-    Ok(if negative { -val } else { val })
+    Ok(if negative { val.wrapping_neg() } else { val })
 }
 
 /// Parse an integer expression with full operator precedence.
