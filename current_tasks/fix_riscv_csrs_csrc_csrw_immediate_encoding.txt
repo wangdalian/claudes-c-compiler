@@ -1,0 +1,7 @@
+Fixing RISC-V assembler: csrs/csrc/csrw pseudo-instructions with immediate operands
+are incorrectly encoded as register variants instead of immediate variants (csrrsi/csrrci/csrrwi).
+
+e.g. "csrs sstatus, 2" should emit csrrsi (setting bits 0x2 in sstatus)
+but instead emits csrrs with rs1=x2 (sp), writing the stack pointer into sstatus.
+
+This causes kernel boot failures because interrupt enable bits are set incorrectly.
