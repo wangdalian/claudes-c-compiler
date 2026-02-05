@@ -1,0 +1,13 @@
+Fix #pragma GCC visibility leaking into assembler for .S files
+
+Problem: When preprocessing .S files (assembly with C preprocessor), the
+preprocessor converts #pragma GCC visibility push(hidden) into synthetic
+tokens (__ccc_visibility_push_hidden ;). These are meant for the C parser
+but leak into the assembly text, causing the assembler to fail with
+"unhandled instruction: __ccc_visibility_push_hidden".
+
+This affects kernel defconfig builds where linux/hidden.h is included.
+
+Fix: Suppress pragma visibility synthetic tokens when in asm_mode.
+Also suppress pragma pack synthetic tokens in asm_mode since they
+are similarly C-parser-specific.
