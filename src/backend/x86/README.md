@@ -13,8 +13,8 @@ output).
 x86/
   codegen/            Code generation and peephole optimizer  (~6,300 lines)
     peephole/         Multi-phase post-codegen assembly optimizer  (~6,200 lines)
-  assembler/          Builtin x86-64 assembler  (~7,900 lines)
-  linker/             Builtin x86-64 linker  (~3,100 lines)
+  assembler/          Builtin x86-64 assembler  (~8,200 lines)
+  linker/             Builtin x86-64 linker  (~3,000 lines)
 ```
 
 ## Sub-Module Documentation

@@ -708,7 +708,7 @@ hot path.
 | File | Lines | Description |
 |------|------:|-------------|
 | `mod.rs` | ~25 | Module root; re-exports `peephole_optimize` |
-| `types.rs` | ~1400 | `LineInfo`, `LineKind`, `ExtKind`, `MoveSize`, `LineStore`, `classify_line`, register tables, utility functions |
+| `types.rs` | ~1275 | `LineInfo`, `LineKind`, `ExtKind`, `MoveSize`, `LineStore`, `classify_line`, register tables, utility functions |
 | `passes/mod.rs` | ~1200 | Pass pipeline orchestrator (`peephole_optimize` entry point) + unit tests |
 | `passes/helpers.rs` | ~290 | Shared utilities: register rewriting, label parsing, epilogue detection, instruction analysis |
 | `passes/local_patterns.rs` | ~490 | Phase 1: combined local pass (7 merged patterns) + movq/extension fusion |

@@ -114,7 +114,7 @@ pub fn link_shared(
 
 | File | Lines | Role |
 |------|-------|------|
-| `mod.rs` | ~3020 | Linker orchestration for both executables and shared libraries: PLT/GOT creation, layout, relocation application, output emission.  Defines `GlobalSymbol`.  Delegates section merging, COMMON allocation, symbol registration, archive loading, argument parsing (`parse_linker_args`), undefined symbol checking (`check_undefined_symbols_elf64`), and ELF writing helpers (`write_elf64_shdr`) to `linker_common`. |
+| `mod.rs` | ~2950 | Linker orchestration for both executables and shared libraries: PLT/GOT creation, layout, relocation application, output emission.  Defines `GlobalSymbol`.  Delegates section merging, COMMON allocation, symbol registration, archive loading, argument parsing (`parse_linker_args`), undefined symbol checking (`check_undefined_symbols_elf64`), and ELF writing helpers (`write_elf64_shdr`) to `linker_common`. |
 | `elf.rs` | ~79 | x86-64 relocation constants (`R_X86_64_*`); type aliases mapping `linker_common` types to local names (`ElfObject`, `Symbol`, etc.); thin wrapper functions delegating to `linker_common` for ELF64 parsing, shared library symbols, and SONAME extraction; re-exports shared ELF constants from `crate::backend::elf` |
 
 
