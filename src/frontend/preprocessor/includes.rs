@@ -237,6 +237,24 @@ pub(super) fn make_absolute(path: &Path) -> PathBuf {
     }
 }
 
+/// Format a path for use in `#line` directives.
+///
+/// GCC emits relative paths in `#line` directives when the file is under the
+/// current working directory, and absolute paths otherwise. We replicate this
+/// behavior because some build systems (notably Perl's `makedepend`) parse
+/// `#line` directives and add compilation recipes for `.c` dependencies that
+/// contain a `/` in their path. Using absolute paths would cause files like
+/// `vutil.c` (which is `#include`d from `util.c`) to match the pattern and
+/// generate a spurious inline recipe that overrides the correct `.c.o` rule.
+pub(super) fn format_path_for_line_directive(path: &Path) -> String {
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Ok(relative) = path.strip_prefix(&cwd) {
+            return relative.display().to_string();
+        }
+    }
+    path.display().to_string()
+}
+
 /// Clean a path by resolving `.` and `..` components without following symlinks.
 fn clean_path(path: &Path) -> PathBuf {
     let mut result = PathBuf::new();
@@ -354,13 +372,16 @@ impl Preprocessor {
                     // Push onto include stack
                     self.include_stack.push(resolved_path.clone());
 
+                    // Format path for line directive (relative when under cwd, matching GCC)
+                    let display_path = format_path_for_line_directive(&resolved_path);
+
                     // Update __FILE__ (uses set_file to avoid full MacroDef allocation)
                     let old_file = self.macros.get_file_body().map(|s| s.to_string());
-                    self.macros.set_file(format!("\"{}\"", resolved_path.display()));
+                    self.macros.set_file(format!("\"{}\"", display_path));
 
                     // Emit line marker for entering the included file
                     // Flag 1 indicates entering a new include file (GCC convention)
-                    let mut result = format!("# 1 \"{}\" 1\n", resolved_path.display());
+                    let mut result = format!("# 1 \"{}\" 1\n", display_path);
 
                     // Preprocess the included content
                     result.push_str(&self.preprocess_included(&content));
@@ -477,12 +498,15 @@ impl Preprocessor {
 
                     self.include_stack.push(resolved_path.clone());
 
+                    // Format path for line directive (relative when under cwd, matching GCC)
+                    let display_path = format_path_for_line_directive(&resolved_path);
+
                     let old_file = self.macros.get_file_body().map(|s| s.to_string());
-                    self.macros.set_file(format!("\"{}\"", resolved_path.display()));
+                    self.macros.set_file(format!("\"{}\"", display_path));
 
                     // Emit line marker for entering the included file
                     // Flag 1 indicates entering a new include file (GCC convention)
-                    let mut result = format!("# 1 \"{}\" 1\n", resolved_path.display());
+                    let mut result = format!("# 1 \"{}\" 1\n", display_path);
 
                     result.push_str(&self.preprocess_included(&content));
 

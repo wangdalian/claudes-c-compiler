@@ -92,6 +92,19 @@ impl Lowerer {
             return Operand::Value(result);
         }
 
+        // Sub-int types (U8/I8/U16/I16): the narrow optimization pass may convert
+        // widen-op-narrow patterns into narrow-type BinOps. The codegen only handles
+        // I32/U32 and I64/U64 operand widths, so after a narrow BinOp the upper
+        // register bits may contain stale data. CondBranch tests the full 64-bit
+        // register (`testq %rax, %rax`), which would see those stale bits as nonzero.
+        // Emit a Cast to widen the value to the machine word type, which forces
+        // proper zero/sign-extension (movzbq/movzwq) to clean the upper bits.
+        if matches!(expr_ty, IrType::I8 | IrType::U8 | IrType::I16 | IrType::U16) {
+            let widen_ty = crate::common::types::widened_op_type(expr_ty);
+            let widened = self.emit_cast_val(val, expr_ty, widen_ty);
+            return Operand::Value(widened);
+        }
+
         val
     }
 

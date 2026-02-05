@@ -371,8 +371,14 @@ impl SemanticAnalyzer {
                     }
                 }
 
-                // Store resolved CType for the typedef
-                let resolved_ctype = self.build_full_ctype(&decl.type_spec, &declarator.derived);
+                // Store resolved CType for the typedef.
+                // Use build_full_ctype_with_base to reuse the already-resolved base
+                // type, avoiding re-resolution of anonymous struct type specs.
+                let resolved_ctype = if declarator.derived.is_empty() {
+                    base_type.clone()
+                } else {
+                    type_builder::build_full_ctype_with_base(self, base_type.clone(), &declarator.derived)
+                };
                 self.result.type_context.typedefs.insert(declarator.name.clone(), resolved_ctype);
 
                 // Preserve alignment override from __attribute__((aligned(N))) on the typedef.
@@ -408,7 +414,11 @@ impl SemanticAnalyzer {
             let mut full_type = if init_decl.derived.is_empty() {
                 base_type.clone()
             } else {
-                type_builder::build_full_ctype(self, &decl.type_spec, &init_decl.derived)
+                // Use build_full_ctype_with_base to reuse the already-resolved base
+                // type. This is critical for anonymous structs: re-resolving the type
+                // spec would call next_anon_struct_id() again and produce a different
+                // key for each declarator, breaking pointer-array compatibility checks.
+                type_builder::build_full_ctype_with_base(self, base_type.clone(), &init_decl.derived)
             };
 
             // Resolve incomplete array sizes from initializers (e.g., int arr[] = {1,2,3})

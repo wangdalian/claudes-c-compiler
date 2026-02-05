@@ -375,7 +375,7 @@ impl Preprocessor {
                     // and the next line of the parent file is source_line_num + 2
                     // (since the #include directive itself was source_line_num + 1).
                     let parent_file = self.include_stack.last()
-                        .map(|p| p.display().to_string())
+                        .map(|p| super::includes::format_path_for_line_directive(p))
                         .unwrap_or_else(|| self.filename.clone());
                     // Flag 2 indicates returning from an include file (GCC convention)
                     let _ = writeln!(output, "# {} \"{}\" 2", source_line_num + 2, parent_file);

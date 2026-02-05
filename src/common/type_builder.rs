@@ -203,6 +203,18 @@ pub fn build_full_ctype(
     derived: &[DerivedDeclarator],
 ) -> CType {
     let base = ctx.resolve_type_spec_to_ctype(type_spec);
+    build_full_ctype_with_base(ctx, base, derived)
+}
+
+/// Build a full CType from an already-resolved base type and derived declarators.
+/// Use this instead of `build_full_ctype` when the base type has already been
+/// resolved (e.g., to avoid re-resolving anonymous struct type specs which would
+/// generate different anonymous struct keys for the same declaration).
+pub fn build_full_ctype_with_base(
+    ctx: &dyn TypeConvertContext,
+    base: CType,
+    derived: &[DerivedDeclarator],
+) -> CType {
     let fptr_idx = find_function_pointer_core(derived);
 
     if let Some(fp_start) = fptr_idx {
