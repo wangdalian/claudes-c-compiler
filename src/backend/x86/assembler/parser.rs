@@ -1843,10 +1843,14 @@ fn expand_gas_macros_with_state(
                 first_part[macro_name.len()..].trim()
             };
             let args = parse_macro_args(args_str, &mac.params)?;
+            // Sort parameters by name length (longest first) to avoid partial
+            // substitution: e.g., \orig must not match before \orig_len.
+            let mut sorted_args: Vec<(String, String)> = args.clone();
+            sorted_args.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
             // Substitute parameters in body
             let mut expanded_body: Vec<String> = mac.body.iter().map(|line| {
                 let mut l = line.clone();
-                for (pname, pval) in &args {
+                for (pname, pval) in &sorted_args {
                     l = l.replace(&format!("\\{}", pname), pval);
                 }
                 // Strip GAS macro argument delimiters: \() resolves to empty string.

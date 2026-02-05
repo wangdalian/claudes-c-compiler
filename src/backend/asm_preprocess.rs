@@ -797,10 +797,15 @@ pub fn expand_macros(
             } else if let Some(mac) = macros.get(potential_name) {
                 let args_str = trimmed[first_word.len()..].trim();
                 let args = split_macro_args(args_str);
+                // Sort parameter indices by name length (longest first) to avoid
+                // partial substitution: e.g., \orig must not match before \orig_len.
+                let mut sorted_indices: Vec<usize> = (0..mac.params.len()).collect();
+                sorted_indices.sort_by(|&a, &b| mac.params[b].len().cmp(&mac.params[a].len()));
                 let mut expanded_lines = Vec::new();
                 for body_line in &mac.body {
                     let mut expanded = body_line.clone();
-                    for (pi, param) in mac.params.iter().enumerate() {
+                    for &pi in &sorted_indices {
+                        let param = &mac.params[pi];
                         let pattern = format!("\\{}", param);
                         let replacement = args.get(pi).map(|s| s.as_str()).unwrap_or_else(|| {
                             mac.defaults.get(pi)
@@ -849,10 +854,15 @@ fn expand_macros_with(
         } else if let Some(mac) = macros.get(potential_name) {
             let args_str = trimmed[first_word.len()..].trim();
             let args = split_macro_args(args_str);
+            // Sort parameter indices by name length (longest first) to avoid
+            // partial substitution: e.g., \orig must not match before \orig_len.
+            let mut sorted_indices: Vec<usize> = (0..mac.params.len()).collect();
+            sorted_indices.sort_by(|&a, &b| mac.params[b].len().cmp(&mac.params[a].len()));
             let mut expanded_lines = Vec::new();
             for body_line in &mac.body {
                 let mut expanded = body_line.clone();
-                for (pi, param) in mac.params.iter().enumerate() {
+                for &pi in &sorted_indices {
+                    let param = &mac.params[pi];
                     let pattern = format!("\\{}", param);
                     let replacement = args.get(pi).map(|s| s.as_str()).unwrap_or_else(|| {
                         mac.defaults.get(pi)
