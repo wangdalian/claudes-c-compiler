@@ -1600,7 +1600,20 @@ impl SemanticAnalyzer {
         let layouts = self.result.type_context.borrow_struct_layouts();
         let layout = match layouts.get(key.as_ref()) {
             Some(l) => l,
-            None => return, // Incomplete type (forward declaration); skip check
+            None => {
+                // No layout at all - struct was never declared or defined.
+                // This happens with implicit struct references in casts like
+                // ((struct foo *)0)->bar where struct foo is never defined.
+                // C11 6.5.2.3: member access requires the struct to be complete.
+                if !self.defined_structs.borrow().contains(key.as_ref()) {
+                    let type_name = format!("{}", base_ctype);
+                    self.diagnostics.borrow_mut().error(
+                        format!("invalid use of undefined type '{}'", type_name),
+                        span,
+                    );
+                }
+                return;
+            }
         };
 
         // Check if the field exists (including anonymous struct/union members)

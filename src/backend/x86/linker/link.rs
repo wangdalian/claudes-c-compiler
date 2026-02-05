@@ -77,11 +77,15 @@ pub fn link_builtin(
         all_lib_names.extend(libs_to_load.iter().cloned());
 
         let mut lib_paths_resolved: Vec<String> = Vec::new();
-        for lib_name in &all_lib_names {
+        let needed_lib_count = needed_libs.len();
+        for (idx, lib_name) in all_lib_names.iter().enumerate() {
             if let Some(lib_path) = linker_common::resolve_lib(lib_name, &all_lib_paths, is_static) {
                 if !lib_paths_resolved.contains(&lib_path) {
                     lib_paths_resolved.push(lib_path);
                 }
+            } else if idx >= needed_lib_count {
+                // User-specified -l library not found: error (matching ld behavior)
+                return Err(format!("cannot find -l{}: No such file or directory", lib_name));
             }
         }
 
@@ -299,6 +303,8 @@ pub fn link_shared(
                 if !lib_paths_resolved.iter().any(|(p, _)| p == &lib_path) {
                     lib_paths_resolved.push((lib_path, *wa));
                 }
+            } else {
+                return Err(format!("cannot find -l{}: No such file or directory", lib_name));
             }
         }
         // Track which whole-archive libraries have been fully loaded to avoid

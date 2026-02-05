@@ -278,3 +278,5 @@ Tracking project build/test results with MY_ASM=builtin MY_LD=builtin
 | squashfuse | PASS | TODO | TODO | TODO | Fixed: implemented --whole-archive / --no-whole-archive in x86 shared library linker; archive members now unconditionally included when flag is active (libtool creates .so from .a convenience archives) |
 | canfestival | PASS | PASS | PASS | PASS | Fixed: C99 inline-only functions (inline without extern/static) were completely skipped during lowering, causing undefined symbol errors. Now lowered as static functions so bodies are available for inlining. |
 | ghostscript | PASS | PASS | PASS | PASS | Passes all architectures out of the box |
+| nng     | PASS | TODO | TODO | TODO | Fixed x86: (1) sema rejected member access on undefined struct types (cmake check_struct_has_member falsely passed for sockpeercred), (2) linker now errors on missing -l libraries (cmake check_library_exists falsely passed for libnsl/libsocket) |
+| libmagic_file | PASS | TODO | TODO | TODO | Passes x86 out of the box |

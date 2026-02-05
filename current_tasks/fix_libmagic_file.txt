@@ -1,3 +1,0 @@
-Fix libmagic_file project for x86 target.
-libmagic_file is the file(1) command / libmagic library. It fails on x86 but passes on i686/arm/riscv.
-Started: 2026-02-05
