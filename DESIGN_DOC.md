@@ -147,16 +147,16 @@ src/
     liveness.rs              Live interval computation for register allocation
     regalloc.rs              Linear scan register allocator
     state.rs                 Shared codegen state (stack slots, register cache)
-    stack_layout.rs          Stack frame layout with liveness-based slot packing
+    stack_layout/            Stack frame layout with liveness-based slot packing
     call_abi.rs              Unified ABI classification (caller + callee)
     cast.rs                  Shared cast and float operation classification
     f128_softfloat.rs        IEEE binary128 soft-float (ARM + RISC-V)
     inline_asm.rs            Shared inline assembly framework
     common.rs                Data sections, external tool fallback invocation
     x86_common.rs            Shared x86/i686 register names, condition codes
-    elf.rs                   ELF constants and shared types
+    elf/                     ELF constants, archive reading, shared types
     elf_writer_common.rs     Common ELF object file writing utilities
-    linker_common.rs         Shared linker types (dynamic symbols, archive reading)
+    linker_common/           Shared linker types (symbols, dynamic linking, EH frame)
     asm_preprocess.rs        Assembly text preprocessing (macro expansion, conditionals)
     asm_expr.rs              Assembly expression evaluation
     peephole_common.rs       Shared peephole optimizer utilities (word matching, line store)
