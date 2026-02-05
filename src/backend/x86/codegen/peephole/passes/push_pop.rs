@@ -69,10 +69,8 @@ fn instruction_modifies_stack(line: &str, info: &LineInfo) -> bool {
     if b.is_empty() { return false; }
     // pushfq, pushfl, pushf, popfq, popfl, popf -- these modify %rsp and
     // read/write the stack, making it unsafe to eliminate surrounding push/pop
-    if b[0] == b'p' {
-        if s.starts_with("pushf") || s.starts_with("popf") {
-            return true;
-        }
+    if b[0] == b'p' && (s.starts_with("pushf") || s.starts_with("popf")) {
+        return true;
     }
     // subq/addq to %rsp
     if (s.starts_with("subq ") || s.starts_with("addq ")) && s.ends_with("%rsp") {

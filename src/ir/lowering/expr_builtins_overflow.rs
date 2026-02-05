@@ -140,7 +140,7 @@ impl Lowerer {
 
                 // Also check for signed overflow: if the signed operation itself overflows,
                 // then we can't trust the result sign. Use signed overflow detection too.
-                let signed_ov = self.compute_signed_overflow(op, lhs_compute.clone(), rhs_compute.clone(), signed_result, compute_ty);
+                let signed_ov = self.compute_signed_overflow(op, lhs_compute, rhs_compute, signed_result, compute_ty);
 
                 // Check if result is negative (doesn't fit in unsigned)
                 let is_negative = self.emit_cmp_val(
@@ -178,7 +178,7 @@ impl Lowerer {
                     rhs_raw
                 };
 
-                let result = self.emit_binop_val(op, lhs_result.clone(), rhs_result.clone(), result_ir_ty);
+                let result = self.emit_binop_val(op, lhs_result, rhs_result, result_ir_ty);
 
                 let overflow = if is_signed {
                     self.compute_signed_overflow(op, lhs_result, rhs_result, result, result_ir_ty)
@@ -288,7 +288,7 @@ impl Lowerer {
                 Operand::Value(self.emit_cast_val(rhs_raw, rhs_src_ir, compute_ty))
             } else { rhs_raw };
 
-            let signed_result = self.emit_binop_val(op, lhs_compute.clone(), rhs_compute.clone(), compute_ty);
+            let signed_result = self.emit_binop_val(op, lhs_compute, rhs_compute, compute_ty);
             let signed_ov = self.compute_signed_overflow(op, lhs_compute, rhs_compute, signed_result, compute_ty);
             let is_negative = self.emit_cmp_val(
                 IrCmpOp::Slt,
@@ -312,7 +312,7 @@ impl Lowerer {
                 Operand::Value(self.emit_cast_val(rhs_raw, rhs_src_ir, result_ir_ty))
             } else { rhs_raw };
 
-            let result = self.emit_binop_val(op, lhs_result.clone(), rhs_result.clone(), result_ir_ty);
+            let result = self.emit_binop_val(op, lhs_result, rhs_result, result_ir_ty);
             let overflow = if is_signed_result {
                 self.compute_signed_overflow(op, lhs_result, rhs_result, result, result_ir_ty)
             } else {

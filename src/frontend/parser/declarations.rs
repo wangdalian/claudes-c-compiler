@@ -1155,7 +1155,7 @@ impl Parser {
         match expr {
             Expr::Identifier(name, _) => {
                 // It's a variable/parameter reference if not in enum constants
-                !enum_consts.map_or(false, |m| m.contains_key(name.as_str()))
+                !enum_consts.is_some_and(|m| m.contains_key(name.as_str()))
             }
             Expr::BinaryOp(_, lhs, rhs, _) => {
                 Self::expr_has_non_const_identifier(lhs, enum_consts)

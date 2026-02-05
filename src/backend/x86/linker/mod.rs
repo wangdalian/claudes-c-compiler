@@ -2132,9 +2132,7 @@ fn emit_executable(
     // Dynamic: PHDR, INTERP, LOAD(ro), LOAD(text), LOAD(rodata), LOAD(rw), DYNAMIC, GNU_STACK, [TLS]
     let phdr_count: u64 = if is_static {
         if has_tls_sections { 7 } else { 6 }
-    } else {
-        if has_tls_sections { 9 } else { 8 }
-    };
+    } else if has_tls_sections { 9 } else { 8 };
     let phdr_total_size = phdr_count * 56;
 
     // === Layout ===
@@ -2386,7 +2384,7 @@ fn emit_executable(
         preinit_array_start: 0,
         preinit_array_size: 0,
         rela_iplt_start: rela_iplt_addr,
-        rela_iplt_size: rela_iplt_size,
+        rela_iplt_size,
     };
     for sym in &get_standard_linker_symbols(&linker_addrs) {
         let entry = globals.entry(sym.name.to_string()).or_insert(GlobalSymbol {

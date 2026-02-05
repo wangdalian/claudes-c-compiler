@@ -13,7 +13,6 @@
 /// Integer literals: decimal, hex (0x), binary (0b), octal (leading 0),
 /// character literals ('c', '\n').
 /// Used by all four assembler backends (x86, i686, ARM, RISC-V).
-
 /// Map a C escape character to its ASCII value (e.g., b'n' -> 10 for '\n').
 fn char_escape_value(esc: u8) -> i64 {
     match esc {

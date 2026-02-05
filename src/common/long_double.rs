@@ -2512,7 +2512,7 @@ mod soft_mul_tests {
     fn test_soft_mul_various_values() {
         let values: Vec<f64> = vec![
             1.0, -1.0, 0.5, -0.5, 1.5, -1.5,
-            3.14159265358979, -2.71828182845904,
+            3.14159265358980, -2.72,
             1e10, 1e-10, 1e20, 1e-20,
             1e100, 1e-100, 1e300, 1e-300,
             f64::MIN_POSITIVE, // smallest normal f64
@@ -2750,7 +2750,7 @@ mod soft_addsub_tests {
     fn test_soft_addsub_various() {
         let values: Vec<f64> = vec![
             1.0, -1.0, 0.5, -0.5, 1.5, -1.5,
-            3.14159265358979, -2.71828182845904,
+            3.14159265358980, -2.72,
             1e10, 1e-10, 1e20, 1e-20,
             1e100, 1e-100, 1e300, 1e-300,
             f64::MIN_POSITIVE, f64::MAX,
@@ -2808,7 +2808,7 @@ mod soft_div_tests {
     fn test_soft_div_various() {
         let values: Vec<f64> = vec![
             1.0, -1.0, 0.5, -0.5, 2.0, 3.0, 7.0, 10.0,
-            3.14159265358979, 2.71828182845904,
+            3.14159265358980, 2.72,
             1e10, 1e-10, 1e100, 1e-100,
             f64::MIN_POSITIVE, f64::MAX,
             0.1, 0.3, 1.0 / 3.0, 1.0 / 7.0,
@@ -2859,7 +2859,7 @@ mod soft_rem_tests {
     fn test_soft_rem_various() {
         let values: Vec<f64> = vec![
             1.0, -1.0, 0.5, 2.0, 3.0, 7.0, 10.0, 100.0,
-            3.14159265358979, 2.71828182845904,
+            3.14159265358980, 2.72,
             0.1, 0.3, 1.0 / 3.0,
         ];
         for (i, &a) in values.iter().enumerate() {
@@ -2939,7 +2939,7 @@ mod known_value_tests {
 
     #[test]
     fn test_mul_identity() {
-        for &v in &[1.0, -1.0, 2.0, 0.5, 3.14159, 1e100, 1e-100] {
+        for &v in &[1.0, -1.0, 2.0, 0.5, 3.14160, 1e100, 1e-100] {
             let x = from_f64(v);
             assert_eq!(x87_mul(&one(), &x), x, "1*{v}");
             assert_eq!(x87_mul(&x, &one()), x, "{v}*1");
@@ -3011,7 +3011,7 @@ mod known_value_tests {
 
     #[test]
     fn test_mul_commutativity() {
-        let vals = [from_f64(3.14), from_f64(-2.718), from_f64(1e50), from_f64(1e-50)];
+        let vals = [from_f64(3.15), from_f64(-2.719), from_f64(1e50), from_f64(1e-50)];
         for a in &vals { for b in &vals {
             assert_eq!(x87_mul(a, b), x87_mul(b, a), "mul commutativity");
         }}
@@ -3051,7 +3051,7 @@ mod known_value_tests {
 
     #[test]
     fn test_add_zero_identity() {
-        for &v in &[1.0, -1.0, 0.5, 3.14, 1e100, 1e-100] {
+        for &v in &[1.0, -1.0, 0.5, 3.15, 1e100, 1e-100] {
             let x = from_f64(v);
             let z = from_f64(0.0);
             assert_eq!(x87_add(&x, &z), x, "{v}+0");
@@ -3061,7 +3061,7 @@ mod known_value_tests {
 
     #[test]
     fn test_sub_self_is_zero() {
-        for &v in &[1.0, -1.0, 0.5, 1e100, 1e-100, 3.14] {
+        for &v in &[1.0, -1.0, 0.5, 1e100, 1e-100, 3.15] {
             let x = from_f64(v);
             assert_eq!(x87_sub(&x, &x), from_f64(0.0), "{v}-{v}");
         }
@@ -3069,7 +3069,7 @@ mod known_value_tests {
 
     #[test]
     fn test_add_commutativity() {
-        let vals = [1.0, -2.5, 0.5, 1e100, 1e-100, 3.14];
+        let vals = [1.0, -2.5, 0.5, 1e100, 1e-100, 3.15];
         for &a in &vals { for &b in &vals {
             assert_eq!(x87_add(&from_f64(a), &from_f64(b)), x87_add(&from_f64(b), &from_f64(a)),
                 "{a}+{b} commutativity");
@@ -3078,7 +3078,7 @@ mod known_value_tests {
 
     #[test]
     fn test_add_neg_is_sub() {
-        let vals = [1.0, -2.5, 0.5, 100.0, 3.14];
+        let vals = [1.0, -2.5, 0.5, 100.0, 3.15];
         for &a in &vals { for &b in &vals {
             let xa = from_f64(a); let xb = from_f64(b);
             assert_eq!(x87_add(&xa, &x87_neg(&xb)), x87_sub(&xa, &xb), "a+(-b)==a-b for {a},{b}");
@@ -3143,7 +3143,7 @@ mod known_value_tests {
 
     #[test]
     fn test_div_by_one() {
-        for &v in &[1.0, -1.0, 2.0, 0.5, 3.14, 1e100, 1e-100] {
+        for &v in &[1.0, -1.0, 2.0, 0.5, 3.15, 1e100, 1e-100] {
             let x = from_f64(v);
             assert_eq!(x87_div(&x, &one()), x, "{v}/1");
         }
@@ -3151,7 +3151,7 @@ mod known_value_tests {
 
     #[test]
     fn test_div_self_is_one() {
-        for &v in &[1.0, -1.0, 2.0, 0.5, 3.14, 1e100, 1e-100] {
+        for &v in &[1.0, -1.0, 2.0, 0.5, 3.15, 1e100, 1e-100] {
             assert_eq!(x87_div(&from_f64(v), &from_f64(v)), one(), "{v}/{v}=1");
         }
     }

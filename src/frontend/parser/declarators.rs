@@ -521,7 +521,7 @@ impl Parser {
                 }
             }
             self.expect(&TokenKind::RParen);
-            return None;
+            None
         } else if matches!(self.peek(), TokenKind::Star) {
             // Function pointer or pointer-to-array: (*name)(params) or (*name)[N]
             let mut inner_ptr_depth = 0u32;

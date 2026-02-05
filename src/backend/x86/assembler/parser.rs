@@ -884,7 +884,7 @@ fn parse_operand(s: &str) -> Result<Operand, String> {
     // In AT&T syntax, a bare number without `$` prefix is an absolute memory address.
     // Only treat it as a memory operand if it parses as a pure integer and doesn't
     // look like a numeric label reference (e.g., `1f`, `1b`).
-    if s.bytes().next().map_or(false, |c| c.is_ascii_digit() || c == b'-')
+    if s.bytes().next().is_some_and(|c| c.is_ascii_digit() || c == b'-')
         && !s.ends_with('f') && !s.ends_with('b')
     {
         if let Ok(val) = crate::backend::asm_expr::parse_integer_expr(s) {
