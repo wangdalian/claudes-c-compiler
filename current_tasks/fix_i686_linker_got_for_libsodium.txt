@@ -1,0 +1,8 @@
+Fix i686 linker: don't emit GLOB_DAT for locally-defined GOT symbols
+
+The i686 linker incorrectly places locally-defined symbols (from static libraries)
+into .dynsym with GLOB_DAT relocations when they're accessed via R_386_GOT32X.
+This causes runtime symbol lookup failures (e.g. aegis128l_soft_implementation in libsodium).
+
+The fix separates GOT symbols into dynamic (need .dynsym + GLOB_DAT) and local
+(just need GOT entry filled at link time).
