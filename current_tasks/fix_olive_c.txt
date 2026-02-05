@@ -1,0 +1,2 @@
+Fixing olive.c project compilation and tests.
+Investigating build failures with ccc compilers (x86, arm, riscv, i686).
