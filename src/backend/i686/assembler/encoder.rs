@@ -119,6 +119,7 @@ fn mnemonic_size_suffix(mnemonic: &str) -> Option<u8> {
         | "outb" | "outw" | "outl" | "inb" | "inw" | "inl"
         | "verw" | "lsl" | "sgdt" | "sidt" | "lgdt" | "lidt"
         | "sgdtl" | "sidtl" | "lgdtl" | "lidtl"
+        | "lmsw" | "smsw"
         | "wbinvd" | "invlpg" | "rdpmc"
         | "ljmpl" | "ljmpw" | "ljmp" | "lret" | "lretl" | "lretq" => return None,
         _ => {}
@@ -385,6 +386,8 @@ impl InstructionEncoder {
             "verw" => self.encode_verw(ops),
             "lsl" => self.encode_lsl(ops),
             "sgdt" | "sgdtl" | "sidt" | "sidtl" | "lgdt" | "lgdtl" | "lidt" | "lidtl" => self.encode_system_table(ops, mnemonic),
+            "lmsw" => self.encode_lmsw(ops),
+            "smsw" => self.encode_smsw(ops),
 
             // Standalone prefix mnemonics (e.g. from "rep; nop" split on semicolon)
             "lock" if ops.is_empty() => { self.bytes.push(0xF0); Ok(()) }
@@ -3246,6 +3249,54 @@ impl InstructionEncoder {
                 Ok(())
             }
             _ => Err(format!("{} requires memory operand", mnemonic)),
+        }
+    }
+
+    /// Encode LMSW (Load Machine Status Word): 0F 01 /6
+    /// Accepts a 16-bit register or memory operand.
+    fn encode_lmsw(&mut self, ops: &[Operand]) -> Result<(), String> {
+        if ops.len() != 1 {
+            return Err("lmsw requires 1 operand".to_string());
+        }
+        match &ops[0] {
+            Operand::Register(reg) => {
+                let rm = reg_num(&reg.name).ok_or("bad register")?;
+                self.bytes.extend_from_slice(&[0x0F, 0x01]);
+                self.bytes.push(self.modrm(3, 6, rm));
+                Ok(())
+            }
+            Operand::Memory(mem) => {
+                self.bytes.extend_from_slice(&[0x0F, 0x01]);
+                self.encode_modrm_mem(6, mem)
+            }
+            _ => Err("lmsw requires register or memory operand".to_string()),
+        }
+    }
+
+    /// Encode SMSW (Store Machine Status Word): 0F 01 /4
+    /// Accepts a 16-bit register or memory operand.
+    /// Register form gets a 66h prefix for 16-bit operand size.
+    fn encode_smsw(&mut self, ops: &[Operand]) -> Result<(), String> {
+        if ops.len() != 1 {
+            return Err("smsw requires 1 operand".to_string());
+        }
+        match &ops[0] {
+            Operand::Register(reg) => {
+                let rm = reg_num(&reg.name).ok_or("bad register")?;
+                // 16-bit register form needs operand size prefix
+                let is_16 = matches!(reg.name.as_str(), "ax"|"bx"|"cx"|"dx"|"si"|"di"|"sp"|"bp");
+                if is_16 {
+                    self.bytes.push(0x66);
+                }
+                self.bytes.extend_from_slice(&[0x0F, 0x01]);
+                self.bytes.push(self.modrm(3, 4, rm));
+                Ok(())
+            }
+            Operand::Memory(mem) => {
+                self.bytes.extend_from_slice(&[0x0F, 0x01]);
+                self.encode_modrm_mem(4, mem)
+            }
+            _ => Err("smsw requires register or memory operand".to_string()),
         }
     }
 

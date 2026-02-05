@@ -246,6 +246,7 @@ fn mnemonic_size_suffix(mnemonic: &str) -> Option<u8> {
         | "fyl2x" | "fyl2xp1" | "fptan" | "fsin" | "fcos" | "fxtract" | "fnclex" | "fxch"
         | "fadd" | "fmul" | "fsub" | "fdiv" | "fnstenv" | "fldenv" | "fnstsw"
         | "ldmxcsr" | "stmxcsr" | "wbinvd" | "invd" | "rdsspq" | "rdsspd"
+        | "lmsw" | "smsw"
         | "pushf" | "pushfq" | "pushfl" | "popf" | "popfq" | "popfl" | "int3"
         | "movsq" | "stosq" | "movsw" | "stosw" | "lodsb" | "lodsw" | "lodsd" | "lodsq"
         | "scasb" | "scasw" | "scasd" | "scasq" | "cmpsb" | "cmpsw" | "cmpsd" | "cmpsq"
@@ -1738,6 +1739,8 @@ impl InstructionEncoder {
             "sgdt" | "sidt" | "lgdt" | "lidt"
             | "sgdtl" | "sidtl" | "lgdtl" | "lidtl"
             | "sgdtq" | "sidtq" | "lgdtq" | "lidtq" => self.encode_system_table(ops, mnemonic),
+            "lmsw" => self.encode_lmsw(ops),
+            "smsw" => self.encode_smsw(ops),
 
             _ if mnemonic.starts_with("set") => {
                 // Handle setXXb forms (e.g., setcb = setc with byte suffix)
@@ -3374,6 +3377,61 @@ impl InstructionEncoder {
                 self.encode_modrm_mem(reg_ext, &mem)
             }
             _ => Err(format!("{} requires memory operand", mnemonic)),
+        }
+    }
+
+    /// Encode LMSW (Load Machine Status Word): 0F 01 /6
+    /// Accepts a 16-bit register or memory operand.
+    fn encode_lmsw(&mut self, ops: &[Operand]) -> Result<(), String> {
+        if ops.len() != 1 {
+            return Err("lmsw requires 1 operand".to_string());
+        }
+        match &ops[0] {
+            Operand::Register(reg) => {
+                let rm = reg_num(&reg.name).ok_or("bad register")?;
+                if needs_rex_ext(&reg.name) {
+                    self.bytes.push(self.rex(false, false, false, true));
+                }
+                self.bytes.extend_from_slice(&[0x0F, 0x01]);
+                self.bytes.push(self.modrm(3, 6, rm));
+                Ok(())
+            }
+            Operand::Memory(mem) => {
+                self.emit_rex_rm(0, "", mem);
+                self.bytes.extend_from_slice(&[0x0F, 0x01]);
+                self.encode_modrm_mem(6, mem)
+            }
+            _ => Err("lmsw requires register or memory operand".to_string()),
+        }
+    }
+
+    /// Encode SMSW (Store Machine Status Word): 0F 01 /4
+    /// Accepts a register or memory operand.
+    /// 16-bit register form gets a 66h prefix.
+    fn encode_smsw(&mut self, ops: &[Operand]) -> Result<(), String> {
+        if ops.len() != 1 {
+            return Err("smsw requires 1 operand".to_string());
+        }
+        match &ops[0] {
+            Operand::Register(reg) => {
+                let rm = reg_num(&reg.name).ok_or("bad register")?;
+                let is_16 = is_reg16(&reg.name);
+                if is_16 {
+                    self.bytes.push(0x66);
+                }
+                if needs_rex_ext(&reg.name) {
+                    self.bytes.push(self.rex(false, false, false, true));
+                }
+                self.bytes.extend_from_slice(&[0x0F, 0x01]);
+                self.bytes.push(self.modrm(3, 4, rm));
+                Ok(())
+            }
+            Operand::Memory(mem) => {
+                self.emit_rex_rm(0, "", mem);
+                self.bytes.extend_from_slice(&[0x0F, 0x01]);
+                self.encode_modrm_mem(4, mem)
+            }
+            _ => Err("smsw requires register or memory operand".to_string()),
         }
     }
 
