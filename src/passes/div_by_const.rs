@@ -71,6 +71,27 @@ pub(crate) fn div_by_const_function(func: &mut IrFunction) -> usize {
     for block in &func.blocks {
         for inst in &block.instructions {
             match inst {
+                Instruction::ParamRef { dest, ty, .. } => {
+                    // (d) Function parameter of <=32-bit integer type.
+                    // After mem2reg, parameters are used directly without
+                    // Load+Cast, but they still fit in 32 bits.
+                    //
+                    // Note: On some architectures (ARM64, RISC-V), the upper
+                    // 32 bits of a register passing a 32-bit argument may not
+                    // be properly zero/sign-extended. The expand_*_in_i64
+                    // functions handle this by explicitly masking the input.
+                    if ty.is_integer() && ty.size() <= 4 {
+                        let id = dest.0 as usize;
+                        if id <= max_id {
+                            if ty.is_unsigned() {
+                                is_known_u32[id] = true;
+                                is_known_i32[id] = true;
+                            } else {
+                                is_known_i32[id] = true;
+                            }
+                        }
+                    }
+                }
                 Instruction::Cast { dest, from_ty, to_ty, .. } => {
                     let id = dest.0 as usize;
                     if id <= max_id {
@@ -108,6 +129,28 @@ pub(crate) fn div_by_const_function(func: &mut IrFunction) -> usize {
                             is_known_u32[id] = true;
                             is_known_i32[id] = true;
                         }
+                    }
+                }
+                Instruction::BinOp { dest, op, ty, .. } => {
+                    // (e) BinOp that produces a <=32-bit result.
+                    // After the narrow pass, operations may be narrowed to I32/U32.
+                    // Also, And with a small mask produces a small result.
+                    if ty.is_integer() && ty.size() <= 4 {
+                        let id = dest.0 as usize;
+                        if id <= max_id {
+                            if ty.is_unsigned() || *op == IrBinOp::And || *op == IrBinOp::LShr {
+                                is_known_u32[id] = true;
+                            }
+                            is_known_i32[id] = true;
+                        }
+                    }
+                }
+                Instruction::Cmp { dest, .. } => {
+                    // Comparison results are 0 or 1, always fit in 32 bits.
+                    let id = dest.0 as usize;
+                    if id <= max_id {
+                        is_known_u32[id] = true;
+                        is_known_i32[id] = true;
                     }
                 }
                 _ => {}
@@ -1306,14 +1349,27 @@ fn expand_udiv32_in_i64(
     let (magic, shift, needs_add) = compute_unsigned_magic_32(d)?;
     let mut insts = Vec::new();
 
-    // x is already in I64 (zero-extended from U32).
+    // Ensure the input is zero-extended to 64 bits. The LHS is known to be
+    // a 32-bit value (from is_known_u32 tracking), but it may be a function
+    // parameter where the upper 32 bits are undefined on some architectures
+    // (ARM64, RISC-V). Mask to guarantee correct unsigned 32-bit range.
+    let x_masked = fresh_value(next_id);
+    insts.push(Instruction::BinOp {
+        dest: x_masked,
+        op: IrBinOp::And,
+        lhs: *x,
+        rhs: Operand::Const(IrConst::I64(0xFFFFFFFF)),
+        ty: IrType::I64,
+    });
+    let x_safe = Operand::Value(x_masked);
+
     // Multiply by magic number (in 64 bits). Since x fits in u32 and magic
     // fits in u32, the product fits in u64 without overflow.
     let product = fresh_value(next_id);
     insts.push(Instruction::BinOp {
         dest: product,
         op: IrBinOp::Mul,
-        lhs: *x,
+        lhs: x_safe,
         rhs: Operand::Const(IrConst::I64(magic as i64)),
         ty: IrType::I64,
     });
@@ -1347,7 +1403,7 @@ fn expand_udiv32_in_i64(
         insts.push(Instruction::BinOp {
             dest: diff,
             op: IrBinOp::Sub,
-            lhs: *x,
+            lhs: x_safe,
             rhs: Operand::Value(hi),
             ty: IrType::I64,
         });

@@ -903,7 +903,10 @@ fn simplify_binop(
                 });
             }
             // Strength reduction: unsigned divide by power-of-2 => logical shift right
-            if op == IrBinOp::UDiv && (ty.is_integer() || ty == IrType::Ptr) && ty.is_unsigned() {
+            // Note: We check the opcode (UDiv) for unsigned semantics, not the type.
+            // On 64-bit targets, C integer promotion widens unsigned int ops to I64,
+            // but UDiv still has unsigned semantics regardless of type signedness.
+            if op == IrBinOp::UDiv && (ty.is_integer() || ty == IrType::Ptr) {
                 if let Some(shift) = const_power_of_two(rhs) {
                     return Some(Instruction::BinOp {
                         dest,
@@ -924,7 +927,10 @@ fn simplify_binop(
                 });
             }
             // Strength reduction: unsigned rem by power-of-2 => bitwise AND with mask
-            if op == IrBinOp::URem && (ty.is_integer() || ty == IrType::Ptr) && ty.is_unsigned() {
+            // Note: We check the opcode (URem) for unsigned semantics, not the type.
+            // On 64-bit targets, C integer promotion widens unsigned int ops to I64,
+            // but URem still has unsigned semantics regardless of type signedness.
+            if op == IrBinOp::URem && (ty.is_integer() || ty == IrType::Ptr) {
                 if let Some(shift) = const_power_of_two(rhs) {
                     // x % 2^k => x & (2^k - 1)
                     let mask = (1i64 << shift) - 1;
