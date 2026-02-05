@@ -420,10 +420,10 @@ format).
 |-----------------------------|--------|-------------------------------------------------|
 | `mod.rs`                    | ~30    | Module root; `assemble()` entry point           |
 | `encoder/`                  | ~3520  | i686 instruction encoder (split into focused submodules, see below) |
-| `elf_writer.rs`             | ~95    | `I686Arch` adapter for `ElfWriterCore`           |
+| `elf_writer.rs`             | ~170   | `I686Arch` adapter for `ElfWriterCore`           |
 | *(shared with x86-64)*      |        |                                                 |
-| `x86/assembler/parser.rs`   | ~1875  | AT&T syntax parser; data types; directives       |
-| `elf_writer_common.rs`      | ~1605  | Section/symbol/jump relax/ELF32 serialization    |
+| `x86/assembler/parser.rs`   | ~2180  | AT&T syntax parser; data types; directives       |
+| `elf_writer_common.rs`      | ~1700  | Section/symbol/jump relax/ELF32 serialization    |
 
 ### Encoder Submodules (`encoder/`)
 
