@@ -22,6 +22,24 @@ pub(super) const ARM_GP_SCRATCH: &[&str] = &["x9", "x10", "x11", "x12", "x13", "
 /// to the appropriate scalar view in format_reg_static.
 const ARM_FP_SCRATCH: &[&str] = &["v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23", "v24", "v25"];
 
+/// Convert an IR constant to a 64-bit value appropriate for an inline asm operand.
+/// On AArch64, 32-bit values in X registers must have upper 32 bits zeroed (zero-extended).
+/// For 64-bit operand types, the constant is sign-extended to preserve its semantic value
+/// (e.g., int64_t a = -128 stored as IrConst::I32(-128) must become 0xFFFFFFFF_FFFFFF80).
+fn const_for_asm_operand(c: &IrConst, operand_type: &IrType) -> i64 {
+    let sext = c.to_i64().unwrap_or(0);
+    match operand_type.size() {
+        // 32-bit operand: zero-extend the 32-bit bit pattern.
+        // This ensures e.g. 0xF0000000u stays 0x00000000_F0000000 in the X register,
+        // not 0xFFFFFFFF_F0000000 (which would be sign-extended).
+        1 => sext & 0xFF,
+        2 => sext & 0xFFFF,
+        4 => sext & 0xFFFF_FFFF,
+        // 64-bit or larger operand: sign-extend to preserve int64_t semantics.
+        _ => sext,
+    }
+}
+
 impl InlineAsmEmitter for ArmCodegen {
     fn asm_state(&mut self) -> &mut CodegenState { &mut self.state }
 
@@ -201,10 +219,12 @@ impl InlineAsmEmitter for ArmCodegen {
                 } else if is_sp {
                     // ARM64: can't use ldr/mov imm to sp directly in most cases.
                     // Load to scratch first, then mov to sp.
-                    self.emit_load_imm64("x9", c.to_i64().unwrap_or(0));
+                    let val = const_for_asm_operand(c, &op.operand_type);
+                    self.emit_load_imm64("x9", val);
                     self.state.emit("    mov sp, x9");
                 } else {
-                    self.emit_load_imm64(reg, c.to_i64().unwrap_or(0));
+                    let val = const_for_asm_operand(c, &op.operand_type);
+                    self.emit_load_imm64(reg, val);
                 }
             }
             Operand::Value(v) => {
