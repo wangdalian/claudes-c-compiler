@@ -763,8 +763,10 @@ terminator. Uses a use-count-based worklist algorithm with O(n) complexity:
 result is used: Store, Call, CallIndirect, Alloca, DynAlloca, Memcpy, all atomic
 operations (including Fence), InlineAsm, StackRestore, VaStart/VaEnd/VaCopy/
 VaArg/VaArgStruct, multi-return helpers (GetReturn*Second, SetReturn*Second),
-and non-pure Intrinsics. Alloca is conservatively kept because the backend uses
-positional indexing for parameter mapping.
+and Intrinsics that are non-pure or have a destination pointer (the store
+through the destination pointer is a side effect even if the intrinsic
+computation itself is pure). Alloca is conservatively kept because the backend
+uses positional indexing for parameter mapping.
 
 ### dead_statics -- Dead Static Function and Global Elimination
 
