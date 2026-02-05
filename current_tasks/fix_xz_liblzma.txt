@@ -1,0 +1,2 @@
+Fixing xz_liblzma project to compile and pass tests with ccc compilers.
+Testing all architectures, fixing any compiler bugs found.
