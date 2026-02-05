@@ -127,9 +127,9 @@ CType::Void, Bool,
        Vector(Box<CType>, usize)
 ```
 
-All 27 variants are shown above: 20 primitive scalar types, 3 complex types,
-and 4 compound type constructors (Pointer, Array, Function, Vector) plus
-Struct, Union, and Enum.
+All 27 variants are shown above: 17 primitive scalar types (Void through
+LongDouble), 3 complex types, 4 compound type constructors (Pointer, Array,
+Function, Vector), and 3 named aggregate types (Struct, Union, Enum).
 
 CType distinguishes `int` from `long` even when the underlying sizes match
 (e.g., both are 32 bits on ILP32), because C requires them to be distinct
@@ -160,7 +160,7 @@ IrType is what the IR instructions, optimization passes, and code generator
 work with. It collapses C-level distinctions that are irrelevant at the
 machine level:
 
-- `int` and `long` on LP64 both become `I64`
+- `long` and `long long` on LP64 both become `I64` (while `int` is always `I32`)
 - All pointer types become `Ptr`
 - Struct and array types are decomposed into sequences of scalar loads/stores
 
@@ -537,7 +537,7 @@ Key evaluators:
 - `eval_const_binop_float(op, lhs, rhs)` -- (public) Floating-point binary
   operations on `&IrConst` parameters. Handles F32, F64, and LongDouble
   formats: for LongDouble, uses full-precision f128 software arithmetic or
-  x87 80-bit inline assembly depending on the target. For F32/F64, uses
+  x87 80-bit software arithmetic depending on the target. For F32/F64, uses
   native Rust arithmetic. Comparison and logical operations always return
   `IrConst::I64`.
 - `eval_const_binop_i128(op, lhs, rhs, ...)` -- (module-private) Native i128
@@ -649,22 +649,18 @@ Note that all float-to-integer conversions operate on f128 bytes. Code working
 with x87 values should first convert to f128 via `x87_bytes_to_f128_bytes`,
 then call the appropriate `f128_bytes_to_*` function.
 
-**x87 arithmetic (x86-64 inline assembly):**
-These functions use `fld` / `fstp` x87 FPU instructions via Rust inline
-assembly to perform operations at full 80-bit precision on x86-64 hosts:
-- `x87_add(a, b)`, `x87_sub(a, b)`, `x87_mul(a, b)`, `x87_div(a, b)`
-- `x87_rem(a, b)` -- Uses `fprem` (not `fprem1`) with a loop that checks the
-  C2 status bit for partial remainders, ensuring correct results even for
-  large quotients.
-- `x87_neg(a)` -- Negates by flipping the sign bit with a pure Rust
-  bit-flip (`result[9] ^= 0x80`). No inline assembly is used.
-- `x87_cmp(a, b)` -- Uses `fucompp` + `fnstsw ax` for unordered comparison.
-  Decodes the x87 status word condition codes (C0, C2, C3) to return: -1 if
-  a < b, 0 if equal, 1 if a > b, or `i32::MIN` for unordered (NaN)
-  comparisons.
+**x87 arithmetic (pure software):**
+All x87 operations are implemented in pure Rust without inline assembly,
+producing bit-identical results to x87 FPU hardware:
+- `x87_add(a, b)`, `x87_sub(a, b)`, `x87_mul(a, b)`, `x87_div(a, b)` --
+  Full 64-bit mantissa precision arithmetic using `_soft` implementations.
+- `x87_rem(a, b)` -- Software remainder with `fprem` semantics.
+- `x87_neg(a)` -- Negates by flipping the sign bit (`result[9] ^= 0x80`).
+- `x87_cmp(a, b)` -- Software comparison returning: -1 if a < b, 0 if
+  equal, 1 if a > b, or `i32::MIN` for unordered (NaN) comparisons.
 
-On non-x86 hosts cross-compiling for x86, fallback software implementations
-are provided (lossy, via f64 approximation).
+Because all implementations are pure software, no cross-compilation
+fallbacks are needed -- the same code runs identically on any host.
 
 **f128 arithmetic (pure Rust software implementation):**
 For AArch64/RISC-V targets (or cross-compilation on non-x86 hosts), all
