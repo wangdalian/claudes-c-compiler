@@ -34,6 +34,20 @@ const RISCV_FP_SCRATCH: &[&str] = &["ft0", "ft1", "ft2", "ft3", "ft4", "ft5", "f
 /// If no safe candidate is found, returns a fallback ("t0" or "t1"). The caller
 /// must check whether the returned register is in all_output_regs and use a
 /// stack-based spill if so.
+
+/// Select the correct RISC-V store instruction based on the operand's IR type.
+/// On RV64, GP registers are always 64-bit, but sub-64-bit types must use
+/// narrower store instructions (sb/sh/sw) to avoid corrupting adjacent memory.
+fn gp_store_for_type(ty: IrType) -> &'static str {
+    match ty {
+        IrType::I8 | IrType::U8 => "sb",
+        IrType::I16 | IrType::U16 => "sh",
+        IrType::I32 | IrType::U32 => "sw",
+        // I64, U64, Ptr, and anything else uses sd (full 64-bit store)
+        _ => "sd",
+    }
+}
+
 fn find_gp_scratch_for_output(current_output_reg: &str, all_output_regs: &[&str]) -> String {
     const CANDIDATES: &[&str] = &["t0", "t1", "t2", "t3", "t4", "t5", "t6", "a0", "a1"];
     for &c in CANDIDATES {
@@ -435,7 +449,13 @@ impl InlineAsmEmitter for RiscvCodegen {
             }
             _ => {
                 let reg = op.reg.clone();
+                // For stores through pointers (indirect), use the type-appropriate
+                // store instruction to avoid corrupting adjacent memory with an
+                // oversized store. For direct slots (alloca IS the variable), always
+                // use sd because alloca slots are padded to 8 bytes on RV64 and
+                // the preload path uses ld unconditionally.
                 let is_direct = self.state.is_direct_slot(ptr.0);
+                let store_op = if is_direct { "sd" } else { gp_store_for_type(op.operand_type) };
                 let slot = self.state.get_slot(ptr.0);
                 if is_direct {
                     if let Some(slot) = slot {
@@ -453,13 +473,13 @@ impl InlineAsmEmitter for RiscvCodegen {
                         self.state.emit_fmt(format_args!("    addi sp, sp, -16"));
                         self.state.emit_fmt(format_args!("    sd {}, 0(sp)", scratch));
                         self.state.emit_fmt(format_args!("    mv {}, {}", scratch, src_name));
-                        self.state.emit_fmt(format_args!("    sd {}, 0({})", reg, scratch));
+                        self.state.emit_fmt(format_args!("    {} {}, 0({})", store_op, reg, scratch));
                         self.state.emit_fmt(format_args!("    ld {}, 0(sp)", scratch));
                         self.state.emit_fmt(format_args!("    addi sp, sp, 16"));
                     } else {
                         let src_name = super::emit::callee_saved_name(phys);
                         self.state.emit_fmt(format_args!("    mv {}, {}", scratch, src_name));
-                        self.state.emit_fmt(format_args!("    sd {}, 0({})", reg, scratch));
+                        self.state.emit_fmt(format_args!("    {} {}, 0({})", store_op, reg, scratch));
                     }
                 } else if let Some(slot) = slot {
                     // Non-alloca: slot holds a pointer, store through it.
@@ -471,12 +491,12 @@ impl InlineAsmEmitter for RiscvCodegen {
                         self.state.emit_fmt(format_args!("    addi sp, sp, -16"));
                         self.state.emit_fmt(format_args!("    sd {}, 0(sp)", scratch));
                         self.emit_load_from_s0(&scratch, slot.0, "ld");
-                        self.state.emit_fmt(format_args!("    sd {}, 0({})", reg, scratch));
+                        self.state.emit_fmt(format_args!("    {} {}, 0({})", store_op, reg, scratch));
                         self.state.emit_fmt(format_args!("    ld {}, 0(sp)", scratch));
                         self.state.emit_fmt(format_args!("    addi sp, sp, 16"));
                     } else {
                         self.emit_load_from_s0(&scratch, slot.0, "ld");
-                        self.state.emit_fmt(format_args!("    sd {}, 0({})", reg, scratch));
+                        self.state.emit_fmt(format_args!("    {} {}, 0({})", store_op, reg, scratch));
                     }
                 }
             }
