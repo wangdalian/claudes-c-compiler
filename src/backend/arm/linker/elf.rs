@@ -8,16 +8,15 @@
 // continue to work via `use super::elf::*`.
 pub use crate::backend::elf::{
     ELF_MAGIC, ELFCLASS64, ELFDATA2LSB, ET_EXEC, ET_DYN, EM_AARCH64,
-    SHT_NULL, SHT_PROGBITS, SHT_NOBITS, SHT_STRTAB, SHT_SYMTAB, SHT_RELA, SHT_REL, SHT_GROUP,
-    SHF_WRITE, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS, SHF_EXCLUDE,
+    SHT_NOBITS,
+    SHF_WRITE, SHF_ALLOC, SHF_EXECINSTR, SHF_TLS,
     STB_GLOBAL, STB_WEAK,
-    STT_OBJECT, STT_FUNC, STT_FILE, STT_SECTION, STT_TLS, STT_GNU_IFUNC,
+    STT_OBJECT, STT_FUNC, STT_SECTION, STT_TLS, STT_GNU_IFUNC,
     SHN_UNDEF, SHN_ABS, SHN_COMMON,
     PT_LOAD, PT_TLS, PT_GNU_STACK, PT_GNU_EH_FRAME, PT_INTERP, PT_DYNAMIC, PT_PHDR,
     PF_X, PF_W, PF_R,
     read_u16, read_u32,
-    w16, w32, w64, write_bytes,
-    parse_archive_members, parse_thin_archive_members, is_thin_archive,
+    is_thin_archive,
     parse_linker_script_entries, LinkerScriptEntry,
     LinkerSymbolAddresses, get_standard_linker_symbols,
     DT_NEEDED, DT_SONAME, DT_STRTAB, DT_SYMTAB, DT_STRSZ, DT_SYMENT,
@@ -26,6 +25,7 @@ pub use crate::backend::elf::{
     DT_INIT_ARRAY, DT_INIT_ARRAYSZ, DT_FINI_ARRAY, DT_FINI_ARRAYSZ,
     DT_NULL, DT_RELACOUNT,
     DT_FLAGS, DF_BIND_NOW, DT_FLAGS_1, DF_1_NOW,
+    w16, w32, w64, write_bytes,
 };
 
 use crate::backend::linker_common;
