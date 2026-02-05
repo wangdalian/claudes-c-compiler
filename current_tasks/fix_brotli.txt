@@ -1,0 +1,3 @@
+Fixing brotli project for riscv target.
+brotli is a compression library. FAIL on riscv, PASS on x86/i686.
+Started: 2026-02-05

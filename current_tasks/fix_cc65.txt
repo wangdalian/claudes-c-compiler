@@ -1,4 +1,0 @@
-Fixing cc65 project for x86 target.
-cc65 is a 6502/65C02 cross-development package (assembler, compiler, linker, librarian).
-Status: TODO on x86, i686, riscv. PASS on arm.
-Started: 2026-02-05

@@ -77,7 +77,7 @@ Tracking project build/test results with MY_ASM=builtin MY_LD=builtin
 | dhrystone | PASS | TODO | TODO | TODO | Passes x86 |
 | tdb     | PASS | PASS | PASS | PASS | All architectures pass out of the box |
 | jansson | PASS | PASS | PASS | PASS | Fixed i686 asm: SymbolDiff (.long A-B) addend correction for PIC jump tables; R_386_GOTPC for _GLOBAL_OFFSET_TABLE_; linker COMDAT dedup |
-| cc65    | TODO | TODO | PASS | TODO | Fixed ARM asm: preserve original case for condition code/barrier symbol names (CS was lowercased to cs) |
+| cc65    | PASS | TODO | PASS | TODO | Fixed ARM asm: preserve original case for condition code/barrier symbol names (CS was lowercased to cs); x86 now passes |
 | brieflz | PASS | PASS | PASS | PASS | All architectures pass out of the box |
 | nettle  | PASS | TODO | TODO | TODO | Fixed x86 asm: added rdsspq/rdsspd (CET shadow stack) instructions; fixed escape_string \0 -> \000 to prevent octal escape consuming adjacent digits |
 | tinn    | PASS | TODO | TODO | TODO | Passes x86 |
