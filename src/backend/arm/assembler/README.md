@@ -13,7 +13,7 @@ not enabled).  It accepts the same textual assembly that GCC's gas would consume
 and produces ABI-compatible `.o` files that any standard AArch64 ELF linker (or
 the companion built-in linker) can link.
 
-The implementation spans roughly 9,200 lines of Rust across four files and is
+The implementation spans roughly 9,600 lines of Rust across four files and is
 organized as a clean three-stage pipeline.  Shared ELF infrastructure (section
 management, symbol tables, ELF serialization) lives in `ElfWriterBase` in
 `elf.rs`; the files here contain only AArch64-specific logic.
@@ -27,14 +27,14 @@ management, symbol tables, ELF serialization) lives in `ElfWriterBase` in
        v
   +------------------+
   |   parser.rs       |   Stage 1: Preprocess + Parse
-  |   (~2,340 lines)  |   Macros, .rept, .if -> AsmStatement[]
+  |   (~2,600 lines)  |   Macros, .rept, .if -> AsmStatement[]
   +------------------+
        |
        | Vec<AsmStatement>
        v
   +------------------+
   |   elf_writer.rs   |   Stage 2: Process + Encode + Emit
-  |   (~570 lines)    |   AArch64-specific: branch resolution,
+  |   (~580 lines)    |   AArch64-specific: branch resolution,
   |                    |   sym diffs (uses ElfWriterBase)
   +------------------+
        |         ^
@@ -485,10 +485,10 @@ relaxation passes (unlike x86).  The only multi-word output is the
 | File | Lines | Purpose |
 |------|-------|---------|
 | `mod.rs` | ~220 | Public API: `assemble()` entry point, GNU numeric label resolution (`1f`/`1b`) |
-| `parser.rs` | ~2,340 | Preprocessor (macros, .rept, .irp, conditionals, aliases) and parser: text -> `Vec<AsmStatement>` |
+| `parser.rs` | ~2,600 | Preprocessor (macros, .rept, .irp, conditionals, aliases) and parser: text -> `Vec<AsmStatement>` |
 | `encoder/` | ~6,190 | Instruction encoder (split into focused submodules, see below) |
-| `elf_writer.rs` | ~570 | ELF object file writer: composes with `ElfWriterBase` (from `elf.rs`), adds AArch64-specific branch resolution and symbol difference handling |
-| **Total** | **~9,320** | |
+| `elf_writer.rs` | ~580 | ELF object file writer: composes with `ElfWriterBase` (from `elf.rs`), adds AArch64-specific branch resolution and symbol difference handling |
+| **Total** | **~9,600** | |
 
 ### Encoder Submodules (`encoder/`)
 
