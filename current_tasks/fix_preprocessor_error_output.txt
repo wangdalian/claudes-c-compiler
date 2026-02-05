@@ -1,0 +1,4 @@
+Fix: preprocessor -E mode should output preprocessed text even when #error directives are encountered.
+Currently, #error causes the -E output to be empty, breaking configure scripts (e.g., privoxy)
+that grep the preprocessed output ignoring the exit code. GCC outputs the full preprocessed text
+and exits non-zero; we should match this behavior.
