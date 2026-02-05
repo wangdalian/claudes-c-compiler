@@ -574,6 +574,15 @@ impl Lowerer {
                             }
                             return;
                         }
+                        // Multi-dimensional array of structs with pointer fields:
+                        // e.g., struct S arr[2][2] where S has pointer fields.
+                        // Recursively emit each outer element as a compound sub-array.
+                        if let CType::Array(_, _) = elem_ty.as_ref() {
+                            let outer_elem_size = self.resolve_ctype_size(elem_ty);
+                            self.emit_multidim_array_compound(
+                                elements, nested_items, elem_ty, *arr_size, outer_elem_size);
+                            return;
+                        }
                     }
                 }
 
@@ -608,6 +617,46 @@ impl Lowerer {
                     self.fill_scalar_list_to_bytes(nested_items, &field_ty_clone, field_size, &mut bytes);
                 }
                 push_bytes_as_elements(elements, &bytes);
+            }
+        }
+    }
+
+    /// Emit a multi-dimensional array field containing structs with pointer fields.
+    /// Recursively emits each outer array element as a compound sub-init, handling
+    /// designated initializers at each level.
+    fn emit_multidim_array_compound(
+        &mut self,
+        elements: &mut Vec<GlobalInit>,
+        items: &[InitializerItem],
+        elem_ty: &CType,
+        arr_size: usize,
+        elem_size: usize,
+    ) {
+        // Build a sparse map: for each outer array index, store its initializer.
+        let mut index_inits: Vec<Option<&Initializer>> = vec![None; arr_size];
+        let mut ai = 0usize;
+        for item in items {
+            // Handle index designator: [idx] = val
+            if let Some(Designator::Index(ref idx_expr)) = item.designators.first() {
+                if let Some(idx) = self.eval_const_expr(idx_expr).and_then(|c| c.to_usize()) {
+                    ai = idx;
+                }
+            }
+            if ai < arr_size {
+                index_inits[ai] = Some(&item.init);
+            }
+            ai += 1;
+        }
+
+        // Emit each outer element
+        for slot in &index_inits {
+            if let Some(init) = slot {
+                // Recursively emit each element using compound field init
+                let is_ptr = matches!(elem_ty, CType::Pointer(_, _) | CType::Function(_));
+                self.emit_compound_field_init(elements, init, elem_ty, elem_size, is_ptr);
+            } else {
+                // Uninitialized element - zero fill
+                push_zero_bytes(elements, elem_size);
             }
         }
     }
@@ -648,7 +697,11 @@ impl Lowerer {
                 let has_array_idx_designator = item.designators.iter().any(|d| matches!(d, Designator::Index(_)));
                 if has_array_idx_designator {
                     if let CType::Array(elem_ty, Some(arr_size)) = &field.ty {
-                        if h::type_has_pointer_elements(elem_ty, &*self.types.borrow_struct_layouts()) {
+                        // Only use pointer-array designated init for direct pointer arrays.
+                        // For arrays of structs/sub-arrays containing pointers, fall through
+                        // to emit_compound_field_init which handles nested List initializers.
+                        let is_direct_ptr = matches!(elem_ty.as_ref(), CType::Pointer(_, _) | CType::Function(_));
+                        if is_direct_ptr {
                             self.emit_compound_ptr_array_designated_init(
                                 elements, &[item], elem_ty, *arr_size);
                             return;

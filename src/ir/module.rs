@@ -28,6 +28,9 @@ pub struct IrModule {
     /// Symbol attribute directives for extern declarations:
     /// (name, is_weak, visibility) - emitted as .weak/.hidden/.protected directives
     pub symbol_attrs: Vec<(String, bool, Option<String>)>,
+    /// Symbol version directives: (function_name, symver_string)
+    /// From __attribute__((symver("name@@VERSION"))) - emitted as .symver directives
+    pub symver_directives: Vec<(String, String)>,
 }
 
 /// A global variable.
@@ -255,6 +258,7 @@ impl IrModule {
             aliases: Vec::new(),
             toplevel_asm: Vec::new(),
             symbol_attrs: Vec::new(),
+            symver_directives: Vec::new(),
         }
     }
 

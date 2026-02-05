@@ -696,18 +696,111 @@ impl Lowerer {
                     return self.apply_field_chain_offsets(&global_name, base_offset, &start_layout, &fields);
                 }
                 // Handle &arr[i].field - ArraySubscript as base of member chain
-                Expr::ArraySubscript(base, index, _) => {
-                    if let Expr::Identifier(name, _) = base.as_ref() {
-                        let global_name = self.resolve_to_global_name(name)?;
-                        let ginfo = self.globals.get(&global_name)?;
-                        if ginfo.is_array {
-                            let idx_val = self.eval_const_expr(index)?;
-                            let idx = self.const_to_i64(&idx_val)?;
-                            let base_offset = idx * ginfo.elem_size as i64;
-                            // The element type should be a struct for member access
-                            let start_layout = ginfo.struct_layout.clone()?;
-                            return self.apply_field_chain_offsets(&global_name, base_offset, &start_layout, &fields);
+                // Also handles &global.member[i][j].field (member access + subscripts)
+                Expr::ArraySubscript(_, _, _) => {
+                    // Collect all subscript indices from outermost to innermost
+                    let mut subscript_indices: Vec<i64> = Vec::new();
+                    let mut sub_cur = current;
+                    while let Expr::ArraySubscript(sub_base, sub_index, _) = sub_cur {
+                        let idx_val = self.eval_const_expr(sub_index)?;
+                        let idx = self.const_to_i64(&idx_val)?;
+                        subscript_indices.push(idx);
+                        sub_cur = sub_base.as_ref();
+                    }
+                    subscript_indices.reverse(); // inner-to-outer -> left-to-right
+
+                    match sub_cur {
+                        Expr::Identifier(name, _) => {
+                            let global_name = self.resolve_to_global_name(name)?;
+                            let ginfo = self.globals.get(&global_name)?;
+                            if ginfo.is_array {
+                                // Compute offset from subscripts using array dim strides
+                                let mut base_offset: i64 = 0;
+                                let strides = &ginfo.array_dim_strides;
+                                for (dim, &idx) in subscript_indices.iter().enumerate() {
+                                    let stride = if !strides.is_empty() && dim < strides.len() {
+                                        strides[dim] as i64
+                                    } else if dim == 0 {
+                                        ginfo.elem_size as i64
+                                    } else {
+                                        return None;
+                                    };
+                                    base_offset += idx * stride;
+                                }
+                                let start_layout = ginfo.struct_layout.clone()?;
+                                return self.apply_field_chain_offsets(&global_name, base_offset, &start_layout, &fields);
+                            }
                         }
+                        // Handle global.member[i][j].field pattern:
+                        // The base of the subscripts is a MemberAccess chain on a global.
+                        // Resolve the member chain to get the global + field offset + field type,
+                        // then apply subscript offsets within the array field.
+                        Expr::MemberAccess(_, _, _) => {
+                            // Walk the member access chain below the subscripts (global.member[i][j].field)
+                            let mut member_fields: Vec<String> = Vec::new();
+                            let mut mcur = sub_cur;
+                            loop {
+                                match mcur {
+                                    Expr::MemberAccess(mbase, mfield, _) => {
+                                        member_fields.push(mfield.clone());
+                                        mcur = mbase.as_ref();
+                                    }
+                                    Expr::Identifier(name, _) => {
+                                        let global_name = self.resolve_to_global_name(name)?;
+                                        let ginfo = self.globals.get(&global_name)?;
+                                        let start_layout = ginfo.struct_layout.clone()?;
+
+                                        // Apply member field offsets to find the array field
+                                        let mut member_offset: i64 = 0;
+                                        let mut current_layout = start_layout;
+                                        let mut final_field_ty: Option<CType> = None;
+                                        for field_name in member_fields.iter().rev() {
+                                            let (foff, fty) = current_layout.field_offset(field_name, &*self.types.borrow_struct_layouts())?;
+                                            member_offset += foff as i64;
+                                            final_field_ty = Some(fty.clone());
+                                            current_layout = match &fty {
+                                                CType::Struct(key) | CType::Union(key) => {
+                                                    self.types.borrow_struct_layouts().get(&**key).cloned()
+                                                        .unwrap_or_else(StructLayout::empty_rc)
+                                                }
+                                                _ => StructLayout::empty_rc(),
+                                            };
+                                        }
+
+                                        // The field type should be an array for subscript access
+                                        let mut arr_ty = final_field_ty?;
+                                        let mut total_offset = member_offset;
+
+                                        // Apply each subscript index
+                                        for &idx in &subscript_indices {
+                                            let elem_size = match &arr_ty {
+                                                CType::Array(elem_ty, _) => {
+                                                    let es = self.ctype_size(elem_ty) as i64;
+                                                    // Advance to the element type for the next subscript
+                                                    arr_ty = elem_ty.as_ref().clone();
+                                                    es
+                                                }
+                                                _ => return None,
+                                            };
+                                            total_offset += idx * elem_size;
+                                        }
+
+                                        // Now arr_ty is the element type after all subscripts.
+                                        // Get its struct layout for applying remaining field chain.
+                                        let elem_layout = match &arr_ty {
+                                            CType::Struct(key) | CType::Union(key) => {
+                                                self.types.borrow_struct_layouts().get(&**key).cloned()?
+                                            }
+                                            _ => return None,
+                                        };
+
+                                        return self.apply_field_chain_offsets(&global_name, total_offset, &elem_layout, &fields);
+                                    }
+                                    _ => return None,
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                     return None;
                 }

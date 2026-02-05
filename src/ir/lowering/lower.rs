@@ -638,6 +638,15 @@ impl Lowerer {
                                 ));
                             }
                         }
+                        // Collect __attribute__((symver("..."))) declarations
+                        if let Some(ref sv) = declarator.attrs.symver {
+                            if !declarator.name.is_empty() {
+                                self.module.symver_directives.push((
+                                    declarator.name.clone(),
+                                    sv.clone(),
+                                ));
+                            }
+                        }
                         // Collect __attribute__((error("..."))) / __attribute__((warning("...")))
                         if declarator.attrs.is_error_attr() && !declarator.name.is_empty() {
                             self.error_functions.insert(declarator.name.clone());

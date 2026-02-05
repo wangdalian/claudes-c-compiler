@@ -1,2 +1,0 @@
-Investigating and fixing the zydis project compilation/tests.
-Will diagnose failures and fix compiler bugs if needed.

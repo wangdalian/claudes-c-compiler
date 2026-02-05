@@ -250,3 +250,5 @@ Tracking project build/test results with MY_ASM=builtin MY_LD=builtin
 | gforth  | PASS | TODO | TODO | TODO | Fixed: (1) preprocessor #line directives consumed during multi-line accumulation in included files, (2) cast-wrapped &&label in static initializers (e.g. (Label)&&I_noop) no longer zero-initialized |
 | wasm3   | PASS | TODO | TODO | TODO | Fixed: (1) x86 tail call optimization peephole pass for threaded interpreter dispatch, (2) 3D function pointer array initializer inner stride bug in global_init, (3) tail call safety check for lea-of-local (dangling stack pointer) |
 | openjpeg | PASS | PASS | PASS | PASS | All architectures pass out of the box |
+| zydis   | PASS | TODO | TODO | TODO | Fixed: self-referential static initializer with multi-dim array member subscripts (&FORMATTER.number_format[1][0].string_data); compound init for multi-dim arrays of structs with pointer fields |
+| libfuse | PASS | TODO | TODO | TODO | Fixed: (1) __attribute__((symver("..."))) support across full pipeline (parser->AST->IR->codegen->assembler->linker), (2) jmp @PLT suffix handling (strip suffix, use R_X86_64_PLT32 relocation instead of creating literal symbol) |

@@ -32,6 +32,8 @@ pub struct FunctionAttributes {
     pub section: Option<String>,
     /// __attribute__((visibility("hidden"|"default"|...)))
     pub visibility: Option<String>,
+    /// __attribute__((symver("name@@VERSION"))) - symbol version alias
+    pub symver: Option<String>,
 }
 
 /// Bit masks for boolean flags in `FunctionAttributes::flags`.
@@ -359,6 +361,8 @@ pub struct DeclAttributes {
     /// __attribute__((cleanup(func))) - call func(&var) when var goes out of scope.
     /// Used for RAII-style cleanup (e.g., Linux kernel guard()/scoped_guard() for mutex_unlock).
     pub cleanup_fn: Option<String>,
+    /// __attribute__((symver("name@@VERSION"))) - symbol version alias
+    pub symver: Option<String>,
 }
 
 /// Bit masks for boolean flags in `DeclAttributes::flags`.

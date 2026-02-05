@@ -414,6 +414,26 @@ fn parse_directive(line: &str) -> Result<AsmStatement, String> {
             let val = if parts.len() > 1 { parts[1].trim().to_string() } else { String::new() };
             Directive::Set(sym, val)
         }
+        ".symver" => {
+            // .symver name, alias@@VERSION -> treat as Set(alias, name) for default version
+            let parts: Vec<&str> = args.splitn(2, ',').collect();
+            if parts.len() == 2 {
+                let name = parts[0].trim();
+                let ver_string = parts[1].trim();
+                if let Some(at_pos) = ver_string.find('@') {
+                    let alias = &ver_string[..at_pos];
+                    if !alias.is_empty() {
+                        Directive::Set(alias.to_string(), name.to_string())
+                    } else {
+                        Directive::Ignored
+                    }
+                } else {
+                    Directive::Ignored
+                }
+            } else {
+                Directive::Ignored
+            }
+        }
 
         ".option" => Directive::ArchOption(args.to_string()),
         ".attribute" => Directive::Attribute(args.to_string()),

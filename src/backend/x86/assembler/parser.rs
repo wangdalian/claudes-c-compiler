@@ -77,6 +77,8 @@ pub enum AsmItem {
     Org(String, i64),
     /// `.incbin "file"[, skip[, count]]` — include binary file contents
     Incbin { path: String, skip: u64, count: Option<u64> },
+    /// Symbol version: `.symver name, name2@@VERSION` or `.symver name, name2@VERSION`
+    Symver(String, String),
     /// Blank line or comment-only line
     Empty,
 }
@@ -533,6 +535,7 @@ fn parse_directive(line: &str) -> Result<AsmItem, String> {
         }
         ".comm" => parse_comm_directive(args),
         ".set" => parse_set_directive(args),
+        ".symver" => parse_symver_directive(args),
         ".cfi_startproc" => Ok(AsmItem::Cfi(CfiDirective::StartProc)),
         ".cfi_endproc" => Ok(AsmItem::Cfi(CfiDirective::EndProc)),
         ".cfi_def_cfa_offset" => {
@@ -752,6 +755,18 @@ fn parse_set_directive(args: &str) -> Result<AsmItem, String> {
         return Err(format!("bad .set directive: {}", args));
     }
     Ok(AsmItem::Set(
+        parts[0].trim().to_string(),
+        parts[1].trim().to_string(),
+    ))
+}
+
+/// Parse `.symver name, name2@@VERSION` or `.symver name, name2@VERSION`.
+fn parse_symver_directive(args: &str) -> Result<AsmItem, String> {
+    let parts: Vec<&str> = args.splitn(2, ',').collect();
+    if parts.len() != 2 {
+        return Err(format!("bad .symver directive: {}", args));
+    }
+    Ok(AsmItem::Symver(
         parts[0].trim().to_string(),
         parts[1].trim().to_string(),
     ))

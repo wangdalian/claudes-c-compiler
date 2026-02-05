@@ -748,6 +748,7 @@ mod tests {
             toplevel_asm: vec![],
             symbol_attrs: vec![],
             char16_string_literals: vec![],
+            symver_directives: vec![],
         };
 
         let eliminated = module.for_each_function(run_gvn_function);
@@ -823,6 +824,7 @@ mod tests {
             toplevel_asm: vec![],
             symbol_attrs: vec![],
             char16_string_literals: vec![],
+            symver_directives: vec![],
         };
 
         let eliminated = module.for_each_function(run_gvn_function);
@@ -889,6 +891,7 @@ mod tests {
             toplevel_asm: vec![],
             symbol_attrs: vec![],
             char16_string_literals: vec![],
+            symver_directives: vec![],
         };
 
         let eliminated = module.for_each_function(run_gvn_function);
@@ -961,6 +964,7 @@ mod tests {
             toplevel_asm: vec![],
             symbol_attrs: vec![],
             char16_string_literals: vec![],
+            symver_directives: vec![],
         };
 
         let eliminated = module.for_each_function(run_gvn_function);
@@ -1033,6 +1037,7 @@ mod tests {
             toplevel_asm: vec![],
             symbol_attrs: vec![],
             char16_string_literals: vec![],
+            symver_directives: vec![],
         };
 
         let eliminated = module.for_each_function(run_gvn_function);
@@ -1110,6 +1115,7 @@ mod tests {
             toplevel_asm: vec![],
             symbol_attrs: vec![],
             char16_string_literals: vec![],
+            symver_directives: vec![],
         };
 
         let eliminated = module.for_each_function(run_gvn_function);
@@ -1216,6 +1222,7 @@ mod tests {
             toplevel_asm: vec![],
             symbol_attrs: vec![],
             char16_string_literals: vec![],
+            symver_directives: vec![],
         };
 
         let eliminated = module.for_each_function(run_gvn_function);
@@ -1274,6 +1281,7 @@ mod tests {
             toplevel_asm: vec![],
             symbol_attrs: vec![],
             char16_string_literals: vec![],
+            symver_directives: vec![],
         }
     }
 

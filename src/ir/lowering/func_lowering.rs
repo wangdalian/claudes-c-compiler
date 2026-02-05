@@ -571,6 +571,10 @@ impl Lowerer {
             ret_eightbyte_classes,
             is_gnu_inline_def: is_gnu_inline_no_extern_def,
         };
+        // Collect __attribute__((symver("..."))) directives
+        if let Some(ref sv) = func.attrs.symver {
+            self.module.symver_directives.push((func.name.clone(), sv.clone()));
+        }
         self.module.functions.push(ir_func);
         self.pop_scope();
         self.func_state = None;

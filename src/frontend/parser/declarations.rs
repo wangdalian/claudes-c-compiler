@@ -162,6 +162,7 @@ impl Parser {
         let is_error_attr = self.attrs.parsing_error_attr();
         let is_noreturn = self.attrs.parsing_noreturn();
         let cleanup_fn = self.attrs.parsing_cleanup_fn.take();
+        let symver = self.attrs.parsing_symver.take();
         let is_used = self.attrs.parsing_used();
         let is_fastcall = self.attrs.parsing_fastcall();
         let is_naked = self.attrs.parsing_naked();
@@ -181,6 +182,7 @@ impl Parser {
         decl_attrs.section = section;
         decl_attrs.asm_register = first_asm_reg;
         decl_attrs.cleanup_fn = cleanup_fn;
+        decl_attrs.symver = symver;
 
         // Apply __attribute__((mode(...))): transform type to specified bit-width
         let type_spec = if let Some(mk) = mode_kind {
@@ -277,6 +279,7 @@ impl Parser {
                 attrs.set_noreturn(decl_attrs.is_noreturn());
                 attrs.section = decl_attrs.section;
                 attrs.visibility = decl_attrs.visibility;
+                attrs.symver = decl_attrs.symver;
                 attrs
             },
             is_kr: is_kr_style,

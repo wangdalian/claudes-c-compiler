@@ -482,6 +482,17 @@ impl<A: X86Arch> ElfWriterCore<A> {
             AsmItem::Set(alias, target) => {
                 self.aliases.insert(alias.clone(), target.clone());
             }
+            AsmItem::Symver(name, ver_string) => {
+                // .symver name, alias@@VERSION  -> default version: create alias from "alias" to "name"
+                // .symver name, alias@VERSION   -> compat version: create alias from "alias" to "name"
+                // Extract the unversioned alias name from the version string
+                if let Some(at_pos) = ver_string.find('@') {
+                    let alias = &ver_string[..at_pos];
+                    if !alias.is_empty() {
+                        self.aliases.insert(alias.to_string(), name.clone());
+                    }
+                }
+            }
             AsmItem::Incbin { path, skip, count } => {
                 let data = std::fs::read(path)
                     .map_err(|e| format!(".incbin: failed to read '{}': {}", path, e))?;

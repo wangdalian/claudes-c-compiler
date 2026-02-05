@@ -1367,6 +1367,26 @@ fn parse_directive(line: &str) -> Result<AsmStatement, String> {
                 return Err(format!("malformed .set directive: expected 'name, value', got '{}'", args));
             }
         }
+        ".symver" => {
+            // .symver name, alias@@VERSION -> treat as alias for default version
+            let parts: Vec<&str> = args.splitn(2, ',').collect();
+            if parts.len() == 2 {
+                let name = parts[0].trim();
+                let ver_string = parts[1].trim();
+                if let Some(at_pos) = ver_string.find('@') {
+                    let alias = &ver_string[..at_pos];
+                    if !alias.is_empty() {
+                        AsmDirective::Set(alias.to_string(), name.to_string())
+                    } else {
+                        AsmDirective::Ignored
+                    }
+                } else {
+                    AsmDirective::Ignored
+                }
+            } else {
+                AsmDirective::Ignored
+            }
+        }
         // CFI directives
         ".cfi_startproc" | ".cfi_endproc" | ".cfi_def_cfa_offset"
         | ".cfi_offset" | ".cfi_def_cfa_register" | ".cfi_restore"

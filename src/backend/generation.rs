@@ -516,6 +516,7 @@ pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule, source_mgr: 
     emit_extern_visibility_directives(cg, module, &referenced_symbols);
     emit_functions_and_sections(cg, module, source_mgr, &file_table);
     emit_aliases(cg, module);
+    emit_symver_directives(cg, module);
     emit_symbol_attrs(cg, module, &referenced_symbols);
     emit_init_fini_arrays(cg, module, ptr_dir);
 
@@ -756,6 +757,13 @@ fn emit_aliases(cg: &mut dyn ArchCodegen, module: &IrModule) {
             cg.state().emit_fmt(format_args!(".globl {}", alias_name));
         }
         cg.state().emit_fmt(format_args!(".set {},{}", alias_name, target_name));
+    }
+}
+
+/// Emit .symver directives from __attribute__((symver("name@@VERSION"))).
+fn emit_symver_directives(cg: &mut dyn ArchCodegen, module: &IrModule) {
+    for (func_name, symver_str) in &module.symver_directives {
+        cg.state().emit_fmt(format_args!(".symver {},{}", func_name, symver_str));
     }
 }
 

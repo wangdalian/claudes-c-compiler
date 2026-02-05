@@ -126,6 +126,8 @@ pub(super) struct ParsedDeclAttrs {
     pub parsing_section: Option<String>,
     /// `__attribute__((cleanup(func)))` cleanup function name.
     pub parsing_cleanup_fn: Option<String>,
+    /// `__attribute__((symver("name@@VERSION")))` symbol version string.
+    pub parsing_symver: Option<String>,
     /// `__attribute__((vector_size(N)))` total vector size in bytes.
     pub parsing_vector_size: Option<usize>,
     /// `__attribute__((ext_vector_type(N)))` number of vector elements.
@@ -733,6 +735,10 @@ impl Parser {
             "section" | "__section__" => {
                 self.advance();
                 self.attrs.parsing_section = self.parse_string_attr_arg();
+            }
+            "symver" | "__symver__" => {
+                self.advance();
+                self.attrs.parsing_symver = self.parse_string_attr_arg();
             }
             "error" | "__error__" | "warning" | "__warning__" => {
                 self.attrs.set_error_attr(true);

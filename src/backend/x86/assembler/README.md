@@ -159,6 +159,7 @@ AsmItem
   |-- PopSection                       .popsection / .previous
   |-- Org(String, i64)                 .org expression, fill
   |-- Incbin { path, skip, count }     .incbin "file"[, skip[, count]]
+  |-- Symver(String, String)           .symver name, alias@@VERSION
   |-- Empty                            blank/comment-only line
 ```
 
@@ -675,6 +676,7 @@ provided flags/type instead of these defaults.
 | `.ascii` | `.ascii "str"` | Emit string without NUL terminator |
 | `.comm` | `.comm name, size, align` | Define common (BSS) symbol |
 | `.set` | `.set alias, target` | Define symbol alias |
+| `.symver` | `.symver name, alias@@VER` | Define symbol version alias (creates unversioned alias) |
 | `.incbin` | `.incbin "file"[, skip[, count]]` | Include binary file contents |
 | `.rept` / `.endr` | `.rept N` ... `.endr` | Repeat block of lines N times |
 | `.macro` / `.endm` | `.macro name [params]` ... `.endm` | Define a GAS macro |
