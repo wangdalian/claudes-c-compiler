@@ -356,7 +356,9 @@ fn parse_directive(line: &str) -> Result<AsmStatement, String> {
             Directive::Align(val)
         }
         ".balign" => {
-            let val: u64 = parse_int_literal(args.trim()).unwrap_or(1) as u64;
+            let val: u64 = args.trim().split(',').next()
+                .and_then(|s| parse_int_literal(s.trim()).ok())
+                .unwrap_or(1) as u64;
             Directive::Balign(val)
         }
 

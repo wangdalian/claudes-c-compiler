@@ -1,0 +1,9 @@
+Fix .balign hex literal parsing in RISC-V and ARM assemblers
+
+The .balign directive was failing to parse hex literals like 0x1000,
+silently falling back to alignment of 1. This caused the RISC-V kernel's
+EFI header (efi-header.S) to be misaligned, breaking the PE/COFF header
+layout and causing boot hangs.
+
+Also adds comma-separated argument handling for .balign (e.g.,
+`.balign 0x1000,0,0x1000` where fill and max_padding args are present).

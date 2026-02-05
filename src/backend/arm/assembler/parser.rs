@@ -1311,7 +1311,9 @@ fn parse_directive(line: &str) -> Result<AsmStatement, String> {
             AsmDirective::Align(1u64 << align_val)
         }
         ".balign" => {
-            let align_val: u64 = parse_int_literal(args.trim()).unwrap_or(1) as u64;
+            let align_val: u64 = args.trim().split(',').next()
+                .and_then(|s| parse_int_literal(s.trim()).ok())
+                .unwrap_or(1) as u64;
             AsmDirective::Balign(align_val)
         }
         ".byte" => {
