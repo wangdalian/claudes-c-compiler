@@ -237,7 +237,7 @@ Tracking project build/test results with MY_ASM=builtin MY_LD=builtin
 | sdcc    | PASS (build script fix) | TODO | TODO | TODO | Build script fix: repo has stale RISC-V .o files; distclean bug (clean.mk lists "pic" not "pic14") leaves them; need find . -name "*.o" -delete before build |
 | blosc   | PASS | PASS | PASS | PASS | Fixed: weak undefined symbols in shared library .dynsym were emitted as STB_GLOBAL instead of STB_WEAK, causing runtime "undefined symbol" errors for ZSTD_trace_*; also fixed x86/i686 asm jmp/jcc @PLT suffix not stripped (baked @PLT into symbol name instead of using R_X86_64_PLT32/R_386_PLT32) |
 | TinyScheme | PASS | PASS | PASS | PASS | All architectures pass out of the box |
-| MicroPython | PASS | TODO | TODO | TODO | Fixed x86: implemented --gc-sections in linker to discard unreferenced sections (eliminates false undefined symbol errors) |
+| MicroPython | PASS | TODO | PASS | TODO | Fixed x86: implemented --gc-sections in linker; ARM: ported --gc-sections to ARM linker (same BFS reachability algorithm) |
 | mksh    | PASS | TODO | TODO | TODO | Fixed: static init array-to-pointer decay on struct array element field (arr[N].text); get_struct_layout_of_expr now handles ArraySubscript |
 | binutils | PASS | TODO | TODO | TODO | Fixed: (1) preprocessor #define inside #ifdef leaked in included files during multi-line accumulation, (2) anonymous enum constants not registered in function definition return types, (3) linker as-needed behavior for shared libraries |
 | CPython | PASS | TODO | TODO | TODO | Fixed: __STRICT_ANSI__ for -std=c11, -Xlinker flag, -export-dynamic, shared lib R_X86_64_64 dynamic relocs for external symbols, compound literal address-of in static struct array initializer |
