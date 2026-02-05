@@ -82,7 +82,7 @@ Tracking project build/test results with MY_ASM=builtin MY_LD=builtin
 | nettle  | PASS | TODO | TODO | TODO | Fixed x86 asm: added rdsspq/rdsspd (CET shadow stack) instructions; fixed escape_string \0 -> \000 to prevent octal escape consuming adjacent digits |
 | tinn    | PASS | TODO | TODO | TODO | Passes x86 |
 | tinycbor | PASS | TODO | TODO | TODO | Passes x86 |
-| brotli  | PASS | PASS | SKIP | FAIL | i686 fixed by COMDAT groups + GOTPC + PIC codegen fixes; no arm check script |
+| brotli  | PASS | PASS | SKIP | PASS | i686 fixed by COMDAT groups + GOTPC + PIC codegen fixes; no arm check script; riscv now passes |
 | msgpack-c | PASS | TODO | TODO | TODO | Passes x86 |
 | Lua     | PASS | TODO | TODO | TODO | Passes x86 |
 | samurai | PASS | TODO | TODO | TODO | Passes x86 |
