@@ -1412,21 +1412,35 @@ fn emit_init_data(out: &mut AsmOutput, init: &GlobalInit, fallback_ty: IrType, t
             emit_const_data(out, c, fallback_ty, ptr_dir);
         }
         GlobalInit::Array(values) => {
-            for val in values {
-                // Determine the emission type for each array element.
-                // For byte-serialized struct data (fallback_ty == I8), use each constant's
-                // own type so that I8/I16/I32/F32/F64 fields are correctly sized.
-                // For typed arrays (e.g., pointer arrays where fallback_ty == Ptr), use
-                // the global's declared element type when it's wider than the
-                // constant's natural type. This ensures that e.g. IrConst::I32(0)
-                // in a pointer array emits .quad 0 (8 bytes) not .long 0 (4 bytes).
+            // Coalesce consecutive zero-valued elements into .zero directives
+            // to avoid emitting millions of individual `.byte 0` lines for
+            // large partially-initialized arrays like `char x[500000]={'a'}`.
+            let mut i = 0;
+            while i < values.len() {
+                let val = &values[i];
                 let const_ty = const_natural_type(val, fallback_ty);
                 let elem_ty = if fallback_ty.size() > const_ty.size() {
                     fallback_ty
                 } else {
                     const_ty
                 };
-                emit_const_data(out, val, elem_ty, ptr_dir);
+
+                if val.is_zero() {
+                    // Count consecutive zero elements and emit as a single .zero
+                    let elem_size = elem_ty.size();
+                    let mut zero_count = 1usize;
+                    while i + zero_count < values.len() && values[i + zero_count].is_zero() {
+                        zero_count += 1;
+                    }
+                    let zero_bytes = zero_count * elem_size;
+                    if zero_bytes > 0 {
+                        out.emit_fmt(format_args!("    .zero {}", zero_bytes));
+                    }
+                    i += zero_count;
+                } else {
+                    emit_const_data(out, val, elem_ty, ptr_dir);
+                    i += 1;
+                }
             }
         }
         GlobalInit::String(s) => {
