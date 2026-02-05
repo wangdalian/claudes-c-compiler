@@ -419,8 +419,8 @@ format).
 | File                        | Lines  | Role                                            |
 |-----------------------------|--------|-------------------------------------------------|
 | `mod.rs`                    | ~30    | Module root; `assemble()` entry point           |
-| `encoder.rs`                | ~3280  | i686 instruction encoder; ModR/M/SIB; relocs    |
+| `encoder.rs`                | ~3420  | i686 instruction encoder; ModR/M/SIB; relocs    |
 | `elf_writer.rs`             | ~95    | `I686Arch` adapter for `ElfWriterCore`           |
 | *(shared with x86-64)*      |        |                                                 |
-| `x86/assembler/parser.rs`   | ~1710  | AT&T syntax parser; data types; directives       |
-| `elf_writer_common.rs`      | ~1565  | Section/symbol/jump relax/ELF32 serialization    |
+| `x86/assembler/parser.rs`   | ~1875  | AT&T syntax parser; data types; directives       |
+| `elf_writer_common.rs`      | ~1605  | Section/symbol/jump relax/ELF32 serialization    |

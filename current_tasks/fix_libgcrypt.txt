@@ -1,2 +1,0 @@
-Fixing libgcrypt project for x86 target.
-Diagnosing build/test failures and fixing compiler bugs as needed.

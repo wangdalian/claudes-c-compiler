@@ -1,8 +1,0 @@
-Fix failing x86 asm unit tests (8 failures):
-
-1. vprold instruction: unhandled instruction error - need to add EVEX encoding for vprold
-2. cld test: character literal '$'!'' in inline asm not parsed correctly
-3. pinsrw/pextrw: SIGSEGV in run1 and wrong results in run2
-4. chacha quarter round: wrong results due to inline asm register allocation
-5. mov-reg-004: register aliasing behavior difference vs gcc
-6. syscall-getuid: uid mismatch (environment issue, skip)

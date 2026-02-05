@@ -1,8 +1,0 @@
-Make verify_musl.py pass with the ARM (aarch64) backend.
-
-Issues identified:
-1. ARM assembler split_on_semicolons doesn't respect // comments (also locked by fix_arm_asm_semicolon_in_comments.txt)
-   - Causes failure on musl's src/ldso/aarch64/tlsdesc.s
-   - Will fix this if the other task doesn't complete first
-2. Potential other compilation/linking/runtime issues with musl's ARM assembly files
-3. Potential issues compiling musl C source files with the ARM backend
