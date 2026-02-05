@@ -1,0 +1,22 @@
+Fix GAS macro \() argument separator/concatenation token in x86 and RISC-V assemblers.
+
+In GAS macro bodies, \() is used as an empty separator to delimit parameter names
+from adjacent text (e.g., \op\()_safe_regs expands to rdmsr_safe_regs when \op=rdmsr).
+
+The ARM assembler already handles this correctly by stripping \() after parameter
+substitution. The x86 and RISC-V (shared asm_preprocess.rs) assemblers do NOT
+strip \(), causing symbols like rdmsr\()_safe_regs to appear literally in object
+files, leading to undefined reference errors at link time.
+
+This breaks the Linux kernel's msr-reg.S which uses:
+  .macro op_safe_regs op
+  SYM_FUNC_START(\op\()_safe_regs)
+  ...
+  SYM_FUNC_END(\op\()_safe_regs)
+  .endm
+  op_safe_regs rdmsr
+  op_safe_regs wrmsr
+
+Fix: Add \() stripping after parameter substitution in x86 and RISC-V assemblers.
+
+Started: 2026-02-05
