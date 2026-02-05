@@ -1,0 +1,28 @@
+Fix assembler: handle symbol=expr assignments during macro expansion phase
+
+Problem: The x86 assembler's expand_gas_macros_with_state() only handles
+.set symbol, expr for tracking symbol values. The equivalent GAS syntax
+"symbol = expr" (e.g., i = 0, i = i + 1) is NOT handled during macro
+expansion. This means symbols assigned with = inside .rept bodies are
+never resolved, causing unresolved references to symbols like "i".
+
+This breaks the Linux kernel's head_64.S which uses:
+  i = 0
+  .rept NUM_EXCEPTION_VECTORS
+  pushq $i
+  i = i + 1
+  .endr
+
+And the PMDS macro which uses:
+  i = 0
+  .rept (COUNT)
+  .quad (START) + (i << PMD_SHIFT) + (PERM)
+  i = i + 1
+  .endr
+
+Fix: Detect "symbol = expr" lines in expand_gas_macros_with_state() and
+treat them identically to .set, updating the symbols map.
+
+Also check if ARM and RISC-V assemblers have the same issue.
+
+Started: 2026-02-05
