@@ -1,0 +1,24 @@
+Split oversized linker_common/mod.rs (1833 lines) and stack_layout/mod.rs (1803 lines)
+into focused submodules.
+
+linker_common/mod.rs will be split into:
+- types.rs: ELF64 core types (Elf64Section, Elf64Symbol, Elf64Rela, Elf64Object, DynSymbol)
+- parse_object.rs: ELF64 object file parsing
+- parse_shared.rs: Shared library symbol/soname parsing
+- section_map.rs: Input-to-output section name mapping
+- dynstr.rs: Dynamic string table builder
+- hash.rs: GNU/SysV hash functions
+- symbols.rs: Linker-defined symbols, GlobalSymbolOps trait, InputSection, OutputSection
+- merge.rs: Section merging and common symbol allocation
+- dynamic.rs: Dynamic linking (match dynsyms, load .so, resolve dynamic symbols)
+- archive.rs: Archive loading and iterative resolution
+- resolve_lib.rs: Library path resolution
+- write.rs: ELF64 writing helpers (shdr, phdr, align, pad)
+- args.rs: Linker argument parsing
+- check.rs: Undefined symbol checking
+
+stack_layout/mod.rs will be split into:
+- analysis.rs: Value use-block map, used values collection, dead param alloca detection
+- alloca_coalescing.rs: Escape analysis for alloca slot sharing
+- copy_coalescing.rs: Copy alias map and immediately-consumed value analysis
+- slot_assignment.rs: Instruction classification and Phases 2-7 slot assignment
