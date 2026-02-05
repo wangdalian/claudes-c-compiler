@@ -1,3 +1,0 @@
-Fixing tre project for x86 (and potentially i686) target.
-tre is a POSIX regex library. It fails on x86 and i686 but passes on ARM and RISC-V.
-Started: 2026-02-05

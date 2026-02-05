@@ -672,7 +672,7 @@ pub fn is_builtin(name: &str) -> bool {
 fn is_atomic_builtin(name: &str) -> bool {
     // __atomic_* family (C11-style)
     if name.starts_with("__atomic_") {
-        return matches!(name,
+        if matches!(name,
             "__atomic_fetch_add" | "__atomic_fetch_sub" | "__atomic_fetch_and" |
             "__atomic_fetch_or" | "__atomic_fetch_xor" | "__atomic_fetch_nand" |
             "__atomic_add_fetch" | "__atomic_sub_fetch" | "__atomic_and_fetch" |
@@ -684,7 +684,11 @@ fn is_atomic_builtin(name: &str) -> bool {
             "__atomic_test_and_set" | "__atomic_clear" |
             "__atomic_thread_fence" | "__atomic_signal_fence" |
             "__atomic_is_lock_free" | "__atomic_always_lock_free"
-        );
+        ) {
+            return true;
+        }
+        // Also recognize size-suffixed variants: __atomic_load_4, __atomic_store_2, etc.
+        return normalize_atomic_size_suffix(name).is_some();
     }
     // __sync_* family (legacy GCC-style)
     // GCC also provides size-suffixed variants (e.g., __sync_fetch_and_add_4,
@@ -718,5 +722,53 @@ pub fn strip_sync_size_suffix(name: &str) -> &str {
         base
     } else {
         name
+    }
+}
+
+/// Normalize size-suffixed __atomic_* builtins to their canonical form.
+/// GCC provides size-suffixed variants (e.g., __atomic_load_4, __atomic_store_2)
+/// as libatomic entry points that are also recognized as compiler builtins.
+/// These follow direct-value semantics (like __atomic_load_n, __atomic_store_n).
+///
+/// Returns Some(canonical_name) if a size suffix was stripped, None otherwise.
+pub fn normalize_atomic_size_suffix(name: &str) -> Option<&'static str> {
+    if !name.starts_with("__atomic_") {
+        return None;
+    }
+    // Try to strip a size suffix
+    let base = name.strip_suffix("_1")
+        .or_else(|| name.strip_suffix("_2"))
+        .or_else(|| name.strip_suffix("_4"))
+        .or_else(|| name.strip_suffix("_8"))
+        .or_else(|| name.strip_suffix("_16"))?;
+    // Map to canonical _n variant for ops that have pointer-return vs direct-return distinction
+    match base {
+        "__atomic_load" => Some("__atomic_load_n"),
+        "__atomic_store" => Some("__atomic_store_n"),
+        "__atomic_exchange" => Some("__atomic_exchange_n"),
+        "__atomic_compare_exchange" => Some("__atomic_compare_exchange_n"),
+        // For fetch-op and op-fetch variants, base name is already correct
+        "__atomic_fetch_add" | "__atomic_fetch_sub" | "__atomic_fetch_and" |
+        "__atomic_fetch_or" | "__atomic_fetch_xor" | "__atomic_fetch_nand" |
+        "__atomic_add_fetch" | "__atomic_sub_fetch" | "__atomic_and_fetch" |
+        "__atomic_or_fetch" | "__atomic_xor_fetch" | "__atomic_nand_fetch" => {
+            // Return the base name by matching it to a static str
+            match base {
+                "__atomic_fetch_add" => Some("__atomic_fetch_add"),
+                "__atomic_fetch_sub" => Some("__atomic_fetch_sub"),
+                "__atomic_fetch_and" => Some("__atomic_fetch_and"),
+                "__atomic_fetch_or" => Some("__atomic_fetch_or"),
+                "__atomic_fetch_xor" => Some("__atomic_fetch_xor"),
+                "__atomic_fetch_nand" => Some("__atomic_fetch_nand"),
+                "__atomic_add_fetch" => Some("__atomic_add_fetch"),
+                "__atomic_sub_fetch" => Some("__atomic_sub_fetch"),
+                "__atomic_and_fetch" => Some("__atomic_and_fetch"),
+                "__atomic_or_fetch" => Some("__atomic_or_fetch"),
+                "__atomic_xor_fetch" => Some("__atomic_xor_fetch"),
+                "__atomic_nand_fetch" => Some("__atomic_nand_fetch"),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }

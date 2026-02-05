@@ -253,6 +253,10 @@ impl Parser {
                 }
             }
         }
+        // Clear noreturn so that _Noreturn/noreturn from the function definition
+        // does not leak into local declarations inside the body.
+        // parse_compound_stmt saves/restores attr flags, so this is safe.
+        self.attrs.set_noreturn(false);
         let body = self.parse_compound_stmt();
         self.shadowed_typedefs = saved_shadowed;
 
