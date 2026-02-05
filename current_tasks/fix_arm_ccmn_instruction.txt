@@ -1,9 +1,0 @@
-Add ccmn (conditional compare negative) instruction to ARM assembler
-
-The ARM assembler supports ccmp but not ccmn. The ccmn instruction is identical
-to ccmp except bit 30 is 0 instead of 1. Both immediate and register forms
-are needed.
-
-Test: /clean_tests/asm-ccmn-arm-001-run1
-
-Started: 2026-02-05

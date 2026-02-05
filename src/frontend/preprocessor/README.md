@@ -79,7 +79,7 @@ downstream lexer uses these markers to maintain accurate source locations.
 | `set_gnu89_inline(gnu89)` | Toggle between GNU89 and C99 inline semantics macros. |
 | `set_sse_macros(no_sse)` | Control `__SSE__`/`__SSE2__`/`__MMX__` definitions. |
 | `set_extended_simd_macros(...)` | Define `__SSE3__`, `__SSSE3__`, `__SSE4_1__`, `__SSE4_2__`, `__AVX__`, `__AVX2__` based on flags. |
-| `set_asm_mode(asm_mode)` | Enable assembly preprocessing mode where `$` is not treated as an identifier character (for AT&T assembly `$MACRO_NAME` expansion). |
+| `set_asm_mode(asm_mode)` | Enable assembly preprocessing mode: `$` is not treated as an identifier character (for AT&T assembly `$MACRO_NAME` expansion), and `#pragma pack` / `#pragma GCC visibility` synthetic tokens are suppressed (since these are C parser-specific and would cause assembler errors). |
 | `set_riscv_abi(abi)` | Override RISC-V float ABI macros (`lp64` = soft-float, `lp64f` = single, `lp64d` = double). |
 | `set_riscv_march(march)` | Override RISC-V extension macros based on `-march=` (removes F/D macros when extensions not present). |
 | `set_strict_ansi(strict)` | Define or undefine `__STRICT_ANSI__` (set for `-std=cXX` non-GNU modes; checked by glibc and other headers to gate GNU extensions). |
@@ -398,18 +398,18 @@ data or synthetic tokens injected into the output for the parser.
 | Pragma | Behavior |
 |--------|----------|
 | `#pragma once` | Marks the current file in `pragma_once_files`; subsequent `#include` of the same file returns empty. |
-| `#pragma pack(N)` | Emits `__ccc_pack_set_N ;` synthetic token. |
-| `#pragma pack()` | Emits `__ccc_pack_reset ;`. |
-| `#pragma pack(push, N)` | Emits `__ccc_pack_push_N ;`. |
-| `#pragma pack(push)` | Emits `__ccc_pack_push_only ;`. |
-| `#pragma pack(pop)` | Emits `__ccc_pack_pop ;`. |
+| `#pragma pack(N)` | Emits `__ccc_pack_set_N ;` synthetic token. Suppressed in `asm_mode`. |
+| `#pragma pack()` | Emits `__ccc_pack_reset ;`. Suppressed in `asm_mode`. |
+| `#pragma pack(push, N)` | Emits `__ccc_pack_push_N ;`. Suppressed in `asm_mode`. |
+| `#pragma pack(push)` | Emits `__ccc_pack_push_only ;`. Suppressed in `asm_mode`. |
+| `#pragma pack(pop)` | Emits `__ccc_pack_pop ;`. Suppressed in `asm_mode`. |
 | `#pragma push_macro("X")` | Saves the current definition of macro `X` onto `macro_save_stack`. |
 | `#pragma pop_macro("X")` | Restores the previously saved definition of macro `X`. |
 | `#pragma weak sym` | Appends `(sym, None)` to `weak_pragmas`. |
 | `#pragma weak sym = tgt` | Appends `(sym, Some(tgt))` to `weak_pragmas`. |
 | `#pragma redefine_extname old new` | Appends `(old, new)` to `redefine_extname_pragmas`. |
-| `#pragma GCC visibility push(V)` | Emits `__ccc_visibility_push_V ;` synthetic token. |
-| `#pragma GCC visibility pop` | Emits `__ccc_visibility_pop ;`. |
+| `#pragma GCC visibility push(V)` | Emits `__ccc_visibility_push_V ;` synthetic token. Suppressed in `asm_mode`. |
+| `#pragma GCC visibility pop` | Emits `__ccc_visibility_pop ;`. Suppressed in `asm_mode`. |
 
 Unrecognized pragmas (including `#pragma GCC diagnostic ...`) are silently
 ignored.

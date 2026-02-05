@@ -282,7 +282,8 @@ pub fn encode_instruction(mnemonic: &str, operands: &[Operand], raw_operands: &s
         "cmp" => encode_cmp(operands),
         "cmn" => encode_cmn(operands),
         "tst" => encode_tst(operands),
-        "ccmp" => encode_ccmp(operands),
+        "ccmp" => encode_ccmp_ccmn(operands, true),
+        "ccmn" => encode_ccmp_ccmn(operands, false),
 
         // Conditional select
         "csel" => encode_csel(operands),
@@ -1908,32 +1909,35 @@ fn encode_tst(operands: &[Operand]) -> Result<EncodeResult, String> {
     encode_logical(&new_ops, 0b11)
 }
 
-fn encode_ccmp(operands: &[Operand]) -> Result<EncodeResult, String> {
-    // CCMP Rn, #imm5, #nzcv, cond
+fn encode_ccmp_ccmn(operands: &[Operand], is_ccmp: bool) -> Result<EncodeResult, String> {
+    // CCMP/CCMN Rn, #imm5, #nzcv, cond
+    // The only difference: CCMP has bit 30 = 1, CCMN has bit 30 = 0
     let (rn, is_64) = get_reg(operands, 0)?;
     let sf = sf_bit(is_64);
+    let op = if is_ccmp { 1u32 << 30 } else { 0u32 };
 
     if let (Some(Operand::Imm(imm5)), Some(Operand::Imm(nzcv)), Some(Operand::Cond(cond))) =
         (operands.get(1), operands.get(2), operands.get(3))
     {
         let cond_val = encode_cond(cond).ok_or("invalid condition")?;
-        let word = ((sf << 31) | (1 << 30) | (1 << 29) | (0b11010010 << 21)
-            | ((*imm5 as u32 & 0x1F) << 16) | (cond_val << 12) | (1 << 11)) | (rn << 5) | (*nzcv as u32 & 0xF);
+        let word = (sf << 31) | op | (1 << 29) | (0b11010010 << 21)
+            | ((*imm5 as u32 & 0x1F) << 16) | (cond_val << 12) | (1 << 11) | (rn << 5) | (*nzcv as u32 & 0xF);
         return Ok(EncodeResult::Word(word));
     }
 
-    // CCMP Rn, Rm, #nzcv, cond
+    // CCMP/CCMN Rn, Rm, #nzcv, cond
     if let (Some(Operand::Reg(rm_name)), Some(Operand::Imm(nzcv)), Some(Operand::Cond(cond))) =
         (operands.get(1), operands.get(2), operands.get(3))
     {
         let rm = parse_reg_num(rm_name).ok_or("invalid rm")?;
         let cond_val = encode_cond(cond).ok_or("invalid condition")?;
-        let word = ((sf << 31) | (1 << 30) | (1 << 29) | (0b11010010 << 21)
-            | (rm << 16) | (cond_val << 12)) | (rn << 5) | (*nzcv as u32 & 0xF);
+        let word = (sf << 31) | op | (1 << 29) | (0b11010010 << 21)
+            | (rm << 16) | (cond_val << 12) | (rn << 5) | (*nzcv as u32 & 0xF);
         return Ok(EncodeResult::Word(word));
     }
 
-    Err("unsupported ccmp operands".to_string())
+    let name = if is_ccmp { "ccmp" } else { "ccmn" };
+    Err(format!("unsupported {} operands", name))
 }
 
 // ── Conditional select ───────────────────────────────────────────────────

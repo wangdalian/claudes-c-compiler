@@ -79,6 +79,19 @@ impl MoveSize {
             MoveSize::B => "movb",
         }
     }
+    fn byte_size(self) -> i32 {
+        match self {
+            MoveSize::L => 4,
+            MoveSize::W => 2,
+            MoveSize::B => 1,
+        }
+    }
+}
+
+/// Check if two byte ranges `[a, a+a_size)` and `[b, b+b_size)` overlap.
+#[inline]
+fn ranges_overlap(a_off: i32, a_size: i32, b_off: i32, b_size: i32) -> bool {
+    a_off < b_off + b_size && b_off < a_off + a_size
 }
 
 #[derive(Clone, Copy)]
@@ -1017,15 +1030,26 @@ fn eliminate_dead_stores(store: &LineStore, infos: &mut [LineInfo]) -> bool {
             while j < len && count < WINDOW {
                 if infos[j].is_nop() { j += 1; continue; }
 
+                let store_bytes = store_size.byte_size();
                 match infos[j].kind {
-                    LineKind::StoreEbp { offset, size, .. } if offset == store_off && size == store_size => {
-                        // Another store to the same slot - this store is dead
+                    LineKind::StoreEbp { offset, size, .. }
+                        if offset == store_off && size == store_size =>
+                    {
+                        // Another store to the exact same slot - this store is dead
                         infos[i].kind = LineKind::Nop;
                         changed = true;
                         break;
                     }
-                    LineKind::LoadEbp { offset, size, .. } if offset == store_off && size == store_size => {
-                        // Load from same slot - this store is alive
+                    LineKind::StoreEbp { offset, size, .. }
+                        if ranges_overlap(store_off, store_bytes, offset, size.byte_size()) =>
+                    {
+                        // Overlapping store but not identical - conservatively keep alive
+                        break;
+                    }
+                    LineKind::LoadEbp { offset, size, .. }
+                        if ranges_overlap(store_off, store_bytes, offset, size.byte_size()) =>
+                    {
+                        // Load overlaps this store's byte range - this store is alive
                         break;
                     }
                     _ => {}
@@ -1419,22 +1443,34 @@ fn try_fold_memory_operand(s: &str, load_reg: RegId, offset: i32, _size: MoveSiz
 fn eliminate_never_read_stores(store: &LineStore, infos: &mut [LineInfo]) {
     let len = infos.len();
 
-    // Collect all loaded offsets
-    let mut loaded_offsets = std::collections::HashSet::new();
+    // Collect all loaded byte ranges (offset, size)
+    let mut read_ranges: Vec<(i32, i32)> = Vec::new();
     let mut addr_taken = false;
 
     for i in 0..len {
         if infos[i].is_nop() { continue; }
         match infos[i].kind {
-            LineKind::LoadEbp { offset, .. } => { loaded_offsets.insert(offset); }
+            LineKind::LoadEbp { offset, size, .. } => {
+                read_ranges.push((offset, size.byte_size()));
+            }
             _ => {
-                // Check for address-of-slot patterns (leal N(%ebp), %reg or leal N(%esp), %reg)
                 let s = trimmed(store, &infos[i], i);
+                // Check for address-of-slot patterns (leal N(%ebp), %reg or leal N(%esp), %reg)
                 if s.starts_with("leal ") && (s.contains("(%ebp)") || s.contains("(%esp)")) {
                     addr_taken = true;
                 }
                 // Indirect memory access means we can't know what's read
                 if infos[i].has_indirect_mem {
+                    addr_taken = true;
+                }
+                // Track %ebp-relative reads from non-Load/Store instructions
+                // (e.g. folded memory operands like "cmpl -44(%ebp), %eax")
+                let ebp_off = infos[i].ebp_offset;
+                if ebp_off != EBP_OFFSET_NONE {
+                    // Conservatively treat as a 4-byte read (max store size on i686)
+                    read_ranges.push((ebp_off, 4));
+                } else if !matches!(infos[i].kind, LineKind::StoreEbp { .. }) && s.contains("(%ebp)") {
+                    // Unknown %ebp reference - bail out
                     addr_taken = true;
                 }
             }
@@ -1443,11 +1479,15 @@ fn eliminate_never_read_stores(store: &LineStore, infos: &mut [LineInfo]) {
 
     if addr_taken { return; }
 
-    // Remove stores to slots that are never loaded
+    // Remove stores to slots whose byte range is never overlapped by any load
     for i in 0..len {
         if infos[i].is_nop() { continue; }
-        if let LineKind::StoreEbp { offset, .. } = infos[i].kind {
-            if !loaded_offsets.contains(&offset) {
+        if let LineKind::StoreEbp { offset, size, .. } = infos[i].kind {
+            let store_bytes = size.byte_size();
+            let is_read = read_ranges.iter().any(|&(r_off, r_sz)| {
+                ranges_overlap(offset, store_bytes, r_off, r_sz)
+            });
+            if !is_read {
                 infos[i].kind = LineKind::Nop;
             }
         }
