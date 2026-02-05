@@ -1,9 +1,0 @@
-Fix hostapd x86 build: x86 linker group resolution for direct .a archives
-
-The x86 linker loaded direct .a files (passed as bare paths in user_args) in a single
-pass outside the group resolution loop. This meant circular dependencies between
-directly-passed archives (e.g., libcrypto.a <-> libtls.a with -Wl,--start-group) were
-not resolved. Fix: separate .a files from .o files in extra_object_files and include
-the .a files in the iterative group resolution loop alongside -l libraries.
-
-Started: 2026-02-05

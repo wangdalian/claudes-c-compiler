@@ -53,10 +53,16 @@ pub fn link_builtin(
     let defsym_defs = parsed_args.defsym_defs;
     let gc_sections = parsed_args.gc_sections;
 
-    // Load extra object/archive files from user args (these come from
-    // linker_ordered_items when the driver passes pre-existing .o/.a files)
+    // Load extra object files (.o) immediately; archive files (.a) are deferred
+    // to the group resolution loop so they participate in iterative re-scanning
+    // (handles --start-group/--end-group and circular archive dependencies).
+    let mut extra_archives: Vec<String> = Vec::new();
     for path in &extra_object_files {
-        load_file(path, &mut objects, &mut globals, &mut needed_sonames, &lib_path_strings, false)?;
+        if path.ends_with(".a") {
+            extra_archives.push(path.clone());
+        } else {
+            load_file(path, &mut objects, &mut globals, &mut needed_sonames, &lib_path_strings, false)?;
+        }
     }
 
     let mut all_lib_paths: Vec<String> = extra_lib_paths;
@@ -72,11 +78,19 @@ pub fn link_builtin(
     // Load needed libraries using group resolution (like ld's --start-group/--end-group).
     // This iterates all archives until no new objects are pulled in, handling circular
     // dependencies between archives (e.g., libc.a needing symbols from libgcc.a and vice versa).
+    // Direct .a files from user args are included in this loop so that circular
+    // dependencies between directly-passed archives are resolved correctly.
     {
         let mut all_lib_names: Vec<String> = needed_libs.iter().map(|s| s.to_string()).collect();
         all_lib_names.extend(libs_to_load.iter().cloned());
 
         let mut lib_paths_resolved: Vec<String> = Vec::new();
+        // Include direct .a files first (they appear before -l libraries on the command line)
+        for archive_path in &extra_archives {
+            if !lib_paths_resolved.contains(archive_path) {
+                lib_paths_resolved.push(archive_path.clone());
+            }
+        }
         let needed_lib_count = needed_libs.len();
         for (idx, lib_name) in all_lib_names.iter().enumerate() {
             if let Some(lib_path) = linker_common::resolve_lib(lib_name, &all_lib_paths, is_static) {

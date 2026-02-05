@@ -280,3 +280,5 @@ Tracking project build/test results with MY_ASM=builtin MY_LD=builtin
 | ghostscript | PASS | PASS | PASS | PASS | Passes all architectures out of the box |
 | nng     | PASS | TODO | TODO | TODO | Fixed x86: (1) sema rejected member access on undefined struct types (cmake check_struct_has_member falsely passed for sockpeercred), (2) linker now errors on missing -l libraries (cmake check_library_exists falsely passed for libnsl/libsocket) |
 | libmagic_file | PASS | TODO | TODO | TODO | Passes x86 out of the box |
+| hostapd | PASS | TODO | TODO | TODO | Fixed x86: linker group resolution included direct .a archives in iterative re-scanning loop (circular archive deps with -Wl,--start-group) |
+| pngquant | PASS | TODO | TODO | TODO | Passes x86 out of the box (was previously failing, now fixed by other improvements) |
