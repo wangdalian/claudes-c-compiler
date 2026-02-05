@@ -14,18 +14,18 @@ archive member extraction, symbol resolution, section merging, virtual address
 layout, GOT/PLT construction, TLS handling, IFUNC support, relocation
 application, dynamic section emission, and final ELF output.
 
-The implementation spans roughly 3,500 lines of Rust across three files, plus shared
-infrastructure in `linker_common` (the `GlobalSymbolOps` trait, `OutputSection`,
-`InputSection`, and shared functions for archive loading, symbol registration,
-section merging, and COMMON allocation).
+The implementation spans roughly 4,100 lines of Rust across three files, plus shared
+infrastructure in `linker_common` (the `GlobalSymbolOps` trait, and shared
+functions for archive parsing, library resolution, section name mapping,
+`.eh_frame` processing, and dynamic symbol resolution).
 
 ```
              AArch64 Built-in Linker
   ============================================================
 
-  .o files    .a archives    -l libraries
-       \           |           /
-        v          v          v
+  .o files    .a archives    -l libraries    .so shared libs
+       \           |           /                /
+        v          v          v                v
   +------------------------------------------+
   |           elf.rs  (~75 lines)            |
   |   Type aliases + thin wrappers to        |
@@ -35,11 +35,9 @@ section merging, and COMMON allocation).
                |  Vec<ElfObject>, HashMap<String, GlobalSymbol>
                v
   +------------------------------------------+
-  |           mod.rs  (~3,370 lines)         |
+  |           mod.rs  (~3,500 lines)         |
   |   Orchestrator: file loading, layout,    |
   |   GOT/PLT/IPLT, dynamic/shared emission |
-  |   (delegates archive/symbol/section ops  |
-  |    to linker_common via GlobalSymbolOps) |
   +------------------------------------------+
                |
                |  output buffer + section map
@@ -57,16 +55,36 @@ section merging, and COMMON allocation).
 
 ---
 
-## Public Entry Point
+## Public Entry Points
+
+The linker has two public entry points:
 
 ```rust
-// mod.rs
-pub fn link(
-    object_files: &[&str],     // Paths to .o files from the compiler
-    output_path: &str,          // Output executable path
-    user_args: &[String],       // Additional flags: -L, -l, -static, -nostdlib, -Wl,...
+// mod.rs -- static and dynamic executable linking
+pub fn link_builtin(
+    object_files: &[&str],          // Paths to .o files from the compiler
+    output_path: &str,               // Output executable path
+    user_args: &[String],            // Additional flags: -L, -l, -Wl,...
+    lib_paths: &[&str],              // Library search paths (from common.rs)
+    needed_libs: &[&str],            // Default libraries to link (e.g., "gcc", "c")
+    crt_objects_before: &[&str],     // CRT objects before user code (crt1.o, crti.o, ...)
+    crt_objects_after: &[&str],      // CRT objects after user code (crtend.o, crtn.o)
+    is_static: bool,                 // Static vs dynamic linking
+) -> Result<(), String>
+
+// mod.rs -- shared library (.so) output
+pub fn link_shared(
+    object_files: &[&str],
+    output_path: &str,
+    user_args: &[String],
+    lib_paths: &[&str],
 ) -> Result<(), String>
 ```
+
+CRT object discovery, library path resolution, and the `-nostdlib`/`-static`
+flags are handled by `common.rs`'s `resolve_builtin_link_setup()` before
+calling into the linker.  The linker receives pre-resolved paths and loads
+them in order.
 
 
 ---
@@ -82,7 +100,7 @@ shared types under local names via type aliases.
 
 ### Key Data Structures
 
-All ELF64 types are defined in `linker_common` and re-exported:
+ELF64 types are defined in `linker_common` and re-exported via type aliases:
 
 | Type | Alias | Role |
 |------|-------|------|
@@ -97,8 +115,9 @@ Delegates to `linker_common::parse_elf64_object(data, source_name, EM_AARCH64)`.
 
 ### Archive and Linker Script Parsing
 
-Archive parsing (`parse_archive_members`) and linker script parsing
-(`parse_linker_script`) are provided by the shared `crate::backend::elf` module.
+Archive parsing (`parse_archive_members`, `parse_thin_archive_members`) and
+linker script parsing (`parse_linker_script_entries`) are provided by the
+shared `crate::backend::elf` module.
 
 
 ---
@@ -115,65 +134,55 @@ ELF executable emission.
 
 | Type | Role |
 |------|------|
-| `OutputSection` | Shared type from `linker_common`: merged output section with name, type, flags, alignment, list of `InputSection` references, merged data, assigned virtual address and file offset. |
-| `InputSection` | Shared type from `linker_common`: reference to one input section with object index, section index, output offset within the merged section, size. |
-| `GlobalSymbol` | ARM-specific resolved global symbol: implements `linker_common::GlobalSymbolOps` trait. Contains final value (address), size, info byte, defining object index, section index, plus dynamic linking fields (from_lib, plt_idx, got_idx, is_dynamic, copy_reloc, lib_sym_value). |
+| `OutputSection` | Locally-defined merged output section: name, type, flags, alignment, list of `InputSection` references, merged data buffer, assigned virtual address and file offset, memory size. |
+| `InputSection` | Locally-defined reference to one input section: object index, section index, output offset within the merged section, size. |
+| `GlobalSymbol` | ARM-specific resolved global symbol: implements `linker_common::GlobalSymbolOps` trait. Contains final value (address), size, info byte, defining object index, section index, plus dynamic linking fields (`from_lib`, `plt_idx`, `got_idx`, `is_dynamic`, `copy_reloc`, `lib_sym_value`). |
 
 ### Constants
 
 ```
 BASE_ADDR  = 0x400000     -- Base virtual address for the executable
 PAGE_SIZE  = 0x10000      -- 64 KB (AArch64 linker page alignment)
+INTERP     = "/lib/ld-linux-aarch64.so.1"  -- dynamic linker path
 ```
-
-### CRT Object Discovery
-
-The linker automatically locates C runtime startup objects:
-
-| Object | Purpose | Search Paths |
-|--------|---------|-------------|
-| `crt1.o` | Entry point (`_start`) | `/usr/aarch64-linux-gnu/lib`, `/usr/lib/aarch64-linux-gnu` |
-| `crti.o` | Init function prologue | same |
-| `crtbeginT.o` | Static C++ init | `/usr/lib/gcc-cross/aarch64-linux-gnu/{13,12,11}`, `/usr/lib/gcc/aarch64-linux-gnu/{13,12,11}` |
-| `crtend.o` | C++ fini epilogue | GCC paths |
-| `crtn.o` | Fini function epilogue | CRT paths |
-
-CRT objects are loaded in order: `crt1.o`, `crti.o`, `crtbeginT.o` (before
-user objects), then `crtend.o`, `crtn.o` (after).  Skipped if `-nostdlib` is
-passed.
 
 ### Linking Algorithm -- Step by Step
 
 ```
-link(object_files, output_path, user_args):
+link_builtin(object_files, output_path, user_args, lib_paths,
+             needed_libs, crt_before, crt_after, is_static):
 
   1. ARGUMENT PARSING
-     Parse user_args for -L (library paths), -l (libraries),
-     -static, -nostdlib, -Wl,... options.
+     Parse user_args for -L (extra library paths), -l (libraries),
+     -Wl,--defsym, -Wl,--export-dynamic, -rdynamic, etc.
 
   2. FILE LOADING
-     a. Load CRT objects (before): crt1.o, crti.o, crtbeginT.o
+     a. Load CRT objects (before): pre-resolved by common.rs
      b. Load user object files from object_files[]
-     c. Load objects/archives/libraries from user_args
-     d. Load CRT objects (after): crtend.o, crtn.o
-     e. Group-load default libraries: libgcc.a, libgcc_eh.a, libc.a
+     c. Load objects/archives/libraries from user_args (-l flags)
+     d. Load CRT objects (after): pre-resolved by common.rs
+     e. Group-load default libraries from needed_libs[]
         (iterate until no new symbols resolved -- handles circular deps)
+     f. For dynamic linking: resolve remaining undefs against
+        system .so files (libc.so.6, libm.so.6, libgcc_s.so.1)
 
-  3. SYMBOL RESOLUTION
-     linker_common::register_symbols_elf64() for each loaded object
-     (via GlobalSymbolOps trait):
-       - Skip FILE and SECTION symbols
-       - Defined symbols: insert or replace if existing is
-         undefined, dynamic, or weak-vs-global
-       - COMMON symbols: insert if not already present
-       - Undefined symbols: insert placeholder if not present
+  3. SYMBOL RESOLUTION (register_symbols, called per loaded object)
+     - Skip FILE, SECTION, and local symbols
+     - Defined symbols: insert or replace if existing is
+       undefined, dynamic, or weak-vs-global
+     - COMMON symbols: insert if not already defined
+     - Undefined symbols: insert placeholder if not present
 
-  4. UNRESOLVED SYMBOL CHECK
-     Error on undefined non-weak symbols, excluding well-known
-     linker-defined names (__bss_start, _GLOBAL_OFFSET_TABLE_, etc.)
+  4. DEFSYM APPLICATION
+     Apply --defsym=ALIAS=TARGET definitions (symbol aliasing).
 
-  5. SECTION MERGING (linker_common::merge_sections_elf64)
-     a. Map input section names to output names:
+  5. UNRESOLVED SYMBOL CHECK
+     Error on undefined non-weak symbols, excluding linker-defined
+     names recognized by linker_common::is_linker_defined_symbol().
+
+  6. SECTION MERGING (merge_sections)
+     a. Map input section names to output names via
+        linker_common::map_section_name():
         .text.*, .text       -> .text
         .data.rel.ro*        -> .data.rel.ro
         .data.*, .data       -> .data
@@ -190,16 +199,21 @@ link(object_files, output_path, user_args):
      d. Sort output sections: RO -> Exec -> RW(progbits) -> RW(nobits)
      e. Build section_map: (obj_idx, sec_idx) -> (out_idx, offset)
 
-  6. COMMON SYMBOL ALLOCATION (linker_common::allocate_common_symbols_elf64)
+  7. COMMON SYMBOL ALLOCATION (allocate_common_symbols)
      Allocate SHN_COMMON symbols into .bss with proper alignment.
 
-  7. ADDRESS LAYOUT AND EMISSION (emit_executable)
-     Detailed below.
+  8. EMIT
+     If dynamic symbols present and !is_static:
+       create_plt_got() then emit_dynamic_executable()
+     Otherwise:
+       emit_executable() (static linking)
 ```
 
-### Memory Layout
+### Memory Layout (Static Executable)
 
-The linker produces a two-segment layout:
+The static linker produces a two-segment layout.  Note: `emit_executable()`
+places executable sections first, then read-only data, regardless of the
+earlier section sort order.
 
 ```
   Virtual Address Space
@@ -218,6 +232,8 @@ The linker produces a two-segment layout:
            |  .gcc_except_table     |      |
            |  .eh_frame             |      |
            +------------------------+      |
+           |  .eh_frame_hdr         |      |
+           +------------------------+      |
            |  [IPLT stubs]          |      |  (in RX padding gap)
            +========================+  ----+
            |  (page alignment gap)  |  <- 64 KB aligned
@@ -227,9 +243,9 @@ The linker produces a two-segment layout:
            +------------------------+      |
            |  .init_array           |      |
            |  .fini_array           |      |
-           +------------------------+      |
-           |  .data.rel.ro          |      |  LOAD segment 2
-           |  .data                 |      |  RW (Read + Write)
+           +------------------------+      |  LOAD segment 2
+           |  .data.rel.ro          |      |  RW (Read + Write)
+           |  .data                 |      |
            +------------------------+      |
            |  .got                  |      |  (built by linker)
            +------------------------+      |
@@ -240,11 +256,12 @@ The linker produces a two-segment layout:
            |  .tbss                 |
            +========================+
 
-  Program Headers:
+  Program Headers (up to 5):
     LOAD  RX: file offset 0, vaddr BASE_ADDR, filesz=rx_filesz
     LOAD  RW: file offset rw_page_offset, vaddr=rw_page_addr
     TLS:  .tdata + .tbss (if present)
     GNU_STACK: RW, no exec
+    GNU_EH_FRAME: .eh_frame_hdr (if .eh_frame present)
 ```
 
 ### GOT (Global Offset Table) Construction
@@ -286,7 +303,8 @@ address is determined by a resolver function):
 
 ### Linker-Defined Symbols
 
-The following symbols are automatically provided:
+The following symbols are automatically provided (via
+`linker_common::get_standard_linker_symbols()`):
 
 | Symbol | Value |
 |--------|-------|
@@ -327,14 +345,14 @@ also handles TLS model relaxation and GOT-indirect references.
 ### Symbol Resolution (`resolve_sym`)
 
 ```
-resolve_sym(obj_idx, sym, globals, section_map, output_sections, bss_addr):
+resolve_sym(obj_idx, sym, globals, section_map, output_sections):
   if sym is STT_SECTION:
     return output_sections[mapped_section].addr + section_offset
-  if sym.name is known linker symbol (__bss_start, _end, ...):
-    return bss boundary address
-  if sym.name is in globals and defined:
-    return global value
-  if sym is weak and undefined:
+  if sym is non-local and in globals and defined:
+    return global value           // includes linker-defined symbols
+  if sym is non-local and weak:
+    return 0
+  if sym is undefined:
     return 0
   if sym is SHN_ABS:
     return sym.value
@@ -471,51 +489,55 @@ fields without disturbing other bits:
 
 ## Archive and Library Handling
 
+### File Loading Dispatch (`load_file`)
+
+The linker dispatches file loading based on format detection:
+
+1. **Archives** (`!<arch>\n` magic): parse members, selectively extract
+2. **Thin archives** (`!<thin>\n` magic): members are external files
+3. **Linker scripts** (non-ELF text): parse `GROUP`/`INPUT` directives,
+   recursively load referenced files and `-l` libraries
+4. **Shared libraries** (`ET_DYN`): load dynamic symbols (skipped if static)
+5. **Relocatable objects** (`ET_REL`): parse and register symbols
+
 ### Archive Loading Strategy
 
-Archives are loaded via `linker_common::load_archive_elf64()` using
-**selective extraction with iterative resolution**, matching the behavior
-of traditional `ld --start-group`:
+Archives use **selective extraction with iterative resolution**, matching
+the behavior of traditional `ld --start-group`:
 
 ```
-load_archive_elf64(data, archive_path, objects, globals, EM_AARCH64, should_replace_extra):
-  1. Parse all archive members into temporary ElfObject list
+load_archive(data, archive_path, objects, globals, ...):
+  1. Parse all archive members (via parse_archive_members)
   2. Filter to AArch64 ELF objects only (by e_machine check)
   3. Iterate until stable:
      for each unloaded member:
        if member defines any currently-undefined global symbol:
-         load the member (register_symbols_elf64 via GlobalSymbolOps)
+         parse the member, register its symbols, add to objects list
          set changed = true
   4. Discard any remaining unextracted members
 ```
 
 ### Default Library Group Loading
 
-When not `-nostdlib`, the linker loads `libgcc.a`, `libgcc_eh.a` (if
-`-static`), and `libc.a` in a group-loading loop.  This handles circular
-dependencies between these libraries (e.g., libc referencing libgcc exception
-handling, and libgcc referencing libc memory allocation):
+The caller (common.rs) provides `needed_libs` (e.g., `["gcc", "gcc_eh", "c"]`).
+The linker resolves these to archive paths and loads them in a group-loading
+loop.  This handles circular dependencies between these libraries:
 
 ```
-lib_group = [libgcc.a, libgcc_eh.a, libc.a]
 repeat:
   prev_count = objects.len()
-  for each archive in lib_group:
-    load_archive(archive)  // only extracts members that resolve undefs
+  for each resolved library archive:
+    load_file(archive)  // only extracts members that resolve undefs
   if objects.len() == prev_count:
     break   // stable -- no new members pulled in
 ```
 
 ### Library Resolution (`resolve_lib`)
 
-Libraries specified with `-l` are searched in order across all library paths:
-
-1. User-specified `-L` paths
-2. CRT paths (`/usr/aarch64-linux-gnu/lib`, `/usr/lib/aarch64-linux-gnu`)
-3. GCC paths (versions 13, 12, 11, both native and cross)
-
-For each directory, `lib<name>.a` is preferred over `lib<name>.so`.
-The special `-l:filename` syntax searches for an exact filename.
+Libraries specified with `-l` are searched via `linker_common::resolve_lib()`
+across all library paths (user `-L` paths first, then system paths provided
+by common.rs).  In static mode, `.a` is preferred; in dynamic mode, `.so` is
+preferred.  The special `-l:filename` syntax searches for an exact filename.
 
 
 ---
@@ -534,9 +556,9 @@ full `dlopen()` support (e.g., PostgreSQL extension modules).
 ### 2. Two-Segment Layout
 
 The output uses exactly two `PT_LOAD` segments (RX and RW) plus optional
-TLS and GNU_STACK segments.  This is the minimal viable layout.  The
-64 KB page alignment (`PAGE_SIZE = 0x10000`) accommodates AArch64 systems
-with either 4 KB or 64 KB page sizes.
+TLS, GNU_STACK, and GNU_EH_FRAME segments.  This is the minimal viable
+layout.  The 64 KB page alignment (`PAGE_SIZE = 0x10000`) accommodates
+AArch64 systems with either 4 KB or 64 KB page sizes.
 
 ### 3. Real GOT for All GOT-Based Relocations
 
@@ -581,8 +603,9 @@ by following program headers.
 ### 8. Diagnostic Support
 
 Setting `LINKER_DEBUG=1` enables verbose tracing of object loading, symbol
-resolution, section layout, GOT allocation, and final addresses.  This is
-invaluable for debugging linking failures.
+resolution, section layout, GOT allocation, and final addresses.
+`LINKER_DEBUG_LAYOUT=1` adds section-by-section layout details, and
+`LINKER_DEBUG_TLS=1` traces TLS relocation processing.
 
 
 ---
@@ -591,7 +614,7 @@ invaluable for debugging linking failures.
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `mod.rs` | ~3,370 | Public API, file loading (delegates archives/symbols to `linker_common`), CRT discovery, address layout, GOT/PLT/IPLT construction, static/dynamic executable emission, shared library emission |
-| `elf.rs` | ~75 | AArch64 relocation constants; type aliases and thin wrappers delegating to `linker_common` for ELF64 parsing |
+| `mod.rs` | ~3,500 | Public API (`link_builtin`, `link_shared`), file loading/dispatch, symbol resolution, section merging, address layout, GOT/PLT/IPLT construction, static/dynamic executable emission, shared library emission |
+| `elf.rs` | ~75 | AArch64 relocation constants (28 types); type aliases delegating to `linker_common` for ELF64 parsing |
 | `reloc.rs` | ~540 | Relocation application (30+ types), TLS relaxation, GOT/TLS-IE references, instruction field patching helpers |
-| **Total** | **~3,985** | (plus shared infrastructure in `linker_common`) |
+| **Total** | **~4,100** | (plus shared infrastructure in `linker_common`) |
