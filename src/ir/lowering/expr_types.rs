@@ -11,6 +11,7 @@ use crate::frontend::parser::ast::{
     CompoundStmt,
     Expr,
     GenericAssociation,
+    Initializer,
     Stmt,
     TypeSpecifier,
     UnaryOp,
@@ -1386,6 +1387,22 @@ impl Lowerer {
             if let BlockItem::Declaration(decl) = item {
                 for declarator in &decl.declarators {
                     if declarator.name.is_empty() {
+                        continue;
+                    }
+                    // Handle __auto_type: infer type from initializer expression
+                    // rather than defaulting to int (which loses signedness/size info).
+                    if matches!(&decl.type_spec, TypeSpecifier::AutoType) {
+                        if let Some(Initializer::Expr(ref init_expr)) = declarator.init {
+                            if let Some(ctype) = self.get_expr_ctype(init_expr)
+                                .or_else(|| self.get_expr_ctype_with_scope(init_expr, &local_scope))
+                            {
+                                let full_ctype = self.build_full_ctype(
+                                    &Self::ctype_to_type_spec(&ctype),
+                                    &declarator.derived,
+                                );
+                                local_scope.insert(declarator.name.clone(), full_ctype);
+                            }
+                        }
                         continue;
                     }
                     // Resolve this declaration's type, using the local_scope

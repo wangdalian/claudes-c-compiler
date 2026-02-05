@@ -10,6 +10,7 @@
 #![allow(dead_code)]
 
 use crate::backend::asm_expr;
+use crate::backend::asm_preprocess;
 use crate::backend::elf;
 
 /// A parsed assembly operand.
@@ -169,32 +170,8 @@ pub enum AsmStatement {
     Empty,
 }
 
-/// Strip C-style /* ... */ comments from assembly text, handling multi-line spans.
-/// Preserves newlines inside comments so line numbers remain correct for error messages.
-fn strip_c_comments(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < bytes.len() {
-                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    i += 2;
-                    break;
-                }
-                if bytes[i] == b'\n' {
-                    result.push('\n');
-                }
-                i += 1;
-            }
-        } else {
-            result.push(bytes[i] as char);
-            i += 1;
-        }
-    }
-    result
-}
+// C-style /* ... */ comment stripping is handled by asm_preprocess::strip_c_comments
+// (shared, string-aware version that correctly handles `/*` inside quoted strings).
 
 /// Parse assembly text into a list of statements.
 /// Expand .rept/.endr, .irp/.endr, and .irpc/.endr blocks by repeating contained lines.
@@ -905,7 +882,7 @@ fn is_alias_ident_char(b: u8) -> bool {
 
 pub fn parse_asm(text: &str) -> Result<Vec<AsmStatement>, String> {
     // Pre-process: strip C-style /* ... */ comments
-    let text = strip_c_comments(text);
+    let text = asm_preprocess::strip_c_comments(text);
 
     // Expand .macro/.endm definitions and invocations
     let raw_lines: Vec<&str> = text.lines().collect();

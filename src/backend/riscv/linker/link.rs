@@ -120,8 +120,11 @@ pub fn link_builtin(
     }
 
     // ── Phase 1: Read all input object files ────────────────────────────
+    // Archives (.a) passed directly as inputs use demand-driven extraction
+    // (same as -l libraries): only members that satisfy undefined symbols are pulled in.
 
     let mut input_objs: Vec<(String, ElfObject)> = Vec::new();
+    let mut inline_archive_paths: Vec<String> = Vec::new();
 
     for path in &all_inputs {
         if !std::path::Path::new(path).exists() {
@@ -131,15 +134,11 @@ pub fn link_builtin(
             .map_err(|e| format!("Cannot read {}: {}", path, e))?;
 
         if data.len() >= 8 && &data[0..8] == b"!<arch>\n" {
-            // Archive: extract members
-            let members = parse_archive(&data)
-                .map_err(|e| format!("{}: {}", path, e))?;
-            input_objs.extend(members);
+            // Archive: save for demand-driven extraction in Phase 1c
+            inline_archive_paths.push(path.clone());
         } else if is_thin_archive(&data) {
-            // Thin archive: member data in external files
-            let members = parse_thin_archive(&data, path)
-                .map_err(|e| format!("{}: {}", path, e))?;
-            input_objs.extend(members);
+            // Thin archive: save for demand-driven extraction in Phase 1c
+            inline_archive_paths.push(path.clone());
         } else if data.len() >= 4 && &data[0..4] == b"\x7fELF" {
             let obj = parse_object(&data, path)
                 .map_err(|e| format!("{}: {}", path, e))?;
@@ -290,10 +289,18 @@ pub fn link_builtin(
     // Group-loading: iterate all archives until no new symbols are resolved,
     // handling circular dependencies (e.g., libm -> libgcc -> libc -> libgcc).
 
-    // First, resolve all archive paths
+    // First, resolve all archive paths: inline archives (passed directly) come first,
+    // then -l library archives.
     let mut archive_paths: Vec<String> = Vec::new();
     {
         let mut seen: HashSet<String> = HashSet::new();
+        // Add inline archives (passed directly as input files) first
+        for path in &inline_archive_paths {
+            if !seen.contains(path) {
+                seen.insert(path.clone());
+                archive_paths.push(path.clone());
+            }
+        }
         for libname in &needed_libs {
             let archive_name = if let Some(exact) = libname.strip_prefix(':') {
                 exact.to_string()

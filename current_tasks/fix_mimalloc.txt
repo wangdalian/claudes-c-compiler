@@ -1,3 +1,0 @@
-Fixing mimalloc project to compile and pass tests with ccc compilers.
-Started: 2026-02-05
-Target: x86 first, then other architectures if possible.

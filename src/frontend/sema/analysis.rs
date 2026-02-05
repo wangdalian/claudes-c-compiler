@@ -289,7 +289,27 @@ impl SemanticAnalyzer {
         // enum definitions (e.g., `struct { enum { A, B } mode; }`).
         self.collect_enum_constants_from_type_spec(&decl.type_spec);
 
-        let base_type = self.type_spec_to_ctype(&decl.type_spec);
+        // Handle __auto_type: infer base type from the first declarator's
+        // initializer expression rather than defaulting to int.
+        let base_type = if matches!(&decl.type_spec, TypeSpecifier::AutoType) {
+            if let Some(first) = decl.declarators.first() {
+                if let Some(Initializer::Expr(ref init_expr)) = first.init {
+                    let checker = super::type_checker::ExprTypeChecker {
+                        symbols: &self.symbol_table,
+                        types: &self.result.type_context,
+                        functions: &self.result.functions,
+                        expr_types: Some(&self.result.expr_types),
+                    };
+                    checker.infer_expr_ctype(init_expr).unwrap_or(CType::Int)
+                } else {
+                    CType::Int
+                }
+            } else {
+                CType::Int
+            }
+        } else {
+            self.type_spec_to_ctype(&decl.type_spec)
+        };
 
         // Handle typedef declarations: populate TypeContext with typedef info
         if decl.is_typedef() {
