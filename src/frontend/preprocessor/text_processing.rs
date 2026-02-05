@@ -210,9 +210,10 @@ impl Preprocessor {
     /// Returns `Cow::Borrowed` when the source has no continuation backslashes
     /// (the common case), avoiding a String allocation entirely.
     pub(super) fn join_continued_lines<'a>(&self, source: &'a str) -> std::borrow::Cow<'a, str> {
-        // Fast path: scan for backslash-newline sequences. If none exist,
-        // return the original string without any allocation.
-        if !source.contains("\\\n") && !source.contains("\\\r") {
+        // Fast path: if the source contains no backslashes at all, there can't
+        // be any line continuations. We check for '\' rather than "\\\n" because
+        // GCC/Clang treat backslash + whitespace + newline as a continuation too.
+        if !source.contains('\\') {
             return std::borrow::Cow::Borrowed(source);
         }
 
