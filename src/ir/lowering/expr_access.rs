@@ -288,8 +288,9 @@ impl Lowerer {
         };
 
         let has_designators = items.iter().any(|item| !item.designators.is_empty());
-        // Zero-init if there are designators, or for vectors with fewer initializers than elements
-        let needs_zero = has_designators || (vector_elem_ir_ty.is_some() && items.len() * elem_size < size);
+        // Zero-init if there are designators, or if fewer initializers than total array size
+        // (C11 6.7.9p21: uninitialized elements are implicitly zero-initialized)
+        let needs_zero = has_designators || (items.len() * elem_size < size);
         if needs_zero {
             self.zero_init_alloca(alloca, size);
         }

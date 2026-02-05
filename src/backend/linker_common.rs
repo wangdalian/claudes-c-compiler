@@ -1629,6 +1629,7 @@ pub struct LinkerArgs {
 pub fn parse_linker_args(user_args: &[String]) -> LinkerArgs {
     let mut result = LinkerArgs::default();
     let args: Vec<&str> = user_args.iter().map(|s| s.as_str()).collect();
+    let mut pending_rpath = false; // for -Wl,-rpath -Wl,/path two-arg form
     let mut i = 0;
     while i < args.len() {
         let arg = args[i];
@@ -1644,6 +1645,13 @@ pub fn parse_linker_args(user_args: &[String]) -> LinkerArgs {
             result.libs_to_load.push(l.to_string());
         } else if let Some(wl_arg) = arg.strip_prefix("-Wl,") {
             let parts: Vec<&str> = wl_arg.split(',').collect();
+            // Handle -Wl,-rpath -Wl,/path two-arg form
+            if pending_rpath && !parts.is_empty() {
+                result.rpath_entries.push(parts[0].to_string());
+                pending_rpath = false;
+                i += 1;
+                continue;
+            }
             let mut j = 0;
             while j < parts.len() {
                 let part = parts[j];
@@ -1654,6 +1662,10 @@ pub fn parse_linker_args(user_args: &[String]) -> LinkerArgs {
                 } else if part == "-rpath" && j + 1 < parts.len() {
                     j += 1;
                     result.rpath_entries.push(parts[j].to_string());
+                } else if part == "-rpath" {
+                    // -rpath without following value in this -Wl, group;
+                    // the path comes in the next -Wl, argument
+                    pending_rpath = true;
                 } else if part == "--enable-new-dtags" {
                     result.use_runpath = true;
                 } else if part == "--disable-new-dtags" {

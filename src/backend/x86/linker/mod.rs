@@ -285,6 +285,8 @@ pub fn link_shared(
     let mut soname: Option<String> = None;
     let mut rpath_entries: Vec<String> = Vec::new();
     let mut use_runpath = false; // --enable-new-dtags -> DT_RUNPATH instead of DT_RPATH
+    let mut pending_rpath = false; // for -Wl,-rpath -Wl,/path two-arg form
+    let mut pending_soname = false; // for -Wl,-soname -Wl,name two-arg form
     let mut i = 0;
     let args: Vec<&str> = user_args.iter().map(|s| s.as_str()).collect();
     while i < args.len() {
@@ -297,6 +299,18 @@ pub fn link_shared(
             libs_to_load.push(l.to_string());
         } else if let Some(wl_arg) = arg.strip_prefix("-Wl,") {
             let parts: Vec<&str> = wl_arg.split(',').collect();
+            // Handle -Wl,-rpath -Wl,/path and -Wl,-soname -Wl,name two-arg forms
+            if (pending_rpath || pending_soname) && !parts.is_empty() {
+                if pending_rpath {
+                    rpath_entries.push(parts[0].to_string());
+                    pending_rpath = false;
+                } else if pending_soname {
+                    soname = Some(parts[0].to_string());
+                    pending_soname = false;
+                }
+                i += 1;
+                continue;
+            }
             let mut j = 0;
             while j < parts.len() {
                 let part = parts[j];
@@ -305,11 +319,15 @@ pub fn link_shared(
                 } else if part == "-soname" && j + 1 < parts.len() {
                     j += 1;
                     soname = Some(parts[j].to_string());
+                } else if part == "-soname" {
+                    pending_soname = true;
                 } else if let Some(rp) = part.strip_prefix("-rpath=") {
                     rpath_entries.push(rp.to_string());
                 } else if part == "-rpath" && j + 1 < parts.len() {
                     j += 1;
                     rpath_entries.push(parts[j].to_string());
+                } else if part == "-rpath" {
+                    pending_rpath = true;
                 } else if part == "--enable-new-dtags" {
                     use_runpath = true;
                 } else if part == "--disable-new-dtags" {

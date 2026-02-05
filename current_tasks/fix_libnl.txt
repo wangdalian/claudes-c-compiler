@@ -1,2 +1,0 @@
-Fixing libnl project for x86 target with custom assembler and linker.
-Working on getting libnl to compile and pass tests with ccc-x86.
