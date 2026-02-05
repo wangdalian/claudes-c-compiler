@@ -1,0 +1,4 @@
+Fix DESIGN_DOC.md source tree: three items listed as .rs files are actually
+directories (stack_layout/, elf/, linker_common/).
+
+Started: 2026-02-05
