@@ -315,7 +315,7 @@ peeks at the token after `(`:
 
 | Token after `(` | Interpretation |
 |---|---|
-| `*`, `^`, `(` | Declarator grouping |
+| `*`, `^`, `(`, `[` | Declarator grouping |
 | Non-typedef identifier | Named declarator |
 | `__attribute__`, `__extension__` | Declarator grouping |
 | Type keyword (`int`, `void`, `struct`, ...) | Parameter list |
