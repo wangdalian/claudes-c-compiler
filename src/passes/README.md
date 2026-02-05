@@ -5,16 +5,10 @@ pipeline. The pipeline transforms the compiler's intermediate representation (IR
 to produce better machine code by eliminating redundant computation, simplifying
 control flow, and replacing expensive operations with cheaper equivalents.
 
-Optimization levels control which passes run:
-
-- **`-O0`**: Minimal passes only -- constant folding (for `__builtin_constant_p`),
-  `IsConstant` resolution, inline assembly symbol resolution, and dead static
-  elimination. No inlining, no main optimization loop. Fast compile for debugging.
-- **`-O1`**: Core passes (cfg_simplify, copy_prop, simplify, constant_fold, dce)
-  with a single iteration. Skips expensive analyses (GVN, LICM, IVSR, if-convert,
-  narrow, IPCP, div_by_const).
-- **`-O2` and above** (`-O3`, `-Os`, `-Oz`): Full pipeline with all passes and up
-  to 3 iterations, as described in the rest of this document.
+All optimization levels (`-O0` through `-O3`, `-Os`, `-Oz`) run the same full set
+of passes. While the compiler is still maturing, having separate tiers creates
+hard-to-find bugs where code works at one level but breaks at another. We always
+run all passes to maximize test coverage of the optimizer and catch issues early.
 
 ## Table of Contents
 

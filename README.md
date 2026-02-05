@@ -138,10 +138,9 @@ AArch64), GNU coreutils, Busybox, CPython, QEMU, and LuaJIT.
 
 ### Known Limitations
 
-- **Optimization levels**: `-O0` runs minimal passes (fast debug builds),
-  `-O1` runs core passes (single iteration), `-O2`/`-O3` run the full pipeline.
-  `-O3` does not yet differ from `-O2` (no extra-aggressive inlining).
-  `-Os`/`-Oz` do not yet perform size-specific optimizations beyond `-O2`.
+- **Optimization levels**: All levels (`-O0` through `-O3`, `-Os`, `-Oz`) run
+  the same optimization pipeline. Separate tiers will be added as the compiler
+  matures.
 - **Long double**: x86 80-bit extended precision is supported via x87 FPU
   instructions. On ARM/RISC-V, `long double` is IEEE binary128 via
   compiler-rt/libgcc soft-float libcalls.

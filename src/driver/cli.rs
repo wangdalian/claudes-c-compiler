@@ -253,26 +253,25 @@ impl Driver {
                 "-dM" => self.dump_defines = true,
 
                 // Optimization levels
+                //
+                // IMPORTANT: All optimization levels internally use the same pipeline
+                // (opt_level=2). This is intentional — see the comment in passes/mod.rs
+                // for the full rationale. In short: having multiple optimization tiers
+                // is exponentially harder to test, and while the compiler is maturing,
+                // running all passes at every level maximizes test coverage and prevents
+                // hard-to-find bugs that only surface at specific tiers.
+                //
+                // The `optimize` and `optimize_size` booleans only control predefined
+                // macros (__OPTIMIZE__, __OPTIMIZE_SIZE__), which build systems like
+                // the Linux kernel rely on.
                 "-O0" => {
-                    self.opt_level = 0;
+                    self.opt_level = 2; // internally always optimize
                     self.optimize = false;
                     self.optimize_size = false;
                     self.omit_frame_pointer = false;
                 }
-                "-O" | "-O1" => {
-                    self.opt_level = 1;
-                    self.optimize = true;
-                    self.optimize_size = false;
-                    self.omit_frame_pointer = true;
-                }
-                "-O2" => {
+                "-O" | "-O1" | "-O2" | "-O3" => {
                     self.opt_level = 2;
-                    self.optimize = true;
-                    self.optimize_size = false;
-                    self.omit_frame_pointer = true;
-                }
-                "-O3" => {
-                    self.opt_level = 3;
                     self.optimize = true;
                     self.optimize_size = false;
                     self.omit_frame_pointer = true;

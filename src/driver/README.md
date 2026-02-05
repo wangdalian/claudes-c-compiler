@@ -80,20 +80,15 @@ populated exclusively by `parse_cli_args()`. The struct is created with
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `opt_level` | `u32` | `2` | Optimization level (0-3). Controls which passes run. |
+| `opt_level` | `u32` | `2` | Internal optimization level (always 2; all levels run the same passes) |
 | `optimize` | `bool` | `false` | Whether user passed `-O1` or higher (defines `__OPTIMIZE__`) |
 | `optimize_size` | `bool` | `false` | Whether `-Os`/`-Oz` (defines `__OPTIMIZE_SIZE__`) |
 
-The `opt_level` directly controls the optimization pass pipeline:
-- **0** (`-O0`): Minimal passes -- constant fold (for `__builtin_constant_p`) and
-  dead static elimination only. Fast debug builds.
-- **1** (`-O1`): Core passes (cfg_simplify, copy_prop, simplify, constant_fold,
-  DCE) with 1 iteration. Skips GVN, LICM, IVSR, if-convert, narrow, IPCP.
-- **2** (`-O2`): Full pipeline with all passes and up to 3 iterations.
-- **3** (`-O3`): Same as -O2 (aggressive inlining thresholds may be added later).
-
-`-Os`/`-Oz` set `opt_level=2` with the `optimize_size` flag for the
-`__OPTIMIZE_SIZE__` predefined macro.
+The internal `opt_level` is always 2 regardless of the CLI flag. The `optimize`
+and `optimize_size` booleans only control predefined macros (`__OPTIMIZE__`,
+`__OPTIMIZE_SIZE__`), which build systems like the Linux kernel rely on (e.g.,
+`BUILD_BUG()` uses `__OPTIMIZE__` to select between a noreturn function call
+and a no-op).
 
 **Preprocessor:**
 

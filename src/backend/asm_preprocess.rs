@@ -493,40 +493,100 @@ fn parse_macro_params(params_str: &str) -> (Vec<String>, Vec<Option<String>>) {
     (params, defaults)
 }
 
-/// Split macro invocation arguments, separating on commas and whitespace.
+/// Split macro invocation arguments, matching GNU as behavior.
 ///
-/// GAS allows both commas and spaces as macro argument separators.
-/// Quoted strings are kept as a single argument with quotes stripped.
+/// GAS treats both commas and whitespace as argument separators. Specifically:
+/// 1. Split on commas first (respecting parentheses and quotes)
+/// 2. Within each comma-separated field, further split on whitespace
+/// 3. However, tokens connected by arithmetic/bitwise operators (`+`, `-`, `*`,
+///    `/`, `%`, `|`, `&`, `^`, `<<`, `>>`, `~`) are kept as a single expression
+///    argument with internal spaces stripped.
+///
+/// Examples:
+/// - `lb a5, 0(a1), 10f` → [`lb`, `a5`, `0(a1)`, `10f`]
+/// - `886b, 888f, 0x1234, 0, 889f - 888f` → [`886b`, `888f`, `0x1234`, `0`, `889f-888f`]
+/// - `a b c` → [`a`, `b`, `c`]
+///
+/// Quoted strings are kept as a single argument with outer quotes stripped.
 /// Parenthesized groups like `0(a1)` are kept together.
-///
-/// When the invocation uses commas, each comma-separated field is one argument
-/// (spaces within a field are preserved). When no commas are present, spaces
-/// serve as separators. This matches GAS behavior where `\arg` can receive
-/// an expression like `889f - 888f` when commas delimit the arguments.
 pub fn split_macro_args(s: &str) -> Vec<String> {
     if s.is_empty() {
         return Vec::new();
     }
 
-    // Determine whether the invocation uses commas as separators by checking
-    // for commas outside quotes and parentheses.
-    let has_commas = {
-        let mut paren_depth = 0i32;
-        let mut in_quote = false;
-        let mut found = false;
-        for &b in s.as_bytes() {
-            match b {
-                b'"' => in_quote = !in_quote,
-                b'(' if !in_quote => paren_depth += 1,
-                b')' if !in_quote => paren_depth -= 1,
-                b',' if !in_quote && paren_depth == 0 => { found = true; break; }
-                _ => {}
+    // Step 1: Split on commas (respecting parens and quotes) to get comma fields.
+    let comma_fields = split_on_commas_raw(s);
+
+    // Step 2: Within each comma field, split on whitespace (respecting parens),
+    // then merge expression tokens connected by operators.
+    let mut args = Vec::new();
+    for field in &comma_fields {
+        let trimmed = field.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let sub_tokens = split_field_on_whitespace(trimmed);
+        let merged = merge_expression_tokens(&sub_tokens);
+        args.extend(merged);
+    }
+    args
+}
+
+/// Split a string on top-level commas (outside parens and quotes).
+fn split_on_commas_raw(s: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let mut paren_depth = 0i32;
+    let mut in_quote = false;
+
+    while i < bytes.len() {
+        if in_quote {
+            if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                current.push(bytes[i] as char);
+                current.push(bytes[i + 1] as char);
+                i += 2;
+                continue;
+            }
+            if bytes[i] == b'"' {
+                in_quote = false;
+            }
+            current.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+        match bytes[i] {
+            b'"' => {
+                in_quote = true;
+                current.push('"');
+            }
+            b'(' => {
+                paren_depth += 1;
+                current.push('(');
+            }
+            b')' => {
+                paren_depth -= 1;
+                current.push(')');
+            }
+            b',' if paren_depth == 0 => {
+                fields.push(current.clone());
+                current.clear();
+            }
+            _ => {
+                current.push(bytes[i] as char);
             }
         }
-        found
-    };
+        i += 1;
+    }
+    fields.push(current);
+    fields
+}
 
-    let mut args = Vec::new();
+/// Split a single comma field on whitespace, respecting parenthesized groups
+/// and quoted strings.
+fn split_field_on_whitespace(s: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
     let mut current = String::new();
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -542,27 +602,8 @@ pub fn split_macro_args(s: &str) -> Vec<String> {
                 paren_depth -= 1;
                 current.push(')');
             }
-            b',' if paren_depth == 0 && has_commas => {
-                let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() {
-                    args.push(trimmed);
-                }
-                current.clear();
-            }
-            b' ' | b'\t' if paren_depth == 0 && !has_commas => {
-                // Space-separated mode: split on whitespace
-                let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() {
-                    args.push(trimmed);
-                    current.clear();
-                }
-                // Skip remaining whitespace
-                while i + 1 < bytes.len() && (bytes[i + 1] == b' ' || bytes[i + 1] == b'\t') {
-                    i += 1;
-                }
-            }
             b'"' => {
-                // Consume quoted string, stripping the outer quotes
+                // Consume quoted string, stripping outer quotes
                 i += 1;
                 while i < bytes.len() && bytes[i] != b'"' {
                     if bytes[i] == b'\\' && i + 1 < bytes.len() {
@@ -575,6 +616,17 @@ pub fn split_macro_args(s: &str) -> Vec<String> {
                 }
                 // Skip closing quote
             }
+            b' ' | b'\t' if paren_depth == 0 => {
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    tokens.push(trimmed);
+                    current.clear();
+                }
+                // Skip remaining whitespace
+                while i + 1 < bytes.len() && (bytes[i + 1] == b' ' || bytes[i + 1] == b'\t') {
+                    i += 1;
+                }
+            }
             _ => {
                 current.push(bytes[i] as char);
             }
@@ -583,9 +635,106 @@ pub fn split_macro_args(s: &str) -> Vec<String> {
     }
     let trimmed = current.trim().to_string();
     if !trimmed.is_empty() {
-        args.push(trimmed);
+        tokens.push(trimmed);
     }
-    args
+    tokens
+}
+
+/// Check if a token looks like an arithmetic/bitwise operator that connects
+/// expression parts in GAS macro arguments.
+fn is_expression_operator(token: &str) -> bool {
+    matches!(
+        token,
+        "+" | "-" | "*" | "/" | "%" | "|" | "&" | "^" | "~" | "<<" | ">>" | "!" | "||" | "&&"
+    )
+}
+
+/// Check if a token ends with an operand character (digit, letter, `_`, `.`, `)`),
+/// indicating it could be the left-hand side of a binary operator expression.
+fn ends_with_operand(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    let last = bytes[bytes.len() - 1];
+    last.is_ascii_alphanumeric() || last == b'_' || last == b'.' || last == b')'
+}
+
+/// Check if a token ends with an operator character, indicating the expression
+/// continues into the next token.
+fn ends_with_operator(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    let last = bytes[bytes.len() - 1];
+    matches!(last, b'+' | b'-' | b'*' | b'/' | b'%' | b'|' | b'&' | b'^' | b'~')
+}
+
+/// Check if a token starts with an operator character that could be a binary
+/// operator connecting it to the preceding token (e.g., `-888f` after `889f`).
+/// Only treats leading `-`/`+` as binary operators when preceded by an operand.
+fn starts_with_binary_operator(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    if bytes.is_empty() {
+        return false;
+    }
+    let first = bytes[0];
+    matches!(first, b'+' | b'-' | b'*' | b'/' | b'%' | b'|' | b'&' | b'^' | b'~')
+}
+
+/// Merge tokens that form arithmetic/bitwise expressions.
+///
+/// When tokens are: `[889f, -, 888f]`, merge to `[889f-888f]`.
+/// When tokens are: `[889f, +, 888f]`, merge to `[889f+888f]`.
+/// When tokens are: `[lb, a5]`, keep as `[lb, a5]` (no operator).
+/// When tokens are: `[a, -4, b]`, keep as `[a, -4, b]` (unary minus, not binary).
+///
+/// Context-awareness: a leading `-`/`+` on the next token is only treated as
+/// a binary operator if the current merged token ends with an operand character
+/// (digit, letter, `_`, `.`, `)`). This prevents false merges like `a-4`.
+fn merge_expression_tokens(tokens: &[String]) -> Vec<String> {
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+    if tokens.len() == 1 {
+        return tokens.to_vec();
+    }
+
+    let mut result = Vec::new();
+    let mut i = 0;
+
+    while i < tokens.len() {
+        let mut merged = tokens[i].clone();
+        // Look ahead: if next token is an operator or starts with one, merge
+        while i + 1 < tokens.len() {
+            let next = &tokens[i + 1];
+            if is_expression_operator(next) && ends_with_operand(&merged) {
+                // Standalone operator token (e.g., `-`, `+`): merge it and the
+                // following operand, but only if current token looks like an operand
+                merged.push_str(next);
+                i += 1;
+                if i + 1 < tokens.len() {
+                    merged.push_str(&tokens[i + 1]);
+                    i += 1;
+                }
+            } else if starts_with_binary_operator(next) && ends_with_operand(&merged) {
+                // Next token starts with operator (e.g., `-888f`) and current
+                // ends with operand — treat as binary expression continuation
+                merged.push_str(next);
+                i += 1;
+            } else if ends_with_operator(&merged) {
+                // Current ends with operator (e.g., `889f+`), merge with next
+                merged.push_str(next);
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        result.push(merged);
+        i += 1;
+    }
+    result
 }
 
 /// Expand `.macro`/`.endm` definitions and macro invocations.
@@ -1084,11 +1233,21 @@ mod tests {
         assert_eq!(split_macro_args("a, b, c"), vec!["a", "b", "c"]);
         assert_eq!(split_macro_args("0(a1), x, y"), vec!["0(a1)", "x", "y"]);
         assert_eq!(split_macro_args(""), Vec::<String>::new());
-        // When commas are used, spaces within a field are preserved
+        // Expression with operator: `889f - 888f` stays as one arg (operator merging)
         assert_eq!(split_macro_args("886b, 888f, 0x1234, 0, 889f - 888f"),
-            vec!["886b", "888f", "0x1234", "0", "889f - 888f"]);
+            vec!["886b", "888f", "0x1234", "0", "889f-888f"]);
         // Without commas, spaces are separators
         assert_eq!(split_macro_args("a b c"), vec!["a", "b", "c"]);
+        // Mixed comma and space: `fixup lb a5, 0(a1), 10f` → 4 args
+        assert_eq!(split_macro_args("lb      a5, 0(a1), 10f"),
+            vec!["lb", "a5", "0(a1)", "10f"]);
+        // Expression operators keep tokens together
+        assert_eq!(split_macro_args("foo + bar"), vec!["foo+bar"]);
+        assert_eq!(split_macro_args("foo + bar, baz"), vec!["foo+bar", "baz"]);
+        // GNU as treats `a -4` as expression `a-4` (binary minus, not unary)
+        assert_eq!(split_macro_args("a -4 b"), vec!["a-4", "b"]);
+        // Operand followed by operator-prefixed token: binary subtraction
+        assert_eq!(split_macro_args("889f -888f"), vec!["889f-888f"]);
     }
 
     #[test]
