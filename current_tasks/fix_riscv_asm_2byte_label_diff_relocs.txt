@@ -1,8 +1,0 @@
-Fix RISC-V assembler: emit R_RISCV_ADD16/SUB16 relocations for .2byte label-difference expressions
-
-The RISC-V assembler currently silently emits zero for .2byte (label1 - label2) instead of
-emitting R_RISCV_ADD16/R_RISCV_SUB16 relocation pairs. This breaks the kernel's .alternative
-section which uses `.2byte 889f - 888f` to encode alt_len. Without proper relocations, the
-alternative patching code sees alt_len=0 and the kernel hangs during boot.
-
-Also fix .byte label-difference to emit R_RISCV_ADD8/SUB8 relocations.
