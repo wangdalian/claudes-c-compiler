@@ -1,0 +1,9 @@
+Fix i686 assembler: add lmsw instruction support
+
+The i686 assembler does not handle the `lmsw` (Load Machine Status Word) instruction,
+which is used in arch/x86/realmode/rm/trampoline_32.S in the Linux kernel.
+This instruction is needed when building the x86 kernel in standalone mode with -m16.
+
+Error: "unhandled i686 instruction: lmsw [Register(Register { name: "dx" })]"
+
+Fix: Add encoding for lmsw (opcode 0F 01 /6) to the i686 assembler.
