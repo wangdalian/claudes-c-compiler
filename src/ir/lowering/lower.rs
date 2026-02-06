@@ -250,6 +250,11 @@ impl Lowerer {
         self.target == Target::Aarch64
     }
 
+    /// Returns true if the target is ARMv7 (32-bit ARM).
+    pub(super) fn is_armv7(&self) -> bool {
+        self.target == Target::Armv7
+    }
+
     /// Returns true if the function has `extern inline` semantics that do NOT
     /// emit an external definition. This covers two cases:
     ///
@@ -306,7 +311,7 @@ impl Lowerer {
     /// On RISC-V: true (fa0/fa1 for return, separate FP regs for params).
     /// On i686: false (16 bytes > 8; uses sret for return, struct-on-stack for params).
     pub(super) fn decomposes_complex_double(&self) -> bool {
-        self.target != Target::I686
+        self.target != Target::I686 && self.target != Target::Armv7
     }
 
     /// Returns true if the target decomposes _Complex float into two separate
@@ -314,7 +319,7 @@ impl Lowerer {
     /// On i686: false (8 bytes fits in eax:edx for return, passed as struct on stack).
     /// On all 64-bit targets: true (decomposed into two FP register args).
     pub(super) fn decomposes_complex_float(&self) -> bool {
-        self.target != Target::I686
+        self.target != Target::I686 && self.target != Target::Armv7
     }
 
     // --- Diagnostic helpers ---

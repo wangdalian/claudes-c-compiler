@@ -1,0 +1,17 @@
+pub(crate) mod emit;
+pub(super) mod prologue;
+pub(super) mod calls;
+pub(super) mod memory;
+pub(super) mod alu;
+pub(super) mod comparison;
+pub(super) mod float_ops;
+pub(super) mod cast_ops;
+pub(super) mod returns;
+pub(super) mod variadic;
+pub(super) mod globals;
+pub(super) mod atomics;
+pub(super) mod i128_ops;
+pub(crate) mod peephole;
+pub(super) mod inline_asm;
+pub(super) mod asm_emitter;
+pub(super) mod intrinsics;

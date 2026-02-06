@@ -21,7 +21,7 @@ use crate::ir::reexports::{
     IrModule,
 };
 use crate::common::types::IrType;
-use crate::backend::elf::{EM_386, EM_X86_64, EM_AARCH64, EM_RISCV};
+use crate::backend::elf::{EM_386, EM_ARM, EM_X86_64, EM_AARCH64, EM_RISCV};
 
 /// Print a one-time warning when using a GCC-backed assembler.
 ///
@@ -122,7 +122,7 @@ pub fn assemble_with_extra(config: &AssemblerConfig, asm_text: &str, output_path
 fn elf_machine_name(em: u16) -> &'static str {
     match em {
         EM_386     => "i386",
-        40         => "ARM",
+        EM_ARM     => "ARM",
         EM_X86_64  => "x86-64",
         EM_AARCH64 => "aarch64",
         EM_RISCV   => "RISC-V",
@@ -226,6 +226,7 @@ pub fn link_with_args(config: &LinkerConfig, object_files: &[&str], output_path:
             EM_AARCH64 => &DIRECT_LD_AARCH64,
             EM_RISCV   => &DIRECT_LD_RISCV64,
             EM_386     => &DIRECT_LD_I686,
+            EM_ARM     => &DIRECT_LD_ARMV7,
             _ => {
                 return Err(format!(
                     "No built-in linker for ELF machine {} ({}). \
@@ -479,6 +480,37 @@ const DIRECT_LD_AARCH64: DirectLdArchConfig = DirectLdArchConfig {
     gcc_package_hint: "Is the gcc-aarch64-linux-gnu package installed?",
 };
 
+#[cfg(not(feature = "gcc_linker"))]
+const DIRECT_LD_ARMV7: DirectLdArchConfig = DirectLdArchConfig {
+    arch_name: "ARMv7",
+    elf_machine: EM_ARM,
+    emulation: "armelf_linux_eabi",
+    dynamic_linker: "/lib/ld-linux-armhf.so.3",
+    gcc_lib_base_paths: &[
+        "/usr/lib/gcc-cross/arm-linux-gnueabihf",
+        "/usr/lib/gcc/arm-linux-gnueabihf",
+        "/usr/lib/gcc/arm-linux-gnueabi",
+    ],
+    gcc_versions: GCC_VERSIONS_SHORT,
+    crt_dir_candidates: &[
+        "/usr/arm-linux-gnueabihf/lib",
+        "/usr/lib/arm-linux-gnueabihf",
+        "/lib/arm-linux-gnueabihf",
+    ],
+    system_lib_dirs: &[
+        "/lib/arm-linux-gnueabihf",
+        "/lib/../lib",
+        "/usr/lib/arm-linux-gnueabihf",
+        "/usr/lib/../lib",
+        "/usr/arm-linux-gnueabihf/lib",
+    ],
+    extra_ld_flags: &[],
+    extra_skip_flags: &[],
+    crti_from_gcc_dir: false,
+    crt_package_hint: "Is the libc-dev-armhf-cross package installed?",
+    gcc_package_hint: "Is the gcc-arm-linux-gnueabihf package installed?",
+};
+
 /// Discover GCC's library directory by probing well-known paths.
 /// Returns the path containing crtbegin.o (e.g., "/usr/lib/gcc/x86_64-linux-gnu/13").
 #[cfg(not(feature = "gcc_linker"))]
@@ -694,7 +726,7 @@ fn link_builtin_native(
     is_static: bool,
     is_shared: bool,
 ) -> Result<(), String> {
-    use crate::backend::{x86, i686, arm, riscv};
+    use crate::backend::{x86, i686, arm, armv7, riscv};
 
     if is_shared {
         // Shared libraries: no CRT objects, lib paths only
@@ -709,6 +741,7 @@ fn link_builtin_native(
             EM_AARCH64 => arm::linker::link_shared(object_files, output_path, user_args, &refs.lib_paths),
             EM_RISCV => riscv::linker::link_shared(object_files, output_path, user_args, &refs.lib_paths),
             EM_386 => i686::linker::link_shared(object_files, output_path, user_args, &refs.lib_paths),
+            EM_ARM => armv7::linker::link_shared(object_files, output_path, user_args, &refs.lib_paths),
             _ => Err(format!("No shared library linker for {} (elf_machine={})", arch.arch_name, arch.elf_machine)),
         };
     }
@@ -732,6 +765,10 @@ fn link_builtin_native(
             is_static,
         ),
         EM_RISCV => riscv::linker::link_builtin(
+            object_files, output_path, user_args,
+            &refs.lib_paths, &refs.needed_libs, &refs.crt_before, &refs.crt_after,
+        ),
+        EM_ARM => armv7::linker::link_builtin(
             object_files, output_path, user_args,
             &refs.lib_paths, &refs.needed_libs, &refs.crt_before, &refs.crt_after,
         ),

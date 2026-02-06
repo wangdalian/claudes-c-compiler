@@ -1,0 +1,310 @@
+//! Symbol resolution for the ARMv7 linker.
+//!
+//! Phases 6-9: global symbol resolution, COMMON symbol allocation,
+//! PLT/GOT marking, undefined symbol checking, PLT/GOT list building,
+//! and IFUNC collection. Closely follows the i686 linker's symbol logic.
+
+use std::collections::HashMap;
+
+use super::types::*;
+use crate::backend::linker_common;
+
+pub(super) fn resolve_symbols(
+    inputs: &[InputObject],
+    _output_sections: &[OutputSection],
+    section_map: &SectionMap,
+    dynlib_syms: &HashMap<String, (String, u8, u32, Option<String>, bool, u8)>,
+) -> (HashMap<String, LinkerSymbol>, HashMap<(usize, usize), String>) {
+    let mut global_symbols: HashMap<String, LinkerSymbol> = HashMap::new();
+    let mut sym_resolution: HashMap<(usize, usize), String> = HashMap::new();
+
+    // First pass: collect definitions
+    for (obj_idx, obj) in inputs.iter().enumerate() {
+        for (sym_idx, sym) in obj.symbols.iter().enumerate() {
+            if sym.name.is_empty() || sym.sym_type == STT_FILE || sym.sym_type == STT_SECTION {
+                continue;
+            }
+            if sym.section_index == SHN_UNDEF { continue; }
+
+            let (out_sec_idx, sec_offset) = if sym.section_index != SHN_ABS && sym.section_index != SHN_COMMON {
+                section_map.get(&(obj_idx, sym.section_index as usize))
+                    .copied().unwrap_or((usize::MAX, 0))
+            } else {
+                (usize::MAX, 0)
+            };
+
+            let new_sym = LinkerSymbol {
+                address: 0,
+                size: sym.size,
+                sym_type: sym.sym_type,
+                binding: sym.binding,
+                visibility: sym.visibility,
+                is_defined: true,
+                needs_plt: false,
+                needs_got: false,
+                output_section: out_sec_idx,
+                section_offset: sec_offset + sym.value,
+                plt_index: 0,
+                got_index: 0,
+                is_dynamic: false,
+                dynlib: String::new(),
+                needs_copy: false,
+                copy_addr: 0,
+                version: None,
+                uses_textrel: false,
+            };
+
+            match global_symbols.get(&sym.name) {
+                None => {
+                    global_symbols.insert(sym.name.clone(), new_sym);
+                }
+                Some(existing) => {
+                    if sym.binding == STB_LOCAL {
+                        // Already have a definition; keep it.
+                    } else if sym.binding == STB_GLOBAL && (existing.binding == STB_WEAK || existing.binding == STB_LOCAL)
+                        || (!existing.is_defined && new_sym.is_defined)
+                    {
+                        global_symbols.insert(sym.name.clone(), new_sym);
+                    }
+                }
+            }
+
+            sym_resolution.insert((obj_idx, sym_idx), sym.name.clone());
+        }
+    }
+
+    // Second pass: undefined symbols (look in dynamic libs)
+    for (obj_idx, obj) in inputs.iter().enumerate() {
+        for (sym_idx, sym) in obj.symbols.iter().enumerate() {
+            if sym.name.is_empty() || sym.sym_type == STT_FILE || sym.sym_type == STT_SECTION {
+                continue;
+            }
+            if sym.section_index != SHN_UNDEF { continue; }
+            if global_symbols.get(&sym.name).map(|s| s.is_defined).unwrap_or(false) {
+                sym_resolution.insert((obj_idx, sym_idx), sym.name.clone());
+                continue;
+            }
+            if let Some((lib, stype, size, ver, _is_default, bind)) = dynlib_syms.get(&sym.name) {
+                let new_sym = LinkerSymbol {
+                    address: 0,
+                    size: *size,
+                    sym_type: *stype,
+                    binding: *bind,
+                    visibility: STV_DEFAULT,
+                    is_defined: false,
+                    needs_plt: false,
+                    needs_got: false,
+                    output_section: usize::MAX,
+                    section_offset: 0,
+                    plt_index: 0,
+                    got_index: 0,
+                    is_dynamic: true,
+                    dynlib: lib.clone(),
+                    needs_copy: *stype == STT_OBJECT && *size > 0,
+                    copy_addr: 0,
+                    version: ver.clone(),
+                    uses_textrel: false,
+                };
+                global_symbols.insert(sym.name.clone(), new_sym);
+            } else if !global_symbols.contains_key(&sym.name) {
+                global_symbols.insert(sym.name.clone(), LinkerSymbol {
+                    address: 0, size: 0, sym_type: sym.sym_type,
+                    binding: sym.binding, visibility: sym.visibility,
+                    is_defined: false, needs_plt: false, needs_got: false,
+                    output_section: usize::MAX, section_offset: 0,
+                    plt_index: 0, got_index: 0, is_dynamic: false,
+                    dynlib: String::new(), needs_copy: false, copy_addr: 0,
+                    version: None, uses_textrel: false,
+                });
+            }
+            sym_resolution.insert((obj_idx, sym_idx), sym.name.clone());
+        }
+    }
+
+    (global_symbols, sym_resolution)
+}
+
+/// Allocate COMMON symbols into .bss.
+pub(super) fn allocate_common_symbols(
+    inputs: &[InputObject],
+    output_sections: &mut Vec<OutputSection>,
+    section_name_to_idx: &mut HashMap<String, usize>,
+    global_symbols: &mut HashMap<String, LinkerSymbol>,
+) {
+    let mut commons: Vec<(String, u32, u32)> = Vec::new(); // name, size, align
+    for obj in inputs {
+        for sym in &obj.symbols {
+            if sym.section_index == SHN_COMMON && !sym.name.is_empty()
+                && sym.binding != STB_LOCAL
+            {
+                if let Some(gs) = global_symbols.get(&sym.name) {
+                    if !gs.is_defined {
+                        let align = sym.value.max(1);
+                        commons.push((sym.name.clone(), sym.size, align));
+                    }
+                }
+            }
+        }
+    }
+
+    if commons.is_empty() { return; }
+
+    let bss_idx = if let Some(&idx) = section_name_to_idx.get(".bss") {
+        idx
+    } else {
+        let idx = output_sections.len();
+        section_name_to_idx.insert(".bss".into(), idx);
+        output_sections.push(OutputSection {
+            name: ".bss".into(), sh_type: SHT_NOBITS,
+            flags: SHF_ALLOC | SHF_WRITE, data: Vec::new(),
+            align: 4, addr: 0, file_offset: 0,
+        });
+        idx
+    };
+
+    for (name, size, align) in commons {
+        let bss = &mut output_sections[bss_idx];
+        let cur_size = bss.data.len() as u32;
+        let aligned = align_up(cur_size, align);
+        bss.data.resize(aligned as usize + size as usize, 0);
+        bss.align = bss.align.max(align);
+
+        if let Some(sym) = global_symbols.get_mut(&name) {
+            sym.is_defined = true;
+            sym.output_section = bss_idx;
+            sym.section_offset = aligned;
+        }
+    }
+}
+
+/// Mark PLT/GOT needs for symbols.
+pub(super) fn mark_plt_got_needs(
+    inputs: &[InputObject],
+    global_symbols: &mut HashMap<String, LinkerSymbol>,
+    is_static: bool,
+) {
+    for obj in inputs {
+        for sec in &obj.sections {
+            for &(_, rel_type, sym_idx, _) in &sec.relocations {
+                let sym_idx = sym_idx as usize;
+                if sym_idx >= obj.symbols.len() { continue; }
+                let sym = &obj.symbols[sym_idx];
+                if sym.name.is_empty() { continue; }
+
+                let gs = match global_symbols.get_mut(&sym.name) {
+                    Some(s) => s,
+                    None => continue,
+                };
+
+                match rel_type {
+                    R_ARM_CALL | R_ARM_JUMP24 | R_ARM_PLT32 => {
+                        if gs.is_dynamic && !is_static {
+                            gs.needs_plt = true;
+                        }
+                    }
+                    R_ARM_GOT32 | R_ARM_GOT_BREL | R_ARM_TLS_GD32 |
+                    R_ARM_TLS_IE32 => {
+                        gs.needs_got = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // IFUNC symbols always need PLT+GOT
+    if !is_static {
+        let ifunc_names: Vec<String> = global_symbols.iter()
+            .filter(|(_, s)| s.sym_type == STT_GNU_IFUNC)
+            .map(|(n, _)| n.clone())
+            .collect();
+        for name in ifunc_names {
+            if let Some(sym) = global_symbols.get_mut(&name) {
+                sym.needs_plt = true;
+                sym.needs_got = true;
+            }
+        }
+    }
+}
+
+/// Check for undefined non-weak symbols.
+pub(super) fn check_undefined_symbols(
+    global_symbols: &HashMap<String, LinkerSymbol>,
+) -> Result<(), String> {
+    for (name, sym) in global_symbols {
+        if !sym.is_defined && !sym.is_dynamic && sym.binding != STB_WEAK {
+            if linker_common::is_linker_defined_symbol(name) { continue; }
+            return Err(format!("undefined reference to `{}'", name));
+        }
+    }
+    Ok(())
+}
+
+/// Build PLT and GOT symbol lists.
+pub(super) fn build_plt_got_lists(
+    global_symbols: &mut HashMap<String, LinkerSymbol>,
+) -> (Vec<String>, Vec<String>, Vec<String>, usize, usize) {
+    let mut plt_symbols: Vec<String> = Vec::new();
+    let mut got_dyn_symbols: Vec<String> = Vec::new();
+    let mut got_local_symbols: Vec<String> = Vec::new();
+
+    // PLT symbols
+    let mut plt_names: Vec<String> = global_symbols.iter()
+        .filter(|(_, s)| s.needs_plt)
+        .map(|(n, _)| n.clone())
+        .collect();
+    plt_names.sort();
+
+    for (i, name) in plt_names.iter().enumerate() {
+        if let Some(sym) = global_symbols.get_mut(name) {
+            sym.plt_index = i;
+        }
+        plt_symbols.push(name.clone());
+    }
+
+    // GOT symbols (dynamic)
+    let mut got_dyn_names: Vec<String> = global_symbols.iter()
+        .filter(|(_, s)| s.needs_got && s.is_dynamic)
+        .map(|(n, _)| n.clone())
+        .collect();
+    got_dyn_names.sort();
+
+    for (i, name) in got_dyn_names.iter().enumerate() {
+        if let Some(sym) = global_symbols.get_mut(name) {
+            sym.got_index = i;
+        }
+        got_dyn_symbols.push(name.clone());
+    }
+
+    // GOT symbols (local)
+    let mut got_local_names: Vec<String> = global_symbols.iter()
+        .filter(|(_, s)| s.needs_got && !s.is_dynamic)
+        .map(|(n, _)| n.clone())
+        .collect();
+    got_local_names.sort();
+
+    let dyn_count = got_dyn_symbols.len();
+    for (i, name) in got_local_names.iter().enumerate() {
+        if let Some(sym) = global_symbols.get_mut(name) {
+            sym.got_index = dyn_count + i;
+        }
+        got_local_symbols.push(name.clone());
+    }
+
+    let num_plt = plt_symbols.len();
+    let num_got = got_dyn_symbols.len() + got_local_symbols.len();
+
+    (plt_symbols, got_dyn_symbols, got_local_symbols, num_plt, num_got)
+}
+
+/// Collect IFUNC symbols for static linking.
+pub(super) fn collect_ifunc_symbols(
+    global_symbols: &HashMap<String, LinkerSymbol>,
+    is_static: bool,
+) -> Vec<String> {
+    if !is_static { return Vec::new(); }
+    global_symbols.iter()
+        .filter(|(_, s)| s.sym_type == STT_GNU_IFUNC && s.is_defined)
+        .map(|(n, _)| n.clone())
+        .collect()
+}

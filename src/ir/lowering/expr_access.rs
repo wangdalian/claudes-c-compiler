@@ -1099,8 +1099,8 @@ impl Lowerer {
         }
 
         use crate::backend::Target;
-        let ap_val = if self.target == Target::Riscv64 || self.target == Target::I686 {
-            // RISC-V / i686: va_list is a pointer, need address of the variable holding it
+        let ap_val = if self.target == Target::Riscv64 || self.target == Target::I686 || self.target == Target::Armv7 {
+            // RISC-V / i686 / ARMv7: va_list is a pointer, need address of the variable holding it
             self.lower_address_of(ap_expr)
         } else {
             // x86-64 / AArch64: va_list is an array type, lower_expr handles
@@ -1195,8 +1195,8 @@ impl Lowerer {
 
         // Non-x86-64 targets: small structs passed by value inline.
         // Read each slot from the va_list and store to a temporary alloca.
-        let slot_size = if self.target == Target::I686 { 4 } else { 8 };
-        let default_slot_ty = if self.target == Target::I686 { IrType::I32 } else { IrType::I64 };
+        let slot_size = if self.target == Target::I686 || self.target == Target::Armv7 { 4 } else { 8 };
+        let default_slot_ty = if self.target == Target::I686 || self.target == Target::Armv7 { IrType::I32 } else { IrType::I64 };
 
         // Number of slots needed (round up)
         let num_slots = struct_size.div_ceil(slot_size);
@@ -1420,8 +1420,8 @@ impl Lowerer {
     /// - RISC-V: va_list is void*, always need address-of the variable.
     pub(super) fn lower_va_list_pointer(&mut self, ap_expr: &Expr) -> Operand {
         use crate::backend::Target;
-        if self.target == Target::Riscv64 || self.target == Target::I686 {
-            // RISC-V / i686: va_list is a pointer, need address of the variable
+        if self.target == Target::Riscv64 || self.target == Target::I686 || self.target == Target::Armv7 {
+            // RISC-V / i686 / ARMv7: va_list is a pointer, need address of the variable
             self.lower_address_of(ap_expr)
         } else {
             self.lower_expr(ap_expr)

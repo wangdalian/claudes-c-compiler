@@ -25,7 +25,12 @@ impl Driver {
             .and_then(|n| n.to_str())
             .unwrap_or("ccc");
 
-        self.target = if binary_name.contains("arm") || binary_name.contains("aarch64") {
+        self.target = if binary_name.contains("aarch64") {
+            Target::Aarch64
+        } else if binary_name.contains("armv7") || binary_name.contains("armhf") {
+            Target::Armv7
+        } else if binary_name.contains("arm") {
+            // "ccc-arm" defaults to aarch64 for backward compatibility
             Target::Aarch64
         } else if binary_name.contains("riscv") {
             Target::Riscv64

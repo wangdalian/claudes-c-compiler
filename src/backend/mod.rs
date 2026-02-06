@@ -27,6 +27,7 @@ pub(crate) mod regalloc;     // Linear scan register allocator
 pub(crate) mod x86;
 pub(crate) mod i686;
 pub(crate) mod arm;
+pub(crate) mod armv7;
 pub(crate) mod riscv;
 
 use crate::ir::reexports::IrModule;
@@ -124,6 +125,7 @@ pub enum Target {
     I686,
     Aarch64,
     Riscv64,
+    Armv7,
 }
 
 impl Target {
@@ -135,6 +137,7 @@ impl Target {
             Target::I686 => "i686-linux-gnu",
             Target::Aarch64 => "aarch64-linux-gnu",
             Target::Riscv64 => "riscv64-linux-gnu",
+            Target::Armv7 => "arm-linux-gnueabihf",
         }
     }
 
@@ -145,6 +148,7 @@ impl Target {
             Target::I686 => "/lib/ld-linux.so.2",
             Target::Aarch64 => "/lib/ld-linux-aarch64.so.1",
             Target::Riscv64 => "/lib/ld-linux-riscv64-lp64d.so.1",
+            Target::Armv7 => "/lib/ld-linux-armhf.so.3",
         }
     }
 
@@ -175,6 +179,10 @@ impl Target {
             Target::Riscv64 => &[
                 "/usr/lib/gcc-cross/riscv64-linux-gnu",
                 "/usr/lib/gcc/riscv64-linux-gnu",
+            ],
+            Target::Armv7 => &[
+                "/usr/lib/gcc-cross/arm-linux-gnueabihf",
+                "/usr/lib/gcc/arm-linux-gnueabihf",
             ],
         };
         let gcc_versions: &[&str] = &["14", "13", "12", "11", "10", "9", "8", "7"];
@@ -220,7 +228,7 @@ impl Target {
 
     /// Whether this target uses 32-bit pointers (ILP32 data model).
     pub(crate) fn is_32bit(&self) -> bool {
-        matches!(self, Target::I686)
+        matches!(self, Target::I686 | Target::Armv7)
     }
 
     /// Pointer size in bytes for this target.
@@ -248,6 +256,10 @@ impl Target {
             Target::Riscv64 => common::AssemblerConfig {
                 command: "riscv64-linux-gnu-gcc",
                 extra_args: &["-march=rv64gc", "-mabi=lp64d"],
+            },
+            Target::Armv7 => common::AssemblerConfig {
+                command: "arm-linux-gnueabihf-gcc",
+                extra_args: &["-march=armv7-a", "-mfpu=vfpv3-d16", "-mfloat-abi=hard"],
             },
         }
     }
@@ -284,6 +296,12 @@ impl Target {
                 extra_args: &["-no-pie"],
                 expected_elf_machine: 243, // EM_RISCV
                 arch_name: "riscv64",
+            },
+            Target::Armv7 => common::LinkerConfig {
+                command: "arm-linux-gnueabihf-gcc",
+                extra_args: &["-no-pie"],
+                expected_elf_machine: 40,  // EM_ARM
+                arch_name: "armv7",
             },
         }
     }
@@ -336,6 +354,14 @@ impl Target {
                 let raw = generation::generate_module_with_debug(&mut cg, module, opts.debug_info, source_mgr);
                 riscv::codegen::peephole::peephole_optimize(raw)
             }
+            Target::Armv7 => {
+                let mut cg = armv7::Armv7Codegen::new();
+                cg.apply_options(opts);
+                cg.state.function_sections = opts.function_sections;
+                cg.state.data_sections = opts.data_sections;
+                let raw = generation::generate_module_with_debug(&mut cg, module, opts.debug_info, source_mgr);
+                armv7::codegen::peephole::peephole_optimize(raw)
+            }
         }
     }
 
@@ -366,6 +392,7 @@ impl Target {
                 Target::X86_64 => x86::assembler::assemble(asm_text, output_path),
                 Target::Riscv64 => riscv::assembler::assemble_with_args(asm_text, output_path, extra_args),
                 Target::I686 => i686::assembler::assemble(asm_text, output_path),
+                Target::Armv7 => armv7::assembler::assemble(asm_text, output_path),
             }
         }
     }

@@ -470,10 +470,17 @@ impl Preprocessor {
                     !s.contains("x86_64")
                 });
                 let aarch64_paths = [
+                    // Cross-compilation paths (from x86_64 host)
                     "/usr/lib/gcc-cross/aarch64-linux-gnu/11/include",
                     "/usr/lib/gcc-cross/aarch64-linux-gnu/12/include",
                     "/usr/lib/gcc-cross/aarch64-linux-gnu/13/include",
                     "/usr/lib/gcc-cross/aarch64-linux-gnu/14/include",
+                    // Native paths (running on aarch64)
+                    "/usr/lib/gcc/aarch64-linux-gnu/10/include",
+                    "/usr/lib/gcc/aarch64-linux-gnu/11/include",
+                    "/usr/lib/gcc/aarch64-linux-gnu/12/include",
+                    "/usr/lib/gcc/aarch64-linux-gnu/13/include",
+                    "/usr/lib/gcc/aarch64-linux-gnu/14/include",
                     "/usr/aarch64-linux-gnu/include",
                     "/usr/include/aarch64-linux-gnu",
                 ];
@@ -524,10 +531,17 @@ impl Preprocessor {
                     !s.contains("x86_64")
                 });
                 let riscv_paths = [
+                    // Cross-compilation paths (from x86_64 host)
                     "/usr/lib/gcc-cross/riscv64-linux-gnu/11/include",
                     "/usr/lib/gcc-cross/riscv64-linux-gnu/12/include",
                     "/usr/lib/gcc-cross/riscv64-linux-gnu/13/include",
                     "/usr/lib/gcc-cross/riscv64-linux-gnu/14/include",
+                    // Native paths (running on riscv64)
+                    "/usr/lib/gcc/riscv64-linux-gnu/10/include",
+                    "/usr/lib/gcc/riscv64-linux-gnu/11/include",
+                    "/usr/lib/gcc/riscv64-linux-gnu/12/include",
+                    "/usr/lib/gcc/riscv64-linux-gnu/13/include",
+                    "/usr/lib/gcc/riscv64-linux-gnu/14/include",
                     "/usr/riscv64-linux-gnu/include",
                     "/usr/include/riscv64-linux-gnu",
                 ];
@@ -631,6 +645,138 @@ impl Preprocessor {
                 self.define_simple_macro("__INT_FAST32_WIDTH__", "32");
                 // i686 uses the same x87 80-bit long double format as x86-64
                 // (LDBL macros are already set correctly), but sizeof differs (12 vs 16)
+            }
+            "armv7" => {
+                // Remove x86 macros
+                self.macros.undefine("__x86_64__");
+                self.macros.undefine("__x86_64");
+                self.macros.undefine("__amd64__");
+                self.macros.undefine("__amd64");
+                self.macros.undefine("__CET__");
+                self.macros.undefine("__SSE__");
+                self.macros.undefine("__SSE2__");
+                self.macros.undefine("__MMX__");
+                self.macros.undefine("__SSE_MATH__");
+                self.macros.undefine("__SSE2_MATH__");
+                self.macros.undefine("__LP64__");
+                self.macros.undefine("_LP64");
+                self.macros.undefine("__SIZEOF_INT128__");
+                // Define ARM32 macros
+                self.define_simple_macro("__arm__", "1");
+                self.define_simple_macro("__ARM_ARCH", "7");
+                self.define_simple_macro("__ARM_ARCH_7A__", "1");
+                self.define_simple_macro("__ARM_ARCH_ISA_ARM", "1");
+                self.define_simple_macro("__ARM_ARCH_ISA_THUMB", "2");
+                self.define_simple_macro("__ARM_ARCH_PROFILE", "65"); // 'A'
+                // Floating-point and SIMD
+                self.define_simple_macro("__ARM_FP", "12"); // 0b1100: single+double precision (VFPv3)
+                self.define_simple_macro("__ARM_NEON__", "1");
+                self.define_simple_macro("__ARM_NEON", "1");
+                self.define_simple_macro("__ARM_FP16_FORMAT_IEEE", "1");
+                // ABI
+                self.define_simple_macro("__ARM_PCS_VFP", "1"); // Hard-float ABI
+                self.define_simple_macro("__ARM_EABI__", "1");
+                self.define_simple_macro("__ARM_SIZEOF_MINIMAL_ENUM", "4");
+                self.define_simple_macro("__ARM_SIZEOF_WCHAR_T", "4");
+                // Endianness
+                self.define_simple_macro("__ARMEL__", "1");
+                // Features
+                self.define_simple_macro("__ARM_FEATURE_CLZ", "1");
+                self.define_simple_macro("__ARM_FEATURE_DSP", "1");
+                self.define_simple_macro("__ARM_FEATURE_IDIV", "1");
+                self.define_simple_macro("__ARM_FEATURE_LDREX", "15");
+                self.define_simple_macro("__ARM_FEATURE_UNALIGNED", "1");
+                self.define_simple_macro("__ARM_FEATURE_SAT", "1");
+                self.define_simple_macro("__ARM_FEATURE_SIMD32", "1");
+                self.define_simple_macro("__THUMB_INTERWORK__", "1");
+                // ILP32 data model
+                self.define_simple_macro("__ILP32__", "1");
+                self.define_simple_macro("_ILP32", "1");
+                self.define_simple_macro("__SIZEOF_POINTER__", "4");
+                self.define_simple_macro("__SIZEOF_LONG__", "4");
+                self.define_simple_macro("__SIZEOF_SIZE_T__", "4");
+                self.define_simple_macro("__SIZEOF_PTRDIFF_T__", "4");
+                // Long double is 8 bytes on ARM (same as double)
+                self.define_simple_macro("__SIZEOF_LONG_DOUBLE__", "8");
+                // Type limits for ILP32
+                self.define_simple_macro("__LONG_MAX__", "2147483647L");
+                self.define_simple_macro("__SIZE_MAX__", "4294967295U");
+                self.define_simple_macro("__PTRDIFF_MAX__", "2147483647");
+                // Override <limits.h> macros for ILP32 (long is 32-bit)
+                self.define_simple_macro("LONG_MIN", "(-2147483647L-1L)");
+                self.define_simple_macro("LONG_MAX", "2147483647L");
+                self.define_simple_macro("ULONG_MAX", "4294967295UL");
+                // Override <stdint.h> macros for ILP32 (pointer/size_t are 32-bit)
+                self.define_simple_macro("INTPTR_MIN", "(-2147483647-1)");
+                self.define_simple_macro("INTPTR_MAX", "2147483647");
+                self.define_simple_macro("UINTPTR_MAX", "4294967295U");
+                self.define_simple_macro("SIZE_MAX", "4294967295U");
+                self.define_simple_macro("PTRDIFF_MIN", "(-2147483647-1)");
+                self.define_simple_macro("PTRDIFF_MAX", "2147483647");
+                // Type names for ILP32
+                self.define_simple_macro("__SIZE_TYPE__", "unsigned int");
+                self.define_simple_macro("__PTRDIFF_TYPE__", "int");
+                self.define_simple_macro("__INTMAX_TYPE__", "long long int");
+                self.define_simple_macro("__UINTMAX_TYPE__", "long long unsigned int");
+                self.define_simple_macro("__INT64_TYPE__", "long long int");
+                self.define_simple_macro("__UINT64_TYPE__", "long long unsigned int");
+                self.define_simple_macro("__INTPTR_TYPE__", "int");
+                self.define_simple_macro("__UINTPTR_TYPE__", "unsigned int");
+                self.define_simple_macro("__INT_LEAST64_TYPE__", "long long int");
+                self.define_simple_macro("__UINT_LEAST64_TYPE__", "long long unsigned int");
+                self.define_simple_macro("__INT_FAST16_TYPE__", "int");
+                self.define_simple_macro("__INT_FAST32_TYPE__", "int");
+                self.define_simple_macro("__INT_FAST64_TYPE__", "long long int");
+                self.define_simple_macro("__UINT_FAST16_TYPE__", "unsigned int");
+                self.define_simple_macro("__UINT_FAST64_TYPE__", "long long unsigned int");
+                // Width macros for ILP32
+                self.define_simple_macro("__LONG_WIDTH__", "32");
+                self.define_simple_macro("__PTRDIFF_WIDTH__", "32");
+                self.define_simple_macro("__SIZE_WIDTH__", "32");
+                self.define_simple_macro("__INTPTR_WIDTH__", "32");
+                self.define_simple_macro("__INT_FAST16_WIDTH__", "32");
+                self.define_simple_macro("__INT_FAST32_WIDTH__", "32");
+                // ARM: char is unsigned by default
+                self.define_simple_macro("__CHAR_UNSIGNED__", "1");
+                // Long double macros (same as double on ARM32)
+                self.define_simple_macro("__LDBL_MANT_DIG__", "53");
+                self.define_simple_macro("__LDBL_DIG__", "15");
+                self.define_simple_macro("__LDBL_MIN_EXP__", "(-1021)");
+                self.define_simple_macro("__LDBL_MAX_EXP__", "1024");
+                self.define_simple_macro("__LDBL_MIN_10_EXP__", "(-307)");
+                self.define_simple_macro("__LDBL_MAX_10_EXP__", "308");
+                self.define_simple_macro("__LDBL_DECIMAL_DIG__", "17");
+                self.define_simple_macro("__LDBL_MAX__", "1.7976931348623157e+308L");
+                self.define_simple_macro("__LDBL_MIN__", "2.2250738585072014e-308L");
+                self.define_simple_macro("__LDBL_EPSILON__", "2.2204460492503131e-16L");
+                self.define_simple_macro("__LDBL_DENORM_MIN__", "4.9406564584124654e-324L");
+                self.define_simple_macro("__LDBL_HAS_DENORM__", "1");
+                self.define_simple_macro("__LDBL_HAS_INFINITY__", "1");
+                self.define_simple_macro("__LDBL_HAS_QUIET_NAN__", "1");
+                self.define_simple_macro("__LDBL_IS_IEC_60559__", "2");
+                self.define_simple_macro("__LDBL_NORM_MAX__", "1.7976931348623157e+308L");
+                // Replace x86 include paths with armv7 paths
+                self.system_include_paths.retain(|p| {
+                    let s = p.to_string_lossy();
+                    !s.contains("x86_64")
+                });
+                let armv7_paths = [
+                    // Cross-compilation paths (from x86_64 host)
+                    "/usr/lib/gcc-cross/arm-linux-gnueabihf/10/include",
+                    "/usr/lib/gcc-cross/arm-linux-gnueabihf/11/include",
+                    "/usr/lib/gcc-cross/arm-linux-gnueabihf/12/include",
+                    "/usr/lib/gcc-cross/arm-linux-gnueabihf/13/include",
+                    "/usr/lib/gcc-cross/arm-linux-gnueabihf/14/include",
+                    // Native paths (running on armv7)
+                    "/usr/lib/gcc/arm-linux-gnueabihf/10/include",
+                    "/usr/lib/gcc/arm-linux-gnueabihf/11/include",
+                    "/usr/lib/gcc/arm-linux-gnueabihf/12/include",
+                    "/usr/lib/gcc/arm-linux-gnueabihf/13/include",
+                    "/usr/lib/gcc/arm-linux-gnueabihf/14/include",
+                    "/usr/arm-linux-gnueabihf/include",
+                    "/usr/include/arm-linux-gnueabihf",
+                ];
+                self.insert_arch_paths_after_bundled(&armv7_paths);
             }
             _ => {
                 // x86_64 is already the default

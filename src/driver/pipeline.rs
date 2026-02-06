@@ -781,6 +781,7 @@ impl Driver {
             Target::Riscv64 => preprocessor.set_target("riscv64"),
             Target::I686 => preprocessor.set_target("i686"),
             Target::X86_64 => preprocessor.set_target("x86_64"),
+            Target::Armv7 => preprocessor.set_target("armv7"),
         }
         // Apply RISC-V ABI/arch overrides from -mabi= and -march= flags.
         // These must come after set_target() which sets defaults for RV64GC/lp64d.

@@ -138,8 +138,8 @@ impl Lowerer {
                 // x86-64: va_list is __va_list_tag[1], 24 bytes, represented as char[24]
                 CType::Array(Box::new(CType::Char), Some(24))
             }
-            Target::I686 => {
-                // i686 cdecl: va_list = char* (simple pointer to stack args)
+            Target::I686 | Target::Armv7 => {
+                // i686/ARMv7 cdecl/AAPCS: va_list = char* (simple pointer to stack args)
                 CType::Pointer(Box::new(CType::Char), AddressSpace::Default)
             }
         };
