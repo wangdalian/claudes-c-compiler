@@ -357,6 +357,27 @@ fn resolve_sym_value(
         return Ok((0, sym.name.clone()));
     }
 
+    // STB_LOCAL symbols: resolve directly from the input object's section context.
+    // Do NOT look up in global_symbols to avoid name collisions with
+    // same-named local symbols from other objects (e.g., static functions).
+    if sym.binding == STB_LOCAL {
+        if sym.section_index != SHN_UNDEF && sym.section_index != SHN_ABS
+            && sym.section_index != SHN_COMMON
+        {
+            if let Some(&(out_sec_idx, sec_offset)) = ctx.section_map.get(&(obj_idx, sym.section_index as usize)) {
+                if out_sec_idx < ctx.output_sections.len() {
+                    // Strip Thumb bit for correct address computation
+                    let sym_val = if sym.sym_type == STT_FUNC { sym.value & !1 } else { sym.value };
+                    return Ok((ctx.output_sections[out_sec_idx].addr + sec_offset + sym_val, sym.name.clone()));
+                }
+            }
+        }
+        if sym.section_index == SHN_ABS {
+            return Ok((sym.value, sym.name.clone()));
+        }
+        return Ok((0, sym.name.clone()));
+    }
+
     if let Some(gs) = ctx.global_symbols.get(&sym.name) {
         if gs.needs_copy && gs.copy_addr != 0 {
             return Ok((gs.copy_addr, sym.name.clone()));

@@ -74,9 +74,17 @@ fn compute_comdat_skip(inputs: &[InputObject]) -> HashSet<(usize, usize)> {
     for (obj_idx, obj) in inputs.iter().enumerate() {
         for sec in &obj.sections {
             if sec.sh_type == SHT_GROUP {
-                // The group section data contains a flag word followed by section indices
-                let group_name = &sec.name;
-                if !seen_groups.insert(group_name.clone()) {
+                // The group section data contains a flag word followed by section indices.
+                // COMDAT groups are identified by their *signature symbol*, not section name
+                // (all group sections are typically named ".group").
+                // sec.info holds the symbol table index of the signature symbol.
+                let group_signature = if (sec.info as usize) < obj.symbols.len() {
+                    obj.symbols[sec.info as usize].name.clone()
+                } else {
+                    // Fallback to section name if info is out of range
+                    sec.name.clone()
+                };
+                if !seen_groups.insert(group_signature) {
                     // Duplicate group: skip all member sections
                     if sec.data.len() >= 4 {
                         let member_count = (sec.data.len() - 4) / 4;

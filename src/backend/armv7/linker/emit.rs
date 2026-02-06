@@ -385,7 +385,8 @@ pub(super) fn emit_executable(
     // Dynamic section
     let num_dyn_entries = if !is_static {
         count_dynamic_entries(&needed_libs, init_vaddr, init_size, fini_vaddr, fini_size,
-            init_array_size, fini_array_size, num_plt, num_rel_dyn, verneed_data.len() as u32, 0)
+            init_array_size, fini_array_size, num_plt, num_rel_dyn,
+            versym_data.len() as u32, verneed_data.len() as u32, 0)
     } else { 0 };
     let dynamic_size = num_dyn_entries * 8;
 
@@ -422,7 +423,11 @@ pub(super) fn emit_executable(
 
     // IRELATIVE relocations for IFUNC in static mode
     let rel_iplt_size = (num_ifunc * 8) as u32;
-    let rel_iplt_vaddr = if num_ifunc > 0 { dynamic_vaddr - rel_iplt_size } else { 0 };
+    let rel_iplt_vaddr = if num_ifunc > 0 && dynamic_vaddr >= rel_iplt_size {
+        dynamic_vaddr - rel_iplt_size
+    } else {
+        0
+    };
 
     // ── Assign symbol addresses ──────────────────────────────────────────
     assign_symbol_addresses(
@@ -890,7 +895,8 @@ fn count_dynamic_entries(
     init_vaddr: u32, init_size: u32,
     fini_vaddr: u32, fini_size: u32,
     init_array_size: u32, fini_array_size: u32,
-    num_plt: usize, num_rel_dyn: usize, verneed_size: u32,
+    num_plt: usize, num_rel_dyn: usize,
+    versym_size: u32, verneed_size: u32,
     num_text_relocs: usize,
 ) -> u32 {
     let mut n: u32 = needed_libs.len() as u32;
@@ -903,7 +909,8 @@ fn count_dynamic_entries(
     n += 1; // DEBUG
     if num_plt > 0 { n += 3; }
     if num_rel_dyn > 0 { n += 3; }
-    if verneed_size > 0 { n += 3; }
+    if versym_size > 0 { n += 1; }  // DT_VERSYM
+    if verneed_size > 0 { n += 2; } // DT_VERNEED + DT_VERNEEDNUM
     if num_text_relocs > 0 { n += 1; }
     n += 1; // DT_NULL
     n

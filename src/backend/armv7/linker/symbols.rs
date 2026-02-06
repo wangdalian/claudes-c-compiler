@@ -26,6 +26,15 @@ pub(super) fn resolve_symbols(
             }
             if sym.section_index == SHN_UNDEF { continue; }
 
+            // STB_LOCAL symbols must NOT be added to the global symbol table.
+            // They are resolved directly from the input object in relocation
+            // processing. Adding them would cause name collisions when
+            // different objects define same-named static functions.
+            if sym.binding == STB_LOCAL {
+                sym_resolution.insert((obj_idx, sym_idx), sym.name.clone());
+                continue;
+            }
+
             let (out_sec_idx, sec_offset) = if sym.section_index != SHN_ABS && sym.section_index != SHN_COMMON {
                 section_map.get(&(obj_idx, sym.section_index as usize))
                     .copied().unwrap_or((usize::MAX, 0))
@@ -64,9 +73,7 @@ pub(super) fn resolve_symbols(
                     global_symbols.insert(sym.name.clone(), new_sym);
                 }
                 Some(existing) => {
-                    if sym.binding == STB_LOCAL {
-                        // Already have a definition; keep it.
-                    } else if sym.binding == STB_GLOBAL && (existing.binding == STB_WEAK || existing.binding == STB_LOCAL)
+                    if sym.binding == STB_GLOBAL && (existing.binding == STB_WEAK || existing.binding == STB_LOCAL)
                         || (!existing.is_defined && new_sym.is_defined)
                     {
                         global_symbols.insert(sym.name.clone(), new_sym);
