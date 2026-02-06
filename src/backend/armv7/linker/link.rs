@@ -25,7 +25,14 @@ pub fn link_builtin(
     crt_objects_after: &[&str],
 ) -> Result<(), String> {
     let is_nostdlib = user_args.iter().any(|a| a == "-nostdlib");
-    let is_static = user_args.iter().any(|a| a == "-static");
+    // Force static linking: the ARMv7 linker does not currently support
+    // shared library symbol resolution (dynlib_syms is always empty).
+    // Without this, the linker creates a broken half-dynamic binary that
+    // has INTERP/DYNAMIC/DT_NEEDED but all symbols resolved from static
+    // archives, causing the dynamic linker to load libc.so alongside the
+    // statically-linked libc — conflicting TLS, GOT, and initialization
+    // code leads to a segfault during CRT startup.
+    let is_static = true;
 
     // Phase 1: Parse arguments
     let (extra_libs, extra_lib_files, extra_lib_paths, extra_objects, defsym_defs) = parse_user_args(user_args);

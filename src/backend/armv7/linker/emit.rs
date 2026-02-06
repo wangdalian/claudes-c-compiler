@@ -365,7 +365,7 @@ pub(super) fn emit_executable(
         layout_tls(section_name_to_idx, output_sections, &mut file_offset, &mut vaddr);
 
     // GOT (.got + .got.plt)
-    let got_reserved: usize = 3; // Reserved GOT entries
+    let got_reserved: usize = 1; // Reserved GOT entries (GOT[0] = _DYNAMIC)
     let gotplt_reserved: u32 = 3;
     let num_got = got_dyn_symbols.len() + got_local_symbols.len();
     let got_size = ((got_reserved + num_got) * 4) as u32;
