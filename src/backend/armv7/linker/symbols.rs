@@ -197,7 +197,8 @@ pub(super) fn mark_plt_got_needs(
                 };
 
                 match rel_type {
-                    R_ARM_CALL | R_ARM_JUMP24 | R_ARM_PLT32 => {
+                    R_ARM_CALL | R_ARM_JUMP24 | R_ARM_PLT32
+                    | R_ARM_THM_CALL | R_ARM_THM_JUMP24 => {
                         if gs.is_dynamic && !is_static {
                             gs.needs_plt = true;
                         }

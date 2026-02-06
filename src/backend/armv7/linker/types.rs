@@ -49,13 +49,16 @@ pub(super) const SHF_TLS: u32 = 0x400;
 pub(super) const R_ARM_NONE: u32 = 0;
 pub(super) const R_ARM_ABS32: u32 = 2;
 pub(super) const R_ARM_REL32: u32 = 3;
+pub(super) const R_ARM_THM_CALL: u32 = 10;
 pub(super) const R_ARM_GLOB_DAT: u32 = 21;
 pub(super) const R_ARM_JUMP_SLOT: u32 = 22;
 pub(super) const R_ARM_RELATIVE: u32 = 23;
+pub(super) const R_ARM_BASE_PREL: u32 = 25;
 pub(super) const R_ARM_GOT32: u32 = 26;
 pub(super) const R_ARM_PLT32: u32 = 27;
 pub(super) const R_ARM_CALL: u32 = 28;
 pub(super) const R_ARM_JUMP24: u32 = 29;
+pub(super) const R_ARM_THM_JUMP24: u32 = 30;
 pub(super) const R_ARM_TARGET1: u32 = 38;
 pub(super) const R_ARM_V4BX: u32 = 40;
 pub(super) const R_ARM_PREL31: u32 = 42;
@@ -63,6 +66,10 @@ pub(super) const R_ARM_MOVW_ABS_NC: u32 = 43;
 pub(super) const R_ARM_MOVT_ABS: u32 = 44;
 pub(super) const R_ARM_MOVW_PREL_NC: u32 = 45;
 pub(super) const R_ARM_MOVT_PREL: u32 = 46;
+pub(super) const R_ARM_THM_MOVW_ABS_NC: u32 = 47;
+pub(super) const R_ARM_THM_MOVT_ABS: u32 = 48;
+pub(super) const R_ARM_THM_MOVW_PREL_NC: u32 = 49;
+pub(super) const R_ARM_THM_MOVT_PREL: u32 = 50;
 pub(super) const R_ARM_GOT_BREL: u32 = 26;
 pub(super) const R_ARM_GOTOFF32: u32 = 24;
 pub(super) const R_ARM_COPY: u32 = 20;
@@ -75,6 +82,8 @@ pub(super) const R_ARM_TLS_DTPMOD32: u32 = 17;
 pub(super) const R_ARM_TLS_DTPOFF32: u32 = 18;
 #[allow(dead_code)]
 pub(super) const R_ARM_TLS_TPOFF32: u32 = 19;
+pub(super) const R_ARM_THM_JUMP11: u32 = 102;
+pub(super) const R_ARM_THM_JUMP8: u32 = 103;
 pub(super) const R_ARM_IRELATIVE: u32 = 160;
 
 // Dynamic tags (i32 for ELF32)
