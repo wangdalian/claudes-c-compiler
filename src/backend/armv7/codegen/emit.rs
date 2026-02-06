@@ -950,8 +950,14 @@ impl Armv7Codegen {
     }
 
     pub(super) fn aligned_frame_size_impl(&self, raw_space: i64) -> i64 {
-        // ARM requires 8-byte stack alignment
-        (raw_space + 7) & !7
+        // ARM AAPCS requires 8-byte stack alignment at public interfaces.
+        // After push {r11, lr} (always 8 bytes, aligned), we push callee-saved
+        // registers then allocate frame space. The sum of callee-saved bytes
+        // and frame space must be a multiple of 8 so sp stays aligned.
+        let callee_saved_bytes = self.used_callee_saved.len() as i64 * 4;
+        let total = raw_space + callee_saved_bytes;
+        let aligned_total = (total + 7) & !7;
+        aligned_total - callee_saved_bytes
     }
 
     // ---- Switch primitives ----
