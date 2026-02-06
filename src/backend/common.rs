@@ -746,6 +746,10 @@ fn link_builtin_native(
         };
     }
 
+    // ARMv7 linker does not currently support shared library symbol resolution,
+    // so force static linking to ensure correct CRT files (crtbeginT.o) and
+    // libraries (libgcc_eh instead of libgcc_s) are selected.
+    let is_static = if arch.elf_machine == EM_ARM { true } else { is_static };
     let mut setup = resolve_builtin_link_setup(arch, user_args, is_nostdlib, is_static);
     add_arch_extra_libs(&mut setup, arch.elf_machine, is_static);
     let refs = setup.as_refs();
