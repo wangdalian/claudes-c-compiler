@@ -81,7 +81,7 @@ pub fn link_builtin(
     check_undefined_symbols(&global_symbols)?;
 
     // Phase 8: Build PLT/GOT
-    let (plt_symbols, got_dyn_symbols, got_local_symbols, num_plt, num_got_total) =
+    let (plt_symbols, got_dyn_symbols, got_local_symbols, num_plt, num_got_slots) =
         build_plt_got_lists(&mut global_symbols);
 
     // Mark weak dynamic data symbols for textrel
@@ -107,7 +107,7 @@ pub fn link_builtin(
         &inputs, &mut output_sections, &section_name_to_idx, &section_map,
         &mut global_symbols, &sym_resolution,
         &dynlib_syms, &plt_symbols, &got_dyn_symbols, &got_local_symbols,
-        num_plt, num_got_total, &ifunc_symbols,
+        num_plt, num_got_slots, &ifunc_symbols,
         is_static, is_nostdlib, needed_libs_param,
         output_path,
     )

@@ -23,7 +23,7 @@ pub(super) fn emit_executable(
     got_dyn_symbols: &[String],
     got_local_symbols: &[String],
     num_plt: usize,
-    _num_got_total: usize,
+    num_got_slots: usize,
     ifunc_symbols: &[String],
     is_static: bool,
     is_nostdlib: bool,
@@ -367,8 +367,8 @@ pub(super) fn emit_executable(
     // GOT (.got + .got.plt)
     let got_reserved: usize = 1; // Reserved GOT entries (GOT[0] = _DYNAMIC)
     let gotplt_reserved: u32 = 3;
-    let num_got = got_dyn_symbols.len() + got_local_symbols.len();
-    let got_size = ((got_reserved + num_got) * 4) as u32;
+    // num_got_slots already accounts for TLS GD symbols needing 2 slots each
+    let got_size = ((got_reserved + num_got_slots) * 4) as u32;
     let gotplt_size = (gotplt_reserved + num_plt as u32) * 4;
 
     file_offset = align_up(file_offset, 4);
@@ -491,6 +491,7 @@ pub(super) fn emit_executable(
     resolve_got_reloc(
         &mut got_data, got_reserved,
         got_dyn_symbols, got_local_symbols, global_symbols,
+        has_tls_sections, tls_addr, tls_mem_size,
     );
 
     let mut gotplt_data = vec![0u8; gotplt_size as usize];
@@ -962,6 +963,7 @@ fn assign_symbol_addresses(
     global_symbols.entry("_GLOBAL_OFFSET_TABLE_".to_string()).or_insert(LinkerSymbol {
         address: got_base, size: 0, sym_type: STT_OBJECT, binding: STB_LOCAL,
         visibility: STV_DEFAULT, is_defined: true, needs_plt: false, needs_got: false,
+        needs_tls_gd: false,
         output_section: usize::MAX, section_offset: 0, plt_index: 0, got_index: 0,
         is_dynamic: false, dynlib: String::new(), needs_copy: false, copy_addr: 0,
         version: None, uses_textrel: false,

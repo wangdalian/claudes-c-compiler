@@ -47,6 +47,7 @@ pub(super) fn resolve_symbols(
                 is_defined: true,
                 needs_plt: false,
                 needs_got: false,
+                needs_tls_gd: false,
                 output_section: out_sec_idx,
                 section_offset: sec_offset + sym_val,
                 plt_index: 0,
@@ -108,6 +109,7 @@ pub(super) fn resolve_symbols(
                     is_defined: false,
                     needs_plt: false,
                     needs_got: false,
+                    needs_tls_gd: false,
                     output_section: usize::MAX,
                     section_offset: 0,
                     plt_index: 0,
@@ -125,6 +127,7 @@ pub(super) fn resolve_symbols(
                     address: 0, size: 0, sym_type: sym.sym_type,
                     binding: sym.binding, visibility: sym.visibility,
                     is_defined: false, needs_plt: false, needs_got: false,
+                    needs_tls_gd: false,
                     output_section: usize::MAX, section_offset: 0,
                     plt_index: 0, got_index: 0, is_dynamic: false,
                     dynlib: String::new(), needs_copy: false, copy_addr: 0,
@@ -223,9 +226,12 @@ pub(super) fn mark_plt_got_needs(
                             gs.needs_plt = true;
                         }
                     }
-                    R_ARM_GOT32 | R_ARM_GOT_BREL | R_ARM_TLS_GD32 |
-                    R_ARM_TLS_IE32 => {
+                    R_ARM_GOT32 | R_ARM_GOT_BREL | R_ARM_TLS_IE32 => {
                         gs.needs_got = true;
+                    }
+                    R_ARM_TLS_GD32 => {
+                        gs.needs_got = true;
+                        gs.needs_tls_gd = true;
                     }
                     _ => {}
                 }
@@ -284,15 +290,18 @@ pub(super) fn build_plt_got_lists(
     }
 
     // GOT symbols (dynamic)
+    // Use a running slot offset to account for TLS GD symbols that need 2 slots.
     let mut got_dyn_names: Vec<String> = global_symbols.iter()
         .filter(|(_, s)| s.needs_got && s.is_dynamic)
         .map(|(n, _)| n.clone())
         .collect();
     got_dyn_names.sort();
 
-    for (i, name) in got_dyn_names.iter().enumerate() {
+    let mut dyn_slot_offset: usize = 0;
+    for name in got_dyn_names.iter() {
         if let Some(sym) = global_symbols.get_mut(name) {
-            sym.got_index = i;
+            sym.got_index = dyn_slot_offset;
+            dyn_slot_offset += if sym.needs_tls_gd { 2 } else { 1 };
         }
         got_dyn_symbols.push(name.clone());
     }
@@ -304,18 +313,20 @@ pub(super) fn build_plt_got_lists(
         .collect();
     got_local_names.sort();
 
-    let dyn_count = got_dyn_symbols.len();
-    for (i, name) in got_local_names.iter().enumerate() {
+    let mut local_slot_offset: usize = dyn_slot_offset;
+    for name in got_local_names.iter() {
         if let Some(sym) = global_symbols.get_mut(name) {
-            sym.got_index = dyn_count + i;
+            sym.got_index = local_slot_offset;
+            local_slot_offset += if sym.needs_tls_gd { 2 } else { 1 };
         }
         got_local_symbols.push(name.clone());
     }
 
     let num_plt = plt_symbols.len();
-    let num_got = got_dyn_symbols.len() + got_local_symbols.len();
+    // Total GOT slots (not symbol count — GD symbols use 2 slots each)
+    let num_got_slots = local_slot_offset;
 
-    (plt_symbols, got_dyn_symbols, got_local_symbols, num_plt, num_got)
+    (plt_symbols, got_dyn_symbols, got_local_symbols, num_plt, num_got_slots)
 }
 
 /// Collect IFUNC symbols for static linking.

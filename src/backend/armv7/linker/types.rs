@@ -213,6 +213,9 @@ pub(super) struct LinkerSymbol {
     pub is_defined: bool,
     pub needs_plt: bool,
     pub needs_got: bool,
+    /// True if the symbol needs a TLS GD (General Dynamic) GOT descriptor
+    /// (2 consecutive GOT slots: module_id + tls_offset).
+    pub needs_tls_gd: bool,
     pub output_section: usize,
     pub section_offset: u32,
     pub plt_index: usize,

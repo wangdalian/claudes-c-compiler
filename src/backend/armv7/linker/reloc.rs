@@ -394,25 +394,66 @@ fn resolve_sym_value(
 }
 
 /// Resolve GOT-related relocations: fill GOT entries with resolved addresses.
+/// For TLS symbols (STT_TLS), the GOT entry must contain the TP (thread pointer)
+/// offset rather than the absolute address. ARM uses variant 1 TLS where:
+///   tp_offset = sym.address - tls_addr + tls_mem_size
+/// This matches the R_ARM_TLS_LE32 formula (tp = tls_addr - tls_mem_size).
+///
+/// For TLS GD (General Dynamic) symbols, 2 consecutive GOT slots are used:
+///   GOT[n]   = module_id (1 for the executable)
+///   GOT[n+1] = TLS offset within the module (sym.address - tls_addr)
 pub(super) fn resolve_got_reloc(
     got_data: &mut [u8],
     got_reserved: usize,
     got_dyn_symbols: &[String],
     got_local_symbols: &[String],
     global_symbols: &HashMap<String, LinkerSymbol>,
+    has_tls: bool,
+    tls_addr: u32,
+    tls_mem_size: u32,
 ) {
-    for (i, name) in got_dyn_symbols.iter().enumerate() {
-        let off = (got_reserved + i) * 4;
-        if off + 4 > got_data.len() { continue; }
-        let val = global_symbols.get(name).map(|s| s.address).unwrap_or(0);
-        write_u32_le(got_data, off, val);
+    // Helper: fill a single symbol's GOT entry/entries using its got_index.
+    // got_index already accounts for multi-slot symbols (set by build_plt_got_lists).
+    let fill_got_entry = |got_data: &mut [u8], gs: &LinkerSymbol| {
+        let off = (got_reserved + gs.got_index) * 4;
+        if has_tls && gs.sym_type == STT_TLS {
+            if gs.needs_tls_gd {
+                // TLS GD descriptor: 2 consecutive slots
+                // Slot 0: module ID (1 for the executable)
+                if off + 4 <= got_data.len() {
+                    write_u32_le(got_data, off, 1);
+                }
+                // Slot 1: TLS offset within the module
+                let off2 = off + 4;
+                if off2 + 4 <= got_data.len() {
+                    let tls_off = gs.address as i32 - tls_addr as i32;
+                    write_u32_le(got_data, off2, tls_off as u32);
+                }
+            } else {
+                // TLS IE: single slot with TP offset
+                // ARM variant 1 TLS: tp_offset = S - tls_addr + tls_mem_size
+                if off + 4 <= got_data.len() {
+                    let tpoff = gs.address as i32 - tls_addr as i32 + tls_mem_size as i32;
+                    write_u32_le(got_data, off, tpoff as u32);
+                }
+            }
+        } else {
+            // Regular symbol: absolute address
+            if off + 4 <= got_data.len() {
+                write_u32_le(got_data, off, gs.address);
+            }
+        }
+    };
+
+    for name in got_dyn_symbols.iter() {
+        if let Some(gs) = global_symbols.get(name) {
+            fill_got_entry(got_data, gs);
+        }
     }
-    let base = got_reserved + got_dyn_symbols.len();
-    for (i, name) in got_local_symbols.iter().enumerate() {
-        let off = (base + i) * 4;
-        if off + 4 > got_data.len() { continue; }
-        let val = global_symbols.get(name).map(|s| s.address).unwrap_or(0);
-        write_u32_le(got_data, off, val);
+    for name in got_local_symbols.iter() {
+        if let Some(gs) = global_symbols.get(name) {
+            fill_got_entry(got_data, gs);
+        }
     }
 }
 
