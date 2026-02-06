@@ -47,6 +47,7 @@ pub(super) const SHF_TLS: u32 = 0x400;
 
 // ARM relocation types
 pub(super) const R_ARM_NONE: u32 = 0;
+pub(super) const R_ARM_PC24: u32 = 1; // deprecated alias for R_ARM_CALL
 pub(super) const R_ARM_ABS32: u32 = 2;
 pub(super) const R_ARM_REL32: u32 = 3;
 pub(super) const R_ARM_THM_CALL: u32 = 10;

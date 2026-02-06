@@ -92,7 +92,26 @@ fn apply_one_reloc(
         return Ok(None);
     }
 
-    // Read implicit addend from the instruction
+    // 16-bit Thumb relocations only need 2 bytes — handle before the 4-byte check
+    if rel_type == R_ARM_THM_JUMP11 || rel_type == R_ARM_THM_JUMP8 {
+        let out_data = &ctx.output_sections[out_sec_idx].data;
+        if patch_off + 2 > out_data.len() { return Ok(None); }
+        let insn16 = read_u16_le(out_data, patch_off);
+        let pc = patch_addr + 4;
+        let offset = (sym_value as i64 + addend as i64) - pc as i64;
+        let result16 = if rel_type == R_ARM_THM_JUMP11 {
+            let imm11 = ((offset >> 1) as u32) & 0x7FF;
+            (insn16 & 0xF800) | (imm11 as u16)
+        } else {
+            let imm8 = ((offset >> 1) as u32) & 0xFF;
+            (insn16 & 0xFF00) | (imm8 as u16)
+        };
+        let out_data = &mut ctx.output_sections[out_sec_idx].data;
+        write_u16_le(out_data, patch_off, result16);
+        return Ok(None);
+    }
+
+    // Read implicit addend from the instruction (32-bit relocations)
     let out_data = &ctx.output_sections[out_sec_idx].data;
     if patch_off + 4 > out_data.len() {
         return Ok(None);
@@ -113,9 +132,11 @@ fn apply_one_reloc(
                 .wrapping_sub(patch_addr as i32) as u32
         }
 
-        R_ARM_CALL | R_ARM_JUMP24 | R_ARM_PLT32 => {
+        R_ARM_PC24 | R_ARM_CALL | R_ARM_JUMP24 | R_ARM_PLT32 => {
             // BL/B: bits [23:0] are signed offset >> 2, PC = patch_addr + 8
-            let target = if let Some(gs) = ctx.global_symbols.get(&sym_name) {
+            // Extract implicit addend: sign-extend 24-bit field, shift left 2
+            let implicit_addend = ((insn_word as i32) << 8 >> 8) << 2;
+            let base_target = if let Some(gs) = ctx.global_symbols.get(&sym_name) {
                 if gs.needs_plt {
                     ctx.plt_vaddr + ctx.plt_header_size + (gs.plt_index as u32) * ctx.plt_entry_size
                 } else {
@@ -124,20 +145,22 @@ fn apply_one_reloc(
             } else {
                 sym_value
             };
-            let pc = patch_addr + 8; // ARM PC offset
-            let rel = (target as i64 - pc as i64) >> 2;
+            let target = (base_target as i64) + (implicit_addend as i64) + (addend as i64);
+            let pc = (patch_addr + 8) as i64; // ARM PC offset
+            let rel = (target - pc) >> 2;
             let imm24 = (rel as u32) & 0x00FFFFFF;
             (insn_word & 0xFF000000) | imm24
         }
 
         R_ARM_THM_CALL | R_ARM_THM_JUMP24 => {
             // Thumb-2 BL/B.W: 32-bit instruction stored as two LE halfwords
-            // upper = insn_word[15:0], lower = insn_word[31:16]
-            // Format: 11110 S imm10 | 1x J1 1 J2 imm11
-            // Offset = SignExtend(S:I1:I2:imm10:imm11:0, 25)
-            // where I1 = NOT(J1 XOR S), I2 = NOT(J2 XOR S)
-            let target = if let Some(gs) = ctx.global_symbols.get(&sym_name) {
+            // Extract implicit addend from the instruction's encoded offset
+            let implicit_addend = decode_thm_branch(insn_word);
+            let mut target_is_arm = false;
+            let base_target = if let Some(gs) = ctx.global_symbols.get(&sym_name) {
                 if gs.needs_plt {
+                    // PLT stubs are always ARM mode
+                    target_is_arm = true;
                     ctx.plt_vaddr + ctx.plt_header_size + (gs.plt_index as u32) * ctx.plt_entry_size
                 } else {
                     sym_value
@@ -145,9 +168,13 @@ fn apply_one_reloc(
             } else {
                 sym_value
             };
-            let pc = patch_addr + 4; // Thumb PC offset is +4 (not +8 like ARM)
-            let offset = target as i64 - pc as i64;
-            encode_thm_branch(insn_word, offset as i32)
+            let target = (base_target as i64) + (implicit_addend as i64) + (addend as i64);
+            let pc = (patch_addr + 4) as i64; // Thumb PC offset is +4
+            let offset = target - pc;
+            // For R_ARM_THM_CALL: if target is ARM mode, convert BL to BLX
+            // BLX clears bit 12 in lower halfword and requires 4-byte aligned target
+            let use_blx = rel_type == R_ARM_THM_CALL && target_is_arm;
+            encode_thm_branch_ex(insn_word, offset as i32, use_blx)
         }
 
         R_ARM_BASE_PREL => {
@@ -160,42 +187,50 @@ fn apply_one_reloc(
         }
 
         R_ARM_MOVW_ABS_NC => {
-            let val = sym_value.wrapping_add(addend as u32) & 0xFFFF;
+            let implicit = decode_movw_movt(insn_word);
+            let val = sym_value.wrapping_add(implicit).wrapping_add(addend as u32) & 0xFFFF;
             encode_movw_movt(insn_word, val)
         }
 
         R_ARM_MOVT_ABS => {
-            let val = (sym_value.wrapping_add(addend as u32) >> 16) & 0xFFFF;
+            let implicit = decode_movw_movt(insn_word);
+            let val = (sym_value.wrapping_add(implicit).wrapping_add(addend as u32) >> 16) & 0xFFFF;
             encode_movw_movt(insn_word, val)
         }
 
         R_ARM_MOVW_PREL_NC => {
-            let val = sym_value.wrapping_add(addend as u32).wrapping_sub(patch_addr) & 0xFFFF;
+            let implicit = decode_movw_movt(insn_word);
+            let val = sym_value.wrapping_add(implicit).wrapping_add(addend as u32).wrapping_sub(patch_addr) & 0xFFFF;
             encode_movw_movt(insn_word, val)
         }
 
         R_ARM_MOVT_PREL => {
-            let val = (sym_value.wrapping_add(addend as u32).wrapping_sub(patch_addr) >> 16) & 0xFFFF;
+            let implicit = decode_movw_movt(insn_word);
+            let val = (sym_value.wrapping_add(implicit).wrapping_add(addend as u32).wrapping_sub(patch_addr) >> 16) & 0xFFFF;
             encode_movw_movt(insn_word, val)
         }
 
         R_ARM_THM_MOVW_ABS_NC => {
-            let val = sym_value.wrapping_add(addend as u32) & 0xFFFF;
+            let implicit = decode_thm_movw_movt(insn_word);
+            let val = sym_value.wrapping_add(implicit).wrapping_add(addend as u32) & 0xFFFF;
             encode_thm_movw_movt(insn_word, val)
         }
 
         R_ARM_THM_MOVT_ABS => {
-            let val = (sym_value.wrapping_add(addend as u32) >> 16) & 0xFFFF;
+            let implicit = decode_thm_movw_movt(insn_word);
+            let val = (sym_value.wrapping_add(implicit).wrapping_add(addend as u32) >> 16) & 0xFFFF;
             encode_thm_movw_movt(insn_word, val)
         }
 
         R_ARM_THM_MOVW_PREL_NC => {
-            let val = sym_value.wrapping_add(addend as u32).wrapping_sub(patch_addr) & 0xFFFF;
+            let implicit = decode_thm_movw_movt(insn_word);
+            let val = sym_value.wrapping_add(implicit).wrapping_add(addend as u32).wrapping_sub(patch_addr) & 0xFFFF;
             encode_thm_movw_movt(insn_word, val)
         }
 
         R_ARM_THM_MOVT_PREL => {
-            let val = (sym_value.wrapping_add(addend as u32).wrapping_sub(patch_addr) >> 16) & 0xFFFF;
+            let implicit = decode_thm_movw_movt(insn_word);
+            let val = (sym_value.wrapping_add(implicit).wrapping_add(addend as u32).wrapping_sub(patch_addr) >> 16) & 0xFFFF;
             encode_thm_movw_movt(insn_word, val)
         }
 
@@ -268,36 +303,6 @@ fn apply_one_reloc(
             } else {
                 0
             }
-        }
-
-        R_ARM_THM_JUMP11 => {
-            // 16-bit Thumb B (encoding T2): 11100 imm11
-            // Offset = SignExtend(imm11:0, 12) — ±2KB range
-            let out_data = &ctx.output_sections[out_sec_idx].data;
-            if patch_off + 2 > out_data.len() { return Ok(None); }
-            let insn16 = read_u16_le(out_data, patch_off);
-            let pc = patch_addr + 4; // Thumb PC offset
-            let offset = (sym_value as i64 + addend as i64) - pc as i64;
-            let imm11 = ((offset >> 1) as u32) & 0x7FF;
-            let result16 = (insn16 & 0xF800) | (imm11 as u16);
-            let out_data = &mut ctx.output_sections[out_sec_idx].data;
-            write_u16_le(out_data, patch_off, result16);
-            return Ok(None);
-        }
-
-        R_ARM_THM_JUMP8 => {
-            // 16-bit Thumb conditional B (encoding T1): 1101 cond imm8
-            // Offset = SignExtend(imm8:0, 9) — ±256B range
-            let out_data = &ctx.output_sections[out_sec_idx].data;
-            if patch_off + 2 > out_data.len() { return Ok(None); }
-            let insn16 = read_u16_le(out_data, patch_off);
-            let pc = patch_addr + 4; // Thumb PC offset
-            let offset = (sym_value as i64 + addend as i64) - pc as i64;
-            let imm8 = ((offset >> 1) as u32) & 0xFF;
-            let result16 = (insn16 & 0xFF00) | (imm8 as u16);
-            let out_data = &mut ctx.output_sections[out_sec_idx].data;
-            write_u16_le(out_data, patch_off, result16);
-            return Ok(None);
         }
 
         _ => {
@@ -376,13 +381,40 @@ pub(super) fn resolve_got_reloc(
     }
 }
 
+/// Decode the 16-bit immediate from an ARM MOVW/MOVT instruction.
+/// Format: imm4 at bits [19:16], imm12 at bits [11:0].
+fn decode_movw_movt(insn: u32) -> u32 {
+    let imm12 = insn & 0xFFF;
+    let imm4 = (insn >> 16) & 0xF;
+    (imm4 << 12) | imm12
+}
+
 fn encode_movw_movt(insn: u32, val: u32) -> u32 {
     let imm12 = val & 0xFFF;
     let imm4 = (val >> 12) & 0xF;
     (insn & 0xFFF0F000) | (imm4 << 16) | imm12
 }
 
-/// Encode a Thumb-2 BL/B.W branch instruction with the given byte offset.
+/// Decode the implicit addend from a Thumb-2 BL/B.W branch instruction.
+/// Returns the signed byte offset encoded in the instruction.
+fn decode_thm_branch(insn_word: u32) -> i32 {
+    let upper = insn_word & 0xFFFF;
+    let lower = (insn_word >> 16) & 0xFFFF;
+    let s = (upper >> 10) & 1;
+    let imm10 = upper & 0x3FF;
+    let j1 = (lower >> 13) & 1;
+    let j2 = (lower >> 11) & 1;
+    let imm11 = lower & 0x7FF;
+    // I1 = NOT(J1 XOR S), I2 = NOT(J2 XOR S)
+    let i1 = ((j1 ^ s) ^ 1) & 1;
+    let i2 = ((j2 ^ s) ^ 1) & 1;
+    // Reconstruct: S:I1:I2:imm10:imm11:0 (25-bit signed)
+    let raw = (s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 12) | (imm11 << 1);
+    // Sign-extend from 25 bits
+    ((raw as i32) << 7) >> 7
+}
+
+/// Encode a Thumb-2 BL/B.W/BLX branch instruction with the given byte offset.
 ///
 /// Thumb-2 32-bit branch format (stored as two LE halfwords):
 ///   upper (insn_word[15:0]):  11110 S imm10
@@ -390,7 +422,11 @@ fn encode_movw_movt(insn: u32, val: u32) -> u32 {
 ///
 /// The offset encodes as: S:I1:I2:imm10:imm11:0 (25-bit signed, in bytes)
 /// where I1 = NOT(J1 XOR S), I2 = NOT(J2 XOR S)
-fn encode_thm_branch(insn_word: u32, offset: i32) -> u32 {
+///
+/// When `use_blx` is true, converts BL to BLX for Thumb-to-ARM interworking:
+/// - Clears bit 12 of lower halfword (BL has bit12=1, BLX has bit12=0)
+/// - BLX target must be 4-byte aligned; bit 1 of the offset encodes in H (bit 0 of imm11)
+fn encode_thm_branch_ex(insn_word: u32, offset: i32, use_blx: bool) -> u32 {
     let upper = insn_word & 0xFFFF;
     let lower = (insn_word >> 16) & 0xFFFF;
 
@@ -404,11 +440,33 @@ fn encode_thm_branch(insn_word: u32, offset: i32) -> u32 {
     let j1 = ((i1 ^ s) ^ 1) & 1;
     let j2 = ((i2 ^ s) ^ 1) & 1;
 
-    // Preserve opcode bits: upper[15:11]=11110, lower[15:14] and lower[12]
+    // Preserve opcode bits: upper[15:11]=11110
     let new_upper = (upper & 0xF800) | (s << 10) | imm10;
-    let new_lower = (lower & 0xD000) | (j1 << 13) | (j2 << 11) | imm11;
 
-    new_upper | (new_lower << 16)
+    if use_blx {
+        // BLX: lower halfword has bit14=1, bit12=0 (vs BL which has bit14=1, bit12=1)
+        // For BLX, imm11's bit 0 is the H bit (bit 1 of the byte offset)
+        let new_lower = 0xC000 | (j1 << 13) | (j2 << 11) | imm11;
+        new_upper | (new_lower << 16)
+    } else {
+        // BL or B.W: preserve original lower opcode bits (bit15, bit14, bit12)
+        let new_lower = (lower & 0xD000) | (j1 << 13) | (j2 << 11) | imm11;
+        new_upper | (new_lower << 16)
+    }
+}
+
+/// Decode the 16-bit immediate from a Thumb-2 MOVW/MOVT instruction.
+/// Format (two LE halfwords): upper has i at bit[10], imm4 at bits[3:0];
+/// lower has imm3 at bits[14:12], imm8 at bits[7:0].
+/// The 16-bit immediate = imm4:i:imm3:imm8.
+fn decode_thm_movw_movt(insn_word: u32) -> u32 {
+    let upper = insn_word & 0xFFFF;
+    let lower = (insn_word >> 16) & 0xFFFF;
+    let imm8 = lower & 0xFF;
+    let imm3 = (lower >> 12) & 0x7;
+    let i = (upper >> 10) & 1;
+    let imm4 = upper & 0xF;
+    (imm4 << 12) | (i << 11) | (imm3 << 8) | imm8
 }
 
 /// Encode a Thumb-2 MOVW/MOVT instruction with a 16-bit immediate value.

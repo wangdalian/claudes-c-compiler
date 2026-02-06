@@ -458,9 +458,13 @@ pub(super) fn emit_executable(
     let output_sections = reloc_ctx.output_sections;
     let global_symbols = reloc_ctx.global_symbols;
 
-    // Entry point
+    // Entry point — check if _start is a Thumb function (bit 0 of original st_value)
+    // ARM ELF: kernel uses bit 0 of e_entry to determine starting execution mode.
+    let start_is_thumb = inputs.iter().any(|obj| {
+        obj.symbols.iter().any(|sym| sym.name == "_start" && sym.sym_type == STT_FUNC && (sym.value & 1) != 0)
+    });
     let entry = global_symbols.get("_start")
-        .map(|s| s.address)
+        .map(|s| if start_is_thumb { s.address | 1 } else { s.address })
         .unwrap_or(text_vaddr);
 
     // ── Build GOT ────────────────────────────────────────────────────────

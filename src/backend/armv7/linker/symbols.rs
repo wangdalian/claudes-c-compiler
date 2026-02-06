@@ -33,6 +33,11 @@ pub(super) fn resolve_symbols(
                 (usize::MAX, 0)
             };
 
+            // ARM ELF: Thumb function symbols have bit 0 set in st_value.
+            // Strip it for correct address computation; interworking is handled
+            // separately in relocation processing.
+            let sym_val = if sym.sym_type == STT_FUNC { sym.value & !1 } else { sym.value };
+
             let new_sym = LinkerSymbol {
                 address: 0,
                 size: sym.size,
@@ -43,7 +48,7 @@ pub(super) fn resolve_symbols(
                 needs_plt: false,
                 needs_got: false,
                 output_section: out_sec_idx,
-                section_offset: sec_offset + sym.value,
+                section_offset: sec_offset + sym_val,
                 plt_index: 0,
                 got_index: 0,
                 is_dynamic: false,
@@ -197,7 +202,7 @@ pub(super) fn mark_plt_got_needs(
                 };
 
                 match rel_type {
-                    R_ARM_CALL | R_ARM_JUMP24 | R_ARM_PLT32
+                    R_ARM_PC24 | R_ARM_CALL | R_ARM_JUMP24 | R_ARM_PLT32
                     | R_ARM_THM_CALL | R_ARM_THM_JUMP24 => {
                         if gs.is_dynamic && !is_static {
                             gs.needs_plt = true;
