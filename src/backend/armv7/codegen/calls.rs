@@ -145,15 +145,18 @@ impl Armv7Codegen {
                         if let Some(preg) = self.reg_assignments.get(&v.0) {
                             let src = super::emit::phys_reg_name(*preg);
                             emit!(self.state, "    mov {}, {}", reg_names[reg_idx], src);
-                        } else {
-                            let slot_ref = self.value_slot_ref(v.0);
+                        } else if let Some(slot) = self.state.get_slot(v.0) {
+                            let slot_ref = self.slot_ref(slot);
                             emit!(self.state, "    ldr {}, {}", reg_names[reg_idx], slot_ref);
                             // 64-bit: load upper half too
                             if matches!(ty, IrType::I64 | IrType::U64 | IrType::F64) && reg_idx + 1 < 4 {
-                                if let Some(slot) = self.state.get_slot(v.0) {
-                                    let hi_offset = slot.0 + 4;
-                                    emit!(self.state, "    ldr {}, [r11, #{}]", reg_names[reg_idx + 1], hi_offset);
-                                }
+                                let hi_offset = slot.0 + 4;
+                                emit!(self.state, "    ldr {}, [r11, #{}]", reg_names[reg_idx + 1], hi_offset);
+                            }
+                        } else {
+                            // Value is in the accumulator (immediately-consumed)
+                            if reg_idx != 0 {
+                                emit!(self.state, "    mov {}, r0", reg_names[reg_idx]);
                             }
                         }
                     }

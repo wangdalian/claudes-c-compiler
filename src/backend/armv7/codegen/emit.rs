@@ -289,16 +289,21 @@ impl Armv7Codegen {
                 self.load_imm32_to_reg("r1", hi);
             }
             Operand::Value(v) => {
-                let slot_ref = self.value_slot_ref(v.0);
-                emit!(self.state, "    ldr r0, {}", slot_ref);
-                // Upper half at offset+4
+                // Wide values (I64/U64/F64/I128) always have stack slots on 32-bit targets
+                // (excluded from immediately-consumed optimization in slot_assignment.rs).
                 if let Some(slot) = self.state.get_slot(v.0) {
-                    let offset = slot.0 + 4;
-                    if offset == 0 {
+                    let slot_ref = self.slot_ref(slot);
+                    emit!(self.state, "    ldr r0, {}", slot_ref);
+                    let hi_offset = slot.0 + 4;
+                    if hi_offset == 0 {
                         self.state.emit("    ldr r1, [r11]");
                     } else {
-                        emit!(self.state, "    ldr r1, [r11, #{}]", offset);
+                        emit!(self.state, "    ldr r1, [r11, #{}]", hi_offset);
                     }
+                } else {
+                    // Fallback: shouldn't happen for wide values, but be safe
+                    self.operand_to_r0(op);
+                    self.state.emit("    mov r1, #0");
                 }
             }
             _ => {
@@ -320,6 +325,9 @@ impl Armv7Codegen {
                 emit!(self.state, "    str r1, [r11, #{}]", offset);
             }
         }
+        // After a 64-bit store, r0 only holds the low 32 bits of dest —
+        // the acc cache cannot represent this accurately, so invalidate it.
+        self.state.reg_cache.invalidate_acc();
     }
 
     /// Emit load of a pointer-to-slot address into a register.
@@ -384,9 +392,14 @@ impl Armv7Codegen {
             if name != reg {
                 emit!(self.state, "    mov {}, {}", reg, name);
             }
-        } else {
-            let slot_ref = self.value_slot_ref(val.0);
+        } else if let Some(slot) = self.state.get_slot(val.0) {
+            let slot_ref = self.slot_ref(slot);
             emit!(self.state, "    ldr {}, {}", reg, slot_ref);
+        } else {
+            // Value is in the accumulator (immediately-consumed), move r0 to target reg
+            if reg != "r0" {
+                emit!(self.state, "    mov {}, r0", reg);
+            }
         }
     }
 
@@ -1275,12 +1288,16 @@ impl ArchCodegen for Armv7Codegen {
         }
         if let Operand::Value(v) = cond {
             if self.state.is_wide_value(v.0) {
-                // 64-bit: OR both halves
-                let slot_ref = self.value_slot_ref(v.0);
-                emit!(self.state, "    ldr r0, {}", slot_ref);
+                // 64-bit: OR both halves to check truthiness
                 if let Some(slot) = self.state.get_slot(v.0) {
+                    let slot_ref = self.slot_ref(slot);
+                    emit!(self.state, "    ldr r0, {}", slot_ref);
                     let hi_offset = slot.0 + 4;
                     emit!(self.state, "    ldr r1, [r11, #{}]", hi_offset);
+                } else {
+                    // Wide value without slot (shouldn't happen, but be safe)
+                    self.operand_to_r0(cond);
+                    self.state.emit("    mov r1, #0");
                 }
                 self.state.emit("    orrs r0, r0, r1");
                 let true_label = true_block.as_label();

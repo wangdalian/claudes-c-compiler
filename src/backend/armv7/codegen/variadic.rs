@@ -93,11 +93,10 @@ impl Armv7Codegen {
             self.store_r0_to(dest);
         }
 
-        // Advance pointer
+        // Advance pointer — r0 is not clobbered, cache stays valid
         emit!(self.state, "    add r2, r2, #{}", size);
         // Store updated pointer back
         self.state.emit("    str r2, [r1]");
-        self.state.reg_cache.invalidate_all();
     }
 
     pub(super) fn emit_va_copy_impl(&mut self, dest: &Value, src: &Value) {

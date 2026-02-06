@@ -83,7 +83,7 @@ fn is_known_base_mnemonic(m: &str) -> bool {
         "nop" | "svc" | "bkpt" | "dmb" | "dsb" | "isb" |
         "clz" | "rbit" | "rev" | "rev16" | "revsh" |
         "sxtb" | "sxth" | "uxtb" | "uxth" |
-        "ldrex" | "strex" | "clrex" |
+        "ldrex" | "ldrexb" | "ldrexh" | "strex" | "strexb" | "strexh" | "clrex" |
         "movw" | "movt" |
         "vadd" | "vsub" | "vmul" | "vdiv" | "vmov" | "vcvt" | "vcmp" | "vneg" | "vabs" |
         "vmrs" | "vldr" | "vstr" | "vpush" | "vpop" |

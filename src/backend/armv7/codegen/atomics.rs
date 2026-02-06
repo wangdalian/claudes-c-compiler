@@ -105,8 +105,9 @@ impl Armv7Codegen {
 
         // Return old value
         self.state.emit("    mov r0, r2");
-        self.store_r0_to(dest);
+        // Invalidate BEFORE storing so store_r0_to can set the cache correctly.
         self.state.reg_cache.invalidate_all();
+        self.store_r0_to(dest);
     }
 
     pub(super) fn emit_atomic_cmpxchg_impl(
@@ -146,8 +147,9 @@ impl Armv7Codegen {
         // r0 already has the loaded value
 
         emit!(self.state, ".Lcmpxchg_done_{}:", done_label);
-        self.store_r0_to(dest);
+        // Invalidate BEFORE storing so store_r0_to can set the cache correctly.
         self.state.reg_cache.invalidate_all();
+        self.store_r0_to(dest);
     }
 
     pub(super) fn emit_fence_impl(&mut self, ordering: AtomicOrdering) {

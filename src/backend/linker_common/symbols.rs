@@ -83,6 +83,9 @@ pub const LINKER_DEFINED_SYMBOLS: &[&str] = &[
     // Exception handling / unwinding (often weak, but may appear undefined)
     "_ITM_registerTMCloneTable", "_ITM_deregisterTMCloneTable",
     "__gcc_personality_v0", "_Unwind_Resume", "_Unwind_ForcedUnwind", "_Unwind_GetCFA",
+    // ARM EABI compact unwinding personality routines (referenced by .ARM.exidx
+    // sections which are excluded from output; C programs don't need them)
+    "__aeabi_unwind_cpp_pr0", "__aeabi_unwind_cpp_pr1", "__aeabi_unwind_cpp_pr2",
     "__pthread_initialize_minimal", "_dl_rtld_map",
     "__GNU_EH_FRAME_HDR",
     "__getauxval",
