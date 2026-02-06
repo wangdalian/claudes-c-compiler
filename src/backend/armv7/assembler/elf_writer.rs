@@ -783,7 +783,7 @@ impl ElfWriter {
             symbol_name: target,
             addend: 0,
         });
-        self.emit_word(encoder::encode_branch(cond, link, -8)); // placeholder
+        self.emit_word(encoder::encode_branch(cond, link, 0)); // zero addend: linker handles PC+8
         Ok(())
     }
 
