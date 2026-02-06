@@ -252,9 +252,14 @@ pub(super) fn emit_executable(
 
     let text_seg_end_vaddr = vaddr;
 
-    // Page-align for rodata segment
+    // Page-align for rodata segment with congruence:
+    // Linux requires p_offset % p_align == p_vaddr % p_align for PT_LOAD segments.
     file_offset = align_up(file_offset, PAGE_SIZE);
     vaddr = align_up(vaddr, PAGE_SIZE);
+    vaddr = (vaddr & !0xfff) | (file_offset & 0xfff);
+    if vaddr <= text_seg_end_vaddr {
+        vaddr = align_up(text_seg_end_vaddr, PAGE_SIZE) | (file_offset & 0xfff);
+    }
     let rodata_seg_start = vaddr;
 
     let (_rodata_vaddr, _rodata_size) = layout_section(".rodata", section_name_to_idx, output_sections, &mut file_offset, &mut vaddr, 4);
@@ -346,9 +351,13 @@ pub(super) fn emit_executable(
 
     let rodata_seg_end = vaddr;
 
-    // Page-align for data segment
+    // Page-align for data segment with congruence
     file_offset = align_up(file_offset, PAGE_SIZE);
     vaddr = align_up(vaddr, PAGE_SIZE);
+    vaddr = (vaddr & !0xfff) | (file_offset & 0xfff);
+    if vaddr <= rodata_seg_end {
+        vaddr = align_up(rodata_seg_end, PAGE_SIZE) | (file_offset & 0xfff);
+    }
     let data_seg_start = vaddr;
 
     // TLS sections
@@ -414,8 +423,9 @@ pub(super) fn emit_executable(
             let align = if sym.size >= 8 { 8 } else if sym.size >= 4 { 4 } else { 1 };
             copy_offset = align_up(copy_offset, align);
             sym.copy_addr = copy_offset;
+            sym.address = copy_offset; // Must set address for relocations to resolve correctly
             sym.is_defined = true;
-            copy_offset += sym.size;
+            copy_offset += sym.size.max(4); // Minimum 4 bytes allocation
         }
     }
 
@@ -493,6 +503,16 @@ pub(super) fn emit_executable(
         if off + 4 <= gotplt_data.len() {
             let val = plt_vaddr + plt_header_size + (i as u32) * plt_entry_size + 12;
             gotplt_data[off..off+4].copy_from_slice(&val.to_le_bytes());
+        }
+    }
+
+    // Patch dynsym entries for copy-reloc symbols with resolved addresses
+    for name in &copy_syms {
+        if let Some(sym) = global_symbols.get(name) {
+            if let Some(&idx) = dynsym_map.get(name) {
+                dynsym_entries[idx].value = sym.copy_addr;
+                dynsym_entries[idx].shndx = 1; // Mark as defined (non-SHN_UNDEF)
+            }
         }
     }
 
@@ -714,6 +734,22 @@ pub(super) fn emit_executable(
         let hash_off = align_up((dynstr_off + dynstr_data.len()) as u32, 4) as usize;
         if hash_off + hash_data.len() <= output.len() {
             output[hash_off..hash_off + hash_data.len()].copy_from_slice(&hash_data);
+        }
+
+        // versym
+        if !versym_data.is_empty() && versym_vaddr != 0 {
+            let off = (versym_vaddr - BASE_ADDR) as usize;
+            if off + versym_data.len() <= output.len() {
+                output[off..off + versym_data.len()].copy_from_slice(&versym_data);
+            }
+        }
+
+        // verneed
+        if !verneed_data.is_empty() && verneed_vaddr != 0 {
+            let off = (verneed_vaddr - BASE_ADDR) as usize;
+            if off + verneed_data.len() <= output.len() {
+                output[off..off + verneed_data.len()].copy_from_slice(&verneed_data);
+            }
         }
 
         // Write .rel.plt

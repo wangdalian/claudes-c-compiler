@@ -87,7 +87,11 @@ pub(super) fn parse_elf32(data: &[u8], filename: &str) -> Result<InputObject, St
         let info = sym_data[off + 12];
         let other = sym_data[off + 13];
         let shndx = read_u16(sym_data, off + 14);
-        let name = read_cstr(strtab_data, name_idx as usize).to_string();
+        let mut name = read_cstr(strtab_data, name_idx as usize).to_string();
+        // Some toolchains emit symbols with @PLT suffix; strip it for resolution
+        if name.ends_with("@PLT") {
+            name.truncate(name.len() - 4);
+        }
         symbols.push(InputSymbol {
             name,
             value,

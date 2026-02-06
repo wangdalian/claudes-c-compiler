@@ -26,15 +26,6 @@ pub(super) fn resolve_symbols(
             }
             if sym.section_index == SHN_UNDEF { continue; }
 
-            // STB_LOCAL symbols must NOT be added to the global symbol table.
-            // They are resolved directly from the input object in relocation
-            // processing. Adding them would cause name collisions when
-            // different objects define same-named static functions.
-            if sym.binding == STB_LOCAL {
-                sym_resolution.insert((obj_idx, sym_idx), sym.name.clone());
-                continue;
-            }
-
             let (out_sec_idx, sec_offset) = if sym.section_index != SHN_ABS && sym.section_index != SHN_COMMON {
                 section_map.get(&(obj_idx, sym.section_index as usize))
                     .copied().unwrap_or((usize::MAX, 0))
@@ -70,10 +61,21 @@ pub(super) fn resolve_symbols(
 
             match global_symbols.get(&sym.name) {
                 None => {
+                    // STB_LOCAL symbols are inserted as fallback definitions when
+                    // no entry exists yet. glibc's static archives contain cross-
+                    // object references that resolve through local symbols.
+                    // Relocations to local symbols are resolved directly via
+                    // section_map in resolve_sym_value, so this fallback is only
+                    // used for cross-object name lookups.
                     global_symbols.insert(sym.name.clone(), new_sym);
                 }
                 Some(existing) => {
-                    if sym.binding == STB_GLOBAL && (existing.binding == STB_WEAK || existing.binding == STB_LOCAL)
+                    // Local symbols must not override any existing entry.
+                    // They have file scope only and should not shadow globals
+                    // or weaks from other objects.
+                    if sym.binding == STB_LOCAL {
+                        // Already have a definition; keep it.
+                    } else if sym.binding == STB_GLOBAL && (existing.binding == STB_WEAK || existing.binding == STB_LOCAL)
                         || (!existing.is_defined && new_sym.is_defined)
                     {
                         global_symbols.insert(sym.name.clone(), new_sym);
@@ -149,10 +151,16 @@ pub(super) fn allocate_common_symbols(
             if sym.section_index == SHN_COMMON && !sym.name.is_empty()
                 && sym.binding != STB_LOCAL
             {
+                // COMMON symbols are inserted with is_defined=true but output_section=usize::MAX
+                // (since SHN_COMMON != SHN_UNDEF). They need allocation if they haven't been
+                // overridden by a real definition from another object.
                 if let Some(gs) = global_symbols.get(&sym.name) {
-                    if !gs.is_defined {
-                        let align = sym.value.max(1);
-                        commons.push((sym.name.clone(), sym.size, align));
+                    if gs.output_section == usize::MAX && gs.is_defined && !gs.is_dynamic {
+                        // Avoid duplicate allocation if same symbol appears in multiple objects
+                        if !commons.iter().any(|(n, _, _)| n == &sym.name) {
+                            let align = sym.value.max(1);
+                            commons.push((sym.name.clone(), sym.size, align));
+                        }
                     }
                 }
             }

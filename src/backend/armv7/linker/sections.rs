@@ -53,8 +53,16 @@ pub(super) fn merge_sections(
             let out = &mut output_sections[out_idx];
             out.align = out.align.max(sec.align);
 
-            // Align data within the output section
-            let padding = align_up(out.data.len() as u32, sec.align) as usize - out.data.len();
+            // .init and .fini sections from CRT objects (crti.o, crtn.o) must be
+            // concatenated without padding — crti.o provides the function prologue
+            // and crtn.o provides the epilogue. Alignment padding would cause the
+            // CPU to execute zero bytes between them, breaking the function.
+            let align = if out.name == ".init" || out.name == ".fini" {
+                1
+            } else {
+                sec.align.max(1)
+            };
+            let padding = align_up(out.data.len() as u32, align) as usize - out.data.len();
             out.data.extend(std::iter::repeat(0u8).take(padding));
 
             let offset_in_output = out.data.len() as u32;
@@ -74,15 +82,19 @@ fn compute_comdat_skip(inputs: &[InputObject]) -> HashSet<(usize, usize)> {
     for (obj_idx, obj) in inputs.iter().enumerate() {
         for sec in &obj.sections {
             if sec.sh_type == SHT_GROUP {
-                // The group section data contains a flag word followed by section indices.
+                // The group section data starts with a flag word:
+                // bit 0 (GRP_COMDAT) = COMDAT group (duplicates should be eliminated)
+                if sec.data.len() < 4 { continue; }
+                let flags = read_u32(&sec.data, 0);
+                if flags & 1 == 0 { continue; } // Only process COMDAT groups
+
                 // COMDAT groups are identified by their *signature symbol*, not section name
                 // (all group sections are typically named ".group").
                 // sec.info holds the symbol table index of the signature symbol.
                 let group_signature = if (sec.info as usize) < obj.symbols.len() {
                     obj.symbols[sec.info as usize].name.clone()
                 } else {
-                    // Fallback to section name if info is out of range
-                    sec.name.clone()
+                    continue; // Skip if signature symbol index is invalid
                 };
                 if !seen_groups.insert(group_signature) {
                     // Duplicate group: skip all member sections
