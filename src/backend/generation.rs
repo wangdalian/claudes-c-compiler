@@ -498,6 +498,10 @@ pub fn generate_module_with_debug(
 pub fn generate_module(cg: &mut dyn ArchCodegen, module: &IrModule, source_mgr: Option<&crate::common::source::SourceManager>) -> String {
     pre_size_output_buffer(cg, module);
     collect_symbol_sets(cg, module);
+
+    // Emit architecture-specific preamble (e.g., ARM mode directives)
+    cg.emit_asm_preamble();
+
     let file_table = build_and_emit_dwarf_file_table(cg, module, source_mgr);
 
     let ptr_dir = cg.ptr_directive();

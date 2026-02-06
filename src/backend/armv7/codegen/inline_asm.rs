@@ -24,6 +24,11 @@ impl Armv7Codegen {
                 saved_regs.push(reg.to_string());
             }
         }
+        // Pad to even register count to maintain 8-byte stack alignment.
+        // r12 (ip) is a caller-saved scratch register, safe to use as padding.
+        if saved_regs.len() % 2 != 0 {
+            saved_regs.push("r12".to_string());
+        }
         if !saved_regs.is_empty() {
             emit!(self.state, "    push {{{}}}", saved_regs.join(", "));
         }

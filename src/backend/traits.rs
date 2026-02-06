@@ -1410,6 +1410,11 @@ pub trait ArchCodegen {
     /// The i686 backend uses this to emit __divdi3/__udivdi3/__moddi3/__umoddi3
     /// as weak symbols for standalone builds without libgcc.
     fn emit_runtime_stubs(&mut self) {}
+
+    /// Emit architecture-specific preamble directives at the very start of the
+    /// assembly output (before any section or data). Default: nothing.
+    /// ARMv7 uses this to emit `.syntax unified`, `.arm`, `.arch armv7-a`.
+    fn emit_asm_preamble(&mut self) {}
 }
 
 // ── Shared jump table helpers ─────────────────────────────────────────────────

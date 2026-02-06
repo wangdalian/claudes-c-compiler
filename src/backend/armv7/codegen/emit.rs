@@ -505,7 +505,8 @@ impl Armv7Codegen {
             let slot_ref = self.slot_ref(slot);
             emit!(self.state, "    ldr r0, {}", slot_ref);
         }
-        self.state.emit("    push {r0}");
+        // Use 8-byte aligned spill to preserve sp alignment invariant
+        self.state.emit("    str r0, [sp, #-8]!");
     }
 
     pub(super) fn emit_memcpy_load_src_addr_impl(&mut self, slot: StackSlot, is_alloca: bool, _val_id: u32) {
@@ -515,7 +516,8 @@ impl Armv7Codegen {
             let slot_ref = self.slot_ref(slot);
             emit!(self.state, "    ldr r1, {}", slot_ref);
         }
-        self.state.emit("    pop {r0}");
+        // Restore r0 from 8-byte aligned spill
+        self.state.emit("    ldr r0, [sp], #8");
     }
 
     pub(super) fn emit_memcpy_impl_impl(&mut self, size: usize) {
@@ -1268,6 +1270,17 @@ impl ArchCodegen for Armv7Codegen {
     }
 
     fn function_type_directive(&self) -> &'static str { "%function" }
+
+    fn emit_asm_preamble(&mut self) {
+        // ARM mode is required: codegen uses ARM-only instructions like rsc,
+        // conditional execution without IT blocks (moveq, movne, cmpeq, etc.),
+        // and ldr pc,[...] for switch tables.
+        self.state.emit(".syntax unified");
+        self.state.emit(".arm");
+        self.state.emit(".arch armv7-a");
+        self.state.emit(".fpu vfpv3-d16");
+        self.state.emit("");
+    }
 
     // ---- Control flow ----
     fn jump_mnemonic(&self) -> &'static str { "b" }

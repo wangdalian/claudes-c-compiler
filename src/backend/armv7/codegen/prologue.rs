@@ -105,20 +105,22 @@ impl Armv7Codegen {
     pub(super) fn emit_epilogue_impl(&mut self, frame_size: i64) {
         let aligned_frame = self.aligned_frame_size_impl(frame_size);
 
-        // Deallocate stack space
-        if aligned_frame > 0 {
-            self.state.emit("    mov sp, r11");
-        }
-
-        // Restore callee-saved registers and return
+        // Restore callee-saved registers and return.
+        // Always restore sp from r11 to handle dynamic alloca correctly:
+        // r11 (frame pointer) is the stable anchor regardless of any runtime
+        // sp modifications (e.g., alloca).
         if !self.used_callee_saved.is_empty() {
-            // We need to subtract the callee-saved space from sp first
             let callee_saved_bytes = self.used_callee_saved.len() * 4;
             emit!(self.state, "    sub sp, r11, #{}", callee_saved_bytes);
             let regs: Vec<&str> = self.used_callee_saved.iter()
                 .map(|r| phys_reg_name(*r))
                 .collect();
             emit!(self.state, "    pop {{{}}}", regs.join(", "));
+        } else {
+            // No callee-saved regs: restore sp from frame pointer.
+            // This is always needed — even if aligned_frame == 0, dynamic
+            // alloca may have moved sp at runtime.
+            self.state.emit("    mov sp, r11");
         }
 
         self.state.emit("    pop {r11, lr}");
