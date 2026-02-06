@@ -212,7 +212,7 @@ pub(super) fn emit_executable(
 
     let mut num_phdrs: u32 = 1; // PHDR
     if !is_static { num_phdrs += 1; } // INTERP
-    num_phdrs += 4; // LOAD x4
+    num_phdrs += 3; // LOAD x3 (text R|X, rodata R, data R|W)
     if !is_static { num_phdrs += 1; } // DYNAMIC
     num_phdrs += 1; // GNU_STACK
     num_phdrs += 1; // GNU_EH_FRAME
@@ -638,10 +638,6 @@ pub(super) fn emit_executable(
     write_phdr32(&mut output, &mut phdr_offset, PT_LOAD,
         data_file_off, data_seg_start, data_seg_start,
         data_filesz, data_memsz, PF_R | PF_W, PAGE_SIZE);
-
-    // Padding LOAD for headers (reuse first LOAD)
-    write_phdr32(&mut output, &mut phdr_offset, PT_LOAD, 0, BASE_ADDR, BASE_ADDR,
-        headers_size, headers_size, PF_R, PAGE_SIZE);
 
     // DYNAMIC
     if !is_static {
