@@ -97,8 +97,18 @@ fn apply_one_reloc(
         let out_data = &ctx.output_sections[out_sec_idx].data;
         if patch_off + 2 > out_data.len() { return Ok(None); }
         let insn16 = read_u16_le(out_data, patch_off);
-        let pc = patch_addr + 4;
-        let offset = (sym_value as i64 + addend as i64) - pc as i64;
+        let pc = patch_addr + 4; // Thumb PC offset
+        // Extract implicit addend from the instruction (REL: addend is in the insn)
+        let implicit_addend = if rel_type == R_ARM_THM_JUMP11 {
+            // B (T2): imm11 is a signed halfword offset → sign-extend and shift left 1
+            let imm11 = (insn16 & 0x7FF) as i32;
+            ((imm11 << 21) >> 21) << 1 // sign-extend from 11 bits, then ×2
+        } else {
+            // B<cond> (T1): imm8 is a signed halfword offset → sign-extend and shift left 1
+            let imm8 = (insn16 & 0xFF) as i32;
+            ((imm8 << 24) >> 24) << 1 // sign-extend from 8 bits, then ×2
+        };
+        let offset = (sym_value as i64) + (implicit_addend as i64) + (addend as i64) - (pc as i64);
         let result16 = if rel_type == R_ARM_THM_JUMP11 {
             let imm11 = ((offset >> 1) as u32) & 0x7FF;
             (insn16 & 0xF800) | (imm11 as u16)
@@ -283,9 +293,11 @@ fn apply_one_reloc(
 
         R_ARM_TLS_GD32 => {
             // GOT(S) + A - P (data-class relocation, points to TLS descriptor in GOT)
+            let implicit_addend = insn_word as i32;
             if let Some(gs) = ctx.global_symbols.get(&sym_name) {
                 let got_entry_off = (ctx.got_reserved + gs.got_index) as u32 * 4;
                 (ctx.got_vaddr + got_entry_off)
+                    .wrapping_add(implicit_addend as u32)
                     .wrapping_add(addend as u32)
                     .wrapping_sub(patch_addr)
             } else {
@@ -295,9 +307,11 @@ fn apply_one_reloc(
 
         R_ARM_TLS_IE32 => {
             // GOT(S) + A - P (data-class relocation, no PC pipeline adjust)
+            let implicit_addend = insn_word as i32;
             if let Some(gs) = ctx.global_symbols.get(&sym_name) {
                 let got_entry_off = (ctx.got_reserved + gs.got_index) as u32 * 4;
                 (ctx.got_vaddr + got_entry_off)
+                    .wrapping_add(implicit_addend as u32)
                     .wrapping_add(addend as u32)
                     .wrapping_sub(patch_addr)
             } else {
