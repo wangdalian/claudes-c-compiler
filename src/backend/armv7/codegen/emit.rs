@@ -168,31 +168,53 @@ impl Armv7Codegen {
         }
     }
 
-    /// Load value from stack into r0.
+    /// Load value into r0.
+    /// Checks the reg cache first to skip redundant loads.
     pub(super) fn operand_to_r0(&mut self, op: &Operand) {
         match op {
-            Operand::Const(c) => self.load_const_to_r0(c),
+            Operand::Const(c) => {
+                self.state.reg_cache.invalidate_acc();
+                self.load_const_to_r0(c);
+            }
             Operand::Value(v) => {
+                let is_alloca = self.state.is_alloca(v.0);
+                // Check cache: skip load if value is already in r0
+                if self.state.reg_cache.acc_has(v.0, is_alloca) {
+                    return;
+                }
                 if let Some(preg) = self.reg_assignments.get(&v.0) {
                     let name = phys_reg_name(*preg);
                     emit!(self.state, "    mov r0, {}", name);
-                } else {
-                    let slot_ref = self.value_slot_ref(v.0);
+                    self.state.reg_cache.set_acc(v.0, false);
+                } else if let Some(slot) = self.state.get_slot(v.0) {
+                    let slot_ref = self.slot_ref(slot);
                     emit!(self.state, "    ldr r0, {}", slot_ref);
+                    self.state.reg_cache.set_acc(v.0, is_alloca);
+                } else {
+                    // Value has no slot and no register (shouldn't happen for
+                    // non-immediately-consumed operands, but be safe)
+                    self.load_imm32_to_reg("r0", 0);
+                    self.state.reg_cache.invalidate_acc();
                 }
             }
         }
     }
 
     /// Store r0 to a value's stack slot.
+    /// If the value has no stack slot and no register assignment (immediately-consumed),
+    /// the store is skipped — the value stays in r0 (the accumulator).
+    /// Always updates the reg cache to indicate r0 holds dest's value.
     pub(super) fn store_r0_to(&mut self, dest: &Value) {
         if let Some(preg) = self.reg_assignments.get(&dest.0) {
             let name = phys_reg_name(*preg);
             emit!(self.state, "    mov {}, r0", name);
-        } else {
-            let slot_ref = self.value_slot_ref(dest.0);
+        } else if let Some(slot) = self.state.get_slot(dest.0) {
+            let slot_ref = self.slot_ref(slot);
             emit!(self.state, "    str r0, {}", slot_ref);
         }
+        // After storing (or skipping for immediately-consumed values),
+        // r0 still holds dest's value. Update the reg cache.
+        self.state.reg_cache.set_acc(dest.0, false);
     }
 
     /// Load a constant into r0.

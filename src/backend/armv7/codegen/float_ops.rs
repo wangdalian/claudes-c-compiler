@@ -51,7 +51,12 @@ impl Armv7Codegen {
             self.state.emit("    vmov r0, s0");
             self.store_r0_to(dest);
         }
-        self.state.reg_cache.invalidate_all();
+        // For F64, the reg cache cannot track the full 64-bit value in the
+        // 32-bit accumulator, so invalidate. For F32, store_r0_to already
+        // set the cache correctly.
+        if ty == IrType::F64 {
+            self.state.reg_cache.invalidate_all();
+        }
     }
 
     pub(super) fn emit_float_neg_impl(&mut self, ty: IrType) {
