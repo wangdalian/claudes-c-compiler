@@ -144,7 +144,7 @@ fn apply_one_reloc(
         }
 
         R_ARM_PC24 | R_ARM_CALL | R_ARM_JUMP24 | R_ARM_PLT32 => {
-            // ARM BL/B: bits [23:0] are signed offset >> 2, PC = patch_addr + 8
+            // ARM BL/B: bits [23:0] are signed offset >> 2
             // Extract implicit addend: sign-extend 24-bit field, shift left 2
             let implicit_addend = ((insn_word as i32) << 8 >> 8) << 2;
             let mut target_is_thumb = false;
@@ -160,19 +160,25 @@ fn apply_one_reloc(
                 sym_value
             };
             let target = (base_target as i64) + (implicit_addend as i64) + (addend as i64);
-            let pc = (patch_addr + 8) as i64; // ARM PC offset
+            // ARM ELF ABI: result = ((S + A) | T) – P
+            // The implicit addend A already includes the pipeline offset cancellation
+            // (-8 for ARM). The hardware adds PC (= P + 8) to the encoded offset,
+            // so using P (not P + 8) as the base gives the correct result:
+            //   encoded = ((S + A) - P) >> 2
+            //   hardware_target = (P + 8) + (encoded << 2) = S + A + 8
+            //   With A = -8: target = S  ✓
+            let relocation = target - (patch_addr as i64);  // (S + A) - P
 
             if target_is_thumb && rel_type == R_ARM_CALL {
                 // ARM BL → BLX: switch to Thumb mode
                 // BLX has H bit (bit 24) = bit 1 of offset, and cond = 0b1111
-                let offset = target - pc;
                 eprintln!("debug reloc: ARM_CALL BL→BLX for '{}' at 0x{:x} → target 0x{:x}",
                     sym_name, patch_addr, target);
-                let h_bit = ((offset >> 1) & 1) as u32;
-                let imm24 = ((offset >> 2) as u32) & 0x00FFFFFF;
+                let h_bit = ((relocation >> 1) & 1) as u32;
+                let imm24 = ((relocation >> 2) as u32) & 0x00FFFFFF;
                 0xFA000000 | (h_bit << 24) | imm24
             } else {
-                let rel = (target - pc) >> 2;
+                let rel = relocation >> 2;
                 let imm24 = (rel as u32) & 0x00FFFFFF;
                 (insn_word & 0xFF000000) | imm24
             }
@@ -215,14 +221,23 @@ fn apply_one_reloc(
             // For R_ARM_THM_CALL: if target is ARM mode, convert BL to BLX
             // BLX clears bit 12 in lower halfword and requires 4-byte aligned target
             let use_blx = rel_type == R_ARM_THM_CALL && target_is_arm;
-            // BLX uses Align(PC, 4) as base, BL uses PC directly.
-            // PC = patch_addr + 4. For BLX, Align(PC, 4) = (patch_addr + 4) & ~3.
-            let pc_base = if use_blx {
-                ((patch_addr + 4) & !3) as i64  // Align to 4 bytes for BLX
+            // ARM ELF ABI: result = ((S + A) | T) – P
+            // The implicit addend A (decoded from the instruction) already includes
+            // the pipeline offset cancellation (-4 for Thumb). The hardware adds
+            // PC (= P + 4) to the encoded offset, so using P (not P + 4) as the
+            // base gives the correct result:
+            //   encoded = (S + A) - P
+            //   hardware_target = (P + 4) + encoded = S + A + 4
+            //   With A = -4: target = S  ✓
+            //
+            // For BLX, the hardware uses Align(PC, 4) instead of PC. BFD handles
+            // this by adjusting: offset = ((S + A) - P + 2) & ~3
+            let relocation = target - (patch_addr as i64);  // (S + A) - P
+            let offset = if use_blx {
+                (relocation + 2) & !3_i64  // BFD adjustment for Align(PC, 4)
             } else {
-                (patch_addr + 4) as i64         // Raw PC for BL/B.W
+                relocation
             };
-            let offset = target - pc_base;
             if use_blx {
                 eprintln!("debug reloc: THM_CALL BL→BLX for '{}' at 0x{:x} → target 0x{:x}",
                     sym_name, patch_addr, target);
