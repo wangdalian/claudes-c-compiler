@@ -83,6 +83,8 @@ pub(super) const R_ARM_TLS_DTPMOD32: u32 = 17;
 pub(super) const R_ARM_TLS_DTPOFF32: u32 = 18;
 #[allow(dead_code)]
 pub(super) const R_ARM_TLS_TPOFF32: u32 = 19;
+pub(super) const R_ARM_TARGET2: u32 = 41; // Platform-specific; Linux ARM → R_ARM_GOT_PREL
+pub(super) const R_ARM_GOT_PREL: u32 = 96; // GOT(S) + A - P: PC-relative offset to GOT entry
 pub(super) const R_ARM_THM_JUMP11: u32 = 102;
 pub(super) const R_ARM_THM_JUMP8: u32 = 103;
 pub(super) const R_ARM_IRELATIVE: u32 = 160;

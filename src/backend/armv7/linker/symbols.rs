@@ -268,7 +268,8 @@ pub(super) fn mark_plt_got_needs(
                             gs.needs_plt = true;
                         }
                     }
-                    R_ARM_GOT32 | R_ARM_GOT_BREL | R_ARM_TLS_IE32 => {
+                    R_ARM_GOT32 | R_ARM_GOT_BREL | R_ARM_GOT_PREL
+                    | R_ARM_TARGET2 | R_ARM_TLS_IE32 => {
                         gs.needs_got = true;
                     }
                     R_ARM_TLS_GD32 => {

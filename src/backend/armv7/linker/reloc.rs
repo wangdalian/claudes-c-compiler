@@ -324,6 +324,30 @@ fn apply_one_reloc(
             }
         }
 
+        R_ARM_GOT_PREL | R_ARM_TARGET2 => {
+            // GOT(S) + A - P: PC-relative offset to the GOT entry for symbol S.
+            // On Linux ARM, R_ARM_TARGET2 resolves to R_ARM_GOT_PREL.
+            // This is used extensively by glibc's PIC code (compiled with -fpic)
+            // to compute addresses of GOT entries via:
+            //   ldr r3, [pc, #N]    ; load GOT_PREL result from literal pool
+            //   add r3, pc           ; r3 = address of GOT entry
+            let implicit_addend = insn_word as i32;
+            if let Some(gs) = ctx.global_symbols.get(&sym_name) {
+                let got_entry_off = (ctx.got_reserved + gs.got_index) as u32 * 4;
+                let got_entry_addr = ctx.got_vaddr + got_entry_off;
+                (got_entry_addr as i32)
+                    .wrapping_add(implicit_addend)
+                    .wrapping_add(addend)
+                    .wrapping_sub(patch_addr as i32) as u32
+            } else {
+                // Symbol not in global_symbols — might be a local symbol.
+                // Compute GOT entry address from sym_value.
+                eprintln!("warning: R_ARM_GOT_PREL for '{}' has no global_symbols entry at 0x{:x}",
+                    sym_name, patch_addr);
+                insn_word
+            }
+        }
+
         R_ARM_GOTOFF32 => {
             // S + A - GOT_ORG
             let implicit_addend = insn_word as i32;
