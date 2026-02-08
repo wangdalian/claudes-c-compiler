@@ -93,6 +93,7 @@ fn apply_one_reloc(
     } else {
         false
     };
+    let debug_watch = patch_addr >= 0x35d80 && patch_addr < 0x35e00;
 
     if rel_type == R_ARM_NONE || rel_type == R_ARM_V4BX {
         return Ok(None);
@@ -436,6 +437,12 @@ fn apply_one_reloc(
                     rel_type, sym_name, patch_addr
                 );
             }
+            if debug_watch {
+                eprintln!(
+                    "debug watch reloc: unsupported type={} sym='{}' patch=0x{:x} insn=0x{:08x} addend={}",
+                    rel_type, sym_name, patch_addr, insn_word, addend
+                );
+            }
             eprintln!("warning: unsupported ARM relocation type {} for symbol '{}' at 0x{:x}",
                 rel_type, sym_name, patch_addr);
             return Ok(None);
@@ -449,6 +456,12 @@ fn apply_one_reloc(
     if debug_lsm {
         eprintln!(
             "debug lsm reloc: type={} sym='{}' patch=0x{:x} insn=0x{:08x} addend={} result=0x{:x}",
+            rel_type, sym_name, patch_addr, insn_word, addend, result
+        );
+    }
+    if debug_watch {
+        eprintln!(
+            "debug watch reloc: type={} sym='{}' patch=0x{:x} insn=0x{:08x} addend={} result=0x{:x}",
             rel_type, sym_name, patch_addr, insn_word, addend, result
         );
     }
