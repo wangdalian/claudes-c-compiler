@@ -335,10 +335,20 @@ fn apply_one_reloc(
             if let Some(gs) = ctx.global_symbols.get(&sym_name) {
                 let got_entry_off = (ctx.got_reserved + gs.got_index) as u32 * 4;
                 let got_entry_addr = ctx.got_vaddr + got_entry_off;
-                (got_entry_addr as i32)
+                let result = (got_entry_addr as i32)
                     .wrapping_add(implicit_addend)
                     .wrapping_add(addend)
-                    .wrapping_sub(patch_addr as i32) as u32
+                    .wrapping_sub(patch_addr as i32) as u32;
+                // Targeted debug: show GOT_PREL relocations inside __libc_start_main
+                if let Some(start) = ctx.global_symbols.get("__libc_start_main") {
+                    if patch_addr >= start.address && patch_addr < start.address + 0x200 {
+                        eprintln!(
+                            "debug got_prel: sym='{}' patch=0x{:x} got_entry=0x{:x} result=0x{:x} implicit_addend={} addend={}",
+                            sym_name, patch_addr, got_entry_addr, result, implicit_addend, addend
+                        );
+                    }
+                }
+                result
             } else {
                 // Symbol not in global_symbols — might be a local symbol.
                 // Compute GOT entry address from sym_value.
