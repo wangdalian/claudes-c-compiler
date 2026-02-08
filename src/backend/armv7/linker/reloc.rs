@@ -187,11 +187,21 @@ fn apply_one_reloc(
                     target_is_arm = true;
                     ctx.plt_vaddr + ctx.plt_header_size + (gs.plt_index as u32) * ctx.plt_entry_size
                 } else {
-                    // Target is ARM mode if it's NOT a Thumb function.
-                    // Don't require STT_FUNC — the is_thumb flag is the authoritative
-                    // indicator. is_thumb is false for non-STT_FUNC symbols by default,
-                    // which correctly identifies ARM-mode targets.
-                    if !gs.is_thumb {
+                    // Target is ARM mode if it's a function-like symbol that is NOT Thumb.
+                    // Check STT_FUNC and STT_GNU_IFUNC (glibc IFUNC for memcpy/memset/etc.).
+                    // For unknown sym_type (STT_NOTYPE), also check if the address has
+                    // bit 0 set — if it does, the target is Thumb despite lacking type info.
+                    if gs.is_thumb {
+                        // Definitely Thumb — keep BL
+                    } else if gs.sym_type == STT_FUNC || gs.sym_type == STT_GNU_IFUNC {
+                        // Function-type symbol without Thumb bit → ARM mode
+                        target_is_arm = true;
+                    } else if (sym_value & 1) != 0 {
+                        // Address has bit 0 set → Thumb (even without STT_FUNC)
+                        // This catches assembly functions with STT_NOTYPE that have
+                        // Thumb bit set in their value but weren't caught by is_thumb
+                    } else if gs.is_defined && gs.output_section != usize::MAX {
+                        // Defined non-function symbol without Thumb bit → assume ARM
                         target_is_arm = true;
                     }
                     sym_value
@@ -399,7 +409,7 @@ fn resolve_sym_value(
             if let Some(&(out_sec_idx, sec_offset)) = ctx.section_map.get(&(obj_idx, sym.section_index as usize)) {
                 if out_sec_idx < ctx.output_sections.len() {
                     // Strip Thumb bit for correct address computation
-                    let sym_val = if sym.sym_type == STT_FUNC { sym.value & !1 } else { sym.value };
+                    let sym_val = if sym.sym_type == STT_FUNC || sym.sym_type == STT_GNU_IFUNC { sym.value & !1 } else { sym.value };
                     return Ok((ctx.output_sections[out_sec_idx].addr + sec_offset + sym_val, sym.name.clone()));
                 }
             }
@@ -475,7 +485,7 @@ pub(super) fn resolve_got_reloc(
             // Regular symbol: absolute address
             // For Thumb functions, set bit 0 so BLX via GOT switches to Thumb mode
             if off + 4 <= got_data.len() {
-                let addr = if gs.sym_type == STT_FUNC && gs.is_thumb {
+                let addr = if (gs.sym_type == STT_FUNC || gs.sym_type == STT_GNU_IFUNC) && gs.is_thumb {
                     gs.address | 1
                 } else {
                     gs.address

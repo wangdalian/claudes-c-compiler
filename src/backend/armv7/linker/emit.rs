@@ -215,7 +215,10 @@ pub(super) fn emit_executable(
     num_phdrs += 3; // LOAD x3 (text R|X, rodata R, data R|W)
     if !is_static { num_phdrs += 1; } // DYNAMIC
     num_phdrs += 1; // GNU_STACK
-    num_phdrs += 1; // GNU_EH_FRAME
+    // Note: PT_GNU_EH_FRAME is intentionally omitted — we don't generate
+    // .eh_frame_hdr. Emitting a PT_GNU_EH_FRAME with p_vaddr=0 causes glibc's
+    // startup code to crash (SIGSEGV at si_addr=0x10) when it tries to
+    // dereference the null pointer.
     if has_tls_sections { num_phdrs += 1; }
 
     let headers_size = ehdr_size + num_phdrs * phdr_size;
@@ -484,7 +487,7 @@ pub(super) fn emit_executable(
     // Entry point — check if _start is a Thumb function (bit 0 of original st_value)
     // ARM ELF: kernel uses bit 0 of e_entry to determine starting execution mode.
     let start_is_thumb = inputs.iter().any(|obj| {
-        obj.symbols.iter().any(|sym| sym.name == "_start" && sym.sym_type == STT_FUNC && (sym.value & 1) != 0)
+        obj.symbols.iter().any(|sym| sym.name == "_start" && (sym.sym_type == STT_FUNC || sym.sym_type == STT_GNU_IFUNC) && (sym.value & 1) != 0)
     });
     let entry = global_symbols.get("_start")
         .map(|s| if start_is_thumb { s.address | 1 } else { s.address })
@@ -654,10 +657,6 @@ pub(super) fn emit_executable(
             dynamic_off, dynamic_vaddr, dynamic_vaddr,
             dynamic_data.len() as u32, dynamic_data.len() as u32, PF_R | PF_W, 4);
     }
-
-    // GNU_EH_FRAME
-    write_phdr32(&mut output, &mut phdr_offset, PT_GNU_EH_FRAME,
-        0, 0, 0, 0, 0, PF_R, 4);
 
     // TLS
     if has_tls_sections {

@@ -36,7 +36,10 @@ pub(super) fn resolve_symbols(
             // ARM ELF: Thumb function symbols have bit 0 set in st_value.
             // Strip it for correct address computation; interworking is handled
             // separately in relocation processing.
-            let sym_val = if sym.sym_type == STT_FUNC { sym.value & !1 } else { sym.value };
+            // This applies to both STT_FUNC and STT_GNU_IFUNC (used by glibc
+            // for runtime-dispatched functions like memcpy, memset, etc.).
+            let is_function_like = sym.sym_type == STT_FUNC || sym.sym_type == STT_GNU_IFUNC;
+            let sym_val = if is_function_like { sym.value & !1 } else { sym.value };
 
             let new_sym = LinkerSymbol {
                 address: 0,
@@ -48,7 +51,7 @@ pub(super) fn resolve_symbols(
                 needs_plt: false,
                 needs_got: false,
                 needs_tls_gd: false,
-                is_thumb: sym.sym_type == STT_FUNC && (sym.value & 1) != 0,
+                is_thumb: is_function_like && (sym.value & 1) != 0,
                 is_abs: sym.section_index == SHN_ABS,
                 output_section: out_sec_idx,
                 section_offset: sec_offset + sym_val,
