@@ -473,6 +473,24 @@ pub(super) fn emit_executable(
                 name, gs.address, gs.is_thumb, gs.sym_type, gs.is_defined, gs.is_abs, gs.output_section);
         }
     }
+    // Debug: locate symbols near recent crash addresses
+    let watch_addrs = [0x76580u32, 0x73360u32];
+    for &wa in &watch_addrs {
+        let mut hits: Vec<(String, u32)> = Vec::new();
+        for (name, sym) in global_symbols.iter() {
+            if sym.address >= wa.saturating_sub(0x100) && sym.address <= wa.saturating_add(0x100) {
+                hits.push((name.clone(), sym.address));
+            }
+        }
+        hits.sort_by_key(|(_, addr)| *addr);
+        if hits.is_empty() {
+            eprintln!("debug addr: 0x{:x} no nearby symbols", wa);
+        } else {
+            for (name, addr) in hits {
+                eprintln!("debug addr: 0x{:x} nearby sym: {} @0x{:x}", wa, name, addr);
+            }
+        }
+    }
 
     // ── Apply relocations ────────────────────────────────────────────────
     let mut reloc_ctx = RelocContext {
