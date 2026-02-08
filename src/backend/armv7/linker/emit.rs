@@ -435,12 +435,22 @@ pub(super) fn emit_executable(
     let data_seg_end = copy_offset;
 
     // IRELATIVE relocations for IFUNC in static mode
-    let rel_iplt_size = (num_ifunc * 8) as u32;
+    let mut rel_iplt_size = (num_ifunc * 8) as u32;
     let rel_iplt_vaddr = if num_ifunc > 0 && dynamic_vaddr >= rel_iplt_size {
         dynamic_vaddr - rel_iplt_size
     } else {
         0
     };
+    // Static ARM: we do not emit .rel.iplt yet. If we leave a non-zero
+    // __rel_iplt_end with start=0, glibc will dereference NULL during
+    // startup and crash (si_addr=0x4). Until .rel.iplt is implemented,
+    // force an empty range for static binaries.
+    if is_static && rel_iplt_vaddr == 0 {
+        if num_ifunc > 0 {
+            eprintln!("warning: static IFUNC relocations not emitted; disabling __rel_iplt range");
+        }
+        rel_iplt_size = 0;
+    }
 
     // ── Assign symbol addresses ──────────────────────────────────────────
     assign_symbol_addresses(
