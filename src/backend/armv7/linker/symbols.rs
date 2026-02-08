@@ -207,6 +207,12 @@ pub(super) fn allocate_common_symbols(
         }
     }
     orphaned.sort_by(|a, b| a.0.cmp(&b.0));
+    if !orphaned.is_empty() {
+        eprintln!("info: allocating {} orphaned symbols to .bss (sections were discarded)", orphaned.len());
+        for (name, size, _) in &orphaned {
+            eprintln!("  orphan: {} (size={})", name, size);
+        }
+    }
     commons.extend(orphaned);
 
     if commons.is_empty() { return; }
