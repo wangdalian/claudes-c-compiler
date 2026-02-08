@@ -88,6 +88,11 @@ fn apply_one_reloc(
     let out_sec = &ctx.output_sections[out_sec_idx];
     let patch_addr = out_sec.addr + sec_base_offset + rel_offset;
     let patch_off = (sec_base_offset + rel_offset) as usize;
+    let debug_lsm = if let Some(start) = ctx.global_symbols.get("__libc_start_main") {
+        patch_addr >= start.address && patch_addr < start.address + 0x200
+    } else {
+        false
+    };
 
     if rel_type == R_ARM_NONE || rel_type == R_ARM_V4BX {
         return Ok(None);
@@ -413,6 +418,12 @@ fn apply_one_reloc(
         }
 
         _ => {
+            if debug_lsm {
+                eprintln!(
+                    "debug lsm reloc: unsupported type={} sym='{}' patch=0x{:x}",
+                    rel_type, sym_name, patch_addr
+                );
+            }
             eprintln!("warning: unsupported ARM relocation type {} for symbol '{}' at 0x{:x}",
                 rel_type, sym_name, patch_addr);
             return Ok(None);
@@ -422,6 +433,13 @@ fn apply_one_reloc(
     // Write result (for 32-bit relocations)
     let out_data = &mut ctx.output_sections[out_sec_idx].data;
     write_u32_le(out_data, patch_off, result);
+
+    if debug_lsm {
+        eprintln!(
+            "debug lsm reloc: type={} sym='{}' patch=0x{:x} insn=0x{:08x} addend={} result=0x{:x}",
+            rel_type, sym_name, patch_addr, insn_word, addend, result
+        );
+    }
 
     // Check for text relocations
     if let Some(gs) = ctx.global_symbols.get(&sym_name) {
