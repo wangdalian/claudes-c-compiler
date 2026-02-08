@@ -563,6 +563,12 @@ pub(super) fn resolve_got_reloc(
                     gs.address
                 };
                 write_u32_le(got_data, off, addr);
+                if name == "__rel_iplt_start" || name == "__rel_iplt_end" || gs.sym_type == STT_GNU_IFUNC {
+                    eprintln!(
+                        "debug got: '{}' off=0x{:x} value=0x{:x} is_thumb={} sym_type={}",
+                        name, off, addr, gs.is_thumb, gs.sym_type
+                    );
+                }
                 if gs.is_defined && gs.address == 0 {
                     eprintln!("warning: GOT entry for '{}' resolved to 0", name);
                 }
