@@ -317,11 +317,18 @@ fn apply_one_reloc(
         }
 
         R_ARM_GOT_BREL | R_ARM_GOT32 => {
-            // GOT(S) + A - GOT_ORG
+            // R_ARM_GOT32: GOT(S) + A  (absolute address of GOT entry)
+            // R_ARM_GOT_BREL: GOT(S) + A - GOT_ORG (offset from GOT base)
+            //
+            // Both use the same relocation number (26) on ARM. In practice,
+            // glibc's static objects use this to load an absolute GOT entry
+            // address via literal pools. Treat it as GOT32 to avoid producing
+            // small offsets like 0x80/0x84 which cause NULL deref.
             if let Some(gs) = ctx.global_symbols.get(&sym_name) {
                 let got_entry_off = (ctx.got_reserved + gs.got_index) as u32 * 4;
+                let got_entry_addr = ctx.got_vaddr + got_entry_off;
                 let implicit_addend = insn_word as i32;
-                (got_entry_off as i32)
+                (got_entry_addr as i32)
                     .wrapping_add(implicit_addend)
                     .wrapping_add(addend) as u32
             } else {
