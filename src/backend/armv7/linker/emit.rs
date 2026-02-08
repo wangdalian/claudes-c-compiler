@@ -454,7 +454,7 @@ pub(super) fn emit_executable(
     );
 
     // ── Debug: print key symbol info for startup debugging ──────────────
-    for name in &["_start", "__libc_start_main", "main", "__libc_start_call_main"] {
+    for name in &["_start", "__libc_start_main", "main", "__libc_start_call_main", "_init", "_fini", "printf"] {
         if let Some(gs) = global_symbols.get(*name) {
             eprintln!("debug sym: {} addr=0x{:x} is_thumb={} sym_type={} is_defined={} is_abs={} output_section={}",
                 name, gs.address, gs.is_thumb, gs.sym_type, gs.is_defined, gs.is_abs, gs.output_section);

@@ -110,16 +110,22 @@ impl ElfWriter {
                 let sec = self.current_section;
                 let offset = self.current_offset() as u64;
                 self.labels.insert(name.clone(), (sec, offset));
-                // Add as local symbol
-                self.symbols.push(ObjSymbol {
-                    name: name.clone(),
-                    section_name: self.sections[sec].name.clone(),
-                    value: offset,
-                    size: 0,
-                    binding: STB_LOCAL,
-                    sym_type: STT_NOTYPE,
-                    visibility: STV_DEFAULT,
-                });
+                // Update existing symbol (from .globl/.type directives) or create new local
+                if let Some(sym) = self.symbols.iter_mut().find(|s| s.name == *name) {
+                    // Preserve binding and sym_type from .globl/.type directives
+                    sym.section_name = self.sections[sec].name.clone();
+                    sym.value = offset;
+                } else {
+                    self.symbols.push(ObjSymbol {
+                        name: name.clone(),
+                        section_name: self.sections[sec].name.clone(),
+                        value: offset,
+                        size: 0,
+                        binding: STB_LOCAL,
+                        sym_type: STT_NOTYPE,
+                        visibility: STV_DEFAULT,
+                    });
+                }
             }
             AsmStatement::Instruction { mnemonic, operands, raw_operands } => {
                 self.encode_instruction(mnemonic, operands, raw_operands)?;

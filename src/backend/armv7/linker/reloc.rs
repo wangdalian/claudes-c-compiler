@@ -166,6 +166,8 @@ fn apply_one_reloc(
                 // ARM BL → BLX: switch to Thumb mode
                 // BLX has H bit (bit 24) = bit 1 of offset, and cond = 0b1111
                 let offset = target - pc;
+                eprintln!("debug reloc: ARM_CALL BL→BLX for '{}' at 0x{:x} → target 0x{:x}",
+                    sym_name, patch_addr, target);
                 let h_bit = ((offset >> 1) & 1) as u32;
                 let imm24 = ((offset >> 2) as u32) & 0x00FFFFFF;
                 0xFA000000 | (h_bit << 24) | imm24
