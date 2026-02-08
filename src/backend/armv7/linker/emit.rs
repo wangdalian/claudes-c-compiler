@@ -964,7 +964,7 @@ fn assign_symbol_addresses(
         address: got_base, size: 0, sym_type: STT_OBJECT, binding: STB_LOCAL,
         visibility: STV_DEFAULT, is_defined: true, needs_plt: false, needs_got: false,
         needs_tls_gd: false,
-        is_thumb: false,
+        is_thumb: false, is_abs: true,
         output_section: usize::MAX, section_offset: 0, plt_index: 0, got_index: 0,
         is_dynamic: false, dynlib: String::new(), needs_copy: false, copy_addr: 0,
         version: None, uses_textrel: false,

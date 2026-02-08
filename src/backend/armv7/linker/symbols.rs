@@ -49,6 +49,7 @@ pub(super) fn resolve_symbols(
                 needs_got: false,
                 needs_tls_gd: false,
                 is_thumb: sym.sym_type == STT_FUNC && (sym.value & 1) != 0,
+                is_abs: sym.section_index == SHN_ABS,
                 output_section: out_sec_idx,
                 section_offset: sec_offset + sym_val,
                 plt_index: 0,
@@ -79,6 +80,14 @@ pub(super) fn resolve_symbols(
                         // Already have a definition; keep it.
                     } else if sym.binding == STB_GLOBAL && (existing.binding == STB_WEAK || existing.binding == STB_LOCAL)
                         || (!existing.is_defined && new_sym.is_defined)
+                        // Prefer a definition in a valid output section over one
+                        // whose section was discarded (COMMON or orphaned).
+                        // This handles the case where a COMMON/tentative definition
+                        // was inserted first but a real definition (in .data/.bss)
+                        // from a later object should take precedence.
+                        || (existing.is_defined && new_sym.is_defined
+                            && existing.output_section == usize::MAX
+                            && new_sym.output_section != usize::MAX)
                     {
                         global_symbols.insert(sym.name.clone(), new_sym);
                     }
@@ -112,6 +121,7 @@ pub(super) fn resolve_symbols(
                     needs_got: false,
                     needs_tls_gd: false,
                     is_thumb: false,
+                    is_abs: false,
                     output_section: usize::MAX,
                     section_offset: 0,
                     plt_index: 0,
@@ -129,7 +139,7 @@ pub(super) fn resolve_symbols(
                     address: 0, size: 0, sym_type: sym.sym_type,
                     binding: sym.binding, visibility: sym.visibility,
                     is_defined: false, needs_plt: false, needs_got: false,
-                    needs_tls_gd: false, is_thumb: false,
+                    needs_tls_gd: false, is_thumb: false, is_abs: false,
                     output_section: usize::MAX, section_offset: 0,
                     plt_index: 0, got_index: 0, is_dynamic: false,
                     dynlib: String::new(), needs_copy: false, copy_addr: 0,
@@ -143,7 +153,14 @@ pub(super) fn resolve_symbols(
     (global_symbols, sym_resolution)
 }
 
-/// Allocate COMMON symbols into .bss.
+/// Allocate COMMON symbols and orphaned defined symbols into .bss.
+///
+/// COMMON symbols (SHN_COMMON) are tentative definitions that need space
+/// allocated in .bss. Additionally, some symbols may be defined in input
+/// sections that were discarded (e.g., COMDAT deduplication, filtered
+/// sections like .ARM.exidx). These "orphaned" symbols still need valid
+/// addresses if they're referenced (e.g., via GOT), so we allocate them
+/// to .bss as a fallback.
 pub(super) fn allocate_common_symbols(
     inputs: &[InputObject],
     output_sections: &mut Vec<OutputSection>,
@@ -171,6 +188,26 @@ pub(super) fn allocate_common_symbols(
             }
         }
     }
+
+    // Also collect orphaned defined symbols whose input sections were discarded.
+    // These symbols have output_section == usize::MAX (section not in section_map)
+    // but are still referenced via GOT or relocations. Allocate them to .bss
+    // so they get valid (zero-initialized) addresses instead of NULL.
+    // Skip SHN_ABS symbols (is_abs=true) — they have absolute addresses and
+    // don't need section allocation.
+    let mut orphaned: Vec<(String, u32, u32)> = Vec::new();
+    for (name, gs) in global_symbols.iter() {
+        if gs.output_section == usize::MAX && gs.is_defined && !gs.is_dynamic
+            && !gs.is_abs
+            && !commons.iter().any(|(cn, _, _)| cn == name)
+        {
+            // Use size from the symbol, minimum 4 bytes, alignment 4
+            let size = gs.size.max(4);
+            orphaned.push((name.clone(), size, 4));
+        }
+    }
+    orphaned.sort_by(|a, b| a.0.cmp(&b.0));
+    commons.extend(orphaned);
 
     if commons.is_empty() { return; }
 

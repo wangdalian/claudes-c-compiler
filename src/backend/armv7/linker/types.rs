@@ -219,6 +219,9 @@ pub(super) struct LinkerSymbol {
     /// True if this is a Thumb function (original st_value had bit 0 set).
     /// Used to set bit 0 in GOT entries for correct interworking via BLX.
     pub is_thumb: bool,
+    /// True if this symbol has SHN_ABS section index (absolute address).
+    /// These symbols should not be allocated to .bss by orphan allocation.
+    pub is_abs: bool,
     pub output_section: usize,
     pub section_offset: u32,
     pub plt_index: usize,
