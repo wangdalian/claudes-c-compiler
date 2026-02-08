@@ -207,6 +207,16 @@ pub(super) fn allocate_common_symbols(
         }
     }
     orphaned.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Debug: check symbols that still have output_section == usize::MAX
+    for (name, gs) in global_symbols.iter() {
+        if gs.output_section == usize::MAX && gs.is_defined && name.contains("_nl_current_LC") {
+            let in_commons = commons.iter().any(|(cn, _, _)| cn == name);
+            eprintln!("debug: {} output_section=MAX is_dynamic={} is_abs={} binding={} sym_type={} size={} in_commons={}",
+                name, gs.is_dynamic, gs.is_abs, gs.binding, gs.sym_type, gs.size, in_commons);
+        }
+    }
+
     if !orphaned.is_empty() {
         eprintln!("info: allocating {} orphaned symbols to .bss (sections were discarded)", orphaned.len());
         for (name, size, _) in &orphaned {
