@@ -1016,6 +1016,12 @@ fn assign_symbol_addresses(
             "end" | "__end__" => sym.address = data_seg_vaddr_end,
             "__rel_iplt_start" => sym.address = rel_iplt_vaddr,
             "__rel_iplt_end" => sym.address = rel_iplt_vaddr + rel_iplt_size,
+            // ARM .ARM.exidx section boundary symbols — since we exclude
+            // .ARM.exidx from output, both point to the same address (empty range).
+            "__exidx_start" | "__exidx_end" => {
+                sym.address = text_seg_vaddr_end;
+                sym.is_defined = true;
+            }
             _ => {}
         }
         if let Some(sec_name) = name.strip_prefix("__start_") {

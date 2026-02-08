@@ -86,6 +86,8 @@ pub const LINKER_DEFINED_SYMBOLS: &[&str] = &[
     // ARM EABI compact unwinding personality routines (referenced by .ARM.exidx
     // sections which are excluded from output; C programs don't need them)
     "__aeabi_unwind_cpp_pr0", "__aeabi_unwind_cpp_pr1", "__aeabi_unwind_cpp_pr2",
+    // ARM .ARM.exidx section boundary symbols (referenced by glibc CRT on ARM)
+    "__exidx_start", "__exidx_end",
     "__pthread_initialize_minimal", "_dl_rtld_map",
     "__GNU_EH_FRAME_HDR",
     "__getauxval",
