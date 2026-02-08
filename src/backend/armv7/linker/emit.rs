@@ -1040,8 +1040,23 @@ fn assign_symbol_addresses(
             "__bss_start__" => sym.address = bss_vaddr,
             "edata" => sym.address = bss_vaddr,
             "end" | "__end__" => sym.address = data_seg_vaddr_end,
-            "__rel_iplt_start" => sym.address = rel_iplt_vaddr,
-            "__rel_iplt_end" => sym.address = rel_iplt_vaddr + rel_iplt_size,
+            "__rel_iplt_start" => {
+                // Static ARM: we don't emit .rel.iplt yet; make it an empty range.
+                if is_static {
+                    sym.address = 0;
+                    sym.is_defined = true;
+                } else {
+                    sym.address = rel_iplt_vaddr;
+                }
+            }
+            "__rel_iplt_end" => {
+                if is_static {
+                    sym.address = 0;
+                    sym.is_defined = true;
+                } else {
+                    sym.address = rel_iplt_vaddr + rel_iplt_size;
+                }
+            }
             // ARM .ARM.exidx section boundary symbols — since we exclude
             // .ARM.exidx from output, both point to the same address (empty range).
             "__exidx_start" | "__exidx_end" => {
