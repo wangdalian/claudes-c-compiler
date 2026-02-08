@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use super::types::*;
 
 /// Context for relocation application.
+#[allow(dead_code)]
 pub(super) struct RelocContext<'a> {
     pub global_symbols: &'a HashMap<String, LinkerSymbol>,
     pub output_sections: &'a mut Vec<OutputSection>,
@@ -143,13 +144,16 @@ fn apply_one_reloc(
         }
 
         R_ARM_PC24 | R_ARM_CALL | R_ARM_JUMP24 | R_ARM_PLT32 => {
-            // BL/B: bits [23:0] are signed offset >> 2, PC = patch_addr + 8
+            // ARM BL/B: bits [23:0] are signed offset >> 2, PC = patch_addr + 8
             // Extract implicit addend: sign-extend 24-bit field, shift left 2
             let implicit_addend = ((insn_word as i32) << 8 >> 8) << 2;
+            let mut target_is_thumb = false;
             let base_target = if let Some(gs) = ctx.global_symbols.get(&sym_name) {
                 if gs.needs_plt {
+                    // PLT stubs are ARM mode
                     ctx.plt_vaddr + ctx.plt_header_size + (gs.plt_index as u32) * ctx.plt_entry_size
                 } else {
+                    target_is_thumb = gs.is_thumb;
                     sym_value
                 }
             } else {
@@ -157,9 +161,19 @@ fn apply_one_reloc(
             };
             let target = (base_target as i64) + (implicit_addend as i64) + (addend as i64);
             let pc = (patch_addr + 8) as i64; // ARM PC offset
-            let rel = (target - pc) >> 2;
-            let imm24 = (rel as u32) & 0x00FFFFFF;
-            (insn_word & 0xFF000000) | imm24
+
+            if target_is_thumb && rel_type == R_ARM_CALL {
+                // ARM BL → BLX: switch to Thumb mode
+                // BLX has H bit (bit 24) = bit 1 of offset, and cond = 0b1111
+                let offset = target - pc;
+                let h_bit = ((offset >> 1) & 1) as u32;
+                let imm24 = ((offset >> 2) as u32) & 0x00FFFFFF;
+                0xFA000000 | (h_bit << 24) | imm24
+            } else {
+                let rel = (target - pc) >> 2;
+                let imm24 = (rel as u32) & 0x00FFFFFF;
+                (insn_word & 0xFF000000) | imm24
+            }
         }
 
         R_ARM_THM_CALL | R_ARM_THM_JUMP24 => {
@@ -173,6 +187,10 @@ fn apply_one_reloc(
                     target_is_arm = true;
                     ctx.plt_vaddr + ctx.plt_header_size + (gs.plt_index as u32) * ctx.plt_entry_size
                 } else {
+                    // Target is ARM mode if it's NOT a Thumb function
+                    if gs.sym_type == STT_FUNC && !gs.is_thumb {
+                        target_is_arm = true;
+                    }
                     sym_value
                 }
             } else {
@@ -276,14 +294,15 @@ fn apply_one_reloc(
         }
 
         R_ARM_TLS_LE32 => {
-            // S + A - tp (tp = tls_addr - tls_mem_size for variant 1 TLS)
+            // S + A - tp, ARM TLS variant 1: tp = tls_addr - TCB_SIZE
+            // So result = S + A - tls_addr + 8 (TCB_SIZE = 8 on ARM32)
             let implicit_addend = insn_word as i32;
             if ctx.has_tls {
                 (sym_value as i32)
                     .wrapping_add(implicit_addend)
                     .wrapping_add(addend)
                     .wrapping_sub(ctx.tls_addr as i32)
-                    .wrapping_add(ctx.tls_mem_size as i32) as u32
+                    .wrapping_add(8i32) as u32
             } else {
                 (sym_value as i32)
                     .wrapping_add(implicit_addend)
@@ -395,9 +414,10 @@ fn resolve_sym_value(
 
 /// Resolve GOT-related relocations: fill GOT entries with resolved addresses.
 /// For TLS symbols (STT_TLS), the GOT entry must contain the TP (thread pointer)
-/// offset rather than the absolute address. ARM uses variant 1 TLS where:
-///   tp_offset = sym.address - tls_addr + tls_mem_size
-/// This matches the R_ARM_TLS_LE32 formula (tp = tls_addr - tls_mem_size).
+/// offset rather than the absolute address. ARM uses TLS variant 1 where:
+///   - TP points to the Thread Control Block (TCB)
+///   - TLS data starts at TP + sizeof(tcbhead_t) = TP + 8
+///   - tp_offset = sym.address - tls_addr + 8
 ///
 /// For TLS GD (General Dynamic) symbols, 2 consecutive GOT slots are used:
 ///   GOT[n]   = module_id (1 for the executable)
@@ -431,16 +451,23 @@ pub(super) fn resolve_got_reloc(
                 }
             } else {
                 // TLS IE: single slot with TP offset
-                // ARM variant 1 TLS: tp_offset = S - tls_addr + tls_mem_size
+                // ARM TLS variant 1: tp_offset = S - tls_addr + TCB_SIZE
+                // TCB_SIZE = sizeof(tcbhead_t) = 2 * sizeof(void*) = 8 on ARM32
                 if off + 4 <= got_data.len() {
-                    let tpoff = gs.address as i32 - tls_addr as i32 + tls_mem_size as i32;
+                    let tpoff = gs.address as i32 - tls_addr as i32 + 8;
                     write_u32_le(got_data, off, tpoff as u32);
                 }
             }
         } else {
             // Regular symbol: absolute address
+            // For Thumb functions, set bit 0 so BLX via GOT switches to Thumb mode
             if off + 4 <= got_data.len() {
-                write_u32_le(got_data, off, gs.address);
+                let addr = if gs.sym_type == STT_FUNC && gs.is_thumb {
+                    gs.address | 1
+                } else {
+                    gs.address
+                };
+                write_u32_le(got_data, off, addr);
             }
         }
     };
@@ -448,11 +475,23 @@ pub(super) fn resolve_got_reloc(
     for name in got_dyn_symbols.iter() {
         if let Some(gs) = global_symbols.get(name) {
             fill_got_entry(got_data, gs);
+        } else {
+            eprintln!("warning: GOT symbol '{}' not found in global_symbols", name);
         }
     }
     for name in got_local_symbols.iter() {
         if let Some(gs) = global_symbols.get(name) {
             fill_got_entry(got_data, gs);
+            // Warn about zero-address GOT entries for defined non-weak symbols
+            if gs.address == 0 && gs.is_defined && gs.binding != STB_WEAK
+                && gs.sym_type != STT_TLS
+            {
+                eprintln!("warning: GOT entry for defined symbol '{}' has address 0 \
+                    (output_section={}, section_offset=0x{:x})",
+                    name, gs.output_section, gs.section_offset);
+            }
+        } else {
+            eprintln!("warning: GOT symbol '{}' not found in global_symbols", name);
         }
     }
 }

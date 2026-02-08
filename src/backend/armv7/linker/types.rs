@@ -216,6 +216,9 @@ pub(super) struct LinkerSymbol {
     /// True if the symbol needs a TLS GD (General Dynamic) GOT descriptor
     /// (2 consecutive GOT slots: module_id + tls_offset).
     pub needs_tls_gd: bool,
+    /// True if this is a Thumb function (original st_value had bit 0 set).
+    /// Used to set bit 0 in GOT entries for correct interworking via BLX.
+    pub is_thumb: bool,
     pub output_section: usize,
     pub section_offset: u32,
     pub plt_index: usize,
