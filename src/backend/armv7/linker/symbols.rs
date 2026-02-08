@@ -282,17 +282,17 @@ pub(super) fn mark_plt_got_needs(
         }
     }
 
-    // IFUNC symbols always need PLT+GOT
-    if !is_static {
-        let ifunc_names: Vec<String> = global_symbols.iter()
-            .filter(|(_, s)| s.sym_type == STT_GNU_IFUNC)
-            .map(|(n, _)| n.clone())
-            .collect();
-        for name in ifunc_names {
-            if let Some(sym) = global_symbols.get_mut(&name) {
+    // IFUNC symbols always need GOT entries (and PLT only for dynamic).
+    let ifunc_names: Vec<String> = global_symbols.iter()
+        .filter(|(_, s)| s.sym_type == STT_GNU_IFUNC)
+        .map(|(n, _)| n.clone())
+        .collect();
+    for name in ifunc_names {
+        if let Some(sym) = global_symbols.get_mut(&name) {
+            if !is_static {
                 sym.needs_plt = true;
-                sym.needs_got = true;
             }
+            sym.needs_got = true;
         }
     }
 }
