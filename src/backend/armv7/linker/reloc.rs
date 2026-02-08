@@ -148,6 +148,15 @@ fn apply_one_reloc(
                 .wrapping_sub(patch_addr as i32) as u32
         }
 
+        R_ARM_RELATIVE => {
+            // B + A, where B is the base address of the image.
+            // For non-PIE static executables, B = BASE_ADDR.
+            let implicit_addend = insn_word as i32;
+            (BASE_ADDR as i32)
+                .wrapping_add(implicit_addend)
+                .wrapping_add(addend) as u32
+        }
+
         R_ARM_PC24 | R_ARM_CALL | R_ARM_JUMP24 | R_ARM_PLT32 => {
             // ARM BL/B: bits [23:0] are signed offset >> 2
             // Extract implicit addend: sign-extend 24-bit field, shift left 2
