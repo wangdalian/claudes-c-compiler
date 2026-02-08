@@ -450,6 +450,14 @@ pub(super) fn emit_executable(
         rel_iplt_vaddr, rel_iplt_size,
     );
 
+    // ── Debug: print key symbol info for startup debugging ──────────────
+    for name in &["_start", "__libc_start_main", "main", "__libc_start_call_main"] {
+        if let Some(gs) = global_symbols.get(*name) {
+            eprintln!("debug sym: {} addr=0x{:x} is_thumb={} sym_type={} is_defined={} is_abs={} output_section={}",
+                name, gs.address, gs.is_thumb, gs.sym_type, gs.is_defined, gs.is_abs, gs.output_section);
+        }
+    }
+
     // ── Apply relocations ────────────────────────────────────────────────
     let mut reloc_ctx = RelocContext {
         global_symbols,
@@ -1064,9 +1072,9 @@ fn write_elf_header(output: &mut [u8], entry_point: u32, ehdr_size: u32, num_phd
     output[40..42].copy_from_slice(&(ehdr_size as u16).to_le_bytes());
     output[42..44].copy_from_slice(&32u16.to_le_bytes());
     output[44..46].copy_from_slice(&(num_phdrs as u16).to_le_bytes());
-    output[46..48].copy_from_slice(&40u16.to_le_bytes());
-    output[48..50].copy_from_slice(&0u16.to_le_bytes());
-    output[50..52].copy_from_slice(&0u16.to_le_bytes());
+    output[46..48].copy_from_slice(&0u16.to_le_bytes());  // e_shentsize = 0 (no section headers)
+    output[48..50].copy_from_slice(&0u16.to_le_bytes());  // e_shnum = 0
+    output[50..52].copy_from_slice(&0u16.to_le_bytes());  // e_shstrndx = 0
 }
 
 fn write_phdr32(output: &mut [u8], offset: &mut usize, p_type: u32, p_offset: u32,

@@ -187,8 +187,11 @@ fn apply_one_reloc(
                     target_is_arm = true;
                     ctx.plt_vaddr + ctx.plt_header_size + (gs.plt_index as u32) * ctx.plt_entry_size
                 } else {
-                    // Target is ARM mode if it's NOT a Thumb function
-                    if gs.sym_type == STT_FUNC && !gs.is_thumb {
+                    // Target is ARM mode if it's NOT a Thumb function.
+                    // Don't require STT_FUNC — the is_thumb flag is the authoritative
+                    // indicator. is_thumb is false for non-STT_FUNC symbols by default,
+                    // which correctly identifies ARM-mode targets.
+                    if !gs.is_thumb {
                         target_is_arm = true;
                     }
                     sym_value
@@ -197,11 +200,21 @@ fn apply_one_reloc(
                 sym_value
             };
             let target = (base_target as i64) + (implicit_addend as i64) + (addend as i64);
-            let pc = (patch_addr + 4) as i64; // Thumb PC offset is +4
-            let offset = target - pc;
             // For R_ARM_THM_CALL: if target is ARM mode, convert BL to BLX
             // BLX clears bit 12 in lower halfword and requires 4-byte aligned target
             let use_blx = rel_type == R_ARM_THM_CALL && target_is_arm;
+            // BLX uses Align(PC, 4) as base, BL uses PC directly.
+            // PC = patch_addr + 4. For BLX, Align(PC, 4) = (patch_addr + 4) & ~3.
+            let pc_base = if use_blx {
+                ((patch_addr + 4) & !3) as i64  // Align to 4 bytes for BLX
+            } else {
+                (patch_addr + 4) as i64         // Raw PC for BL/B.W
+            };
+            let offset = target - pc_base;
+            if use_blx {
+                eprintln!("debug reloc: THM_CALL BL→BLX for '{}' at 0x{:x} → target 0x{:x}",
+                    sym_name, patch_addr, target);
+            }
             encode_thm_branch_ex(insn_word, offset as i32, use_blx)
         }
 
