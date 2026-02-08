@@ -31,6 +31,9 @@ pub(super) fn emit_executable(
     output_path: &str,
 ) -> Result<(), String> {
     let num_ifunc = ifunc_symbols.len();
+    let rel_iplt_size = (num_ifunc * 8) as u32;
+    let mut rel_iplt_vaddr: u32 = 0;
+    let mut rel_iplt_off: u32 = 0;
 
     // ── Build dynamic symbol/string tables ────────────────────────────────
     let mut needed_libs: Vec<String> = Vec::new();
@@ -388,6 +391,16 @@ pub(super) fn emit_executable(
 
     let got_base = got_vaddr;
 
+    // .rel.iplt (static IFUNC relocation table)
+    if is_static && rel_iplt_size > 0 {
+        file_offset = align_up(file_offset, 4);
+        vaddr = align_up(vaddr, 4);
+        rel_iplt_vaddr = vaddr;
+        rel_iplt_off = file_offset;
+        file_offset += rel_iplt_size;
+        vaddr += rel_iplt_size;
+    }
+
     // Data sections (PLT was already placed in text segment above)
     let (data_vaddr, data_size) = layout_section(".data", section_name_to_idx, output_sections, &mut file_offset, &mut vaddr, 4);
     let (init_array_vaddr, init_array_size) = layout_section(".init_array", section_name_to_idx, output_sections, &mut file_offset, &mut vaddr, 4);
@@ -408,6 +421,11 @@ pub(super) fn emit_executable(
     let dynamic_off = file_offset;
     file_offset += dynamic_size;
     vaddr += dynamic_size;
+
+    // For dynamic binaries, rel.iplt sits before .dynamic.
+    if !is_static && num_ifunc > 0 && dynamic_vaddr >= rel_iplt_size {
+        rel_iplt_vaddr = dynamic_vaddr - rel_iplt_size;
+    }
 
     // BSS
     let bss_vaddr = vaddr;
@@ -433,24 +451,6 @@ pub(super) fn emit_executable(
     }
 
     let data_seg_end = copy_offset;
-
-    // IRELATIVE relocations for IFUNC in static mode
-    let mut rel_iplt_size = (num_ifunc * 8) as u32;
-    let rel_iplt_vaddr = if num_ifunc > 0 && dynamic_vaddr >= rel_iplt_size {
-        dynamic_vaddr - rel_iplt_size
-    } else {
-        0
-    };
-    // Static ARM: we do not emit .rel.iplt yet. If we leave a non-zero
-    // __rel_iplt_end with start=0, glibc will dereference NULL during
-    // startup and crash (si_addr=0x4). Until .rel.iplt is implemented,
-    // force an empty range for static binaries.
-    if is_static && rel_iplt_vaddr == 0 {
-        if num_ifunc > 0 {
-            eprintln!("warning: static IFUNC relocations not emitted; disabling __rel_iplt range");
-        }
-        rel_iplt_size = 0;
-    }
 
     // ── Assign symbol addresses ──────────────────────────────────────────
     assign_symbol_addresses(
@@ -528,6 +528,21 @@ pub(super) fn emit_executable(
         if off + 4 <= gotplt_data.len() {
             let val = plt_vaddr + plt_header_size + (i as u32) * plt_entry_size + 12;
             gotplt_data[off..off+4].copy_from_slice(&val.to_le_bytes());
+        }
+    }
+
+    // Build .rel.iplt for static IFUNCs (R_ARM_IRELATIVE relocations)
+    let mut rel_iplt_data: Vec<u8> = Vec::new();
+    if is_static && rel_iplt_size > 0 {
+        for name in ifunc_symbols {
+            if let Some(sym) = global_symbols.get(name) {
+                let got_entry_addr = got_vaddr + ((got_reserved + sym.got_index) as u32) * 4;
+                let r_info = R_ARM_IRELATIVE; // sym=0 for IRELATIVE
+                rel_iplt_data.extend_from_slice(&got_entry_addr.to_le_bytes());
+                rel_iplt_data.extend_from_slice(&r_info.to_le_bytes());
+            } else {
+                eprintln!("warning: IFUNC '{}' missing for .rel.iplt", name);
+            }
         }
     }
 
@@ -786,6 +801,14 @@ pub(super) fn emit_executable(
         }
     }
 
+    // Write .rel.iplt for static IFUNCs
+    if is_static && !rel_iplt_data.is_empty() {
+        let off = rel_iplt_off as usize;
+        if off + rel_iplt_data.len() <= output.len() {
+            output[off..off + rel_iplt_data.len()].copy_from_slice(&rel_iplt_data);
+        }
+    }
+
     // Write to file
     std::fs::write(output_path, &output)
         .map_err(|e| format!("failed to write {}: {}", output_path, e))?;
@@ -1041,21 +1064,12 @@ fn assign_symbol_addresses(
             "edata" => sym.address = bss_vaddr,
             "end" | "__end__" => sym.address = data_seg_vaddr_end,
             "__rel_iplt_start" => {
-                // Static ARM: we don't emit .rel.iplt yet; make it an empty range.
-                if is_static {
-                    sym.address = 0;
-                    sym.is_defined = true;
-                } else {
-                    sym.address = rel_iplt_vaddr;
-                }
+                sym.address = rel_iplt_vaddr;
+                if is_static { sym.is_defined = true; }
             }
             "__rel_iplt_end" => {
-                if is_static {
-                    sym.address = 0;
-                    sym.is_defined = true;
-                } else {
-                    sym.address = rel_iplt_vaddr + rel_iplt_size;
-                }
+                sym.address = rel_iplt_vaddr + rel_iplt_size;
+                if is_static { sym.is_defined = true; }
             }
             // ARM .ARM.exidx section boundary symbols — since we exclude
             // .ARM.exidx from output, both point to the same address (empty range).
