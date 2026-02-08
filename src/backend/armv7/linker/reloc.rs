@@ -317,18 +317,14 @@ fn apply_one_reloc(
         }
 
         R_ARM_GOT_BREL | R_ARM_GOT32 => {
-            // R_ARM_GOT32: GOT(S) + A  (absolute address of GOT entry)
-            // R_ARM_GOT_BREL: GOT(S) + A - GOT_ORG (offset from GOT base)
-            //
-            // Both use the same relocation number (26) on ARM. In practice,
-            // glibc's static objects use this to load an absolute GOT entry
-            // address via literal pools. Treat it as GOT32 to avoid producing
-            // small offsets like 0x80/0x84 which cause NULL deref.
+            // ARM uses relocation number 26 for both GOT32 and GOT_BREL.
+            // In glibc's static startup, this value is typically added to the
+            // GOT base to form the GOT entry address, so we emit the offset
+            // from GOT base: GOT(S) + A - GOT_ORG.
             if let Some(gs) = ctx.global_symbols.get(&sym_name) {
                 let got_entry_off = (ctx.got_reserved + gs.got_index) as u32 * 4;
-                let got_entry_addr = ctx.got_vaddr + got_entry_off;
                 let implicit_addend = insn_word as i32;
-                (got_entry_addr as i32)
+                (got_entry_off as i32)
                     .wrapping_add(implicit_addend)
                     .wrapping_add(addend) as u32
             } else {
@@ -533,7 +529,7 @@ pub(super) fn resolve_got_reloc(
 ) {
     // Helper: fill a single symbol's GOT entry/entries using its got_index.
     // got_index already accounts for multi-slot symbols (set by build_plt_got_lists).
-    let fill_got_entry = |got_data: &mut [u8], gs: &LinkerSymbol| {
+    let fill_got_entry = |got_data: &mut [u8], name: &str, gs: &LinkerSymbol| {
         let off = (got_reserved + gs.got_index) * 4;
         if has_tls && gs.sym_type == STT_TLS {
             if gs.needs_tls_gd {
@@ -567,20 +563,23 @@ pub(super) fn resolve_got_reloc(
                     gs.address
                 };
                 write_u32_le(got_data, off, addr);
+                if gs.is_defined && gs.address == 0 {
+                    eprintln!("warning: GOT entry for '{}' resolved to 0", name);
+                }
             }
         }
     };
 
     for name in got_dyn_symbols.iter() {
         if let Some(gs) = global_symbols.get(name) {
-            fill_got_entry(got_data, gs);
+            fill_got_entry(got_data, name, gs);
         } else {
             eprintln!("warning: GOT symbol '{}' not found in global_symbols", name);
         }
     }
     for name in got_local_symbols.iter() {
         if let Some(gs) = global_symbols.get(name) {
-            fill_got_entry(got_data, gs);
+            fill_got_entry(got_data, name, gs);
             // Warn about zero-address GOT entries for defined non-weak symbols
             if gs.address == 0 && gs.is_defined && gs.binding != STB_WEAK
                 && gs.sym_type != STT_TLS
