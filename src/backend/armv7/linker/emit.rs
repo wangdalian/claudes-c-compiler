@@ -1004,7 +1004,12 @@ fn assign_symbol_addresses(
             }
             continue;
         }
-        if sym.output_section < output_sections.len() {
+        if sym.is_abs {
+            // SHN_ABS symbols: their address IS their absolute value,
+            // stored in section_offset (= sym.value from the input ELF).
+            // No section allocation needed — just use the value directly.
+            sym.address = sym.section_offset;
+        } else if sym.output_section < output_sections.len() {
             sym.address = output_sections[sym.output_section].addr + sym.section_offset;
         }
         if let Some(&value) = linker_sym_map.get(name.as_str()) {
