@@ -417,15 +417,15 @@ fn apply_one_reloc(
         }
 
         R_ARM_TLS_IE32 => {
-            // GOT(S) + A (data-class relocation for TLS IE).
-            // glibc's static startup expects an absolute GOT entry address
-            // in the literal pool, not a PC-relative offset.
+            // GOT(S) + A - GOT_ORG (offset from GOT base).
+            // In static glibc startup, the code adds GOT base at runtime,
+            // so we must emit the offset, not an absolute address.
             let implicit_addend = insn_word as i32;
             if let Some(gs) = ctx.global_symbols.get(&sym_name) {
                 let got_entry_off = (ctx.got_reserved + gs.got_index) as u32 * 4;
-                (ctx.got_vaddr + got_entry_off)
-                    .wrapping_add(implicit_addend as u32)
-                    .wrapping_add(addend as u32)
+                (got_entry_off as i32)
+                    .wrapping_add(implicit_addend)
+                    .wrapping_add(addend) as u32
             } else {
                 0
             }
